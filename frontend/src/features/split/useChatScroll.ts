@@ -44,6 +44,7 @@ export function useChatScroll(
   const lastScrollEventRef = useRef<{ pos: number; at: number } | null>(null);
   // Mutable accumulator: writes and their delayed echoes span multiple renders.
   const programmaticWritesRef = useRef<Array<{ value: number; at: number }>>([]);
+  const pendingEchoRef = useRef<{ value: number; at: number } | null>(null);
   const restoredVersionRef = useRef<number | undefined>(undefined);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
 
@@ -115,7 +116,9 @@ export function useChatScroll(
     if (!element) return;
     const at = performance.now();
     const writes = programmaticWritesRef.current.filter((write) => at - write.at <= PROGRAMMATIC_WRITE_WINDOW_MS);
-    writes.push({ value: element.scrollTop, at });
+    const write = { value: element.scrollTop, at };
+    pendingEchoRef.current = write;
+    writes.push(write);
     programmaticWritesRef.current = writes.slice(-PROGRAMMATIC_WRITE_LIMIT);
   }, []);
 
@@ -165,6 +168,15 @@ export function useChatScroll(
     if (!element) return;
     const pos = element.scrollTop;
     const at = performance.now();
+    const pending = pendingEchoRef.current;
+    // The next notification either consumes this write's echo or supersedes
+    // it. Historical coordinates remain available to genuine reader motion.
+    pendingEchoRef.current = null;
+    if (pending !== null && at - pending.at <= PROGRAMMATIC_WRITE_WINDOW_MS
+      && Math.abs(pos - pending.value) <= PROGRAMMATIC_WRITE_EPSILON) {
+      updateIntent();
+      return;
+    }
     const previous = lastScrollEventRef.current;
     const distance = previous === null ? 0 : Math.abs(pos - previous.pos);
     // This predecessor exists only for reader-seeded motion. Cached coordinates

@@ -196,6 +196,50 @@ it.each([1, 20])("quiet frame-cadence bottom writes keep the jump control hidden
   }
 });
 
+it.each([1, 20])("reader signal plus fresh app writes cannot expose the jump control (delta=%s)", async (delta) => {
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = ++frameId;
+    frames.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+  const h = mountTranscript();
+  const scroll = async (): Promise<void> => {
+    await act(async () => { h.body.dispatchEvent(new Event("scroll")); });
+    const pending = [...frames.values()];
+    frames.clear();
+    await act(async () => { for (const callback of pending) callback(performance.now()); });
+  };
+  try {
+    Object.defineProperties(h.body, {
+      scrollHeight: { configurable: true, get: () => Math.round(h.instance.getTotalSize()) },
+      scrollTop: { configurable: true, get: h.getTop, set: (value: number) => {
+        h.setTop(Math.max(0, Math.min(value, h.body.scrollHeight - CLIENT_HEIGHT)));
+      } },
+    });
+    await act(async () => h.instance.scrollToIndex(ROW_COUNT - 1, { align: "end" }));
+    await scroll();
+    expect(frames.size).toBe(0);
+    act(() => h.body.dispatchEvent(new WheelEvent("wheel", { deltaY: 10 })));
+    for (const at of [110, 126]) {
+      vi.mocked(performance.now).mockReturnValue(at);
+      resizeBy(h, ROW_COUNT - 1, delta);
+      await act(async () => h.instance.scrollToIndex(ROW_COUNT - 1, { align: "end" }));
+      await scroll();
+    }
+    expect(h.getTop()).toBe(11120 + 2 * delta);
+    vi.mocked(performance.now).mockReturnValue(400.001);
+    resizeBy(h, ROW_COUNT - 1, 100);
+    expect(h.getTop()).toBe(11120 + 2 * delta);
+    await scroll();
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+  } finally {
+    unmount(h);
+  }
+});
+
 it.each(["jump", "restore", "focus"])("hands ownership to explicit %s without scrollend before a growing-content echo", (transition) => {
   const frames = new Map<number, FrameRequestCallback>();
   let frameId = 0;

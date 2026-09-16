@@ -422,6 +422,70 @@ describe("reader ownership provenance and contacts", () => {
     scroll();
   }
 
+  it.each([1, 20])("reader signal alone cannot authorize an app-written streak (delta=%s)", (delta) => {
+    automaticBottom();
+    scroll();
+    dispatch(new WheelEvent("wheel", { deltaY: 10 }));
+    for (const at of [110, 126]) {
+      time(at);
+      height += delta;
+      automaticBottom();
+      expect(top).toBe(height - 400);
+      expect(state.isRecentProgrammaticWrite(top)).toBe(true);
+      scroll();
+    }
+    time(400.001);
+    expect.soft(state.isReaderInputActive()).toBe(false);
+    height += 100;
+    scroll();
+    expect.soft(state.isFollowing()).toBe(true);
+    expect.soft(container.querySelector("button")).toBeNull();
+  });
+
+  it("a genuine reader predecessor does not authorize a fresh app echo mid-streak", () => {
+    automaticBottom();
+    scroll();
+    dispatch(new WheelEvent("wheel", { deltaY: -10 }));
+    time(200);
+    body.scrollTop = 5590;
+    scroll();
+    expect(state.isFollowing()).toBe(true);
+    time(350);
+    height = 6020;
+    automaticBottom();
+    expect(top).toBe(5620);
+    expect(state.isRecentProgrammaticWrite(top)).toBe(true);
+    scroll();
+    time(500.001);
+    expect.soft(state.isReaderInputActive()).toBe(false);
+    height += 100;
+    scroll();
+    expect.soft(state.isFollowing()).toBe(true);
+    expect.soft(container.querySelector("button")).toBeNull();
+  });
+
+  it.each([251, 300.001])("app writes cannot reseed a broken reader streak inside residual grace (gap=%s)", (gap) => {
+    automaticBottom();
+    scroll();
+    dispatch(new WheelEvent("wheel", { deltaY: -10 }));
+    body.scrollTop = 5590;
+    scroll();
+    time(100 + gap);
+    height = 6020;
+    automaticBottom();
+    scroll();
+    time(Math.max(401, 116 + gap));
+    expect(state.isReaderInputActive()).toBe(false);
+    height = 6040;
+    automaticBottom();
+    scroll();
+    expect.soft(state.isReaderInputActive()).toBe(false);
+    height += 100;
+    scroll();
+    expect.soft(state.isFollowing()).toBe(true);
+    expect.soft(container.querySelector("button")).toBeNull();
+  });
+
   it.each([[16, 1], [16, 20], [16, 400], [16, 401], [250, 20], [250.001, 20], [0, 20], [16, 0]] as const)(
     "quiet automatic echoes cannot seed motion: gap=%s delta=%s", (gap, delta) => {
       automaticBottom();

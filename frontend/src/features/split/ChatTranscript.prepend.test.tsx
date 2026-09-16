@@ -438,6 +438,50 @@ it.each([[16, 1], [16, 30], [250, 30], [250.001, 30]] as const)(
   },
 );
 
+it.each([false, true])("fresh app writes cannot retire a new warm anchor (reader signal=%s)", async (seed) => {
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = ++frameId;
+    frames.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  const scroll = async (): Promise<void> => {
+    await act(async () => { h.body.dispatchEvent(new Event("scroll")); });
+    const pending = [...frames.values()];
+    frames.clear();
+    await act(async () => { for (const callback of pending) callback(performance.now()); });
+  };
+  try {
+    await act(async () => h.instance.scrollToIndex(TAIL_ROWS - 1, { align: "end" }));
+    await scroll();
+    expect(frames.size).toBe(0);
+    if (seed) act(() => h.body.dispatchEvent(new WheelEvent("wheel", { deltaY: 10 })));
+    for (const at of [110, 126]) {
+      vi.mocked(performance.now).mockReturnValue(at);
+      const row = h.instance.measurementsCache[TAIL_ROWS - 1];
+      if (!row) throw new Error("missing last tail row");
+      await act(async () => h.instance.resizeItem(TAIL_ROWS - 1, row.size + 20));
+      await act(async () => h.instance.scrollToIndex(TAIL_ROWS - 1, { align: "end" }));
+      await scroll();
+    }
+    expect(h.getTop()).toBe(11160);
+    vi.mocked(performance.now).mockReturnValue(400.001);
+    h.render([...rows("head", 2), ...tail]);
+    expect(h.getTop()).toBe(11294);
+    await scroll();
+    const row = h.instance.measurementsCache[0];
+    if (!row) throw new Error("missing warm row");
+    await act(async () => h.instance.resizeItem(0, row.size + 30));
+    expect(h.getTop()).toBe(11324);
+  } finally {
+    unmount(h);
+  }
+});
+
 it("buttonless hover repairs a missing release before a quiet 500ms warm echo", () => {
   const tail = rows("tail", TAIL_ROWS);
   const h = mountTranscript(tail);
