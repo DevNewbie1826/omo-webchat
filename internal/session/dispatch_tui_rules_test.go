@@ -512,7 +512,7 @@ func TestDispatchInteractiveApprovalStillRetained(t *testing.T) {
 	}
 }
 
-func TestDispatchNonInteractiveStatusMethodStillApproval(t *testing.T) {
+func TestDispatchStatusPublishesAnnouncementWithoutPendingAsk(t *testing.T) {
 	// Given a live session.
 	s, sub := acquireDrained(t, "tui-approval-status")
 
@@ -524,10 +524,21 @@ func TestDispatchNonInteractiveStatusMethodStillApproval(t *testing.T) {
 	})
 	frames := publishCompactionMarker(t, s, sub)
 
-	// Then the current approval-frame behavior is unchanged and nothing is
-	// retained for a later attach.
+	// Then status still broadcasts once in the approval envelope, explicitly
+	// marked as an announcement, and is never retained as a pending ask.
 	if got := counts(frames)[FrameApproval]; got != 1 {
 		t.Fatalf("setStatus produced %d FrameApproval, want 1; frames=%+v", got, frames)
+	}
+	for _, frame := range frames {
+		if frame.Kind == FrameApproval {
+			payload, ok := frame.Data.(map[string]any)
+			if !ok {
+				t.Fatalf("approval payload = %T, want map[string]any", frame.Data)
+			}
+			if payload["awaitsAnswer"] != false {
+				t.Fatalf("setStatus awaitsAnswer = %v, want false", payload["awaitsAnswer"])
+			}
+		}
 	}
 	late := &synchronousApprovalRecorder{recorder: newRecorder(16)}
 	lateDetach := s.Attach(late)

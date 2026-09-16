@@ -575,6 +575,10 @@
         "method": {
           "$ref": "shared-types.json#/$defs/ApprovalMethod"
         },
+        "awaitsAnswer": {
+          "type": "boolean",
+          "description": "True for a known method awaiting a client answer; false for a known fire-and-forget announcement. Omitted when the method is unknown or the sender provides no classification."
+        },
         "questions": {
           "type": "array",
           "items": { "$ref": "shared-types.json#/$defs/Question" }

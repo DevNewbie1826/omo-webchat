@@ -212,6 +212,8 @@ type ActivitySnapshot struct {
 }
 
 type ApprovalFrame struct {
+	// True for a known method awaiting a client answer; false for a known fire-and-forget announcement. Omitted when the method is unknown or the sender provides no classification.
+	AwaitsAnswer *bool          `json:"awaitsAnswer,omitempty"`
 	DeadlineAtMs *int64         `json:"deadlineAtMs,omitempty"`
 	ID           string         `json:"id"`
 	Message      *string        `json:"message,omitempty"`
@@ -1209,7 +1211,7 @@ func (v *ApprovalFrame) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"deadlineAtMs", "id", "message", "method", "nonBlocking", "options", "placeholder", "prefill", "questions", "remainingMs", "sessionId", "timeout", "title", "type"}, []string{}, []string{"options", "questions"})
+	extra, err := captureExtraFields(data, []string{"awaitsAnswer", "deadlineAtMs", "id", "message", "method", "nonBlocking", "options", "placeholder", "prefill", "questions", "remainingMs", "sessionId", "timeout", "title", "type"}, []string{}, []string{"options", "questions"})
 	if err != nil {
 		return err
 	}
@@ -2678,7 +2680,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "approval":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"deadlineAtMs": validationSchema{Type: "integer"}, "id": validationSchema{Type: "string"}, "message": validationSchema{Type: "string"}, "method": validationSchema{Type: "string", Enum: []string{"select", "confirm", "input", "editor", "question"}}, "nonBlocking": validationSchema{Type: "boolean"}, "options": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "placeholder": validationSchema{Type: "string"}, "prefill": validationSchema{Type: "string"}, "questions": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"header": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "multiSelect": validationSchema{Type: "boolean"}, "options": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"description": validationSchema{Type: "string"}, "label": validationSchema{Type: "string"}}}}, "question": validationSchema{Type: "string"}}}}, "remainingMs": validationSchema{Type: "integer"}, "sessionId": validationSchema{Type: "string"}, "timeout": validationSchema{Type: "integer"}, "title": validationSchema{Type: "string"}, "type": validationSchema{Const: "approval"}}, Required: []string{"type", "sessionId", "id", "method"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"awaitsAnswer": validationSchema{Type: "boolean"}, "deadlineAtMs": validationSchema{Type: "integer"}, "id": validationSchema{Type: "string"}, "message": validationSchema{Type: "string"}, "method": validationSchema{Type: "string", Enum: []string{"select", "confirm", "input", "editor", "question"}}, "nonBlocking": validationSchema{Type: "boolean"}, "options": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "placeholder": validationSchema{Type: "string"}, "prefill": validationSchema{Type: "string"}, "questions": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"header": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "multiSelect": validationSchema{Type: "boolean"}, "options": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"description": validationSchema{Type: "string"}, "label": validationSchema{Type: "string"}}}}, "question": validationSchema{Type: "string"}}}}, "remainingMs": validationSchema{Type: "integer"}, "sessionId": validationSchema{Type: "string"}, "timeout": validationSchema{Type: "integer"}, "title": validationSchema{Type: "string"}, "type": validationSchema{Const: "approval"}}, Required: []string{"type", "sessionId", "id", "method"}}); err != nil {
 				return nil, err
 			}
 		case "commands":
