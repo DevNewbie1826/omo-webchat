@@ -23,6 +23,9 @@ function parseQuestion(record: Record<string, unknown>): Question | null {
   const multiSelect = optBoolean(record, "multiSelect");
   const options = record["options"] === undefined ? undefined : mapRecords(record["options"], parseQuestionOption);
   if (id === null || header === null || question === null || multiSelect === null || options === null) return null;
+  // Answers carry labels, not descriptions or option ids. Reject collisions
+  // before either surface can turn distinct options into the same selection.
+  if (options && new Set(options.map(option => option.label ?? "")).size !== options.length) return null;
   return {
     ...(id === undefined ? {} : { id }),
     ...(header === undefined ? {} : { header }),
