@@ -94,6 +94,14 @@ let root: Root;
 
 beforeEach(() => {
   vi.spyOn(performance, "now").mockReturnValue(100);
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = ++frameId;
+    frames.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
   observed.scrollToIndexCalls = [];
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -248,6 +256,62 @@ it("drops follow when the reader wheels back to a previously written bottom", ()
     body.dispatchEvent(new Event("scroll"));
   });
   expect(container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+});
+
+it("drops follow when a held pointer returns to an earlier written bottom after 400ms", async () => {
+  const body = prepareWarmFollow(7000);
+  act(() => root.render(
+    <ChatTranscript {...idle} items={transcriptRows(40)} restoreVersion={2} focused />,
+  ));
+  expect(body.scrollTop).toBe(6600);
+  act(() => body.dispatchEvent(new Event("scroll")));
+  act(() => body.dispatchEvent(new PointerEvent("pointerdown", { buttons: 1 })));
+  for (const now of [450, 501]) {
+    vi.mocked(performance.now).mockReturnValue(now);
+    act(() => body.dispatchEvent(new PointerEvent("pointermove", { buttons: 1 })));
+  }
+  body.scrollTop = 5600;
+  await act(async () => { body.dispatchEvent(new Event("scroll")); });
+  expect(container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+});
+
+it.each([6050, 6055])("drops follow when continuing touch momentum crosses the bottom threshold after 400ms (height %s)", async (height) => {
+  const body = prepareWarmFollow(height);
+  act(() => root.render(
+    <ChatTranscript {...idle} items={transcriptRows(40)} restoreVersion={2} focused />,
+  ));
+  expect(body.scrollTop).toBe(height - 400);
+  act(() => body.dispatchEvent(new Event("scroll")));
+  act(() => {
+    body.dispatchEvent(new TouchEvent("touchstart"));
+    body.dispatchEvent(new TouchEvent("touchmove"));
+  });
+  vi.mocked(performance.now).mockReturnValue(101);
+  act(() => body.dispatchEvent(new TouchEvent("touchend")));
+  for (const [now, offset] of [[200, 20], [350, 30]] as const) {
+    vi.mocked(performance.now).mockReturnValue(now);
+    body.scrollTop = height - 400 - offset;
+    act(() => body.dispatchEvent(new Event("scroll")));
+    expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+  }
+  vi.mocked(performance.now).mockReturnValue(501);
+  // 5600 is a cached write; 5605 is an unwritten momentum coordinate.
+  body.scrollTop = height - 450;
+  await act(async () => { body.dispatchEvent(new Event("scroll")); });
+  expect(container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+});
+
+it("does not renew reader ownership from quiet app echoes or pointer hover", () => {
+  const body = prepareWarmFollow();
+  vi.mocked(performance.now).mockReturnValue(450);
+  act(() => body.dispatchEvent(new Event("scroll")));
+  expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+  vi.mocked(performance.now).mockReturnValue(600);
+  act(() => {
+    body.dispatchEvent(new PointerEvent("pointermove"));
+    body.dispatchEvent(new Event("scroll"));
+  });
+  expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
 });
 
 it("still drops follow when the reader genuinely scrolls up while history warms", () => {

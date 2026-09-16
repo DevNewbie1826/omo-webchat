@@ -303,6 +303,54 @@ it("keeps the warm anchor after a settled measurement correction echo", () => {
   }
 });
 
+it("retires the warm anchor when a held pointer returns to a written position after 400ms", async () => {
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = ++frameId;
+    frames.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  const scroll = async (): Promise<void> => {
+    await act(async () => { h.body.dispatchEvent(new Event("scroll")); });
+    const pending = [...frames.values()];
+    frames.clear();
+    await act(async () => { for (const callback of pending) callback(performance.now()); });
+  };
+  try {
+    await act(async () => h.instance.scrollToIndex(TAIL_ROWS - 1, { align: "end" }));
+    await scroll();
+    expect(frames.size).toBe(0);
+    park(h, 1000);
+    const first = [...rows("head", 3), ...tail];
+    h.render(first);
+    expect(h.getTop()).toBe(3304);
+    await scroll();
+    act(() => h.body.dispatchEvent(new Event("scrollend")));
+    h.render([...rows("next", 2), ...first]);
+    expect(h.getTop()).toBe(4840);
+    await scroll();
+    act(() => h.body.dispatchEvent(new Event("scrollend")));
+    act(() => h.body.dispatchEvent(new PointerEvent("pointerdown", { buttons: 1 })));
+    for (const now of [450, 501]) {
+      vi.mocked(performance.now).mockReturnValue(now);
+      act(() => h.body.dispatchEvent(new PointerEvent("pointermove", { buttons: 1 })));
+    }
+    h.body.scrollTop = 3304;
+    await scroll();
+    const warmRow = h.instance.measurementsCache[4];
+    if (!warmRow) throw new Error("missing warm row straddling the reader");
+    await act(async () => h.instance.resizeItem(4, warmRow.size + 20));
+    expect(h.getTop()).toBe(3304);
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+  } finally {
+    unmount(h);
+  }
+});
+
 it("still corrects a measured row above the reader that is not a warm chunk", () => {
   const tail = rows("tail", TAIL_ROWS);
   const h = mountTranscript(tail);
