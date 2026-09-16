@@ -188,12 +188,12 @@ it("scrolls to the end on restoreVersion even when the reader is not following",
   expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
 });
 
-function prepareWarmFollow(): HTMLDivElement {
+function prepareWarmFollow(grownHeight = 11000): HTMLDivElement {
   act(() => root.render(
     <ChatTranscript {...idle} items={transcriptRows(40)} restoreVersion={0} focused />,
   ));
   const body = requireBody(container);
-  const metrics = { scrollTop: 5600, scrollHeight: 6000, clientHeight: 400 };
+  const metrics = { scrollTop: 5000, scrollHeight: 6000, clientHeight: 400 };
   installScroll(body, metrics);
   // Install browser clamping before asking the app to write its bottom position.
   let top = metrics.scrollTop;
@@ -218,7 +218,7 @@ function prepareWarmFollow(): HTMLDivElement {
   act(() => body.dispatchEvent(new Event("scroll")));
   expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
   observed.scrollToIndexCalls = [];
-  metrics.scrollHeight = 11000;
+  metrics.scrollHeight = grownHeight;
   return body;
 }
 
@@ -231,6 +231,23 @@ it("keeps bottom follow when a late scroll echo of the app's own write arrives a
     <ChatTranscript {...idle} items={transcriptRows(41)} restoreVersion={1} focused />,
   ));
   expect(observed.scrollToIndexCalls).toContainEqual([40, { align: "end" }]);
+});
+
+it("drops follow when the reader wheels back to a previously written bottom", () => {
+  const body = prepareWarmFollow(7000);
+  act(() => root.render(
+    <ChatTranscript {...idle} items={transcriptRows(40)} restoreVersion={2} focused />,
+  ));
+  expect(body.scrollTop).toBe(6600);
+  act(() => body.dispatchEvent(new Event("scroll")));
+  expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+
+  act(() => {
+    body.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -1000 }));
+    body.scrollTop = 5600;
+    body.dispatchEvent(new Event("scroll"));
+  });
+  expect(container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
 });
 
 it("still drops follow when the reader genuinely scrolls up while history warms", () => {

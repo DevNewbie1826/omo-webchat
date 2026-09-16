@@ -1,7 +1,7 @@
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
-import { expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Virtualizer } from "@tanstack/react-virtual";
 import { ChatTranscript } from "./ChatTranscript";
 import type { TranscriptItem } from "./useChatFrameState";
@@ -24,6 +24,10 @@ vi.mock("@tanstack/react-virtual", async (importOriginal) => {
   };
 });
 vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+beforeEach(() => {
+  vi.spyOn(performance, "now").mockReturnValue(100);
+});
+afterEach(() => vi.restoreAllMocks());
 
 // Same geometry as the scroll-adjust harness: the test ResizeObserver measures
 // every rendered row at 768px, so 15 tail rows total 11520. Unlike that
@@ -67,7 +71,9 @@ function mountTranscript(items: readonly TranscriptItem[]): Harness {
   if (!instance) throw new Error("missing virtualizer instance");
   let top = 0;
   Object.defineProperties(body, {
-    scrollTop: { configurable: true, get: () => top, set: (value: number) => { top = value; } },
+    scrollTop: { configurable: true, get: () => top, set: (value: number) => {
+      top = Math.max(0, Math.min(value, Math.round(instance.getTotalSize()) - CLIENT_HEIGHT));
+    } },
     // The scrollport's content is the virtualized row area: it grows with the
     // list, exactly like a real scroll container's scrollHeight.
     scrollHeight: { configurable: true, get: () => Math.round(instance.getTotalSize()) },
@@ -75,7 +81,7 @@ function mountTranscript(items: readonly TranscriptItem[]): Harness {
     scrollTo: {
       configurable: true,
       value: (options?: { top?: number }) => {
-        if (options && typeof options.top === "number") top = options.top;
+        if (options && typeof options.top === "number") body.scrollTop = options.top;
       },
     },
   });
@@ -210,7 +216,6 @@ it("leaves the viewport alone once the reader has scrolled into the warm history
 });
 
 it("keeps compensating later warm chunks when a late echo of a programmatic write arrives between chunks", () => {
-  const clock = vi.spyOn(performance, "now").mockReturnValue(100);
   const tail = rows("tail", TAIL_ROWS);
   const h = mountTranscript(tail);
   try {
@@ -241,7 +246,60 @@ it("keeps compensating later warm chunks when a late echo of a programmatic writ
     expect(h.getTop()).toBe(flushedTop + 30 + 3 * ROW_HEIGHT);
   } finally {
     unmount(h);
-    clock.mockRestore();
+  }
+});
+
+it("retires the warm anchor when the reader wheels back to the initial top", () => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, 1000);
+    const first = [...rows("head", 3), ...tail];
+    h.render(first);
+    expect(h.getTop()).toBe(3304);
+
+    act(() => h.body.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -3304 })));
+    park(h, 0);
+    const warmRow = h.instance.measurementsCache[2];
+    if (!warmRow) throw new Error("missing warm measurement");
+    act(() => h.instance.resizeItem(2, warmRow.size + 20));
+    expect(h.getTop()).toBe(0);
+
+    const visibleRow = viewportOffset(h, "head row 0");
+    h.render([...rows("next", 2), ...first]);
+    expect(h.getTop()).toBe(2 * ROW_HEIGHT);
+    expect(viewportOffset(h, "head row 0")).toBe(visibleRow);
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+  } finally {
+    unmount(h);
+  }
+});
+
+it("keeps the warm anchor after a settled measurement correction echo", () => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, 1000);
+    const first = [...rows("chunk-a", 2), ...tail];
+    h.render(first);
+    expect(h.getTop()).toBe(2536);
+    act(() => h.body.dispatchEvent(new Event("scroll")));
+    act(() => h.body.dispatchEvent(new Event("scrollend")));
+    expect(h.instance.isScrolling).toBe(false);
+
+    const tailRow = h.instance.measurementsCache[2];
+    if (!tailRow) throw new Error("missing tail measurement");
+    act(() => h.instance.resizeItem(2, tailRow.size + 20));
+    expect(h.getTop()).toBe(2556);
+    act(() => h.body.dispatchEvent(new Event("scroll")));
+    const warmRow = h.instance.measurementsCache[0];
+    if (!warmRow) throw new Error("missing warm measurement");
+    act(() => h.instance.resizeItem(0, warmRow.size + 30));
+    expect(h.getTop()).toBe(2586);
+    h.render([...rows("chunk-b", 3), ...first]);
+    expect(h.getTop()).toBe(4890);
+  } finally {
+    unmount(h);
   }
 });
 

@@ -317,7 +317,7 @@ export function ChatTranscript({
   const clearDeferredAdjustment = useCallback(() => {
     deferredAdjustmentRef.current = 0;
   }, []);
-  const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom, isFollowing, noteProgrammaticWrite, isRecentProgrammaticWrite } = useChatScroll(restoreVersion, focused, clearDeferredAdjustment);
+  const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom, isFollowing, isReaderInputActive, noteProgrammaticWrite, isRecentProgrammaticWrite } = useChatScroll(restoreVersion, focused, clearDeferredAdjustment);
   // Lane width feeding the row-height estimator. Tracked via ResizeObserver
   // so metrics recompute only on an actual width change, never per render.
   const [laneWidth, setLaneWidth] = useState(0);
@@ -653,7 +653,9 @@ export function ChatTranscript({
         // Genuine scroll intent (scrollToIndex/scrollToOffset): the viewport
         // is being moved deliberately, so any deferred compensation is moot.
         deferredAdjustmentRef.current = 0;
+        const previous = element.scrollTop;
         element.scrollTo?.(behavior === undefined ? { top: offset } : { top: offset, behavior });
+        if (element.scrollTop !== previous) noteProgrammaticWrite();
         return;
       }
       // virtual-core 3.17.6 hands over the PER-CALL delta on every path, never
@@ -669,7 +671,9 @@ export function ChatTranscript({
         return;
       }
       const top = offset + adjustments;
+      const previous = element.scrollTop;
       element.scrollTo?.(behavior === undefined ? { top } : { top, behavior });
+      if (element.scrollTop !== previous) noteProgrammaticWrite();
     },
     // Finish compensation with the native gesture, not a later idle timer
     // which can replay it after focus has moved to another scroll owner.
@@ -714,15 +718,16 @@ export function ChatTranscript({
     const start = virtualizer.measurementsCache[anchor.index]?.start;
     if (start === undefined || start === anchor.start) return;
     anchorRef.current = { ...anchor, start };
+    const previous = element.scrollTop;
     element.scrollTop += start - anchor.start;
-    noteProgrammaticWrite();
+    if (element.scrollTop !== previous) noteProgrammaticWrite();
   });
 
   // The reader moving the viewport themselves retires the anchor: from here
   // their own position, not the pre-chunk one, is what later rows are held
   // against. Our own compensation write is not that signal.
   const onTranscriptScroll: typeof onScroll = (event) => {
-    if (!isRecentProgrammaticWrite(event.currentTarget.scrollTop)) anchorRef.current = null;
+    if (isReaderInputActive() || !isRecentProgrammaticWrite(event.currentTarget.scrollTop)) anchorRef.current = null;
     onScroll(event);
   };
 
@@ -737,8 +742,9 @@ export function ChatTranscript({
       const pending = deferredAdjustmentRef.current;
       if (pending === 0) return;
       deferredAdjustmentRef.current = 0;
+      const previous = element.scrollTop;
       element.scrollTop += pending;
-      noteProgrammaticWrite();
+      if (element.scrollTop !== previous) noteProgrammaticWrite();
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
     const onScrollDebounce = (): void => {

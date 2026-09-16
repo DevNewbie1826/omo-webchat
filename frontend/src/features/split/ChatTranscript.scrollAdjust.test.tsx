@@ -1,7 +1,7 @@
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
-import { expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Virtualizer } from "@tanstack/react-virtual";
 import { ChatTranscript } from "./ChatTranscript";
 import type { TranscriptItem } from "./useChatFrameState";
@@ -24,6 +24,10 @@ vi.mock("@tanstack/react-virtual", async (importOriginal) => {
   };
 });
 vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+beforeEach(() => {
+  vi.spyOn(performance, "now").mockReturnValue(100);
+});
+afterEach(() => vi.restoreAllMocks());
 
 // 15 rows: the test ResizeObserver polyfill measures every rendered row at
 // 768px and the whole list fits the initial window plus overscan, so every
@@ -126,6 +130,26 @@ function resizeBy(h: Harness, index: number, delta: number): void {
     h.instance.resizeItem(index, measurement.size + delta);
   });
 }
+
+it("keeps follow after explicit row positioning and growth before its notification", () => {
+  const h = mountTranscript();
+  try {
+    Object.defineProperty(h.body, "scrollHeight", {
+      configurable: true,
+      get: () => Math.round(h.instance.getTotalSize()),
+    });
+    h.setTop(5000);
+    act(() => h.instance.scrollToIndex(ROW_COUNT - 1, { align: "end" }));
+    expect(h.getTop()).toBe(SCROLL_HEIGHT - CLIENT_HEIGHT);
+    resizeBy(h, ROW_COUNT - 1, 100);
+    expect(h.body.scrollHeight).toBe(SCROLL_HEIGHT + 100);
+    expect(h.getTop()).toBe(SCROLL_HEIGHT - CLIENT_HEIGHT);
+    dispatchScroll(h);
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+  } finally {
+    unmount(h);
+  }
+});
 
 it("applies a measurement correction immediately when no gesture is in flight", () => {
   const h = mountTranscript();

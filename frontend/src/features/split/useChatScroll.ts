@@ -8,6 +8,7 @@ const BOTTOM_EPSILON = 40;
 const PROGRAMMATIC_WRITE_WINDOW_MS = 600;
 const PROGRAMMATIC_WRITE_EPSILON = 1;
 const PROGRAMMATIC_WRITE_LIMIT = 16;
+const READER_INPUT_WINDOW_MS = 400;
 
 export interface ChatScrollState {
   readonly scrollRef: RefObject<HTMLDivElement>;
@@ -16,6 +17,7 @@ export interface ChatScrollState {
   readonly onScroll: UIEventHandler<HTMLDivElement>;
   readonly scrollToBottom: () => void;
   readonly isFollowing: () => boolean;
+  readonly isReaderInputActive: () => boolean;
   readonly noteProgrammaticWrite: () => void;
   readonly isRecentProgrammaticWrite: (value: number) => boolean;
 }
@@ -31,12 +33,26 @@ export function useChatScroll(
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
+  const lastReaderInputRef = useRef(-Infinity);
   // Mutable accumulator: writes and their delayed echoes span multiple renders.
   const programmaticWritesRef = useRef<Array<{ value: number; at: number }>>([]);
   const restoredVersionRef = useRef<number | undefined>(undefined);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
 
   const isFollowing = useCallback(() => followRef.current, []);
+  const isReaderInputActive = useCallback(() =>
+    performance.now() - lastReaderInputRef.current <= READER_INPUT_WINDOW_MS, []);
+
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const noteReaderInput = (): void => { lastReaderInputRef.current = performance.now(); };
+    const events = ["wheel", "touchstart", "touchmove", "pointerdown", "keydown"] as const;
+    for (const event of events) element.addEventListener(event, noteReaderInput, { passive: true });
+    return () => {
+      for (const event of events) element.removeEventListener(event, noteReaderInput);
+    };
+  }, []);
 
   const noteProgrammaticWrite = useCallback(() => {
     const element = scrollRef.current;
@@ -59,8 +75,12 @@ export function useChatScroll(
     if (!element) return;
     onScrollToBottomIntent?.();
     followRef.current = true;
-    element.scrollTop = element.scrollHeight;
-    noteProgrammaticWrite();
+    const target = Math.max(0, element.scrollHeight - element.clientHeight);
+    const previous = element.scrollTop;
+    if (previous !== target) {
+      element.scrollTop = element.scrollHeight;
+      if (element.scrollTop !== previous) noteProgrammaticWrite();
+    }
     setShowScrollToBottom(false);
   }, [onScrollToBottomIntent, noteProgrammaticWrite]);
 
@@ -68,11 +88,12 @@ export function useChatScroll(
     const element = scrollRef.current;
     if (!element) return;
     const atBottom = element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_EPSILON;
-    // Content can grow before our write's echo arrives; that is not reader intent.
-    if (!atBottom && isRecentProgrammaticWrite(element.scrollTop)) return;
+    // Quiet echoes can arrive after content grows. A reader gesture takes
+    // precedence, even when it returns to a position we recently wrote.
+    if (!isReaderInputActive() && !atBottom && isRecentProgrammaticWrite(element.scrollTop)) return;
     followRef.current = atBottom;
     setShowScrollToBottom(!atBottom);
-  }, [isRecentProgrammaticWrite]);
+  }, [isReaderInputActive, isRecentProgrammaticWrite]);
 
   useLayoutEffect(() => {
     if (restoredVersionRef.current === restoreVersion) return;
@@ -104,6 +125,7 @@ export function useChatScroll(
     onScroll: updateIntent,
     scrollToBottom,
     isFollowing,
+    isReaderInputActive,
     noteProgrammaticWrite,
     isRecentProgrammaticWrite,
   };
