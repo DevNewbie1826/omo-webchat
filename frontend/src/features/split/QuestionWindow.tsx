@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { ModalDialog } from "../../components/ModalDialog";
+import { modalStack } from "../../components/modalStack";
 import { useT } from "../../i18n";
 import type { Question, QuestionAnswer } from "../../lib/contract/types_gen";
 import { ApprovalFallbackForm, ApprovalFallbackNote } from "./ApprovalFallback";
@@ -109,7 +110,10 @@ const pendingFocusHandoffs = new Map<string, ReturnType<typeof setTimeout>>();
  *  Exits and focus (the C3 semantics): answering or cancelling is an
  *  explicit exit and hands focus to the pane's composer synchronously.
  *  Closing (X / backdrop / Escape) folds the window back to the notice band
- *  and likewise hands focus back. An unmount with focus inside and no
+ *  and likewise hands focus back — but only when NO dialog remains: while
+ *  another request's dialog survives a close, the modal stack restores focus
+ *  to that dialog's own initial control, and a handoff here would aim the
+ *  user's typing at the background chat. An unmount with focus inside and no
  *  local exit is an external resolution: the handoff is deferred one task so
  *  a same-id remount can cancel it, and it never steals focus that already
  *  landed somewhere else. */
@@ -155,6 +159,12 @@ export function QuestionWindow({
 		}
 		if (!wasOpenRef.current) return;
 		wasOpenRef.current = false;
+		// A surviving dialog owns focus now. This effect runs after this
+		// window's ModalDialog left the stack (child passive cleanups flush
+		// before the parent's passive setup), so a non-empty stack means
+		// another dialog remained and the stack already restored focus to it —
+		// handing off here would send the user's typing to the background chat.
+		if (modalStack.size() > 0) return;
 		focusComposerRef.current?.();
 	}, [open]);
 
@@ -183,8 +193,15 @@ export function QuestionWindow({
 				return;
 			}
 			if (exitedRef.current) {
-				// Answered or cancelled from this window: hand off synchronously.
-				focusComposerRef.current?.();
+				// Answered or cancelled from this window: hand off synchronously —
+				// but only when no other dialog remains. This layout cleanup runs
+				// before ModalDialog's passive stack removal, so this window's own
+				// entry is still registered: size <= 1 means "just us", and with a
+				// survivor the stack's removal restores focus to the surviving top
+				// dialog instead.
+				if (modalStack.size() <= 1) {
+					focusComposerRef.current?.();
+				}
 				return;
 			}
 			// No local exit — an external resolution would still deserve the

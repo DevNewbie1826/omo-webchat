@@ -11,7 +11,7 @@ import type {
 	ChatServerFrame,
 } from "../../lib/chatWs";
 import { ChatPane } from "./ChatPane";
-import { setTextareaValue } from "./chatPaneTestHarness";
+import { requireElement, setTextareaValue } from "./chatPaneTestHarness";
 
 const i18n: I18nValue = {
 	lang: "en",
@@ -182,6 +182,69 @@ describe("ChatPane non-blocking question widget", () => {
 		});
 		expect(container.querySelector(".th-question-band")).toBeNull();
 		expect(document.querySelector(".th-modal")).toBeNull();
+	});
+
+	it("a rejected response restores the question to its band without reopening the window", () => {
+		const { deliver, sent } = renderWithFakeConnect();
+		act(() => deliver(QUESTION_FRAME));
+		// Non-blocking arrival: band only, no auto-opened window.
+		expect(container.querySelector(".th-question-band")).not.toBeNull();
+		expect(document.querySelector(".th-modal")).toBeNull();
+		// Open the window explicitly from the band, choose an option, submit.
+		act(() => {
+			container
+				.querySelector<HTMLButtonElement>(".th-question-band-open")
+				?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		});
+		const option = Array.from(
+			document.querySelectorAll<HTMLButtonElement>(".th-approval-question-option"),
+		).find((button) => button.textContent === "Go");
+		expect(option).toBeDefined();
+		act(() => {
+			option?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		});
+		const submit = Array.from(
+			document.querySelectorAll<HTMLButtonElement>(".th-approval-question-actions button"),
+		).find((button) => button.textContent === "approval.submit");
+		expect(submit).toBeDefined();
+		act(() => {
+			submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		});
+		expect(sent).toContainEqual({
+			type: "approval.respond",
+			sessionId: "chat-1",
+			requestId: expect.any(String),
+			id: "ask-1",
+			answers: { q1: { selected: ["Go"] } },
+		});
+		// The optimistic removal dismisses both band and window.
+		expect(container.querySelector(".th-question-band")).toBeNull();
+		expect(document.querySelector(".th-modal")).toBeNull();
+		// The server rejects the response: an error carrying the response's
+		// requestId and the extension_ui_response command rolls the request
+		// back (the same non-blocking id is pending again).
+		const response = sent.find((frame) => frame.type === "approval.respond");
+		if (!response || response.type !== "approval.respond") {
+			throw new Error("missing approval.respond frame");
+		}
+		const requestId = requireElement(response.requestId, "response request id");
+		act(() => {
+			deliver({
+				type: "error",
+				sessionId: "chat-1",
+				command: "extension_ui_response",
+				requestId,
+				message: "rejected",
+			});
+		});
+		// The restored non-blocking question stays in its notice band; no dialog
+		// opens and no tab takes focus without a second explicit Open gesture —
+		// the same contract as the initial arrival.
+		expect(container.querySelector(".th-question-band")).not.toBeNull();
+		expect(document.querySelector(".th-modal")).toBeNull();
+		expect(document.activeElement).not.toBe(
+			document.querySelector(".th-approval-question-tab"),
+		);
 	});
 
 	it("a request without the non-blocking flag auto-opens the window (blocking presentation)", () => {

@@ -139,7 +139,13 @@ export function ChatPane({
   const seenQuestionIdRef = useRef<string | null>(null);
   if (questionId !== seenQuestionIdRef.current) {
     seenQuestionIdRef.current = questionId;
-    if (questionId !== null && questionFrame?.nonBlocking !== true) {
+    if (questionFrame === null) {
+      // The request exited (answered or dismissed): retire the open-window
+      // owner with it, so a restored non-blocking question waits in its
+      // notice band until the user opens the window again. A restored
+      // blocking question still auto-opens through the arrival branch below.
+      setQuestionWindowForId(null);
+    } else if (questionFrame.nonBlocking !== true) {
       setQuestionWindowForId(questionId);
     }
   }

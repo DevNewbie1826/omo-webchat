@@ -1052,6 +1052,37 @@ describe("question window and notice band contracts", () => {
   });
 });
 
+describe("modal visual-viewport contracts", () => {
+  it("bounds the modal surface to the published visual viewport, never the layout viewport", () => {
+    // The overlay must sit exactly on the visible region the parse-time boot
+    // script publishes on <html>: iOS shrinks the VISUAL viewport under the
+    // keyboard while the layout viewport stays full-height, so a
+    // layout-fixed overlay parks the panel's answer/actions under the
+    // keyboard. No component measures anything — the CSS reads the published
+    // tokens (same pattern as the mobile drawer and the model-picker sheet).
+    // Prose comments between declarations carry no semicolons, so strip
+    // them before declarationValue's (^|;) anchor runs.
+    const stripComments = (body: string): string => body.replace(/\/\*[\s\S]*?\*\//g, "");
+    const overlay = stripComments(ruleBody(modal, ".th-modal-overlay"));
+    expect(declarationValue(overlay, "top")).toBe("var(--th-vv-top, 0px)");
+    expect(declarationValue(overlay, "left")).toBe("var(--th-vv-left, 0px)");
+    expect(declarationValue(overlay, "width")).toBe("var(--th-vv-width, 100%)");
+    expect(declarationValue(overlay, "height")).toBe("calc(var(--th-vh-unit, 1vh) * 100)");
+    // The layout-viewport inset must not return: it is what overflowed the
+    // visible region (overlay bottom 820 vs visible 524 at 390x844).
+    expect(declarationValue(overlay, "inset")).toBe("");
+    expect(declarationValue(overlay, "bottom")).toBe("");
+    expect(declarationValue(overlay, "right")).toBe("");
+    const maxHeight = declarationValue(stripComments(ruleBody(modal, ".th-modal")), "max-height");
+    // var() carries a fallback here, so match the reference directly rather
+    // than via containsVarToken (which only accepts bare var(--name)).
+    expect(maxHeight).toMatch(/var\(\s*--th-vh-unit\b/);
+    // No viewport unit may size the panel directly (the former 100dvh); the
+    // 1dvh inside the var() fallback is only the no-boot-script fallback.
+    expect(maxHeight.replace(/var\([^)]*\)/g, "")).not.toContain("vh");
+  });
+});
+
 describe("pinned live-session section contracts", () => {
   // The running-sessions block sits between .th-sidebar-nav and the flex:1
   // workspace tree: it never flexes, caps its height at min(30vh, 216px), and
