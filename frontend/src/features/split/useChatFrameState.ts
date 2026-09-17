@@ -4,7 +4,8 @@ import type { ChatClient, ChatServerFrame, CommandEntry, ContextUsage, JsonObjec
 import type { ApprovalRequest } from "./ApprovalDock";
 import type { ApprovalFrame } from "../../lib/contract/types_gen";
 import { useConfirmedControls } from "./chatConfirmedControls";
-import { messageText, type UiMessage } from "./chatEntries";
+import { concatEntries, messageText, type UiMessage } from "./chatEntries";
+import type { HistoryResumeCursor } from "../../lib/contract/types_gen";
 import {
   applyActivityEvent,
   applyTaskHistorySnapshot,
@@ -111,6 +112,100 @@ export function mergeTranscriptItems(
   return items;
 }
 
+type HistoryPage = Extract<ChatServerFrame, { type: "entries" }>;
+
+const historyEntryId = (entry: unknown): string | undefined => typeof entry === "object" && entry !== null && "id" in entry && typeof entry.id === "string" ? entry.id : undefined;
+
+function uniqueHistoryEntries(entries: unknown[]): unknown[] {
+  const positions = new Map<string, number>();
+  const result: unknown[] = [];
+  for (const entry of entries) {
+    const id = historyEntryId(entry);
+    const position = id === undefined ? undefined : positions.get(id);
+    if (position !== undefined) result[position] = entry;
+    else {
+      if (id !== undefined) positions.set(id, result.length);
+      result.push(entry);
+    }
+  }
+  return result;
+}
+
+// Shared IDs anchor the ordered union; reversed anchors contradict continuity.
+function mergeHistoryEntries(earlier: unknown[], later: unknown[]): unknown[] | null {
+  const left = uniqueHistoryEntries(earlier);
+  const right = uniqueHistoryEntries(later);
+  const positions = new Map(left.flatMap((entry, index) => {
+    const id = historyEntryId(entry);
+    return id === undefined ? [] : [[id, index] as const];
+  }));
+  const result: unknown[] = [];
+  let next = 0;
+  let pending: unknown[] = [];
+  for (const entry of right) {
+    const id = historyEntryId(entry);
+    const position = id === undefined ? undefined : positions.get(id);
+    if (position === undefined) pending.push(entry);
+    else {
+      if (position < next) return null;
+      result.push(...left.slice(next, position), ...pending, entry);
+      pending = [];
+      next = position + 1;
+    }
+  }
+  return [...result, ...left.slice(next), ...pending];
+}
+
+export function createHistoryResumeCoverage() {
+  let committed: unknown[] = [];
+  let pending: unknown[] = [];
+  let cursor: HistoryResumeCursor | undefined;
+  let continuity = true;
+  return {
+    entries: () => committed,
+    cursor: () => cursor,
+    reconnect: () => { pending = []; continuity = true; },
+    reset: () => { committed = []; pending = []; cursor = undefined; continuity = true; },
+    accept(frame: HistoryPage): { frame: HistoryPage; resumed: boolean } {
+      const echo = frame.resume;
+      let resumed = continuity && echo !== undefined && cursor !== undefined
+        && frame.historySessionId === cursor.sessionId
+        && echo.sessionId === cursor.sessionId && echo.firstEntryId === cursor.firstEntryId
+        && echo.lastEntryId === cursor.lastEntryId && echo.historyComplete === cursor.historyComplete;
+      if (frame.segment === "head") {
+        if (committed.length === 0) return { frame, resumed: false };
+        // Head echoes describe the original request, not the advancing cursor.
+        // Only an explicit durable-identity contradiction retires that coverage.
+        const identityChanged = cursor !== undefined && frame.historySessionId !== undefined
+          && frame.historySessionId !== cursor.sessionId;
+        const received = uniqueHistoryEntries(concatEntries([frame.entries]));
+        committed = (identityChanged ? null : mergeHistoryEntries(received, committed)) ?? received;
+        if (identityChanged) {
+          pending = [];
+          continuity = false;
+        }
+      } else {
+        continuity = resumed;
+        pending.push(frame.entries);
+        if (frame.final === false) return { frame, resumed };
+        const received = uniqueHistoryEntries(concatEntries(pending));
+        const merged = resumed ? mergeHistoryEntries(committed, received) : null;
+        resumed = resumed && merged !== null;
+        committed = merged ?? received;
+        pending = [];
+        continuity = true;
+      }
+      const firstEntryId = historyEntryId(committed[0]);
+      const lastEntryId = historyEntryId(committed[committed.length - 1]);
+      const sessionId = frame.historySessionId ?? (frame.segment === "head" ? cursor?.sessionId : undefined);
+      cursor = firstEntryId && lastEntryId && sessionId ? {
+        sessionId, firstEntryId, lastEntryId, historyComplete: frame.historyComplete === true,
+      } : undefined;
+      return { frame: { ...frame, entries: committed }, resumed };
+    },
+  };
+}
+
 export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">) {
   const { store: sends, requests: sendRequests } = useSessionSends(session);
   const { cancelRecovery } = useSessionDraft(session);
@@ -120,7 +215,17 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const ledger = controls.ledger;
   const [messages, setMessages] = useState<readonly UiMessage[]>([]);
   const streaming = useStreamingBuffer();
-  const pageBuffer = useEntriesPageBuffer();
+  const entriesBuffer = useEntriesPageBuffer();
+  const resumeCoverage = useRef(createHistoryResumeCoverage());
+  const historyPageCommittedRef = useRef(false);
+  const pageBuffer = {
+    ...entriesBuffer,
+    reset: () => {
+      entriesBuffer.reset();
+      resumeCoverage.current.reconnect();
+      historyPageCommittedRef.current = false;
+    },
+  };
   const [thinking, setThinking] = useState("");
   const [toolCalls, setToolCalls] = useState<Readonly<Record<string, ToolEntry>>>({});
   const [running, setRunning] = useState(false);
@@ -363,6 +468,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   // already released the action's own busy marker, fencing older page streams
   // away from the reset buffer.
   const beginResync = (): void => {
+    resumeCoverage.current.reset();
     todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
     const generation = beginReplay(connectionGenerationRef.current);
     resyncGenerationRef.current = generation;
@@ -469,6 +575,16 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   };
 
   const baseHandleFrame = createChatFrameHandler({
+    acceptHistoryPage: (frame) => {
+      if (frame.segment === "head" && !historyPageCommittedRef.current) return null;
+      const accepted = resumeCoverage.current.accept(frame);
+      if (frame.segment === "head" || frame.final !== false) {
+        // Coverage already produced the whole accepted list, including replacement.
+        entriesBuffer.reset();
+        historyPageCommittedRef.current = true;
+      }
+      return accepted;
+    },
     t,
     controls,
     streaming,
@@ -695,6 +811,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     sendDraft({ text, image: null }, requestId, sessionId, client, "steer");
 
   const markOpen = (): number => {
+    resumeCoverage.current.reconnect();
     todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
     applyRecovery(recoveryAfterOpen(recoveryRef.current));
     socketOpenRef.current = true;
@@ -748,6 +865,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   };
 
   const beginExternalWriteRecovery = (): void => {
+    resumeCoverage.current.reset();
     todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
     externalRecoveryPendingRef.current = true;
     externalRecoveryReadyRef.current = false;
@@ -819,6 +937,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     notices,
     recovery,
     handleFrame,
+    getHistoryResume: () => resumeCoverage.current.cursor(),
     beginActivityHydration,
     cancelActivityHydration,
     hydrateActivities,

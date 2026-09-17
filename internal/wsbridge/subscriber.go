@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/DevNewbie1826/omo-webchat/internal/coldhistory"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
@@ -18,6 +19,7 @@ const preActivationBufferCapacity = session.DefaultQueueSize + 1 + session.SendO
 // activation and is written synchronously, with the connection deadline
 // bounding each page.
 type subscriber struct {
+	resume         *coldhistory.ResumeCursor
 	conn           *connection
 	mu             sync.Mutex
 	active         bool
@@ -90,6 +92,8 @@ func (s *subscriber) ReplayBackpressure() (<-chan struct{}, bool) {
 // ProgressiveHistory reports whether the socket's client hello negotiated a
 // contract version that accepts segmented head pages after the terminal tail
 // page.
+func (s *subscriber) HistoryResume() *coldhistory.ResumeCursor { return s.resume }
+
 func (s *subscriber) ProgressiveHistory() bool {
 	return s.conn.clientHelloVersion() >= ContractVersion
 }
@@ -243,6 +247,12 @@ func mapFrame(f session.Frame, chatID string, reattach bool) (any, error) {
 			return mergedFrame(typ, chatID, f.Data)
 		}
 		out := wscontract.EntriesFrame{Type: typ, SessionID: chatID, Entries: x.Entries, Final: x.Final}
+		if x.HistorySessionID != "" {
+			out.HistorySessionID = &x.HistorySessionID
+		}
+		if x.Resume != nil {
+			out.Resume = &wscontract.HistoryResumeCursor{SessionID: x.Resume.SessionID, FirstEntryID: x.Resume.FirstEntryID, LastEntryID: x.Resume.LastEntryID, HistoryComplete: x.Resume.HistoryComplete}
+		}
 		if x.LeafID != "" {
 			out.LeafID = &x.LeafID
 		}

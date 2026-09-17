@@ -57,16 +57,27 @@ func (e *IndexBudgetError) Error() string {
 
 func (e *IndexBudgetError) Unwrap() error { return ErrIndexBudgetExceeded }
 
+// ResumeCursor identifies a contiguous delivered range on one active branch.
+type ResumeCursor struct {
+	SessionID       string `json:"sessionId"`
+	FirstEntryID    string `json:"firstEntryId"`
+	LastEntryID     string `json:"lastEntryId"`
+	HistoryComplete bool   `json:"historyComplete"`
+}
+
 // Options bounds disk reads, individual JSONL records, the aggregate retained
 // index, and emitted pages. Zero fields select the defaults. MaxLineBytes may
 // not exceed PageBytes, so a successful stream never emits a page larger than
 // PageBytes.
 type Options struct {
-	ChunkBytes   int
-	MaxLineBytes int
-	PageBytes    int
-	PageEntries  int
-	IndexBytes   int64
+	// ResolveResume can map an engine-only tip onto the validated disk leaf.
+	ResolveResume func(Metadata) (*ResumeCursor, error)
+	Resume        *ResumeCursor
+	ChunkBytes    int
+	MaxLineBytes  int
+	PageBytes     int
+	PageEntries   int
+	IndexBytes    int64
 }
 
 // Header contains the known session-header fields and its original JSON. The
@@ -84,6 +95,7 @@ type Header struct {
 // Metadata describes the complete active branch. It is available on every
 // callback, including the empty final page of a header-only file.
 type Metadata struct {
+	Resume *ResumeCursor
 	Header Header
 	LeafID string
 	Total  int
@@ -183,6 +195,44 @@ func streamTailFirst(ctx context.Context, source io.ReadSeeker, opts normalizedO
 	if err != nil {
 		return Metadata{}, err
 	}
+	cursor := opts.resume
+	if opts.resolveResume != nil {
+		cursor, err = opts.resolveResume(metadata)
+		if err != nil {
+			return Metadata{}, err
+		}
+	}
+	if cursor != nil && cursor.SessionID == metadata.Header.ID {
+		first, last := -1, -1
+		for i, ref := range branch {
+			if ref.id == cursor.FirstEntryID {
+				first = i
+			}
+			if ref.id == cursor.LastEntryID {
+				last = i
+			}
+		}
+		if first >= 0 && last >= first && (!cursor.HistoryComplete || first == 0) {
+			metadata.Resume = cursor
+			// An empty callback still validates the session and fetches the engine tail.
+			if last+1 == len(branch) {
+				err = emit(metadata, Page{Entries: []json.RawMessage{}, Start: last + 1, Final: first == 0})
+			} else {
+				err = emitRange(ctx, source, opts, metadata, branch, last+1, len(branch), false, first == 0, emit)
+			}
+			if err != nil {
+				return Metadata{}, err
+			}
+			for pos := first; pos > 0; {
+				start := max(0, pos-warmChunk)
+				if err := emitRange(ctx, source, opts, metadata, branch, start, pos, true, start == 0, emit); err != nil {
+					return Metadata{}, err
+				}
+				pos = start
+			}
+			return metadata, nil
+		}
+	}
 	if err := emitTailFirst(ctx, source, opts, metadata, branch, tailEntries, warmChunk, emit); err != nil {
 		return Metadata{}, err
 	}
@@ -190,20 +240,24 @@ func streamTailFirst(ctx context.Context, source io.ReadSeeker, opts normalizedO
 }
 
 type normalizedOptions struct {
-	chunkBytes   int
-	maxLineBytes int
-	pageBytes    int
-	pageEntries  int
-	indexBytes   int64
+	resolveResume func(Metadata) (*ResumeCursor, error)
+	resume        *ResumeCursor
+	chunkBytes    int
+	maxLineBytes  int
+	pageBytes     int
+	pageEntries   int
+	indexBytes    int64
 }
 
 func normalizeOptions(options Options) (normalizedOptions, error) {
 	opts := normalizedOptions{
-		chunkBytes:   options.ChunkBytes,
-		maxLineBytes: options.MaxLineBytes,
-		pageBytes:    options.PageBytes,
-		pageEntries:  options.PageEntries,
-		indexBytes:   options.IndexBytes,
+		resolveResume: options.ResolveResume,
+		resume:        options.Resume,
+		chunkBytes:    options.ChunkBytes,
+		maxLineBytes:  options.MaxLineBytes,
+		pageBytes:     options.PageBytes,
+		pageEntries:   options.PageEntries,
+		indexBytes:    options.IndexBytes,
 	}
 	if opts.chunkBytes == 0 {
 		opts.chunkBytes = DefaultChunkBytes

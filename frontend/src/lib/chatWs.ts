@@ -2,13 +2,20 @@ import { connectWs } from "./ws";
 import type { WsHandlers } from "./ws";
 import { notifyUnauthorized } from "./api";
 import { sessionExpired } from "../features/auth/auth";
-import { parseChatServerFrame } from "./chatWsParse";
+import { parseChatServerFrame as parseFrame } from "./chatWsParse";
 import { sanitizeJson } from "./chatWsParseFields";
 import type { FallbackApprovalFrame } from "./chatWsParseFallback";
 import { frameTypeOf, parseServerFrame } from "./contract/types_gen";
 import type * as ct from "./contract/types_gen";
 
-export { parseChatServerFrame, sanitizeJson } from "./chatWsParse";
+export { sanitizeJson } from "./chatWsParse";
+
+export function parseChatServerFrame(raw: unknown): ChatServerFrame | null {
+  const frame = parseFrame(raw);
+  if (frame?.type !== "entries") return frame;
+  const wire = parseServerFrame(raw) as ct.EntriesFrame | null;
+  return wire ? { ...frame, ...(wire.resume ? { resume: wire.resume } : {}), ...(wire.historySessionId ? { historySessionId: wire.historySessionId } : {}) } : frame;
+}
 
 /**
  * The features/ import seam, rewritten on the generated contract
@@ -215,6 +222,7 @@ export interface ChatClient {
 }
 
 export interface ChatHandlers {
+  readonly getHistoryResume?: () => ct.HistoryResumeCursor | undefined;
   readonly onOpen?: () => void;
   readonly onFrame: (frame: ChatServerFrame) => void;
   readonly onParseError?: (raw: string) => void;
@@ -262,7 +270,8 @@ export const connectChat: ChatConnector = (handlers) => {
   const replayCreateIfNeeded = (): void => {
     if (!rebindPending || createSentSinceOpen || lastCreate === null) return;
     rebindPending = false;
-    sendClient?.(lastCreate);
+    const resume = handlers.getHistoryResume?.();
+    sendClient?.({ ...lastCreate, ...(resume ? { resume } : {}) });
   };
 
   const wsHandlers: WsHandlers = {
@@ -322,7 +331,16 @@ export const connectChat: ChatConnector = (handlers) => {
   const client: ChatClient = {
     send: (m) => {
       if (m.type === "chat.create") {
-        lastCreate = m;
+        if (rebindPending && !createSentSinceOpen) {
+          const resume = handlers.getHistoryResume?.();
+          if (resume) m = { ...m, resume };
+        }
+        // Empty anchors opt into cursor bootstrap without claiming coverage.
+        if (handlers.getHistoryResume && !m.resume) {
+          m = { ...m, resume: { sessionId: "", firstEntryId: "", lastEntryId: "", historyComplete: false } };
+        }
+        const { resume: _resume, ...freshCreate } = m;
+        lastCreate = freshCreate;
         createSentSinceOpen = true;
         rebindPending = false;
       }

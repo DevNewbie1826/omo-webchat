@@ -7,6 +7,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/DevNewbie1826/omo-webchat/internal/coldhistory"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
 
@@ -212,11 +213,13 @@ func (e *ResumeError) Unwrap() error { return e.Cause }
 // already begins at the branch root - and the final head page carries true;
 // nil omits the field. Absent values keep the legacy whole-stream meaning.
 type EntriesFrame struct {
-	Entries         []json.RawMessage
-	LeafID          string
-	Final           bool
-	Segment         string
-	HistoryComplete *bool
+	Resume           *coldhistory.ResumeCursor
+	HistorySessionID string
+	Entries          []json.RawMessage
+	LeafID           string
+	Final            bool
+	Segment          string
+	HistoryComplete  *bool
 }
 
 type RunInfo struct{ Reason string }
@@ -250,6 +253,10 @@ type SynchronousAttachHook interface {
 // contract version that accepts segmented head pages after the terminal tail
 // page. Hydration consults it to pick progressive delivery; subscribers that
 // do not implement it keep the complete root-to-leaf stream.
+type HistoryResumeSubscriber interface {
+	HistoryResume() *coldhistory.ResumeCursor
+}
+
 type ProgressiveHistorySubscriber interface {
 	ProgressiveHistory() bool
 }

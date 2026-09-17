@@ -339,9 +339,11 @@ type EntriesFrame struct {
 	// REQUIRED on every entries frame (invariant 18)
 	Final bool `json:"final"`
 	// True on the last head chunk, meaning the client now holds the branch from its root. Absent keeps today's meaning.
-	HistoryComplete *bool `json:"historyComplete,omitempty"`
+	HistoryComplete  *bool   `json:"historyComplete,omitempty"`
+	HistorySessionID *string `json:"historySessionId,omitempty"`
 	// Present only on the terminal page
-	LeafID *string `json:"leafId,omitempty"`
+	LeafID *string              `json:"leafId,omitempty"`
+	Resume *HistoryResumeCursor `json:"resume,omitempty"`
 	// Backward warm chunk of earlier history; the only value is head. Absent keeps today's meaning.
 	Segment   *string `json:"segment,omitempty"`
 	SessionID string  `json:"sessionId"`
@@ -671,9 +673,10 @@ type ChatCreateFrame struct {
 	// Explicitly authorizes opening an in-place session whose source file shows concurrent write activity (session-active retry)
 	Force *bool `json:"force,omitempty"`
 	// Explicitly authorizes replacement of a quarantined in-place provider route
-	Recovery *bool  `json:"recovery,omitempty"`
-	Type     string `json:"type"`
-	WsID     string `json:"wsId"`
+	Recovery *bool                `json:"recovery,omitempty"`
+	Resume   *HistoryResumeCursor `json:"resume,omitempty"`
+	Type     string               `json:"type"`
+	WsID     string               `json:"wsId"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -758,6 +761,15 @@ type ChatSetFrame struct {
 type ChatStatsFrame struct {
 	SessionID string `json:"sessionId"`
 	Type      string `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+type HistoryResumeCursor struct {
+	FirstEntryID    string `json:"firstEntryId"`
+	HistoryComplete bool   `json:"historyComplete"`
+	LastEntryID     string `json:"lastEntryId"`
+	SessionID       string `json:"sessionId"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -1395,7 +1407,7 @@ func (v *EntriesFrame) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"entries", "final", "historyComplete", "leafId", "segment", "sessionId", "type"}, []string{}, []string{})
+	extra, err := captureExtraFields(data, []string{"entries", "final", "historyComplete", "historySessionId", "leafId", "resume", "segment", "sessionId", "type"}, []string{}, []string{})
 	if err != nil {
 		return err
 	}
@@ -1989,7 +2001,7 @@ func (v *ChatCreateFrame) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"chatId", "force", "recovery", "type", "wsId"}, []string{}, []string{})
+	extra, err := captureExtraFields(data, []string{"chatId", "force", "recovery", "resume", "type", "wsId"}, []string{}, []string{})
 	if err != nil {
 		return err
 	}
@@ -2179,6 +2191,24 @@ func (v *ChatStatsFrame) UnmarshalJSON(data []byte) error {
 
 func (v ChatStatsFrame) MarshalJSON() ([]byte, error) {
 	type plain ChatStatsFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *HistoryResumeCursor) UnmarshalJSON(data []byte) error {
+	type plain HistoryResumeCursor
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"firstEntryId", "historyComplete", "lastEntryId", "sessionId"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v HistoryResumeCursor) MarshalJSON() ([]byte, error) {
+	type plain HistoryResumeCursor
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
@@ -2696,7 +2726,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "entries":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"entries": validationSchema{Type: "array", Items: &validationSchema{}}, "final": validationSchema{Type: "boolean"}, "historyComplete": validationSchema{Type: "boolean"}, "leafId": validationSchema{Type: "string"}, "segment": validationSchema{Type: "string", Const: "head"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "entries"}}, Required: []string{"type", "sessionId", "entries", "final"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"entries": validationSchema{Type: "array", Items: &validationSchema{}}, "final": validationSchema{Type: "boolean"}, "historyComplete": validationSchema{Type: "boolean"}, "historySessionId": validationSchema{Type: "string"}, "leafId": validationSchema{Type: "string"}, "resume": validationSchema{Type: "object", Properties: map[string]validationSchema{"firstEntryId": validationSchema{Type: "string"}, "historyComplete": validationSchema{Type: "boolean"}, "lastEntryId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}}, Required: []string{"sessionId", "firstEntryId", "lastEntryId", "historyComplete"}}, "segment": validationSchema{Type: "string", Const: "head"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "entries"}}, Required: []string{"type", "sessionId", "entries", "final"}}); err != nil {
 				return nil, err
 			}
 		case "compaction.started":
@@ -2862,7 +2892,7 @@ func ParseClientFrame(data []byte) (ClientFrame, error) {
 				return nil, err
 			}
 		case "chat.create":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"chatId": validationSchema{Type: "string"}, "force": validationSchema{Type: "boolean"}, "recovery": validationSchema{Type: "boolean"}, "type": validationSchema{Const: "chat.create"}, "wsId": validationSchema{Type: "string"}}, Required: []string{"type", "wsId", "chatId"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"chatId": validationSchema{Type: "string"}, "force": validationSchema{Type: "boolean"}, "recovery": validationSchema{Type: "boolean"}, "resume": validationSchema{Type: "object", Properties: map[string]validationSchema{"firstEntryId": validationSchema{Type: "string"}, "historyComplete": validationSchema{Type: "boolean"}, "lastEntryId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}}, Required: []string{"sessionId", "firstEntryId", "lastEntryId", "historyComplete"}}, "type": validationSchema{Const: "chat.create"}, "wsId": validationSchema{Type: "string"}}, Required: []string{"type", "wsId", "chatId"}}); err != nil {
 				return nil, err
 			}
 		case "chat.send":

@@ -18,6 +18,7 @@ import (
 	"github.com/lxzan/gws"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/adoptcopy"
+	"github.com/DevNewbie1826/omo-webchat/internal/coldhistory"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 	"github.com/DevNewbie1826/omo-webchat/internal/sendqueue"
@@ -1253,6 +1254,9 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 		return commitBinding(acquired, stagedStarted, stagedDetach)
 	}
 	acquire := func() {
+		if f.Resume != nil {
+			sub.resume = &coldhistory.ResumeCursor{SessionID: f.Resume.SessionID, FirstEntryID: f.Resume.FirstEntryID, LastEntryID: f.Resume.LastEntryID, HistoryComplete: f.Resume.HistoryComplete}
+		}
 		stagedSession, stagedStarted, stagedDetach = nil, false, nil
 		if !guarded {
 			initialize := func(acquired *session.Session, started bool, acquiredDetach func()) {
