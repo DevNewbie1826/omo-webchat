@@ -615,6 +615,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           if (warmed === null) return;
           reconcileEntries(warmed, page.sessionId);
           if (bindings.pageBuffer.historyRootKnown()) bindings.setHistoryWarming(false);
+          else bindings.armHistoryStall(true);
           return;
         }
         const terminal = frame.final !== false;

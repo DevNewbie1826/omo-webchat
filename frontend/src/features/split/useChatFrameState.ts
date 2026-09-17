@@ -237,9 +237,25 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [cacheHitRate, setCacheHitRate] = useState<number | null>(null);
   const [isCompacting, setIsCompacting] = useState(false);
-  const [historyStatus, setHistoryStatus] = useState<HistoryStatus>("loading");
+  const [historyStatus, updateHistoryStatus] = useState<HistoryStatus>("loading");
+  const historyStatusRef = useRef(historyStatus);
   // Unlike historyStatus (which opens on the tail), this spans the head fill.
-  const [historyWarming, setHistoryWarming] = useState(true);
+  const [historyWarming, updateHistoryWarming] = useState(true);
+  const historyWarmingRef = useRef(historyWarming);
+  // Frames can batch: watchdog eligibility must see each transition immediately.
+  const setHistoryStatus: typeof updateHistoryStatus = (value) => {
+    const next = typeof value === "function" ? value(historyStatusRef.current) : value;
+    historyStatusRef.current = next;
+    updateHistoryStatus(next);
+    if (next !== "loading" && !historyWarmingRef.current) clearHistoryStall();
+  };
+  const setHistoryWarming: typeof updateHistoryWarming = (value) => {
+    const next = typeof value === "function" ? value(historyWarmingRef.current) : value;
+    historyWarmingRef.current = next;
+    updateHistoryWarming(next);
+    if (next) armHistoryStall(true);
+    else if (historyStatusRef.current !== "loading") clearHistoryStall();
+  };
   const historyLoaded = historyStatus === "loaded";
   const [connected, setConnected] = useState(false);
   const [commands, setCommands] = useState<readonly CommandEntry[]>([]);
@@ -508,13 +524,23 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     setHistoryStatus((current) => current === "loading" ? "failed" : current);
   };
 
-  const armHistoryStall = (refresh: boolean): void => {
-    if (historyStatus !== "loading") return;
-    if (historyStallTimerRef.current !== null && !refresh) return;
+  const clearHistoryStall = (): void => {
     if (historyStallTimerRef.current !== null) window.clearTimeout(historyStallTimerRef.current);
+    historyStallTimerRef.current = null;
+  };
+  const armHistoryStall = (refresh: boolean): void => {
+    if (historyStatusRef.current !== "loading" && !historyWarmingRef.current) return;
+    if (historyStallTimerRef.current !== null && !refresh) return;
+    clearHistoryStall();
     const connectionGeneration = connectionGenerationRef.current;
     historyStallTimerRef.current = window.setTimeout(() => {
       historyStallTimerRef.current = null;
+      if (connectionGeneration !== connectionGenerationRef.current) return;
+      // A committed tail stays loaded: head inactivity only lifts the hold.
+      if (historyStatusRef.current !== "loading") {
+        setHistoryWarming(false);
+        return;
+      }
       const stalled = replayQueueRef.current.filter((candidate) =>
         candidate.connectionGeneration === connectionGeneration);
       replayQueueRef.current = replayQueueRef.current.filter((candidate) =>
@@ -818,6 +844,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     sendDraft({ text, image: null }, requestId, sessionId, client, "steer");
 
   const markOpen = (): number => {
+    clearHistoryStall();
     resumeCoverage.current.reconnect();
     todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
     applyRecovery(recoveryAfterOpen(recoveryRef.current));
@@ -835,8 +862,9 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     snapshotMessagesRef.current = messagesRef.current;
     historyLoadedRef.current = false;
     // A reconnect with committed coverage requests a resume, not a new pin.
-    setHistoryWarming(resumeCoverage.current.cursor() === undefined);
     setHistoryStatus("loading");
+    setHistoryWarming(resumeCoverage.current.cursor() === undefined);
+    armHistoryStall(false);
     // A new socket makes a previous transport error stale — the same
     // reasoning beginResync already applies to its own reset.
     applyError("");
@@ -851,10 +879,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     applyRecovery(recoveryAfterClose(recoveryRef.current, socketOpenRef.current));
     socketOpenRef.current = false;
     ledger.failAll();
-    if (historyStallTimerRef.current !== null) {
-      window.clearTimeout(historyStallTimerRef.current);
-      historyStallTimerRef.current = null;
-    }
+    clearHistoryStall();
     sends.disconnect(socketRef.current);
     const closedGeneration = connectionGenerationRef.current;
     const closedReplays = replayQueueRef.current.filter((candidate) =>
@@ -894,18 +919,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     setHistoryStatus((current) => current === "loading" ? "failed" : current);
   };
 
-  useEffect(() => {
-    if (historyStatus !== "loading" && historyStallTimerRef.current !== null) {
-      window.clearTimeout(historyStallTimerRef.current);
-      historyStallTimerRef.current = null;
-    }
-    return () => {
-      if (historyStallTimerRef.current !== null) {
-        window.clearTimeout(historyStallTimerRef.current);
-        historyStallTimerRef.current = null;
-      }
-    };
-  }, [historyStatus]);
+  useEffect(() => () => clearHistoryStall(), []);
 
   return {
     messages,
