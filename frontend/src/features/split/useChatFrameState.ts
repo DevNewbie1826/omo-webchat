@@ -285,6 +285,10 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const [steerPending, setSteerPending] = useState<readonly SteerPendingItem[]>([]);
   const steerPendingRef = useRef<readonly SteerPendingItem[]>([]);
   const steerConfirmTimersRef = useRef<Map<string, number>>(new Map());
+  // Sent steers in FIFO order, independent of the confirmation window. A late
+  // echo must consume the occurrence it belongs to even after that occurrence's
+  // confirmation has already expired, so it cannot steal a later same-text send.
+  const outstandingSteersRef = useRef<Array<{ readonly requestId: string; readonly text: string }>>([]);
   const publishSteerPending = (next: readonly SteerPendingItem[]): void => {
     steerPendingRef.current = next;
     setSteerPending(next);
@@ -301,13 +305,18 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     }
     publishSteerPending(steerPendingRef.current.filter(item => item.requestId !== requestId));
   };
+  const dropOutstandingSteer = (requestId: string): void => {
+    outstandingSteersRef.current = outstandingSteersRef.current.filter(item => item.requestId !== requestId);
+  };
   const clearSteerPending = (): void => {
     clearSteerConfirmTimers();
+    outstandingSteersRef.current = [];
     publishSteerPending([]);
   };
   /** Confirm one sent steer for its own window; each steer expires on its own. */
   const confirmSteer = (requestId: string, text: string): void => {
     publishSteerPending([...steerPendingRef.current, { requestId, text }]);
+    outstandingSteersRef.current = [...outstandingSteersRef.current, { requestId, text }];
     steerConfirmTimersRef.current.set(requestId,
       window.setTimeout(() => dropSteerPending(requestId), STEER_CONFIRM_MS));
   };
@@ -629,10 +638,14 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   // the engine consuming that steer, which also retires its pending summary.
   const bindPendingSteerEcho = (sessionId: string, message: UiMessage): void => {
     const text = messageText(message);
-    // The echo materialized: the engine has consumed this steer, so its
-    // confirmation retires now even if its window has not expired yet.
-    const confirmed = steerPendingRef.current.find(item => item.text === text);
-    if (confirmed !== undefined) dropSteerPending(confirmed.requestId);
+    // Correlate the echo with the oldest outstanding send of this text, not
+    // with whichever confirmation is still on screen. Retiring that request id
+    // is a no-op when its window already expired.
+    const matched = outstandingSteersRef.current.find(item => item.text === text);
+    if (matched !== undefined) {
+      outstandingSteersRef.current = outstandingSteersRef.current.filter(item => item !== matched);
+      dropSteerPending(matched.requestId);
+    }
     if (pendingSteersRef.current.length === 0) return;
     const match = pendingSteersRef.current.find(pending =>
       pending.sessionId === sessionId && pending.echo === undefined && pending.text === text);
@@ -647,6 +660,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   };
   const dropPendingSteer = (requestId: string): void => {
     pendingSteersRef.current = pendingSteersRef.current.filter(pending => pending.requestId !== requestId);
+    dropOutstandingSteer(requestId);
     dropSteerPending(requestId);
   };
   const dropAllPendingSteers = (): void => {
@@ -882,6 +896,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
       if (kind === "steer") {
         forgetSteerMark(sessionId, requestId);
         pendingSteersRef.current = pendingSteersRef.current.filter(pending => pending.requestId !== requestId);
+        dropOutstandingSteer(requestId);
         dropSteerPending(requestId);
       }
     }

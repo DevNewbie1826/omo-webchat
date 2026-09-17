@@ -92,4 +92,24 @@ describe("useChatSession steer confirmation lifetime", () => {
     advance(2_000);
     expect(current.steerPending).toEqual([]);
   });
+
+  it("does not let an expired same-text echo retire a later confirmation", () => {
+    const first = steer("same redirect");
+    advance(2_000);
+    const second = steer("same redirect");
+    expect(current.steerPending.map((item) => item.requestId)).toEqual([first, second]);
+
+    advance(1_100);
+    expect(current.steerPending.map((item) => item.requestId)).toEqual([second]);
+
+    emit({
+      type: "message",
+      sessionId: session.id,
+      message: { role: "user", blocks: [{ kind: "text", text: "same redirect" }] },
+    });
+    expect(current.steerPending.map((item) => item.requestId)).toEqual([second]);
+
+    advance(2_000);
+    expect(current.steerPending).toEqual([]);
+  });
 });
