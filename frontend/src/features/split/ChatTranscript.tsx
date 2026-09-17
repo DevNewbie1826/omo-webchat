@@ -865,7 +865,10 @@ export function ChatTranscript({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focused, restoreVersion, virtualizer]);
 
-  useEffect(() => {
+  // Before paint: the held earlier history mounts in one commit, so a pin
+  // scheduled after paint would let the reader see one frame at the
+  // pre-admission offset.
+  useLayoutEffect(() => {
     if (rows.length === 0 || !isFollowing()) return;
     virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
   }, [rows.length, isFollowing, virtualizer]);
