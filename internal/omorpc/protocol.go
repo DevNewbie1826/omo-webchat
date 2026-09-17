@@ -478,6 +478,7 @@ type GetMediaData struct {
 // the session queue changes. An empty queue carries empty arrays and a zero
 // count.
 type QueueUpdate struct {
+	Steering            []string        `json:"steering,omitempty"`
 	FollowUp            []string        `json:"followUp,omitempty"`
 	Ordered             []QueuedMessage `json:"ordered,omitempty"`
 	PendingMessageCount int             `json:"pendingMessageCount,omitempty"`
@@ -492,6 +493,13 @@ func ParseQueueUpdate(ev *Event) (*QueueUpdate, error) {
 	var qu QueueUpdate
 	if err := json.Unmarshal(ev.Raw, &qu); err != nil {
 		return nil, fmt.Errorf("omorpc: parse queue_update: %w", err)
+	}
+	// Observed engine behavior: the live event carries the queue arrays but
+	// omits the count get_state reports, and the engine's own clients derive
+	// it from those arrays. Deriving it here keeps a parked steer from
+	// mirroring as an empty engine queue.
+	if qu.PendingMessageCount == 0 {
+		qu.PendingMessageCount = max(len(qu.Steering)+len(qu.FollowUp), len(qu.Ordered))
 	}
 	return &qu, nil
 }
