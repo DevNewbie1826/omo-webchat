@@ -10,7 +10,6 @@ export interface ChatSendRequest {
   readonly phase: "sending" | "admitted" | "unknown" | "failed";
   readonly queueOwned: boolean;
   readonly hold: boolean;
-  readonly showSteer: boolean;
 }
 
 // Queue receipts retain only ownership, not a terminal send outcome or payload.
@@ -53,7 +52,7 @@ export class ChatSendStore {
   }
   register(requestId: string, kind: ChatSendRequest["kind"], draft: ChatDraft, socket: number): void {
     this.publish([...this.requests, { requestId, kind, draft, text: draft.text.trim(), sequence: ++this.sequence,
-      socket, phase: "sending", queueOwned: false, hold: kind === "prompt", showSteer: kind === "steer" }]);
+      socket, phase: "sending", queueOwned: false, hold: kind === "prompt" }]);
   }
   admit(id: string): void {
     if (this.get(id)?.phase === "sending") this.update(id, { phase: "admitted" });
@@ -74,7 +73,7 @@ export class ChatSendStore {
     const request = this.get(id);
     if (!request || this.terminals.has(id)) return undefined;
     this.remember(id, "failed");
-    this.update(id, { phase: "failed", hold: false, showSteer: false });
+    this.update(id, { phase: "failed", hold: false });
     this.boundRecovery();
     return request;
   }
@@ -93,12 +92,12 @@ export class ChatSendStore {
   }
   disconnect(socket: number): void {
     this.publish(this.requests.map(request => request.socket === socket && request.phase !== "failed"
-      ? { ...request, phase: "unknown", hold: false, showSteer: false } : request));
+      ? { ...request, phase: "unknown", hold: false } : request));
     this.boundRecovery();
   }
   endRun(): void {
     this.publish(this.requests.map(request => request.phase === "failed" ? request
-      : { ...request, hold: false, showSteer: false, phase: request.queueOwned || request.kind === "queued" ? request.phase : "unknown" }));
+      : { ...request, hold: false, phase: request.queueOwned || request.kind === "queued" ? request.phase : "unknown" }));
     this.boundRecovery();
   }
   retire(id: string): ChatDraft | undefined {

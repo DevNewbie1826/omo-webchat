@@ -41,7 +41,8 @@ interface ChatFrameHandlerBindings {
   /** Record retained steer occurrences once the branch root is known.
    * Returns true when marks were recorded against the given messages. */
   readonly settlePendingSteers: (sessionId: string, messages: readonly UiMessage[]) => boolean;
-  /** Bind a live user message to a retained steer occurrence as its echo. */
+  /** Bind a live user message to a retained steer occurrence as its echo and
+   *  retire that steer's pending summary: the echo is the engine consuming it. */
   readonly bindPendingSteerEcho: (sessionId: string, message: UiMessage) => void;
   /** Retire retained steer occurrences whose run ended without an echo. */
   readonly retireUnmaterializedPendingSteers: () => void;
@@ -325,9 +326,9 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           if (merged !== null) bindings.replaceToolCalls(merged);
           return;
         }
-        // A user message that arrives while a steer occurrence is retained
-        // may be that steer's echo: bind the occurrence identity so
-        // settlement resolves the message that was actually sent.
+        // A user message that arrives while a steer is pending may be that
+        // steer's echo: bind the occurrence identity so settlement resolves
+        // the message that was actually sent, and retire its summary.
         if (frame.message.role === "user") bindings.bindPendingSteerEcho(frame.sessionId, frame.message);
         bindings.messageVersionRef.current += 1;
         bindings.replaceMessages(chatState.applySteerMarks(

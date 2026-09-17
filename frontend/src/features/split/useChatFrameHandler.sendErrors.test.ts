@@ -39,7 +39,7 @@ describe("completed chat.send settlement", () => {
     const store = new ChatSendStore();
     store.register("steer-7", "steer", { text: "work", image: null }, 1);
     store.endRun();
-    expect(store.get("steer-7")?.showSteer).toBe(false);
+    expect(store.get("steer-7")).toMatchObject({ phase: "unknown", hold: false });
     expect(store.complete("steer-7")).toBe(true);
     expect(store.getSnapshot()).toEqual([]);
   });

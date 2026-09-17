@@ -30,7 +30,7 @@ import * as chatState from "./chatSessionState";
 import { useSessionDraft, useSessionSends } from "./sessionDraft";
 import type { ChatSendRequest } from "./chatSendState";
 import type { ChatSessionRef } from "../workspace/workspace";
-import type { ChatDraft, FailedDraft, RecoveredChatDraft, QueueEngineSummary, QueueSlotItem, ToolEntry } from "./chatSessionTypes";
+import type { ChatDraft, FailedDraft, RecoveredChatDraft, QueueEngineSummary, QueueSlotItem, SteerPendingItem, ToolEntry } from "./chatSessionTypes";
 import { createChatFrameHandler } from "./useChatFrameHandler";
 import {
   recoveryAfterClose,
@@ -275,7 +275,13 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     .map(request => ({ ...request.draft, requestId: request.requestId }));
   const queuePlaceholders = sendRequests.filter(request => request.kind === "queued" && !request.queueOwned && (request.phase === "sending" || request.phase === "admitted"))
     .map(request => ({ requestId: request.requestId, text: request.text, hasImage: request.draft.image !== null }));
-  const steerPending = sendRequests.filter(request => request.showSteer).map(request => ({ requestId: request.requestId, text: request.text }));
+  // Steer feedback is not a transport receipt. A completed send ACK only means
+  // the engine parked the steer; it consumes it at the next turn boundary. The
+  // summary therefore outlives the request itself and retires on its canonical
+  // echo, the run terminal, or a lost socket.
+  const [steerPending, setSteerPending] = useState<readonly SteerPendingItem[]>([]);
+  const dropSteerPending = (requestId: string): void =>
+    setSteerPending(pending => pending.filter(item => item.requestId !== requestId));
   const messagesRef = useRef<readonly UiMessage[]>([]);
   const runningRef = useRef(false);
   const submitLatchRef = useRef(false);
@@ -429,6 +435,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const clearLiveSurfaces = (): void => {
     runningRef.current = false;
     sends.endRun();
+    // A steer the run never consumed cannot still be pending against it.
+    setSteerPending([]);
     setRunning(false);
     streaming.clear();
     setThinking("");
@@ -498,6 +506,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     // A reloaded branch already contains any accepted steer, so a retained
     // occurrence from the replaced load must never resolve against it.
     pendingSteersRef.current = [];
+    setSteerPending([]);
     setHistoryWarming(true);
     setHistoryStatus("loading");
     applyError("");
@@ -587,10 +596,17 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   };
   // Bind a live user message to the oldest retained steer occurrence still
   // waiting for its echo: the occurrence identity survives warming, so
-  // settlement resolves the message that was actually sent.
+  // settlement resolves the message that was actually sent. The same echo is
+  // the engine consuming that steer, which also retires its pending summary.
   const bindPendingSteerEcho = (sessionId: string, message: UiMessage): void => {
-    if (pendingSteersRef.current.length === 0) return;
     const text = messageText(message);
+    // The echo materialized: the engine has consumed this steer, so its
+    // pending summary retires here rather than on the transport ACK.
+    setSteerPending(pending => {
+      const match = pending.find(item => item.text === text);
+      return match === undefined ? pending : pending.filter(item => item !== match);
+    });
+    if (pendingSteersRef.current.length === 0) return;
     const match = pendingSteersRef.current.find(pending =>
       pending.sessionId === sessionId && pending.echo === undefined && pending.text === text);
     if (match === undefined) return;
@@ -604,6 +620,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   };
   const dropPendingSteer = (requestId: string): void => {
     pendingSteersRef.current = pendingSteersRef.current.filter(pending => pending.requestId !== requestId);
+    dropSteerPending(requestId);
   };
 
   const baseHandleFrame = createChatFrameHandler({
@@ -804,6 +821,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
       replaceToolCalls({});
     }
     if (kind === "steer") {
+      setSteerPending(pending => [...pending, { requestId, text }]);
       if (pageBuffer.historyRootKnown()) {
         const marks = steerMarks(sessionId);
         const ordinal = Math.max(messagesRef.current.filter(message => message.role === "user").length, ...marks.map(mark => mark.ordinal)) + 1;
@@ -832,6 +850,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
       if (kind === "steer") {
         forgetSteerMark(sessionId, requestId);
         pendingSteersRef.current = pendingSteersRef.current.filter(pending => pending.requestId !== requestId);
+        dropSteerPending(requestId);
       }
     }
     return accepted;
@@ -872,6 +891,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     setConnected(true);
     pageBuffer.reset();
     pendingSteersRef.current = [];
+    setSteerPending([]);
     return connectionGeneration;
   };
   const markClose = (): void => {
@@ -881,6 +901,9 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     ledger.failAll();
     clearHistoryStall();
     sends.disconnect(socketRef.current);
+    // The socket carried the only evidence of the steer's fate; recovery
+    // republishes it through history rather than a stale live summary.
+    setSteerPending([]);
     const closedGeneration = connectionGenerationRef.current;
     const closedReplays = replayQueueRef.current.filter((candidate) =>
       candidate.connectionGeneration === closedGeneration);

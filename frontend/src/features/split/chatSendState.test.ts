@@ -79,12 +79,12 @@ describe("ChatSendStore", () => {
     expect(store.terminal("0")).toBeUndefined();
     expect(store.terminal("512")).toBe("queued");
   });
-  it("run.done retires prompt holds and steer display without settling outcomes or pending queue handoff", () => {
+  it("run.done retires prompt holds without settling outcomes or pending queue handoff", () => {
     const store = new ChatSendStore();
     for (const kind of ["prompt", "queued", "steer"] as const) store.register(kind, kind, draft, 1);
     store.endRun();
     expect(store.get("prompt")).toMatchObject({ phase: "unknown", hold: false });
-    expect(store.get("steer")).toMatchObject({ phase: "unknown", showSteer: false });
+    expect(store.get("steer")).toMatchObject({ phase: "unknown", hold: false });
     expect(store.get("queued")).toMatchObject({ phase: "sending", queueOwned: false });
     expect(store.fail("steer")?.draft).toBe(draft);
   });
