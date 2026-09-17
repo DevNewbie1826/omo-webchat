@@ -2056,6 +2056,13 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 			progressive = capable.ProgressiveHistory()
 		}
 	}
+	var resume, acceptedResume *coldhistory.ResumeCursor
+	coveredTail := map[string]bool{}
+	if progressive && target != nil {
+		if capable, ok := target.sub.(HistoryResumeSubscriber); ok {
+			resume = capable.HistoryResume()
+		}
+	}
 	// Tail-first delivery emits pages out of branch order, so page derivation
 	// is suspended until the complete branch has been folded root-to-leaf.
 	deriveSuspended := false
@@ -2084,6 +2091,26 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 				}
 			}
 			s.lifecycleMu.Unlock()
+		}
+		if page, ok := frame.Data.(EntriesFrame); ok && progressive {
+			page.Resume = acceptedResume
+			if acceptedResume != nil && len(coveredTail) > 0 {
+				entries := make([]json.RawMessage, 0, len(page.Entries))
+				for _, raw := range page.Entries {
+					var entry struct {
+						ID string `json:"id"`
+					}
+					if err := json.Unmarshal(raw, &entry); err != nil {
+						return err
+					}
+					if !coveredTail[entry.ID] {
+						entries = append(entries, raw)
+					}
+				}
+				page.Entries = entries
+			}
+			page.HistorySessionID = s.durableID
+			frame.Data = page
 		}
 		if target != nil {
 			return target.enqueueReplay(ctx, frame, terminal)
@@ -2167,6 +2194,37 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 	}
 
 	var tail entriesTail
+	tailFetched := false
+	resolveResume := func(metadata coldhistory.Metadata) (*coldhistory.ResumeCursor, error) {
+		if resume == nil || resume.SessionID != metadata.Header.ID || metadata.LeafID == "" {
+			return resume, nil
+		}
+		if err := s.verifySessionFileIdentity(sessionPath, metadata.LeafID); err != nil {
+			return nil, err
+		}
+		var err error
+		tail, err = s.fetchEntriesAfter(ctx, metadata.LeafID)
+		if err != nil {
+			return nil, err
+		}
+		tailFetched = true
+		for _, raw := range tail.Entries {
+			var entry struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(raw, &entry); err != nil {
+				return nil, err
+			}
+			coveredTail[entry.ID] = true
+			if entry.ID == resume.LastEntryID {
+				diskCursor := *resume
+				diskCursor.LastEntryID = metadata.LeafID
+				return &diskCursor, nil
+			}
+		}
+		clear(coveredTail)
+		return resume, nil
+	}
 	persistedCompactions := 0
 	var preparationErr error
 	callbackFailed := false
@@ -2201,7 +2259,9 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 				return preparationErr
 			}
 			var tailErr error
-			tail, tailErr = s.fetchEntriesAfter(ctx, cursor)
+			if !tailFetched {
+				tail, tailErr = s.fetchEntriesAfter(ctx, cursor)
+			}
 			if tailErr != nil {
 				preparationErr = tailErr
 				return tailErr
@@ -2211,7 +2271,15 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 				callbackFailed = true
 				return validateErr
 			}
-			if progressive && metadata.Total > hydrationTailBudget {
+			if metadata.Resume != nil {
+				acceptedResume = resume
+			}
+			if acceptedResume != nil {
+				if deriveErr := s.deriveCompleteHistoryBranch(ctx, sessionPath, &noticeCandidate); deriveErr != nil {
+					return deriveErr
+				}
+			}
+			if progressive && (metadata.Total > hydrationTailBudget || acceptedResume != nil) {
 				// Pages arrive tail-first; derivation resumes only around the
 				// complete-branch fold that precedes the terminal commit.
 				deriveSuspended = true
@@ -2225,8 +2293,10 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 			// The bounded branch tail is on the wire. Fold the complete branch
 			// root-to-leaf so the terminal commit derives from the whole
 			// transcript, then paint the live engine tail exactly as today.
-			if deriveErr := s.deriveCompleteHistoryBranch(ctx, sessionPath, &noticeCandidate); deriveErr != nil {
-				return deriveErr
+			if acceptedResume == nil {
+				if deriveErr := s.deriveCompleteHistoryBranch(ctx, sessionPath, &noticeCandidate); deriveErr != nil {
+					return deriveErr
+				}
 			}
 			compactionCount = persistedCompactions
 			noticeCandidate.replayingTail = true
@@ -2273,7 +2343,9 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 	var err error
 	if progressive {
 		_, err = streamTailFirstSessionHistory(ctx, sessionPath, coldhistory.Options{
-			PageEntries: entriesPageMaxCount,
+			ResolveResume: resolveResume,
+			Resume:        resume,
+			PageEntries:   entriesPageMaxCount,
 		}, hydrationTailBudget, hydrationWarmChunk, streamCallback)
 	} else {
 		_, err = streamSessionHistory(ctx, sessionPath, coldhistory.Options{
@@ -2329,6 +2401,7 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 		return publishErr(routeErr)
 	}
 	if !terminalEmitted {
+		deriveSuspended = false
 		compactionCount = persistedCompactions
 		noticeCandidate.replayingTail = true
 		// No head page followed: the emitted tail already begins at the root.

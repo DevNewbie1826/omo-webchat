@@ -24,6 +24,17 @@
     { "$ref": "hello.json#/$defs/ClientHelloFrame" }
   ],
   "$defs": {
+    "HistoryResumeCursor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionId", "firstEntryId", "lastEntryId", "historyComplete"],
+      "properties": {
+        "sessionId": { "type": "string" },
+        "firstEntryId": { "type": "string" },
+        "lastEntryId": { "type": "string" },
+        "historyComplete": { "type": "boolean" }
+      }
+    },
     "PingFrame": {
       "type": "object",
       "additionalProperties": false,
@@ -38,6 +49,7 @@
         "type": { "const": "chat.create" },
         "wsId": { "type": "string" },
         "chatId": { "type": "string" },
+        "resume": { "$ref": "#/$defs/HistoryResumeCursor" },
         "recovery": { "type": "boolean", "description": "Explicitly authorizes replacement of a quarantined in-place provider route" },
         "force": { "type": "boolean", "description": "Explicitly authorizes opening an in-place session whose source file shows concurrent write activity (session-active retry)" }
       }

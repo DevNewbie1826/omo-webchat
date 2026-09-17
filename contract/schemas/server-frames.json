@@ -684,6 +684,8 @@
           },
           "description": "History entries; bounds per invariant 18 (100 entries / 256 KiB per page)"
         },
+        "resume": { "$ref": "client-frames.json#/$defs/HistoryResumeCursor" },
+        "historySessionId": { "type": "string" },
         "leafId": {
           "type": "string",
           "description": "Present only on the terminal page"
