@@ -56,9 +56,21 @@
   flex-direction: column;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0 var(--th-space-5) var(--th-space-4);
+  padding: 0 var(--th-space-5) 0;
   /* Keep scrolled-into-view targets clear of the pinned action row. */
-  scroll-padding-bottom: calc(34px + var(--th-space-2) + var(--th-space-2));
+  scroll-padding-bottom: calc(34px + var(--th-space-2) + var(--th-space-4));
+}
+
+/* The pinned action row is chrome, not content: it spans the body's full
+   width and closes the window's bottom edge, so a question scrolling past
+   it disappears behind an opaque band instead of showing through the
+   body's side gutters or below the buttons. */
+.th-question-window-body .th-approval-question-actions {
+  margin-left: calc(-1 * var(--th-space-5));
+  margin-right: calc(-1 * var(--th-space-5));
+  padding: var(--th-space-2) var(--th-space-5) var(--th-space-4);
+  border-top: 1px solid var(--th-border-overlay);
+  background: var(--th-surface-overlay);
 }
 
 /* One-line notice band: the pending request's anchor in the chat column

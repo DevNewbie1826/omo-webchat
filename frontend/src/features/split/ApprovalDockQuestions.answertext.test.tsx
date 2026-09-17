@@ -114,6 +114,30 @@ describe("per-question free text under an options question", () => {
 		});
 	});
 
+	it.each(["option-first", "text-first"].flatMap(order =>
+		["submit", "next", "tab"].map(action => ({ order, action })),
+	))("preserves deferred IME text in $order order through $action", ({ order, action }) => {
+		const onRespond = vi.fn();
+		renderWindow(action === "submit"
+			? { ...TWO_OPTIONS_QUESTIONS, questions: [TWO_OPTIONS_QUESTIONS.questions![0]!] }
+			: TWO_OPTIONS_QUESTIONS, onRespond);
+		const input = requireElement(document.querySelector<HTMLInputElement>(".th-approval-question-text"), "answer input");
+		if (order === "option-first") click(option("Go"));
+		act(() => {
+			input.focus();
+			input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+			// The IME has changed the live editor, but its input/change notification
+			// has not arrived when the user activates an option or Submit.
+			Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "한글 답변");
+			input.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true, data: "한글 답변" }));
+		});
+		if (order === "text-first") click(option("Go"));
+		if (action === "tab") click(tabs()[1]);
+		if (action === "next") click(requireElement(document.querySelector<HTMLButtonElement>(".th-approval-question-actions button"), "next"));
+		click(requireElement(document.querySelector<HTMLButtonElement>(".th-approval-question-actions button"), "submit"));
+		expect(onRespond).toHaveBeenCalledExactlyOnceWith({ answers: { q1: { selected: ["Go"], text: "한글 답변" } } });
+	});
+
 	it("keeps an options question's typed text through a refresh of the same request", async () => {
 		// Given a typed answer on an options question.
 		const question = { id: "target", multiSelect: true, options: [{ label: "Red" }, { label: "Blue" }] };

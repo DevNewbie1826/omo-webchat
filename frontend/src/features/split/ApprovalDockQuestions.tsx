@@ -275,11 +275,31 @@ export function ApprovalQuestionPanel({
 }: ApprovalQuestionPanelProps) {
 	const { t } = useT();
 	const commentId = useId();
+	const answerInputRef = useRef<HTMLInputElement>(null);
 	const draft = reconcileDraft(storedDraft, questions);
 	useLayoutEffect(() => {
 		if (draft !== storedDraft) setDraft(draft);
 	}, [draft, storedDraft, setDraft]);
 	const activeIndex = Math.min(draft.activeIndex, Math.max(questions.length - 1, 0));
+
+	// An IME can update the editor before notifying React. Snapshot that
+	// live value before an option re-render, tab unmount, or submission;
+	// waiting for compositionend/blur can be too late once the request exits.
+	const readLiveDraft = (): QuestionDraft => {
+		const input = answerInputRef.current;
+		const question = questions[activeIndex];
+		if (!input || !question) return draft;
+		const key = questionKey(question, activeIndex);
+		const previous = draft.answers.get(key) ?? { selected: [], text: "", completed: false };
+		if (input.value === previous.text) return draft;
+		return {
+			...draft,
+			answering: true,
+			answers: new Map(draft.answers).set(key, {
+				...previous, text: input.value, textAnswered: false, invalidated: false,
+			}),
+		};
+	};
 
 	const patchDraft = (
 		index: number,
@@ -288,11 +308,12 @@ export function ApprovalQuestionPanel({
 		const question = questions[index];
 		if (!question) return;
 		const key = questionKey(question, index);
-		const previous = draft.answers.get(key) ?? { selected: [], text: "", completed: false };
+		const liveDraft = readLiveDraft();
+		const previous = liveDraft.answers.get(key) ?? { selected: [], text: "", completed: false };
 		setDraft({
-			...draft,
-			answering: patch.text !== undefined ? true : draft.answering,
-			answers: new Map(draft.answers).set(key, {
+			...liveDraft,
+			answering: patch.text !== undefined ? true : liveDraft.answering,
+			answers: new Map(liveDraft.answers).set(key, {
 				...previous,
 				invalidated: false,
 				selected: patch.selected ?? previous.selected,
@@ -319,7 +340,7 @@ export function ApprovalQuestionPanel({
 		}
 	};
 
-	const submit = (): void => onSubmit(questionDraftResponse(draft, questions));
+	const submit = (): void => onSubmit(questionDraftResponse(readLiveDraft(), questions));
 	const isLastQuestion = activeIndex >= questions.length - 1;
 	const unanswered = questions.filter((question, index) => {
 		const entry = draft.answers.get(questionKey(question, index));
@@ -338,7 +359,7 @@ export function ApprovalQuestionPanel({
 						aria-selected={index === activeIndex}
 						className="th-approval-question-tab"
 						data-approval-primary={index === 0 ? "" : undefined}
-						onClick={() => setDraft({ ...draft, activeIndex: index })}
+						onClick={() => setDraft({ ...readLiveDraft(), activeIndex: index })}
 					>
 						{question.header ??
 							question.question ??
@@ -384,6 +405,7 @@ export function ApprovalQuestionPanel({
 								 * submitted as THIS question's answer alongside any selected
 								 * option - never as the overall comment below. */}
 								<input
+									ref={answerInputRef}
 									type="text"
 									className="th-approval-input th-approval-question-text"
 									placeholder={t("approval.question.answerOptionPlaceholder")}
@@ -393,6 +415,7 @@ export function ApprovalQuestionPanel({
 							</>
 						) : (
 							<input
+								ref={answerInputRef}
 								type="text"
 								className="th-approval-input th-approval-question-text"
 								placeholder={t("approval.question.answerPlaceholder")}
@@ -413,7 +436,7 @@ export function ApprovalQuestionPanel({
 					className="th-approval-input th-approval-question-comment"
 					placeholder={t("approval.question.commentPlaceholder")}
 					value={draft.comment}
-					onChange={(event) => setDraft({ ...draft, comment: event.target.value })}
+					onChange={(event) => setDraft({ ...readLiveDraft(), comment: event.target.value })}
 				/>
 			</div>
 			<div className="th-approval-question-actions">
@@ -430,7 +453,7 @@ export function ApprovalQuestionPanel({
 					<button
 						type="button"
 						className="th-btn"
-						onClick={() => setDraft({ ...draft, activeIndex: activeIndex + 1 })}
+						onClick={() => setDraft({ ...readLiveDraft(), activeIndex: activeIndex + 1 })}
 					>
 						{t("approval.question.next")}
 					</button>
