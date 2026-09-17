@@ -104,6 +104,86 @@ describe("ApprovalQuestionPanel focus-keeping option taps", () => {
 	const answerInput = (): HTMLInputElement | null =>
 		container.querySelector<HTMLInputElement>(".th-approval-question-text");
 
+	it("keeps the answer input focused through a touch tap (iOS steals focus at touchstart)", () => {
+		renderDock(QUESTIONS);
+
+		const input = answerInput();
+		expect(input).not.toBeNull();
+		act(() => input?.focus());
+		expect(document.activeElement).toBe(input);
+
+		// iOS Safari moves focus at the TOUCH level: an unprevented touchstart
+		// blurs the open input and drops the software keyboard (pointerdown and
+		// mousedown fire too late to stop it). React registers its root
+		// touchstart listener as passive, so the cancel must actually land on a
+		// non-passive listener on the button itself.
+		const go = option("Go") as HTMLButtonElement;
+		const touchstart = new Event("touchstart", { bubbles: true, cancelable: true });
+		act(() => {
+			go.dispatchEvent(touchstart);
+		});
+		expect(touchstart.defaultPrevented).toBe(true);
+		if (!touchstart.defaultPrevented) {
+			(document.activeElement as HTMLElement | null)?.blur();
+		}
+
+		const touchend = new Event("touchend", { bubbles: true, cancelable: true });
+		act(() => {
+			go.dispatchEvent(touchend);
+		});
+		expect(touchend.defaultPrevented).toBe(true);
+
+		expect(document.activeElement).toBe(input);
+		expect(go.getAttribute("aria-pressed")).toBe("true");
+	});
+
+	it("activates the selection on touchend itself, without any synthesized click", () => {
+		renderDock(QUESTIONS);
+
+		// Canceling touchstart/touchend suppresses the browser's click
+		// synthesis, so touchend must apply the toggle on its own.
+		const go = option("Go") as HTMLButtonElement;
+		const touchend = new Event("touchend", { bubbles: true, cancelable: true });
+		act(() => {
+			go.dispatchEvent(touchend);
+		});
+		expect(touchend.defaultPrevented).toBe(true);
+		expect(go.getAttribute("aria-pressed")).toBe("true");
+	});
+
+	it("ignores a click within 500ms of a touch activation but not a later one", () => {
+		renderDock(QUESTIONS);
+
+		const go = option("Go") as HTMLButtonElement;
+		act(() => {
+			go.dispatchEvent(new Event("touchstart", { bubbles: true, cancelable: true }));
+			go.dispatchEvent(new Event("touchend", { bubbles: true, cancelable: true }));
+		});
+		expect(go.getAttribute("aria-pressed")).toBe("true");
+
+		// A webview that still delivers the synthesized click right after the
+		// touchend activation must not toggle the multiSelect option back off.
+		act(() => go.click());
+		expect(go.getAttribute("aria-pressed")).toBe("true");
+
+		// The guard is a dedup window, not a latch: later real clicks toggle.
+		const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 600);
+		try {
+			act(() => go.click());
+		} finally {
+			clock.mockRestore();
+		}
+		expect(go.getAttribute("aria-pressed")).toBe("false");
+	});
+
+	it("still toggles on a bare click with no prior touch (mouse/keyboard path)", () => {
+		renderDock(QUESTIONS);
+
+		const go = option("Go") as HTMLButtonElement;
+		act(() => go.click());
+		expect(go.getAttribute("aria-pressed")).toBe("true");
+	});
+
 	it("keeps the answer input focused while selecting an option from it", () => {
 		renderDock(QUESTIONS);
 

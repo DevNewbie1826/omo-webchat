@@ -4,7 +4,7 @@ import type { Question, QuestionAnswer } from "../../lib/contract/types_gen";
 import { ApprovalFallbackForm, ApprovalFallbackNote, ApprovalFallbackSummaryActions } from "./ApprovalFallback";
 import { ApprovalQuestionPanel, useApprovalQuestionDraft } from "./ApprovalDockQuestions";
 import { computeShelfAvailableSpace } from "./useShelfAvailableSpace";
-import { useVisualViewport } from "../../lib/useVisualViewport";
+import { useGlobalKeyboardOpen } from "../../lib/useGlobalKeyboardOpen";
 
 export interface ApprovalRequest {
 	readonly id: string;
@@ -70,11 +70,6 @@ function focusPaneComposer(section: HTMLElement | null): void {
  *  (an external resolution - local exits hand off synchronously). */
 const pendingFocusHandoffs = new Map<string, ReturnType<typeof setTimeout>>();
 
-/** A visual viewport shrink this large is a covering keyboard (the boot
- *  script's data-th-keyboard-open threshold); smaller wobbles are URL-bar
- *  and pinch-zoom noise. */
-const KEYBOARD_SHRINK_PX = 100;
-
 export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	const { t } = useT();
 	const titleId = useId();
@@ -92,26 +87,17 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	// synchronously (no task-queue hop that drops focus to <body> for a tick,
 	// which on iOS dismisses the keyboard mid-handoff).
 	const exitedRef = useRef(false);
-	// Keyboard awareness: the visual viewport is the only geometry that sees
-	// a covering keyboard (iOS never shrinks the layout viewport). The
-	// session's tallest observed viewport is the unobscured baseline; a
-	// shrink beyond KEYBOARD_SHRINK_PX is keyboard-like however it was caused
-	// (a genuinely smaller window has the same spatial problem).
-	const viewportBox = useVisualViewport();
-	const viewportBaselineRef = useRef<number>(Number.NaN);
-	if (viewportBox) {
-		viewportBaselineRef.current = Number.isNaN(viewportBaselineRef.current)
-			? Math.max(window.innerHeight, viewportBox.height)
-			: Math.max(viewportBaselineRef.current, viewportBox.height);
-	}
-	const keyboardLike =
-		viewportBox !== null &&
-		!Number.isNaN(viewportBaselineRef.current) &&
-		viewportBaselineRef.current - viewportBox.height > KEYBOARD_SHRINK_PX;
+	// Keyboard awareness comes from the app-global decision: the boot
+	// script raises data-th-keyboard-open when the visible viewport shrinks
+	// past its threshold, and global.css shrinks #root by the same attribute.
+	// The dock must not re-derive keyboard-ness from its own geometry — a
+	// second judgment prices the keyboard twice (the #root shrink AND a local
+	// clamp).
+	const keyboardOpen = useGlobalKeyboardOpen();
 	// The column clamp's measure() closure outlives renders; the keyboard
-	// floor below must price the budget with the CURRENT viewport regime.
-	const keyboardLikeRef = useRef(false);
-	keyboardLikeRef.current = keyboardLike;
+	// floor below must price the budget with the CURRENT keyboard state.
+	const keyboardOpenRef = useRef(false);
+	keyboardOpenRef.current = keyboardOpen;
 	// Explicit user expansion, keyed by request id: overrides the space floor
 	// so the toggle always works. A new request resets to the automatic
 	// presentation.
@@ -164,10 +150,14 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 				(Number.parseFloat(style.borderTopWidth) || 0) +
 				(Number.parseFloat(style.borderBottomWidth) || 0);
 			const minDockPx = headerHeightRef.current + borders + APPROVAL_BODY_FLOOR_PX;
-			// Input-priority floor: while the keyboard holds the viewport short,
-			// the transcript reserve yields further — enough body for the pinned
-			// tab strip + the focused answer input + the pinned actions row — so
-			// the slice the focused input must be visible in actually exists.
+			// Input-priority floor: while the keyboard holds the viewport short
+			// AND focus sits inside the dock (the keyboard is typing into the
+			// dock's own answer field), the transcript reserve yields further —
+			// enough body for the pinned tab strip + the focused answer input +
+			// the pinned actions row — so the slice the focused input must be
+			// visible in actually exists. A keyboard raised for the COMPOSER
+			// (focus outside the dock) must not inflate the dock: the transcript
+			// keeps its reserve there.
 			// This raises the budget's reserve-yield minimum ONLY: the collapse
 			// decision (floorCollapsed) and the inline ceilings keep pricing
 			// minDockPx, and the budget is still capped by the column's real
@@ -179,7 +169,14 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 			const bandAnswer = section.querySelector<HTMLElement>(".th-approval-question-text");
 			const bandActions = section.querySelector<HTMLElement>(".th-approval-question-actions");
 			const bandBody = section.querySelector<HTMLElement>(".th-approval-dock-body");
-			if (keyboardLikeRef.current && bandTabs && bandAnswer && bandActions && bandBody) {
+			if (
+				keyboardOpenRef.current &&
+				section.contains(document.activeElement) &&
+				bandTabs &&
+				bandAnswer &&
+				bandActions &&
+				bandBody
+			) {
 				const bandPadBottom = Number.parseFloat(getComputedStyle(bandBody).paddingBottom) || 0;
 				minSelfPx =
 					headerHeightRef.current +
@@ -213,10 +210,17 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 		});
 		mutation.observe(column, { childList: true, subtree: true });
 		window.addEventListener("resize", measure);
+		// The input-priority floor and the --keyboard modifier depend on WHERE
+		// focus sits (the dock's answer field vs the composer), so focus moves
+		// across the dock boundary re-measure too.
+		section.addEventListener("focusin", measure);
+		section.addEventListener("focusout", measure);
 		return () => {
 			observer.disconnect();
 			mutation.disconnect();
 			window.removeEventListener("resize", measure);
+			section.removeEventListener("focusin", measure);
+			section.removeEventListener("focusout", measure);
 		};
 	}, []);
 
@@ -363,20 +367,38 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	const [viewportCapPx, setViewportCapPx] = useState<number | null>(null);
 	useLayoutEffect(() => {
 		const section = sectionRef.current;
-		if (!expanded || !viewportBox || !section) {
+		if (!expanded || !section) {
 			setViewportCapPx((previous) => (previous === null ? previous : null));
 			return;
 		}
-		const viewportBottom = viewportBox.offsetTop + viewportBox.height;
-		const cap = Math.round(viewportBottom - section.getBoundingClientRect().top);
-		setViewportCapPx((previous) =>
-			previous !== null && Math.abs(previous - cap) < 1 ? previous : Math.max(cap, 0),
-		);
-	}, [expanded, viewportBox]);
+		// Read the visual viewport imperatively: it is the only geometry that
+		// sees a covering keyboard (iOS never shrinks the layout viewport).
+		const update = (): void => {
+			const viewport = window.visualViewport ?? null;
+			const viewportBottom = viewport
+				? viewport.offsetTop + viewport.height
+				: window.innerHeight;
+			const cap = Math.round(viewportBottom - section.getBoundingClientRect().top);
+			setViewportCapPx((previous) =>
+				previous !== null && Math.abs(previous - cap) < 1 ? previous : Math.max(cap, 0),
+			);
+		};
+		update();
+		const viewport = window.visualViewport ?? null;
+		viewport?.addEventListener("resize", update);
+		viewport?.addEventListener("scroll", update);
+		window.addEventListener("resize", update);
+		return () => {
+			viewport?.removeEventListener("resize", update);
+			viewport?.removeEventListener("scroll", update);
+			window.removeEventListener("resize", update);
+		};
+	}, [expanded, keyboardOpen]);
 
 	// Keyboard-aware scroll discipline: while an input inside the body holds
-	// focus and the visual viewport changes (the keyboard opening or closing
-	// reshapes the visible slice), keep the focused input inside the body's
+	// focus and the keyboard state transitions (the keyboard opening or
+	// closing reshapes the visible slice), keep the focused input inside the
+	// body's
 	// ACTUAL visible slice — the band between the pinned tab strip and the
 	// pinned actions row (either edge falls back to the body's own edge when
 	// that band is not pinned). When the bands plus the input cannot all
@@ -391,7 +413,7 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	// offsets only (scroll-independent), so the decision cannot oscillate.
 	const [tabsYield, setTabsYield] = useState(false);
 	useLayoutEffect(() => {
-		if (!expanded || !viewportBox) return;
+		if (!expanded || !keyboardOpen) return;
 		const section = sectionRef.current;
 		const body = section?.querySelector<HTMLElement>(".th-approval-dock-body");
 		if (!section || !body) return;
@@ -444,7 +466,7 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 			delta = Math.max(delta, Math.min(actionsDelta, cap));
 		}
 		if (delta !== 0) body.scrollTop += delta;
-	}, [expanded, viewportBox, columnSpace.clampPx, tabsYield, request.id]);
+	}, [expanded, keyboardOpen, columnSpace.clampPx, tabsYield, request.id]);
 
 	// scrollIntoView on focus: the browser's native focus scroll does not
 	// reserve the pinned footer's band; scroll-padding-bottom on the body
@@ -596,7 +618,7 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 					? "th-approval-dock th-approval-dock--tight"
 					: !expanded && expansionImpossible
 						? "th-approval-dock th-approval-dock--compact"
-						: keyboardLike
+						: keyboardOpen && sectionRef.current?.contains(document.activeElement)
 							? tabsYield
 								? "th-approval-dock th-approval-dock--keyboard th-approval-dock--input-priority"
 								: "th-approval-dock th-approval-dock--keyboard"
