@@ -224,6 +224,7 @@ export function ChatPane({
           doneReason={chat.doneReason}
           error={chat.missingOriginal ? "" : chat.error}
           restoreVersion={chat.restoreVersion}
+          historyWarming={chat.historyWarming}
           focused={focused}
           mediaSource={{ wsId: chatSession.wsId, chatId: chatSession.id }}
         />

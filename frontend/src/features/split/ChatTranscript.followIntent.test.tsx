@@ -380,7 +380,7 @@ describe("reader ownership provenance and contacts", () => {
   let height: number;
   let notifyResize: () => void;
   function Harness({ focused = false }: { focused?: boolean }) {
-    state = useChatScroll(0, focused);
+    state = useChatScroll(0, focused, undefined, false);
     return <div ref={state.scrollRef} onScroll={state.onScroll}>
       <div ref={state.contentRef} />
       {state.showScrollToBottom && <button onClick={() => state.scrollToBottom()}>jump</button>}

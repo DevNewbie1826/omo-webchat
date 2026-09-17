@@ -3,6 +3,21 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useChatScroll, type ChatScrollState } from "./useChatScroll";
 
+// Restore clears grace today. Inject the ambiguous residual-grace state without
+// delivering post-attach physical input or mocking the attribution/scroll logic.
+const grace = vi.hoisted(() => ({ ref: null as { current: number } | null }));
+vi.mock("react", async (importOriginal) => {
+  const react = await importOriginal<typeof import("react")>();
+  return {
+    ...react,
+    useRef: <T,>(initial: T) => {
+      const ref = react.useRef(initial);
+      if (initial === -Infinity) grace.ref = ref as { current: number };
+      return ref;
+    },
+  };
+});
+
 let container: HTMLDivElement;
 let root: Root;
 let state: ChatScrollState;
@@ -10,8 +25,8 @@ let body: HTMLDivElement;
 let height: number;
 let notifyResize: () => void;
 
-function Harness() {
-  state = useChatScroll(0, false);
+function Harness({ restoreVersion = 0, historyWarming = true }: { restoreVersion?: number; historyWarming?: boolean }) {
+  state = useChatScroll(restoreVersion, false, undefined, historyWarming);
   return <div ref={state.scrollRef} onScroll={state.onScroll}>
     <div ref={state.contentRef} />
     {state.showScrollToBottom && <button onClick={() => state.scrollToBottom()}>jump</button>}
@@ -119,6 +134,93 @@ it("T5: a whole unowned motion chain never releases follow", () => {
     expect(state.isFollowing()).toBe(true);
     expect(container.querySelector("button")).toBeNull();
   }
+  height += 1000;
+  act(() => notifyResize());
+  expect(body.scrollTop).toBe(11600);
+});
+
+it("T9: after warming, unattributed navigation releases follow without engagement", () => {
+  act(() => root.render(<Harness historyWarming={false} />));
+  expect(state.isReaderInputActive()).toBe(false);
+  expect(state.isRecentProgrammaticWrite(9000)).toBe(false);
+  scrollTo(9000, 116);
+  expect.soft(state.isFollowing()).toBe(false);
+  expect.soft(container.querySelector("button")).not.toBeNull();
+  height += 1000;
+  act(() => notifyResize());
+  expect(body.scrollTop).toBe(9000);
+});
+
+it("T10: warming protects the same unattributed navigation", () => {
+  scrollTo(9000, 116);
+  expect(state.isReaderInputActive()).toBe(false);
+  expect(state.isFollowing()).toBe(true);
+  expect(container.querySelector("button")).toBeNull();
+  height += 1000;
+  act(() => notifyResize());
+  expect(body.scrollTop).toBe(11600);
+});
+
+it("T11: engagement unlocks during warming and a fresh attach re-arms", () => {
+  act(() => body.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp" })));
+  scrollTo(9000, 116);
+  expect(state.isFollowing()).toBe(false);
+  expect(container.querySelector("button")).not.toBeNull();
+  act(() => root.render(<Harness historyWarming={false} />));
+  act(() => root.render(<Harness restoreVersion={1} historyWarming />));
+  scrollTo(8800, 132);
+  expect(state.isReaderInputActive()).toBe(false);
+  expect(state.isFollowing()).toBe(true);
+  expect(container.querySelector("button")).toBeNull();
+  height += 1000;
+  act(() => notifyResize());
+  expect(body.scrollTop).toBe(11600);
+});
+
+function injectResidualGrace(): void {
+  if (!grace.ref) throw new Error("missing reader grace ref");
+  grace.ref.current = performance.now();
+  expect(state.isReaderInputActive()).toBe(true);
+}
+
+it("T6: attach lock keeps follow despite residual physical grace and deferred echoes", () => {
+  act(() => body.dispatchEvent(new TouchEvent("touchstart")));
+  act(() => root.render(<Harness restoreVersion={1} />));
+  injectResidualGrace();
+  expect(state.isRecentProgrammaticWrite(9000)).toBe(false);
+  scrollTo(9000, 116);
+  expect.soft(state.isFollowing()).toBe(true);
+  expect.soft(container.querySelector("button")).toBeNull();
+  height += 1000;
+  act(() => notifyResize());
+  expect(body.scrollTop).toBe(11600);
+});
+
+it("T7: post-attach wheel engagement releases follow on reader scroll-up", () => {
+  act(() => root.render(<Harness restoreVersion={1} />));
+  act(() => body.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
+  scrollTo(9000, 116);
+  expect(state.isFollowing()).toBe(false);
+  expect(container.querySelector("button")).not.toBeNull();
+  height += 1000;
+  act(() => notifyResize());
+  expect(body.scrollTop).toBe(9000);
+});
+
+it("T8: another restore re-arms the lock after reader engagement", () => {
+  act(() => root.render(<Harness restoreVersion={1} />));
+  act(() => body.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
+  scrollTo(9000, 116);
+  expect(state.isFollowing()).toBe(false);
+  expect(container.querySelector("button")).not.toBeNull();
+  act(() => root.render(<Harness restoreVersion={2} />));
+  expect(body.scrollTop).toBe(10600);
+  expect(state.isFollowing()).toBe(true);
+  expect(container.querySelector("button")).toBeNull();
+  injectResidualGrace();
+  scrollTo(8800, 132);
+  expect.soft(state.isFollowing()).toBe(true);
+  expect.soft(container.querySelector("button")).toBeNull();
   height += 1000;
   act(() => notifyResize());
   expect(body.scrollTop).toBe(11600);

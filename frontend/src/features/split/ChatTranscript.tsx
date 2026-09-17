@@ -293,6 +293,7 @@ interface ChatTranscriptProps {
   readonly restoreVersion: number;
   readonly focused: boolean;
   readonly historyLoaded: boolean;
+  readonly historyWarming?: boolean;
 }
 
 export function ChatTranscript({
@@ -305,6 +306,7 @@ export function ChatTranscript({
   restoreVersion,
   focused,
   historyLoaded,
+  historyWarming = false,
   mediaSource,
 }: ChatTranscriptProps) {
   const { t, fontSize, font } = useT();
@@ -317,7 +319,7 @@ export function ChatTranscript({
   const clearDeferredAdjustment = useCallback(() => {
     deferredAdjustmentRef.current = 0;
   }, []);
-  const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom, isFollowing, isReaderInputActive, noteProgrammaticWrite, isRecentProgrammaticWrite } = useChatScroll(restoreVersion, focused, clearDeferredAdjustment);
+  const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom, isFollowing, isReaderInputActive, noteProgrammaticWrite, isRecentProgrammaticWrite } = useChatScroll(restoreVersion, focused, clearDeferredAdjustment, historyWarming);
   // Lane width feeding the row-height estimator. Tracked via ResizeObserver
   // so metrics recompute only on an actual width change, never per render.
   const [laneWidth, setLaneWidth] = useState(0);

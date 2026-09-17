@@ -32,11 +32,13 @@ export function useChatScroll(
   // Explicit "jump to bottom" intent (button, focus gain, restore): any
   // measurement compensation queued for replay is moot once the viewport is
   // deliberately sent to the end, so the owner discards it here.
-  onScrollToBottomIntent?: (() => void) | undefined,
+  onScrollToBottomIntent: (() => void) | undefined,
+  historyWarming: boolean,
 ): ChatScrollState {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
+  const readerEngagedRef = useRef(false);
   const lastReaderSignalRef = useRef(-Infinity);
   // Physical contacts survive an explicit handoff; only their ownership is
   // relinquished until genuine movement reclaims it.
@@ -58,7 +60,10 @@ export function useChatScroll(
   useEffect(() => {
     const element = scrollRef.current;
     if (!element) return;
-    const noteSignal = (): void => { lastReaderSignalRef.current = performance.now(); };
+    const noteSignal = (): void => {
+      readerEngagedRef.current = true;
+      lastReaderSignalRef.current = performance.now();
+    };
     const pointerDown = (event: PointerEvent): void => {
       contactsRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY, owns: true });
       noteSignal();
@@ -155,6 +160,12 @@ export function useChatScroll(
   const updateIntent = useCallback((echoOrigin?: ProgrammaticWriteOrigin, readerMotion = false) => {
     const element = scrollRef.current;
     if (!element) return;
+    // Only the history fill locks attach intent against unattributed movement.
+    if (historyWarming && !readerEngagedRef.current) {
+      followRef.current = true;
+      setShowScrollToBottom(false);
+      return;
+    }
     const atBottom = element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_EPSILON;
     const readerActive = isReaderInputActive();
     const origin = echoOrigin ?? (readerMotion ? undefined : recentProgrammaticWrite(element.scrollTop)?.origin);
@@ -168,11 +179,12 @@ export function useChatScroll(
       return;
     }
     if (!atBottom && appOwned) return;
-    // Unowned echoes (including deferred WebKit adjustments) cannot revoke follow.
-    if (!atBottom) return;
-    followRef.current = true;
-    setShowScrollToBottom(false);
-  }, [isReaderInputActive, recentProgrammaticWrite]);
+    // During fill, unowned layout echoes remain neutral. Afterwards, browser
+    // find/AT/off-port keyboard navigation need not supply a physical signal.
+    if (!atBottom && historyWarming) return;
+    followRef.current = atBottom;
+    setShowScrollToBottom(!atBottom);
+  }, [historyWarming, isReaderInputActive, recentProgrammaticWrite]);
 
   const onScroll = useCallback<UIEventHandler<HTMLDivElement>>(() => {
     const element = scrollRef.current;
@@ -210,6 +222,7 @@ export function useChatScroll(
   useLayoutEffect(() => {
     if (restoredVersionRef.current === restoreVersion) return;
     restoredVersionRef.current = restoreVersion;
+    readerEngagedRef.current = false;
     scrollToBottom();
   }, [restoreVersion, scrollToBottom]);
 
