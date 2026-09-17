@@ -174,7 +174,16 @@ export function createHistoryResumeCoverage() {
         && echo.lastEntryId === cursor.lastEntryId && echo.historyComplete === cursor.historyComplete;
       if (frame.segment === "head") {
         if (committed.length === 0) return { frame, resumed: false };
-        committed = mergeHistoryEntries(concatEntries([frame.entries]), committed) ?? uniqueHistoryEntries(concatEntries([frame.entries]));
+        // Head echoes describe the original request, not the advancing cursor.
+        // Only an explicit durable-identity contradiction retires that coverage.
+        const identityChanged = cursor !== undefined && frame.historySessionId !== undefined
+          && frame.historySessionId !== cursor.sessionId;
+        const received = uniqueHistoryEntries(concatEntries([frame.entries]));
+        committed = (identityChanged ? null : mergeHistoryEntries(received, committed)) ?? received;
+        if (identityChanged) {
+          pending = [];
+          continuity = false;
+        }
       } else {
         continuity = resumed;
         pending.push(frame.entries);
@@ -208,15 +217,14 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const streaming = useStreamingBuffer();
   const entriesBuffer = useEntriesPageBuffer();
   const resumeCoverage = useRef(createHistoryResumeCoverage());
+  const historyPageCommittedRef = useRef(false);
   const pageBuffer = {
     ...entriesBuffer,
-    prepend: (page: unknown, historyComplete?: boolean) => {
-      if (entriesBuffer.prepend(page, historyComplete) === null) return null;
-      const entries = mergeHistoryEntries(concatEntries([page]), resumeCoverage.current.entries())
-        ?? uniqueHistoryEntries(concatEntries([page]));
-      return entriesBuffer.consume(entries, historyComplete === true);
+    reset: () => {
+      entriesBuffer.reset();
+      resumeCoverage.current.reconnect();
+      historyPageCommittedRef.current = false;
     },
-    reset: () => { entriesBuffer.reset(); resumeCoverage.current.reconnect(); },
   };
   const [thinking, setThinking] = useState("");
   const [toolCalls, setToolCalls] = useState<Readonly<Record<string, ToolEntry>>>({});
@@ -568,8 +576,13 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
 
   const baseHandleFrame = createChatFrameHandler({
     acceptHistoryPage: (frame) => {
+      if (frame.segment === "head" && !historyPageCommittedRef.current) return null;
       const accepted = resumeCoverage.current.accept(frame);
-      if (frame.segment !== "head" && frame.final !== false) entriesBuffer.reset();
+      if (frame.segment === "head" || frame.final !== false) {
+        // Coverage already produced the whole accepted list, including replacement.
+        entriesBuffer.reset();
+        historyPageCommittedRef.current = true;
+      }
       return accepted;
     },
     t,

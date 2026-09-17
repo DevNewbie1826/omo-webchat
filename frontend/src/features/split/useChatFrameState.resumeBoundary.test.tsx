@@ -119,6 +119,30 @@ it("replaces coverage when overlapping anchors reverse branch order", () => harn
   expect(state().restoreVersion).toBe(restore + 1);
 }));
 
+it("replaces the rendered transcript when a head contradicts durable identity", () => harness(({state,deliver,reconnect}) => {
+  deliver(page(["c","d"],{historyComplete:false}));
+  const resume = state().getHistoryResume();
+  expect(resume).toEqual({sessionId:"durable",firstEntryId:"c",lastEntryId:"d",historyComplete:false});
+  reconnect();
+  deliver(page(["e"],{resume,historyComplete:false}));
+  expect(state().getHistoryResume()).toEqual({...resume,lastEntryId:"e"});
+  deliver(page(["replacement-root"],{resume,segment:"head",final:false,historySessionId:"different"}));
+  expect(state().messages.map(message => message.id)).toEqual(["replacement-root"]);
+  expect(state().getHistoryResume()).toEqual({sessionId:"different",firstEntryId:"replacement-root",lastEntryId:"replacement-root",historyComplete:true});
+}));
+
+it("replaces coverage when a head contradicts durable identity", () => {
+  const coverage = createHistoryResumeCoverage();
+  coverage.accept(page(["c","d"],{historyComplete:false}));
+  const resume = coverage.cursor();
+  expect(resume).toEqual({sessionId:"durable",firstEntryId:"c",lastEntryId:"d",historyComplete:false});
+  const accepted = coverage.accept(page(["replacement-root"],{resume,segment:"head",final:false,historySessionId:"different"}));
+  expect(accepted.resumed).toBe(false);
+  expect(accepted.frame.entries).toEqual([entry("replacement-root")]);
+  expect(coverage.entries()).toEqual([entry("replacement-root")]);
+  expect(coverage.cursor()).toEqual({sessionId:"different",firstEntryId:"replacement-root",lastEntryId:"replacement-root",historyComplete:true});
+});
+
 it("retains entries between shared anchors in authoritative order", () => {
   const coverage = createHistoryResumeCoverage();
   coverage.accept(page(["a","c"]));

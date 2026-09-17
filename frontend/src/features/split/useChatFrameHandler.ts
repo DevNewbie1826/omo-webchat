@@ -28,7 +28,7 @@ type ModelsFrame = Extract<ChatServerFrame, { readonly type: "models" }>;
 type HistoryPage = Extract<ChatServerFrame, { type: "entries" }>;
 
 interface ChatFrameHandlerBindings {
-  readonly acceptHistoryPage?: (frame: HistoryPage) => { frame: HistoryPage; resumed: boolean };
+  readonly acceptHistoryPage?: (frame: HistoryPage) => { frame: HistoryPage; resumed: boolean } | null;
   readonly t: Translate;
   readonly controls: ReturnType<typeof useConfirmedControls>;
   readonly streaming: ReturnType<typeof useStreamingBuffer>;
@@ -598,10 +598,14 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           const generation = bindings.claimHistoryGeneration(connectionGeneration, false);
           if (bindings.resyncGenerationRef.current !== null
             && bindings.resyncGenerationRef.current !== generation) return;
-          const warmed = bindings.pageBuffer.prepend(frame.entries, frame.historyComplete);
+          const accepted = bindings.acceptHistoryPage?.(frame);
+          if (accepted === null) return;
+          const page = accepted?.frame ?? frame;
+          const warmed = accepted
+            ? bindings.pageBuffer.consume(page.entries, page.historyComplete === true)
+            : bindings.pageBuffer.prepend(page.entries, page.historyComplete);
           if (warmed === null) return;
-          bindings.acceptHistoryPage?.(frame);
-          reconcileEntries(warmed, frame.sessionId);
+          reconcileEntries(warmed, page.sessionId);
           return;
         }
         const terminal = frame.final !== false;
