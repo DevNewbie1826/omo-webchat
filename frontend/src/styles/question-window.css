@@ -1,0 +1,106 @@
+/* Question/approval window: the pending request renders as a separate modal
+   window (the ModalDialog portal supplies overlay, focus, and Escape), NOT
+   an inline dock in the chat column. Only the request content lives here;
+   the modal chrome belongs to modal-dialog.css. */
+
+.th-question-window {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.th-question-window-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  /* The inline end padding clears the modal's absolutely positioned close
+     button (44px target at the panel's top corner). */
+  padding: var(--th-space-5) calc(var(--th-space-5) + var(--th-space-11)) var(--th-space-3) var(--th-space-5);
+}
+
+.th-question-window-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--th-type-title-size);
+  font-weight: var(--th-weight-announce);
+  line-height: var(--th-type-title-line);
+  letter-spacing: var(--th-type-title-tracking);
+}
+
+.th-question-window-countdown {
+  flex: none;
+  padding: 0 var(--th-space-1);
+  border: 1px solid var(--th-border-raised);
+  border-radius: var(--th-radius-pill);
+  color: var(--th-warning);
+  font-family: var(--th-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Bounded scrollport: a long message, many options, or several questions
+   scroll inside the window instead of growing it past the viewport. The
+   option buttons' touch-contract drag scroll targets this body. The tab
+   strip pins to its top edge and the action row to its bottom edge, so the
+   question content scrolls between two fixed chrome bands. */
+.th-question-window-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 var(--th-space-5) var(--th-space-4);
+  /* Keep scrolled-into-view targets clear of the pinned action row. */
+  scroll-padding-bottom: calc(34px + var(--th-space-2) + var(--th-space-2));
+}
+
+/* One-line notice band: the pending request's anchor in the chat column
+   where the inline dock lived. A fixed single-line band with no layout
+   machinery: it never grows (nowrap + clipped title), never scrolls, and
+   never takes over the composer — the window, opened from here, is the
+   answering surface. */
+.th-question-band {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
+  margin: var(--th-space-1) auto 0;
+  padding: var(--th-space-1) var(--th-space-2);
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius-sm);
+  background: var(--th-surface);
+  font-size: var(--th-type-micro-size);
+  white-space: nowrap;
+}
+
+.th-question-band-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--th-text-dim);
+  font-weight: var(--th-weight-emphasize);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-question-band-count {
+  flex: none;
+  color: var(--th-muted);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+/* The Open action pins to the row's far end: the label/count lead, the
+   action follows. */
+.th-question-band-open {
+  flex: none;
+  margin-left: auto;
+}

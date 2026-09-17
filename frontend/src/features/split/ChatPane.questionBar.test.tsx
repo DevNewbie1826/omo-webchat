@@ -112,7 +112,10 @@ describe("ChatPane non-blocking question widget", () => {
 	it("a normal send does not answer the pending question", () => {
 		const { deliver, sent } = renderWithFakeConnect();
 		act(() => deliver(QUESTION_FRAME));
-		expect(container.querySelector(".th-question-bar")).not.toBeNull();
+		const band = container.querySelector(".th-question-band");
+		expect(band).not.toBeNull();
+		// Non-blocking: no auto-opened window, no takeover of the column.
+		expect(document.querySelector(".th-modal")).toBeNull();
 
 		const textarea = composer();
 		act(() => setTextareaValue(textarea, "just a normal message"));
@@ -132,23 +135,43 @@ describe("ChatPane non-blocking question widget", () => {
 		).toBe(true);
 		// …and nothing answered the question.
 		expect(sent.some((frame) => frame.type === "approval.respond")).toBe(false);
-		// The widget is still present with the question still pending.
-		const bar = container.querySelector(".th-question-bar");
-		expect(bar).not.toBeNull();
-		expect(bar?.textContent).toContain("Which stack?");
+		// The band is still present with the question still pending, and the
+		// window opens only from the band's Open button.
+		expect(container.querySelector(".th-question-band")).not.toBeNull();
+		expect(document.querySelector(".th-modal")).toBeNull();
+		act(() => {
+			container
+				.querySelector<HTMLButtonElement>(".th-question-band-open")
+				?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		});
+		expect(document.querySelector(".th-modal")).not.toBeNull();
+		expect(document.querySelector(".th-modal")?.textContent).toContain("Which stack?");
 	});
 
-	it("answering through the widget sends the structured answer and dismisses it", () => {
+	it("answering through the band-opened window sends the structured answer and dismisses it", () => {
 		const { deliver, sent } = renderWithFakeConnect();
 		act(() => deliver(QUESTION_FRAME));
-		const bar = container.querySelector(".th-question-bar");
-		expect(bar).not.toBeNull();
+		expect(container.querySelector(".th-question-band")).not.toBeNull();
+		act(() => {
+			container
+				.querySelector<HTMLButtonElement>(".th-question-band-open")
+				?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		});
 		const option = Array.from(
-			bar?.querySelectorAll<HTMLButtonElement>("button") ?? [],
+			document.querySelectorAll<HTMLButtonElement>(".th-approval-question-option"),
 		).find((button) => button.textContent === "Go");
 		expect(option).toBeDefined();
 		act(() => {
 			option?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		});
+		// The panel answers with one structured response on its explicit Submit
+		// (the window contract), unlike the retired bar's instant single-select.
+		const submit = Array.from(
+			document.querySelectorAll<HTMLButtonElement>(".th-approval-question-actions button"),
+		).find((button) => button.textContent === "approval.submit");
+		expect(submit).toBeDefined();
+		act(() => {
+			submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 		});
 		expect(sent).toContainEqual({
 			type: "approval.respond",
@@ -157,25 +180,26 @@ describe("ChatPane non-blocking question widget", () => {
 			id: "ask-1",
 			answers: { q1: { selected: ["Go"] } },
 		});
-		expect(container.querySelector(".th-question-bar")).toBeNull();
+		expect(container.querySelector(".th-question-band")).toBeNull();
+		expect(document.querySelector(".th-modal")).toBeNull();
 	});
 
-	it("a request without the non-blocking flag keeps the blocking dock presentation", () => {
+	it("a request without the non-blocking flag auto-opens the window (blocking presentation)", () => {
 		const { deliver } = renderWithFakeConnect();
 		const { nonBlocking: _omitted, ...blockingFrame } = QUESTION_FRAME;
 		act(() => deliver(blockingFrame));
-		expect(container.querySelector(".th-question-bar")).toBeNull();
-		expect(container.querySelector(".th-approval-dock")).not.toBeNull();
+		expect(document.querySelector(".th-modal")).not.toBeNull();
+		expect(container.querySelector(".th-question-band")).not.toBeNull();
 	});
 
-	it("a request with nonBlocking: false keeps the blocking dock presentation", () => {
+	it("a request with nonBlocking: false auto-opens the window (blocking presentation)", () => {
 		const { deliver } = renderWithFakeConnect();
 		act(() => deliver({ ...QUESTION_FRAME, nonBlocking: false }));
-		expect(container.querySelector(".th-question-bar")).toBeNull();
-		expect(container.querySelector(".th-approval-dock")).not.toBeNull();
+		expect(document.querySelector(".th-modal")).not.toBeNull();
+		expect(container.querySelector(".th-question-band")).not.toBeNull();
 	});
 
-	it("the composer's focus and draft are untouched when the widget appears", () => {
+	it("the composer's focus and draft are untouched when the band appears", () => {
 		const { deliver } = renderWithFakeConnect();
 		const textarea = composer();
 		act(() => {
@@ -186,7 +210,10 @@ describe("ChatPane non-blocking question widget", () => {
 
 		act(() => deliver(QUESTION_FRAME));
 
-		expect(container.querySelector(".th-question-bar")).not.toBeNull();
+		// The band announces the question without touching focus or typing;
+		// the window (which would take focus) stays closed until opened.
+		expect(container.querySelector(".th-question-band")).not.toBeNull();
+		expect(document.querySelector(".th-modal")).toBeNull();
 		expect(document.activeElement).toBe(textarea);
 		expect(textarea.value).toBe("draft in progress");
 	});

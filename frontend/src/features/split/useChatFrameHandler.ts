@@ -1,7 +1,7 @@
 import type { Translate } from "../../i18n";
 import type { ChatServerFrame, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
 import { isFallbackApprovalFrame } from "../../lib/chatWsParseFallback";
-import type { ApprovalRequest } from "./ApprovalDock";
+import type { ApprovalRequest } from "./QuestionWindow";
 import type { ApprovalFrame } from "../../lib/contract/types_gen";
 import type { HistoryStatus, MissingOriginal } from "./useChatFrameState";
 import { applyActivityEvent, applyRunFlight, validatedActivityEvent } from "./activityState";

@@ -3,9 +3,9 @@ import { useT } from "../../i18n";
 /**
  * Minimal fallback rendering for a request type this client cannot fully
  * render (unknown method or shape, per the observed engine contract). Kept
- * wholly in this component so the dock only carries small, clearly-scoped
- * insertions. The entry always names the request (the dock's title), shows
- * the request's text (the dock's shared message block), offers a plain
+ * wholly in this component so the window only carries small, clearly-scoped
+ * insertions. The entry always names the request (the window's title), shows
+ * the request's text (the shared message block), offers a plain
  * confirmation and free text, and always keeps the explicit cancel control.
  */
 
@@ -65,24 +65,3 @@ export function ApprovalFallbackForm({
 	);
 }
 
-export interface ApprovalFallbackSummaryActionsProps {
-	readonly onConfirm: () => void;
-	readonly onCancel: () => void;
-}
-
-/** The compact summary row for the ultra-tight density where expansion
- *  cannot fit: plain confirmation plus the always-present cancel, so the
- *  fallback stays answerable without expanding. */
-export function ApprovalFallbackSummaryActions({ onConfirm, onCancel }: ApprovalFallbackSummaryActionsProps) {
-	const { t } = useT();
-	return (
-		<div className="th-approval-dock-summary-actions">
-			<button type="button" className="th-btn" data-approval-primary onClick={onConfirm}>
-				{t("approval.confirm")}
-			</button>
-			<button type="button" className="th-btn th-btn--ghost" onClick={onCancel}>
-				{t("approval.cancel")}
-			</button>
-		</div>
-	);
-}

@@ -40,16 +40,19 @@ it("keeps dynamic queue and recovery controls in the bounded content scroll shel
   expect(input.value.split("\n")).toHaveLength(6);
 });
 
-it("mounts the approval dock inline as the band directly above the composer", () => {
+it("mounts the notice band inline as the band directly above the composer", () => {
   const { deliver } = renderChatPane(root);
   act(() => deliver({ type: "approval", sessionId: chatSession.id, id: "ap-1",
     method: "confirm", title: "Continue?" }));
-  // The modal presentation is retired: no overlay is portaled to the body.
-  expect(document.querySelector(".th-modal-overlay")).toBeNull();
+  // Separate window: the modal overlay is portaled to the body, and the band
+  // is the request's one-line anchor inside the pane column (the slot the
+  // retired inline dock occupied: directly above the composer).
+  expect(document.querySelector(".th-modal-overlay")).not.toBeNull();
+  expect(document.querySelector(".th-modal")?.textContent).toContain("Continue?");
   const column = requireElement(container.querySelector<HTMLElement>(".th-chat-main"), "pane column");
-  const dock = requireElement(column.querySelector<HTMLElement>(":scope > .th-approval-dock"), "inline approval dock");
-  expect(dock.previousElementSibling?.classList.contains("th-chat-controls")).toBe(true);
-  expect(dock.nextElementSibling?.classList.contains("th-chat-input")).toBe(true);
+  const band = requireElement(column.querySelector<HTMLElement>(":scope > .th-question-band"), "question notice band");
+  expect(band.previousElementSibling?.classList.contains("th-chat-controls")).toBe(true);
+  expect(band.nextElementSibling?.classList.contains("th-chat-input")).toBe(true);
 });
 
 it("provides a shrinkable scroll shell and a column-local editor ceiling for a 320x300 pane", () => {

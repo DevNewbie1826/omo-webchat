@@ -1,4 +1,4 @@
-import { createContext, useContext, useId, useLayoutEffect, useState } from "react";
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { Dispatch, ReactElement, SetStateAction } from "react";
 import { useT } from "../../i18n";
 import { lostQuestionAnswer, QuestionDraftNotice, RemovedQuestionNoticeContext } from "./QuestionDraftNotice";
@@ -64,6 +64,156 @@ function reconcileDraft(draft: QuestionDraft, questions: readonly Question[]): Q
 
 type QuestionDraftState = readonly [QuestionDraft, Dispatch<SetStateAction<QuestionDraft>>];
 const QuestionDraftContext = createContext<QuestionDraftState | null>(null);
+
+/** How long after a touch gesture a click is treated as the same tap. */
+const TOUCH_CLICK_DEDUP_MS = 500;
+
+/** How far the first touch may drift before a tap becomes a scroll drag. */
+const TOUCH_MOVE_THRESHOLD_PX = 10;
+
+/** One in-flight touch gesture on an option button: the first touch only
+ *  (extra touches are ignored), tracked from touchstart to its touchend. */
+interface OptionTouchGesture {
+	/** Identifier of the tracked first touch, or null when the touchstart
+	 *  carried no touch list (synthetic events in tests). */
+	readonly identifier: number | null;
+	readonly startX: number;
+	readonly startY: number;
+	lastY: number;
+	moved: boolean;
+	readonly scroller: HTMLElement | null;
+}
+
+/** One option toggle of a structured question. Touch contract (ported from
+ *  the PR #177 keyboard work, selectors adapted to the window DOM — the
+ *  focus scope is the dialog and the drag-scroll target is the window body):
+ *  - FOCUS SCOPE: the touch contract applies only while focus is inside the
+ *    question window (the typing context where the software keyboard must
+ *    survive). With focus anywhere else, touches behave natively: nothing
+ *    is canceled, the browser scrolls the list itself, and the synthesized
+ *    click activates the option through onClick.
+ *  - FOCUS KEEP: with focus inside the window, iOS Safari steals focus at
+ *    the TOUCH level, before pointerdown - so touchstart is canceled. React
+ *    registers root touchstart listeners as passive (scrolling-intervention
+ *    emulation), which silently ignores preventDefault, hence native
+ *    non-passive listeners on the button.
+ *  - MOVEMENT GATE: the first touch's start point is recorded at
+ *    touchstart; a displacement over TOUCH_MOVE_THRESHOLD_PX marks the
+ *    gesture a drag. touchend activates only for taps (not moved) - a drag
+ *    across the options must never submit the option it started on.
+ *  - DRAG SCROLL: canceling touchstart kills native scrolling for the
+ *    gesture, so while the contract is active a drag scrolls the window
+ *    body manually by the touch delta on each touchmove.
+ *  - CLICK DEDUP: canceling touchstart/touchend suppresses the synthesized
+ *    click, so touchend applies the toggle itself for taps. onClick stays
+ *    the mouse/keyboard path; a click landing within TOUCH_CLICK_DEDUP_MS of
+ *    any completed gesture - tap OR drag, whose timestamp is recorded
+ *    without activating - is that gesture's echo and ignored, so a drag's
+ *    stray click cannot toggle either. The synthesized click always targets
+ *    the touched button, so the dedup timestamp lives per button.
+ *  - onPointerDown/onMouseDown preventDefault remains for desktop mouse
+ *    focus (mousedown fires without any touch). Tabs and the action row
+ *    keep default focus behavior: they switch or end the editing context,
+ *    where focus-follows-tap is the honest outcome. */
+function OptionButton({
+	label,
+	description,
+	selected,
+	onToggle,
+}: {
+	readonly label: string;
+	readonly description: string | undefined;
+	readonly selected: boolean;
+	readonly onToggle: () => void;
+}): ReactElement {
+	const buttonRef = useRef<HTMLButtonElement | null>(null);
+	const lastTouchActivation = useRef(0);
+	const touchGesture = useRef<OptionTouchGesture | null>(null);
+	useEffect(() => {
+		const button = buttonRef.current;
+		if (!button) return undefined;
+		const windowRoot = button.closest(".th-question-window");
+		const focusInsideWindow = (): boolean => {
+			const active = document.activeElement;
+			return windowRoot !== null && active !== null && windowRoot.contains(active);
+		};
+		const onTouchStart = (event: TouchEvent): void => {
+			if (!focusInsideWindow()) return; // native: browser scrolls, click activates
+			event.preventDefault();
+			const touch = event.touches?.[0];
+			touchGesture.current = {
+				identifier: touch?.identifier ?? null,
+				startX: touch?.clientX ?? 0,
+				startY: touch?.clientY ?? 0,
+				lastY: touch?.clientY ?? 0,
+				moved: false,
+				scroller: button.closest<HTMLElement>(".th-question-window-body"),
+			};
+		};
+		const onTouchMove = (event: TouchEvent): void => {
+			const gesture = touchGesture.current;
+			if (!gesture || gesture.identifier === null) return;
+			const touch = Array.from(event.touches ?? [])
+				.concat(Array.from(event.changedTouches ?? []))
+				.find((entry) => entry.identifier === gesture.identifier);
+			if (!touch) return;
+			if (!gesture.moved
+				&& Math.hypot(touch.clientX - gesture.startX, touch.clientY - gesture.startY)
+					<= TOUCH_MOVE_THRESHOLD_PX) {
+				gesture.lastY = touch.clientY;
+				return;
+			}
+			gesture.moved = true;
+			event.preventDefault();
+			if (gesture.scroller) gesture.scroller.scrollTop += gesture.lastY - touch.clientY;
+			gesture.lastY = touch.clientY;
+		};
+		const onTouchEnd = (event: TouchEvent): void => {
+			const gesture = touchGesture.current;
+			if (!gesture) return; // contract inactive: the native click activates
+			if (gesture.identifier !== null
+				&& !Array.from(event.changedTouches ?? [])
+					.some((entry) => entry.identifier === gesture.identifier)) {
+				return; // an ignored extra touch ended; the first is still down
+			}
+			touchGesture.current = null;
+			event.preventDefault();
+			// Taps and drags alike record the dedup timestamp: a drag must not
+			// activate, and its stray click must not toggle afterwards either.
+			lastTouchActivation.current = Date.now();
+			if (!gesture.moved) onToggle();
+		};
+		button.addEventListener("touchstart", onTouchStart, { passive: false });
+		button.addEventListener("touchmove", onTouchMove, { passive: false });
+		button.addEventListener("touchend", onTouchEnd, { passive: false });
+		return () => {
+			button.removeEventListener("touchstart", onTouchStart);
+			button.removeEventListener("touchmove", onTouchMove);
+			button.removeEventListener("touchend", onTouchEnd);
+		};
+	}, [onToggle]);
+	return (
+		<button
+			ref={buttonRef}
+			type="button"
+			className="th-approval-question-option"
+			aria-pressed={selected}
+			onClick={() => {
+				if (Date.now() - lastTouchActivation.current < TOUCH_CLICK_DEDUP_MS) return;
+				onToggle();
+			}}
+			onPointerDown={(event) => event.preventDefault()}
+			onMouseDown={(event) => event.preventDefault()}
+		>
+			<span className="th-approval-question-option-label">{label}</span>
+			{description && (
+				<span className="th-approval-question-option-description">
+					{description}
+				</span>
+			)}
+		</button>
+	);
+}
 
 /** This owner stays mounted when the same request changes presentation. */
 export function QuestionDraftProvider({ requestId, children }: {
@@ -218,35 +368,14 @@ export function ApprovalQuestionPanel({
 								<div className="th-approval-question-options">
 									{options.map((option) => {
 										const label = option.label ?? "";
-										const selected = entry.selected.includes(label);
 										return (
-											<button
+											<OptionButton
 												key={label}
-												type="button"
-												className="th-approval-question-option"
-												aria-pressed={selected}
-												onClick={() => toggleOption(index, label)}
-												// Keyboard continuity: tapping a non-input moves focus
-												// to it, blurring the answer box below and dismissing
-												// the software keyboard on iOS - so a user mixing
-												// typed answers with option taps must reopen the
-												// keyboard on every tap. Canceling the pointerdown
-												// default keeps focus in the input (the click still
-												// fires); mousedown mirrors it for environments
-												// without pointer events. Tabs and the action row
-												// keep default focus behavior: they switch or end
-												// the editing context, where focus-follows-tap is
-												// the honest outcome.
-												onPointerDown={(event) => event.preventDefault()}
-												onMouseDown={(event) => event.preventDefault()}
-											>
-												<span className="th-approval-question-option-label">{label}</span>
-												{option.description && (
-													<span className="th-approval-question-option-description">
-														{option.description}
-													</span>
-												)}
-											</button>
+												label={label}
+												description={option.description}
+												selected={entry.selected.includes(label)}
+												onToggle={() => toggleOption(index, label)}
+											/>
 										);
 									})}
 								</div>

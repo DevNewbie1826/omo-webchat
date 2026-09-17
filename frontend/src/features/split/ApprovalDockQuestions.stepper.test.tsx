@@ -4,8 +4,8 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { I18nValue } from "../../i18n";
 import { I18nContext } from "../../i18n";
-import type { ApprovalRequest } from "./ApprovalDock";
-import { ApprovalDock } from "./ApprovalDock";
+import type { ApprovalRequest } from "./QuestionWindow";
+import { QuestionWindow } from "./QuestionWindow";
 
 const i18n: I18nValue = {
 	lang: "en",
@@ -75,34 +75,34 @@ describe("ApprovalQuestionPanel question stepper", () => {
 		vi.unstubAllGlobals();
 	});
 
-	function renderDock(request: ApprovalRequest, onRespond = vi.fn()): void {
+	function renderWindow(request: ApprovalRequest, onRespond = vi.fn()): void {
 		act(() => {
 			root.render(
 				<I18nContext.Provider value={i18n}>
-					<ApprovalDock request={request} onRespond={onRespond} />
+					<QuestionWindow request={request} open onCollapse={vi.fn()} onRespond={onRespond} />
 				</I18nContext.Provider>,
 			);
 		});
 	}
 
 	const tabs = (): HTMLButtonElement[] =>
-		Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+		Array.from(document.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
 	const actionButtons = (): HTMLButtonElement[] =>
 		Array.from(
-			container.querySelectorAll<HTMLButtonElement>(".th-approval-question-actions button"),
+			document.querySelectorAll<HTMLButtonElement>(".th-approval-question-actions button"),
 		);
 	const action = (label: string): HTMLButtonElement | undefined =>
 		actionButtons().find((button) => button.textContent === label);
 	const option = (label: string): HTMLButtonElement | undefined =>
 		Array.from(
-			container.querySelectorAll<HTMLButtonElement>(".th-approval-question-option"),
+			document.querySelectorAll<HTMLButtonElement>(".th-approval-question-option"),
 		).find((button) => button.textContent === label);
 	const click = (el: HTMLElement | undefined): void => {
 		act(() => el?.click());
 	};
 
 	it("offers Next instead of Submit until the last question, keeping tabs freely navigable", () => {
-		renderDock(FOUR_QUESTIONS);
+		renderWindow(FOUR_QUESTIONS);
 
 		// Q1: the only forward action is Next; Submit must not end the request early.
 		expect(action("approval.question.next")).toBeDefined();
@@ -131,10 +131,10 @@ describe("ApprovalQuestionPanel question stepper", () => {
 	});
 
 	it("shows the unanswered count near the actions and lowers it as questions are answered", () => {
-		renderDock(FOUR_QUESTIONS);
+		renderWindow(FOUR_QUESTIONS);
 
 		const count = (): string | null | undefined =>
-			container.querySelector(".th-approval-question-unanswered")?.textContent;
+			document.querySelector(".th-approval-question-unanswered")?.textContent;
 		expect(count()).toBe("approval.question.unanswered count=4");
 
 		// Answering the active question with an option lowers the count.

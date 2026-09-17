@@ -21,6 +21,7 @@ const appEmpty = readStyle("app-empty");
 const sidebar = readStyle("sidebar");
 const sidebarToggle = readStyle("sidebar-toggle");
 const approvalDock = readStyle("approval-dock");
+const questionWindow = readStyle("question-window");
 const allStyles = ["app-empty", "chat-transcript", "home-live", "login", "sidebar", "sidebar-live"]
   .map(readStyle)
   .join("\n");
@@ -957,48 +958,97 @@ describe("main-screen running-sessions contracts", () => {
 });
 
 describe("approval question panel contracts", () => {
-  it("pins the question tab strip to the dock body scrollport top with an opaque surface", () => {
-    // The tab strip lives inside .th-approval-dock-body's scrollport; without
+  it("pins the question tab strip to the window body scrollport top with an opaque surface", () => {
+    // The tab strip lives inside .th-question-window-body's scrollport; without
     // stickiness it scrolls out of view on a long question, stranding the
     // user on the last tab with no way back to an earlier question. Sticky
-    // must pair with the dock's own surface token so scrolled content never
-    // shows through the pinned strip.
+    // must pair with the window's own surface (the modal's Overlay fill) so
+    // scrolled content never shows through the pinned strip.
     const strip = ruleBody(approvalDock, ".th-approval-question-tabs");
     expect(declarationValue(strip, "position")).toBe("sticky");
     expect(declarationValue(strip, "top")).toBe("0");
-    expect(wholeVarToken(declarationValue(strip, "background"))).toBe("--th-surface");
+    expect(wholeVarToken(declarationValue(strip, "background"))).toBe("--th-surface-overlay");
+    // The window body is the bounded scrollport the strip pins to (and the
+    // option buttons' touch-contract drag-scroll target).
+    const body = ruleBody(questionWindow, ".th-question-window-body");
+    expect(declarationValue(body, "overflow-y")).toBe("auto");
+    expect(declarationValue(body, "min-height")).toBe("0");
   });
 
-  it("pins the action row while the keyboard holds the viewport short, without ever covering the tabs in the tight density", () => {
-    // The OS keyboard shrinks the visible column below the 500px container
-    // threshold that normally pins the action row, so the keyboard-held
-    // density must pin it from a 300px column instead — Next/Submit/Cancel
-    // stay reachable above the keyboard. The selector excludes the tight
-    // density explicitly: its scrollport is only a couple of rows tall, where
-    // a pinned footer would cover the pinned tab strip and make the tabs
-    // unclickable (the same reason the 500px threshold exists).
-    const keyboardBlock = approvalDock.match(
-      /@container chat-column \(min-height: 300px\) \{([\s\S]*?)^\}/m,
-    )?.[1] ?? "";
-    expect(keyboardBlock, "keyboard container block exists").not.toBe("");
-    const actions = ruleBody(keyboardBlock, ".th-approval-dock--keyboard:not(.th-approval-dock--tight) .th-approval-question-actions");
-    expect(actions, "keyboard action-row rule exists").not.toBe("");
+  it("pins the action row to the window body scrollport bottom with an opaque surface", () => {
+    // The window body's scrollport is always bounded (the modal caps at the
+    // viewport), so the submit row pins unconditionally — no keyboard
+    // detection, no container-height thresholds, no tight density: the
+    // inline dock's layout machinery is retired with it.
+    const actions = ruleBody(approvalDock, ".th-approval-question-actions");
     expect(declarationValue(actions, "position")).toBe("sticky");
     expect(declarationValue(actions, "bottom")).toBe("0");
-    // The tight density keeps its static fallback and wins the cascade even
-    // against the keyboard rule by never matching it in the first place.
-    const tight = ruleBody(approvalDock, ".th-approval-dock--tight .th-approval-question-actions");
-    expect(declarationValue(tight, "position")).toBe("static");
-    // Input-priority fallback: when the body slice cannot seat the pinned
-    // tab band + the focused input + the pinned action row, the tab band
-    // yields (static — scrolls with the content); the action row keeps its
-    // pin. Higher specificity than the tabs' own sticky rule.
-    const yieldBlock = ruleBody(
-      approvalDock,
-      ".th-approval-dock--input-priority .th-approval-question-tabs",
+    expect(wholeVarToken(declarationValue(actions, "background"))).toBe("--th-surface-overlay");
+  });
+
+  it("keeps the retired dock column machinery out of the stylesheets", () => {
+    // The inline dock's shrink/clamp/sticky-slice/floor machinery is gone:
+    // no dock selectors, no chat-column container thresholds, no keyboard or
+    // density modifiers may linger in the shared sheet.
+    expect(approvalDock).not.toContain("th-approval-dock--tight");
+    expect(approvalDock).not.toContain("th-approval-dock--keyboard");
+    expect(approvalDock).not.toContain("th-approval-dock--input-priority");
+    expect(approvalDock).not.toContain("th-approval-dock-summary");
+    expect(approvalDock).not.toContain("@container chat-column");
+  });
+});
+
+describe("question window and notice band contracts", () => {
+  it("keeps the notice band a fixed single-line band in the chat lane", () => {
+    const band = ruleBody(questionWindow, ".th-question-band");
+    expect(declarationValue(band, "flex")).toBe("none");
+    expect(declarationValue(band, "white-space")).toBe("nowrap");
+    // The band inherits the retired dock's column slot: same lane width as
+    // .th-chat-controls, centered with auto margins.
+    expect(declarationValue(band, "width")).toBe(
+      "min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)))",
     );
-    expect(yieldBlock, "input-priority tab-yield rule exists").not.toBe("");
-    expect(declarationValue(yieldBlock, "position")).toBe("static");
+    expect(declarationValue(band, "margin")).toBe("var(--th-space-1) auto 0");
+    // The title absorbs the squeeze: one clipped line, never a wrapped band.
+    const title = ruleBody(questionWindow, ".th-question-band-title");
+    expect(declarationValue(title, "min-width")).toBe("0");
+    expect(declarationValue(title, "overflow")).toBe("hidden");
+    expect(declarationValue(title, "text-overflow")).toBe("ellipsis");
+    expect(declarationValue(title, "white-space")).toBe("nowrap");
+    // The Open action pins to the row's far end.
+    const open = ruleBody(questionWindow, ".th-question-band-open");
+    expect(declarationValue(open, "flex")).toBe("none");
+    expect(declarationValue(open, "margin-left")).toBe("auto");
+  });
+
+  it("titles the window at the modal title tier and clears the close target", () => {
+    const head = ruleBody(questionWindow, ".th-question-window-head");
+    expect(head).toMatch(/padding:\s*var\(--th-space-5\) calc\(var\(--th-space-5\) \+ var\(--th-space-11\)\) var\(--th-space-3\) var\(--th-space-5\)/);
+    const title = ruleBody(questionWindow, ".th-question-window-title");
+    expect(declarationValue(title, "font-size")).toBe("var(--th-type-title-size)");
+    expect(declarationValue(title, "font-weight")).toBe("var(--th-weight-announce)");
+    expect(declarationValue(title, "overflow")).toBe("hidden");
+    expect(declarationValue(title, "text-overflow")).toBe("ellipsis");
+    expect(declarationValue(title, "white-space")).toBe("nowrap");
+    // The deadline pill keeps the countdown's urgency styling (warning tone,
+    // mono, tabular numerals) in both the window head and the band.
+    const countdown = ruleBody(questionWindow, ".th-question-window-countdown");
+    expect(declarationValue(countdown, "color")).toBe("var(--th-warning)");
+    expect(declarationValue(countdown, "font-family")).toBe("var(--th-font-mono)");
+    expect(declarationValue(countdown, "font-variant-numeric")).toBe("tabular-nums");
+  });
+
+  it("declares the band strings in both locales", () => {
+    const en = JSON.parse(readFileSync("src/i18n/locales/en.json", "utf8")) as Record<string, string>;
+    const ko = JSON.parse(readFileSync("src/i18n/locales/ko.json", "utf8")) as Record<string, string>;
+    for (const key of ["approval.band.open", "approval.band.questions"]) {
+      expect(en[key], `en ${key}`).toBeDefined();
+      expect(ko[key], `ko ${key}`).toBeDefined();
+    }
+    // The whole label comes from approval.remaining with a seconds param;
+    // the band count is a parameterized key, not a composed literal.
+    expect(en["approval.band.questions"]).toContain("{count}");
+    expect(ko["approval.band.questions"]).toContain("{count}");
   });
 });
 

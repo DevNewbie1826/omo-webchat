@@ -20,29 +20,41 @@ describe("request-owned question drafts", () => {
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
-  const button = (label: string) => requireElement([...container.querySelectorAll("button")].find(b => b.textContent === label), label);
+  // The answering surface is the modal window, which portals to document.body.
+  const button = (label: string) => requireElement([...document.querySelectorAll("button")].find(b => b.textContent === label), label);
   const click = (label: string) => act(() => button(label).click());
   const input = (selector: string, value: string) => act(() => {
-    const element = requireElement(container.querySelector<HTMLInputElement>(selector), selector);
+    const element = requireElement(document.querySelector<HTMLInputElement>(selector), selector);
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(element, value);
     element.dispatchEvent(new Event("input", { bubbles: true }));
   });
+  // A blocking arrival auto-opens the window; a non-blocking one leaves it
+  // to the band. Same-id presentation hops keep the window's open state, so
+  // the helper only opens when it is actually closed.
+  const ensureWindowOpen = () => {
+    if (document.querySelector(".th-modal") === null) click("approval.band.open");
+    expect(document.querySelector(".th-modal")).not.toBeNull();
+  };
 
   it.each([{ surfaces: [true, false] }, { surfaces: [false, true] }, { surfaces: [true, false, true] }, { surfaces: [false, true, false, true, false] }] as const)(
     "preserves the complete response when surfaces hop through $surfaces", async ({ surfaces }) => {
       // Given a completed first answer, a partial selection, and a panel comment.
       const { deliver, sent } = renderChatPane(root);
       await act(async () => deliver({ ...request, nonBlocking: surfaces[0] }));
+      ensureWindowOpen();
       click("A");
-      if (!surfaces[0]) { click("Second"); input(".th-approval-question-comment", "keep comment"); }
+      // The window keeps one tab per question: walk to the question being
+      // answered (the retired bar auto-advanced; the panel keeps the user's tab).
+      click("Second");
+      if (!surfaces[0]) { input(".th-approval-question-comment", "keep comment"); }
       click("B");
       // When the same request hops repeatedly and the remaining answers are completed.
       for (const nonBlocking of surfaces.slice(1)) act(() => deliver({ ...request, nonBlocking }));
-      expect([...container.querySelectorAll('button[aria-pressed="true"]')].map(element => element.textContent)).toContain("B");
+      ensureWindowOpen();
+      expect([...document.querySelectorAll('button[aria-pressed="true"]')].map(element => element.textContent)).toContain("B");
       click("C");
-      const inline = surfaces.at(-1);
-      if (inline) { click("question.submit"); click("question.answer"); input(".th-question-bar-input", "draft notes"); click("question.submit"); }
-      else { click("Notes"); input(".th-approval-question-text", "draft notes"); click("approval.submit"); }
+      click("Notes"); input(".th-approval-question-text", "draft notes");
+      click("approval.submit");
       // Then all answers, including those entered before the hop, use their own keys.
       expect(sent.filter(frame => frame.type === "approval.respond")).toEqual([{
         type: "approval.respond", sessionId: "chat-1", requestId: expect.any(String), id: "moving-draft",
@@ -53,37 +65,48 @@ describe("request-owned question drafts", () => {
   );
 
   it("preserves unsubmitted free text and the active question when both surfaces replay", async () => {
-    // Given an expanded inline text draft.
+    // Given panel answers on a non-blocking request, entered through the
+    // band-opened window.
     const { deliver } = renderChatPane(root);
     await act(async () => deliver({ ...request, nonBlocking: true }));
-    click("A"); click("B"); click("question.submit"); click("question.answer"); input(".th-question-bar-input", "unfinished");
-    // When the panel receives it, adds a comment, and hops back and forth.
+    ensureWindowOpen();
+    click("A"); click("Second"); click("B"); click("Notes"); input(".th-approval-question-text", "unfinished");
+    // When the same request replays across blocking/non-blocking presentations.
     act(() => deliver({ ...request, nonBlocking: false }));
-    expect(container.querySelector('.th-approval-question [role="tab"][aria-selected="true"]')?.textContent).toBe("Notes");
-    expect(container.querySelector<HTMLInputElement>(".th-approval-question-text")?.value).toBe("unfinished");
+    expect(document.querySelector('.th-approval-question [role="tab"][aria-selected="true"]')?.textContent).toBe("Notes");
+    expect(document.querySelector<HTMLInputElement>(".th-approval-question-text")?.value).toBe("unfinished");
     input(".th-approval-question-comment", "in progress");
     act(() => deliver({ ...request, nonBlocking: true }));
     act(() => deliver({ ...request, nonBlocking: true }));
-    expect(container.querySelector<HTMLInputElement>(".th-question-bar-input")?.value).toBe("unfinished");
+    expect(document.querySelector<HTMLInputElement>(".th-approval-question-text")?.value).toBe("unfinished");
     act(() => deliver({ ...request, nonBlocking: false }));
-    // Then no draft field or active question was reset.
-    expect(container.querySelector('.th-approval-question [role="tab"][aria-selected="true"]')?.textContent).toBe("Notes");
-    expect(container.querySelector<HTMLInputElement>(".th-approval-question-text")?.value).toBe("unfinished");
-    expect(container.querySelector<HTMLInputElement>(".th-approval-question-comment")?.value).toBe("in progress");
+    // Then no draft field or active question was reset by any hop.
+    expect(document.querySelector('.th-approval-question [role="tab"][aria-selected="true"]')?.textContent).toBe("Notes");
+    expect(document.querySelector<HTMLInputElement>(".th-approval-question-text")?.value).toBe("unfinished");
+    expect(document.querySelector<HTMLInputElement>(".th-approval-question-comment")?.value).toBe("in progress");
   });
 
-  it.each(["", "   "])("retains explicitly answered blank text %j across a surface hop", async (text) => {
-    // Given a blank text answer explicitly completed in the inline bar.
+  const clickTab = (index: number) => act(() => {
+    requireElement(document.querySelectorAll<HTMLButtonElement>('.th-modal .th-approval-question-tabs [role="tab"]')[index], `tab ${index}`).click();
+  });
+
+  it.each(["", "   "])("omits erased blank text %j from the payload (the window panel's blank contract)", async (text) => {
+    // Given a blank answer typed and erased again before submission.
     const { deliver, sent } = renderChatPane(root);
-    const blankRequest = { ...request, questions: [{ id: "blank" }, { id: "last", options: [{ label: "Done" }] }] };
+    const blankRequest = { ...request, id: "blank-draft", questions: [{ id: "blank" }, { id: "last", options: [{ label: "Done" }] }] };
     await act(async () => deliver({ ...blankRequest, nonBlocking: true }));
-    click("question.answer"); input(".th-question-bar-input", text); click("question.submit");
-    // When the panel receives the same request and submits the last answer.
+    ensureWindowOpen();
+    input(".th-approval-question-text", "temporary"); input(".th-approval-question-text", text);
+    // When the same request settles and the remaining answer is submitted.
     act(() => deliver({ ...blankRequest, nonBlocking: false }));
+    clickTab(1);
     click("Done"); click("approval.submit");
-    // Then an explicitly empty answer remains distinguishable from an unanswered question.
+    // Then the erased answer is indistinguishable from an unanswered question:
+    // the explicit-blank-answer affordance belonged to the retired one-line
+    // bar's per-question Send; the window panel submits live draft text, and
+    // blank text is omitted from the response (questionDraftResponse).
     expect(sent.filter(frame => frame.type === "approval.respond").at(-1)).toMatchObject({
-      answers: { blank: { text }, last: { selected: ["Done"] } },
+      answers: { last: { selected: ["Done"] } },
     });
   });
 
@@ -100,8 +123,8 @@ describe("request-owned question drafts", () => {
     act(() => deliver({ ...request, id: action === "replace" ? "new-draft" : request.id, nonBlocking: false }));
     // Then the new lifetime has no answers, comment, active-tab offset, or text.
     expect(button("A").getAttribute("aria-pressed")).toBe("false");
-    expect(container.querySelector('.th-approval-question [role="tab"][aria-selected="true"]')?.textContent).toBe("First");
-    expect(container.querySelector<HTMLInputElement>(".th-approval-question-comment")?.value).toBe("");
-    click("Notes"); expect(container.querySelector<HTMLInputElement>(".th-approval-question-text")?.value).toBe("");
+    expect(document.querySelector('.th-approval-question [role="tab"][aria-selected="true"]')?.textContent).toBe("First");
+    expect(document.querySelector<HTMLInputElement>(".th-approval-question-comment")?.value).toBe("");
+    click("Notes"); expect(document.querySelector<HTMLInputElement>(".th-approval-question-text")?.value).toBe("");
   });
 });

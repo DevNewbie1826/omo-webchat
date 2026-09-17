@@ -125,13 +125,17 @@ describe("ChatPane structured question dock panel", () => {
 		});
 	};
 
-	it("renders one dock panel with a tab per question", () => {
+	it("auto-opens one window with a tab per question for a blocking request", () => {
 		const { deliver } = renderWithFakeConnect();
 		act(() => deliver(QUESTION_FRAME));
 
-		expect(container.querySelectorAll(".th-approval-dock")).toHaveLength(1);
+		// Blocking question: the window opens on arrival (its separate modal,
+		// the old dock's arrival expansion) and the notice band stays in the
+		// column beneath it.
+		expect(container.querySelectorAll(".th-question-band")).toHaveLength(1);
+		expect(document.querySelectorAll(".th-modal")).toHaveLength(1);
 		const tabs = Array.from(
-			container.querySelectorAll<HTMLButtonElement>('.th-approval-dock [role="tab"]'),
+			document.querySelectorAll<HTMLButtonElement>('.th-modal [role="tab"]'),
 		);
 		expect(tabs.map((tab) => tab.textContent)).toEqual(["Stack", "Region"]);
 	});
@@ -142,18 +146,18 @@ describe("ChatPane structured question dock panel", () => {
 
 		const option = (label: string): HTMLButtonElement | undefined =>
 			Array.from(
-				container.querySelectorAll<HTMLButtonElement>(".th-approval-question-option"),
+				document.querySelectorAll<HTMLButtonElement>(".th-approval-question-option"),
 			).find((button) => button.textContent?.includes(label));
 
 		click(option("Go"));
 		click(option("TS"));
 		const regionTab = Array.from(
-			container.querySelectorAll<HTMLButtonElement>('.th-approval-dock [role="tab"]'),
+			document.querySelectorAll<HTMLButtonElement>('.th-modal [role="tab"]'),
 		).find((tab) => tab.textContent === "Region");
 		click(regionTab);
 		click(option("eu-west"));
 
-		const comment = container.querySelector<HTMLInputElement>(
+		const comment = document.querySelector<HTMLInputElement>(
 			".th-approval-question-comment",
 		);
 		expect(comment).not.toBeNull();
@@ -168,7 +172,7 @@ describe("ChatPane structured question dock panel", () => {
 		});
 
 		const submit = Array.from(
-			container.querySelectorAll<HTMLButtonElement>(".th-approval-question-actions button"),
+			document.querySelectorAll<HTMLButtonElement>(".th-approval-question-actions button"),
 		).find((button) => button.textContent === "approval.submit");
 		click(submit);
 
@@ -183,11 +187,12 @@ describe("ChatPane structured question dock panel", () => {
 			},
 			comment: "ship it",
 		});
-		// The answered request leaves the pane.
-		expect(container.querySelector(".th-approval-dock")).toBeNull();
+		// The answered request leaves the pane: window and band both go.
+		expect(document.querySelector(".th-modal")).toBeNull();
+		expect(container.querySelector(".th-question-band")).toBeNull();
 	});
 
-	it("a single-question request keeps the compact one-line bar, not the tabbed panel", () => {
+	it("a single-question non-blocking request keeps the one-line band alone, not the window", () => {
 		const { deliver } = renderWithFakeConnect();
 		act(() =>
 			deliver({
@@ -202,11 +207,14 @@ describe("ChatPane structured question dock panel", () => {
 			}),
 		);
 
-		expect(container.querySelector(".th-question-bar")).not.toBeNull();
-		expect(container.querySelector(".th-approval-dock")).toBeNull();
+		// Non-interference: no auto-opened window, no takeover of the column —
+		// the band alone announces the question until the user opens the window.
+		expect(container.querySelector(".th-question-band")).not.toBeNull();
+		expect(document.querySelector(".th-modal")).toBeNull();
+		expect(document.querySelector(".th-approval-question")).toBeNull();
 	});
 
-	it("a single-question request without the nonBlocking flag renders the dock panel", () => {
+	it("a single-question request without the nonBlocking flag auto-opens the window panel", () => {
 		const { deliver } = renderWithFakeConnect();
 		act(() =>
 			deliver({
@@ -220,14 +228,14 @@ describe("ChatPane structured question dock panel", () => {
 			}),
 		);
 
-		expect(container.querySelector(".th-approval-dock .th-approval-question")).not.toBeNull();
-		expect(container.querySelector(".th-question-bar")).toBeNull();
+		expect(document.querySelector(".th-modal .th-approval-question")).not.toBeNull();
+		expect(container.querySelector(".th-question-band")).not.toBeNull();
 	});
 
 	it("a normal composer send does not answer the pending question", () => {
 		const { deliver, sent } = renderWithFakeConnect();
 		act(() => deliver(QUESTION_FRAME));
-		expect(container.querySelector(".th-approval-dock")).not.toBeNull();
+		expect(document.querySelector(".th-modal")).not.toBeNull();
 
 		const textarea = composer();
 		act(() => setTextareaValue(textarea, "just a normal message"));
@@ -245,6 +253,6 @@ describe("ChatPane structured question dock panel", () => {
 			),
 		).toBe(true);
 		expect(sent.some((frame) => frame.type === "approval.respond")).toBe(false);
-		expect(container.querySelector(".th-approval-dock")).not.toBeNull();
+		expect(document.querySelector(".th-modal")).not.toBeNull();
 	});
 });
