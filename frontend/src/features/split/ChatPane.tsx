@@ -384,15 +384,14 @@ export function ChatPane({
                 </>}
               </span>
             ))}
-            {chat.steerPending.map((item) => (
-              <span key={item.requestId} className="th-chat-status-item th-chat-status-item--steer" title={item.text}>
-                <span className="th-chat-status-label">{t("chat.steerPending", { text: "" })}</span>
-                <button type="button" className="th-chat-send-preview" aria-label={t("chat.send.inspect")}
-                  aria-haspopup="dialog" onClick={event => setInspectedOriginal({ text: item.text, trigger: event.currentTarget })}>
-                  {item.text}
-                </button>
+            {/* Send confirmation only: one short line that self-retires. What is
+               actually parked in the engine stays in the queue panel above,
+               which the server republishes and a pane remount cannot lose. */}
+            {chat.steerPending.length > 0 && (
+              <span className="th-chat-status-item th-chat-status-item--steer" title={chat.steerPending[chat.steerPending.length - 1]?.text}>
+                {t("chat.steerSent")}
               </span>
-            ))}
+            )}
             </div>
 
           <div className="th-chat-status-metrics">
