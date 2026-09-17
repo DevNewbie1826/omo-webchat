@@ -236,6 +236,8 @@ export function ChatComposer({ session, commands, running, disabled = false, ret
           disabled={disabled}
           running={running}
           sendLabel={t(running ? "chat.stop" : "chat.send")}
+          steerLabel={t("chat.steer")}
+          canSteer={input.trim().length > 0}
           onCaret={setCaret}
           onInput={(value, at) => {
             setInput(value);
@@ -244,6 +246,7 @@ export function ChatComposer({ session, commands, running, disabled = false, ret
             setPaletteHidden(false);
           }}
           onPaste={imageSupported && !disabled ? onPaste : undefined}
+          onSteer={steer}
           onKeyDown={(event) => handleChatComposerKeyDown(event, {
             file: { open: fileOpen, mention: fileMention, onSelect: selectFile },
             command: {

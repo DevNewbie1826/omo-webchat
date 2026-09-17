@@ -99,6 +99,34 @@
   color: var(--th-error-fg);
 }
 
+/* Run-time steer action: the same send affordance, placed beside the fixed
+   send/stop slot so that slot never moves. It exists only while a run is in
+   flight, where the keyboard shortcut is unreachable on a soft keyboard. */
+.th-chat-input .th-chat-steer-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--th-send);
+  color: var(--th-send-fg);
+}
+
+.th-chat-input .th-chat-steer-btn:hover:not(:disabled) {
+  background: var(--th-send-hover);
+}
+
+.th-chat-input .th-chat-steer-btn:disabled,
+.th-chat-input .th-chat-steer-btn:disabled:hover {
+  background: var(--th-disabled-bg);
+  color: var(--th-disabled-fg);
+  cursor: not-allowed;
+}
+
 /* The visible control is the glyph alone; the name stays machine-readable. */
 .th-chat-send-label {
   position: absolute;
@@ -351,6 +379,11 @@
   /* Narrow panes and phones get full 44px touch targets. */
   .th-chat-attach-btn,
   .th-chat-input .th-chat-send-btn {
+    width: 44px;
+    height: 44px;
+  }
+
+  .th-chat-input .th-chat-steer-btn {
     width: 44px;
     height: 44px;
   }
