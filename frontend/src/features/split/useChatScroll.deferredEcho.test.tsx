@@ -89,6 +89,41 @@ it("T2: two unowned deferred echoes cannot acquire reader ownership", () => {
   }
 });
 
+it("T4: reader momentum releases follow after physical grace expires", () => {
+  scrollTo(10600, 100);
+  act(() => {
+    body.dispatchEvent(new TouchEvent("touchstart"));
+    body.dispatchEvent(new TouchEvent("touchmove"));
+  });
+  vi.mocked(performance.now).mockReturnValue(101);
+  act(() => body.dispatchEvent(new TouchEvent("touchend")));
+  for (const [top, now] of [[10580, 200], [10570, 350]] as const) {
+    scrollTo(top, now);
+    expect(state.isFollowing()).toBe(true);
+    expect(container.querySelector("button")).toBeNull();
+  }
+  scrollTo(10550, 501);
+  // Attributed momentum renews grace beyond the original physical signal.
+  expect(state.isReaderInputActive()).toBe(true);
+  expect(state.isFollowing()).toBe(false);
+  expect(container.querySelector("button")).not.toBeNull();
+  height += 1000;
+  act(() => notifyResize());
+  expect(body.scrollTop).toBe(10550);
+});
+
+it("T5: a whole unowned motion chain never releases follow", () => {
+  for (const [top, now] of [[9000, 116], [8800, 200], [8600, 350], [8400, 501], [8200, 700]] as const) {
+    scrollTo(top, now);
+    expect(state.isReaderInputActive()).toBe(false);
+    expect(state.isFollowing()).toBe(true);
+    expect(container.querySelector("button")).toBeNull();
+  }
+  height += 1000;
+  act(() => notifyResize());
+  expect(body.scrollTop).toBe(11600);
+});
+
 it("T3: active pointer scroll-up still revokes follow and exposes the jump control", () => {
   act(() => body.dispatchEvent(new PointerEvent("pointerdown", {
     pointerId: 1, pointerType: "touch", buttons: 1, bubbles: true,
