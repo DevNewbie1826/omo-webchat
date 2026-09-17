@@ -61,6 +61,26 @@ function tap(button: HTMLElement): void {
 	button.click();
 }
 
+interface TouchPoint {
+	readonly identifier: number;
+	readonly clientX: number;
+	readonly clientY: number;
+}
+
+/** Builds a bubbling, cancelable touch event carrying the given touch lists.
+ *  jsdom has no Touch constructor, so plain Events carry the coordinates the
+ *  handlers read (touches/changedTouches). */
+function touchGestureEvent(
+	type: "touchstart" | "touchmove" | "touchend",
+	touches: readonly TouchPoint[],
+	changedTouches: readonly TouchPoint[] = touches,
+): Event {
+	const event = new Event(type, { bubbles: true, cancelable: true });
+	Object.defineProperty(event, "touches", { value: touches });
+	Object.defineProperty(event, "changedTouches", { value: changedTouches });
+	return event;
+}
+
 describe("ApprovalQuestionPanel focus-keeping option taps", () => {
 	let container: HTMLDivElement;
 	let root: Root;
@@ -140,19 +160,93 @@ describe("ApprovalQuestionPanel focus-keeping option taps", () => {
 	it("activates the selection on touchend itself, without any synthesized click", () => {
 		renderDock(QUESTIONS);
 
+		const input = answerInput();
+		act(() => input?.focus());
+
 		// Canceling touchstart/touchend suppresses the browser's click
 		// synthesis, so touchend must apply the toggle on its own.
 		const go = option("Go") as HTMLButtonElement;
 		const touchend = new Event("touchend", { bubbles: true, cancelable: true });
 		act(() => {
+			go.dispatchEvent(new Event("touchstart", { bubbles: true, cancelable: true }));
 			go.dispatchEvent(touchend);
 		});
 		expect(touchend.defaultPrevented).toBe(true);
 		expect(go.getAttribute("aria-pressed")).toBe("true");
 	});
 
+	it("treats a drag over 10px as a scroll, not a tap: no toggle, the dock body scrolls, the stray click is swallowed", () => {
+		renderDock(QUESTIONS);
+
+		const input = answerInput();
+		act(() => input?.focus());
+		expect(document.activeElement).toBe(input);
+
+		const body = container.querySelector<HTMLElement>(".th-approval-dock-body");
+		expect(body).not.toBeNull();
+		(body as HTMLElement).scrollTop = 0;
+
+		// The reviewed regression: a swipe across the options must neither
+		// submit the option it started on nor leave the list unscrollable.
+		// Canceling touchstart kills native scrolling for the gesture, so the
+		// dock body is dragged manually by the touch delta.
+		const go = option("Go") as HTMLButtonElement;
+		const touchend = touchGestureEvent("touchend", [], [{ identifier: 0, clientX: 40, clientY: 160 }]);
+		act(() => {
+			go.dispatchEvent(touchGestureEvent("touchstart", [{ identifier: 0, clientX: 40, clientY: 200 }]));
+			go.dispatchEvent(touchGestureEvent("touchmove", [{ identifier: 0, clientX: 40, clientY: 160 }]));
+			go.dispatchEvent(touchend);
+		});
+
+		expect(touchend.defaultPrevented).toBe(true);
+		expect(go.getAttribute("aria-pressed")).toBe("false");
+		expect((body as HTMLElement).scrollTop).toBeGreaterThan(0);
+		expect(document.activeElement).toBe(input);
+
+		// The drag still records the dedup timestamp, so any residual
+		// synthesized click must not toggle the option on afterwards.
+		act(() => go.click());
+		expect(go.getAttribute("aria-pressed")).toBe("false");
+	});
+
+	it("leaves touches native when focus is outside the dock's section", () => {
+		const outside = document.createElement("input");
+		document.body.appendChild(outside);
+		try {
+			renderDock(QUESTIONS);
+			act(() => outside.focus());
+			expect(document.activeElement).toBe(outside);
+
+			// No typing context to protect: the browser keeps its native
+			// behavior — scrolling, then a synthesized click that activates.
+			const go = option("Go") as HTMLButtonElement;
+			const touchstart = touchGestureEvent("touchstart", [
+				{ identifier: 0, clientX: 40, clientY: 200 },
+			]);
+			act(() => {
+				go.dispatchEvent(touchstart);
+			});
+			expect(touchstart.defaultPrevented).toBe(false);
+
+			const touchend = touchGestureEvent("touchend", [], [{ identifier: 0, clientX: 40, clientY: 200 }]);
+			act(() => {
+				go.dispatchEvent(touchend);
+			});
+			expect(touchend.defaultPrevented).toBe(false);
+			expect(go.getAttribute("aria-pressed")).toBe("false");
+
+			act(() => go.click());
+			expect(go.getAttribute("aria-pressed")).toBe("true");
+		} finally {
+			outside.remove();
+		}
+	});
+
 	it("ignores a click within 500ms of a touch activation but not a later one", () => {
 		renderDock(QUESTIONS);
+
+		const input = answerInput();
+		act(() => input?.focus());
 
 		const go = option("Go") as HTMLButtonElement;
 		act(() => {
