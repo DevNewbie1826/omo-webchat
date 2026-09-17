@@ -55,11 +55,18 @@ func TestChatSendImagePayloadIncludesType(t *testing.T) {
 		)
 		releaseRun := h.daemon.HoldPrompt(h.path)
 		defer releaseRun()
+		entered, releaseApply := h.daemon.BlockPromptBeforeApply(h.path)
+		defer releaseApply()
 		writeClient(t, conn, map[string]any{
 			"type": "chat.send", "sessionId": "image-queued", "requestId": "running",
 			"run": map[string]any{"kind": "prompt", "message": "running"},
 		})
 		nextSuccessfulSendAcks(t, frames, "running")
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("held prompt never reached its handler")
+		}
 
 		writeClient(t, conn, map[string]any{
 			"type": "chat.send", "sessionId": "image-queued", "requestId": "queued-image",
@@ -80,6 +87,7 @@ func TestChatSendImagePayloadIncludesType(t *testing.T) {
 
 		releaseFlush := h.daemon.BlockHandler(omorpc.CmdPrompt)
 		defer releaseFlush()
+		releaseApply()
 		releaseRun()
 		frames.next(t, "run.done")
 		if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 2, 5*time.Second) {
