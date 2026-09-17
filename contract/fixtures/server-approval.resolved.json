@@ -1,0 +1,8 @@
+{
+  "type": "approval.resolved",
+  "sessionId": "chat-1",
+  "id": "approval-1",
+  "outcome": "expired",
+  "requestId": "answer-1",
+  "message": "This question has expired. Ask the assistant to request it again."
+}

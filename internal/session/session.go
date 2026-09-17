@@ -140,6 +140,7 @@ type Session struct {
 	taskSnapshots                                                           taskSnapshotCache
 	engineQueue                                                             EngineQueueSnapshot
 	pendingApproval                                                         *Frame
+	activeApprovals                                                         map[string]struct{}
 
 	transcriptNotices transcriptNoticeState
 	todoRead          todoReadState
@@ -1468,8 +1469,8 @@ func (s *Session) persistName(ctx context.Context, name, source string) error {
 	return s.manager.cfg.Store.UpdateName(ctx, s.chatID, name, source)
 }
 
-// RespondApproval publishes the correlated acceptance ack before notifying the
-// provider, preserving ordering with any stream resumed by that response.
+// RespondApproval publishes the correlated ack after writing to the provider,
+// preserving ordering with any stream resumed by that response.
 func (s *Session) RespondApproval(id string, value json.RawMessage, confirmed *bool, cancelled bool) error {
 	return s.respondApproval(id, id, value, confirmed, cancelled)
 }
@@ -1826,9 +1827,10 @@ func (s *Session) markProviderUnloadedLocked() {
 	s.providerRunActive = false
 	s.compactionActive = false
 	s.localCommandActive = false
-	// An unload cancels the provider's pending UI requests; retaining one
-	// would resurface an unanswerable ask on the next attach.
-	s.pendingApproval = nil
+	// Retire requests for live clients as well as reconnect replay.
+	for id := range s.activeApprovals {
+		s.resolveApprovalLocked(id, "", "expired", errApprovalExpired.Error())
+	}
 	s.cancelIdleLocked()
 	s.notifyActivityLocked()
 }
@@ -1884,7 +1886,9 @@ func (s *Session) invalidate(code, message string) {
 	s.providerRunActive = false
 	s.compactionActive = false
 	s.localCommandActive = false
-	s.pendingApproval = nil
+	for id := range s.activeApprovals {
+		s.resolveApprovalLocked(id, "", "expired", errApprovalExpired.Error())
+	}
 	s.cancelIdleLocked()
 	s.publishLocked(Frame{Kind: FrameError, SessionID: s.durableID, Data: ErrorInfo{Code: code, Message: message}})
 	s.lifecycleMu.Unlock()

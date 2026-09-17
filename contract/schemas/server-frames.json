@@ -34,6 +34,9 @@
       "$ref": "#/$defs/ApprovalFrame"
     },
     {
+      "$ref": "#/$defs/ApprovalResolvedFrame"
+    },
+    {
       "$ref": "#/$defs/CommandsFrame"
     },
     {
@@ -83,6 +86,19 @@
     }
   ],
   "$defs": {
+    "ApprovalResolvedFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "id", "outcome"],
+      "properties": {
+        "type": { "const": "approval.resolved" },
+        "sessionId": { "type": "string" },
+        "id": { "type": "string" },
+        "outcome": { "type": "string" },
+        "requestId": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
     "ReadyFrame": {
       "type": "object",
       "format": "todo-binding-ready",

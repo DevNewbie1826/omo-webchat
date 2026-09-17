@@ -28,6 +28,8 @@ func TestQuestionAnswersReachEngineWhenBrowserResponds(t *testing.T) {
 	h := newInPlaceBridgeHarness(t, "question-response")
 	conn, frames := h.connect(t)
 	attachAndAwaitHistory(t, conn, frames, "question-response")
+	h.daemon.EmitSession(h.path, map[string]any{"type": "extension_ui_request", "id": "ask", "method": "question"})
+	frames.next(t, "approval")
 	answers := map[string]any{"q1": map[string]any{"selected": []any{"Go", "TS"}}, "q2": map[string]any{"selected": []any{}, "text": "custom"}}
 	// When
 	writeClient(t, conn, map[string]any{"type": "approval.respond", "sessionId": "question-response", "id": "ask", "requestId": "browser", "answers": answers, "comment": "overall"})
