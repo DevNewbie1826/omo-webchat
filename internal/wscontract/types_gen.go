@@ -232,6 +232,17 @@ type ApprovalFrame struct {
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
+type ApprovalResolvedFrame struct {
+	ID        string  `json:"id"`
+	Message   *string `json:"message,omitempty"`
+	Outcome   string  `json:"outcome"`
+	RequestID *string `json:"requestId,omitempty"`
+	SessionID string  `json:"sessionId"`
+	Type      string  `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
 // ChatGoalFrame — Live goal state for the bound chat, pushed when the underlying goal document changes while the session is attached. goal is null when the chat has no readable goal.
 type ChatGoalFrame struct {
 	Goal      *ChatGoalState `json:"goal"`
@@ -1237,6 +1248,24 @@ func (v *ApprovalFrame) UnmarshalJSON(data []byte) error {
 
 func (v ApprovalFrame) MarshalJSON() ([]byte, error) {
 	type plain ApprovalFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ApprovalResolvedFrame) UnmarshalJSON(data []byte) error {
+	type plain ApprovalResolvedFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"id", "message", "outcome", "requestId", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ApprovalResolvedFrame) MarshalJSON() ([]byte, error) {
+	type plain ApprovalResolvedFrame
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
@@ -2427,6 +2456,7 @@ func (StatsFrame) serverFrame()             {}
 func (ExtensionEventFrame) serverFrame()    {}
 func (SessionsActivityFrame) serverFrame()  {}
 func (ApprovalFrame) serverFrame()          {}
+func (ApprovalResolvedFrame) serverFrame()  {}
 func (CommandsFrame) serverFrame()          {}
 func (ModelsFrame) serverFrame()            {}
 func (EntriesFrame) serverFrame()           {}
@@ -2626,6 +2656,8 @@ func NewServerFrame(wireType string) ServerFrame {
 		return new(SessionsActivityFrame)
 	case "approval":
 		return new(ApprovalFrame)
+	case "approval.resolved":
+		return new(ApprovalResolvedFrame)
 	case "commands":
 		return new(CommandsFrame)
 	case "models":
@@ -2715,6 +2747,10 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 			}
 		case "approval":
 			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"awaitsAnswer": validationSchema{Type: "boolean"}, "deadlineAtMs": validationSchema{Type: "integer"}, "id": validationSchema{Type: "string"}, "message": validationSchema{Type: "string"}, "method": validationSchema{Type: "string", Enum: []string{"select", "confirm", "input", "editor", "question"}}, "nonBlocking": validationSchema{Type: "boolean"}, "options": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "placeholder": validationSchema{Type: "string"}, "prefill": validationSchema{Type: "string"}, "questions": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"header": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "multiSelect": validationSchema{Type: "boolean"}, "options": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"description": validationSchema{Type: "string"}, "label": validationSchema{Type: "string"}}}}, "question": validationSchema{Type: "string"}}}}, "remainingMs": validationSchema{Type: "integer"}, "sessionId": validationSchema{Type: "string"}, "timeout": validationSchema{Type: "integer"}, "title": validationSchema{Type: "string"}, "type": validationSchema{Const: "approval"}}, Required: []string{"type", "sessionId", "id", "method"}}); err != nil {
+				return nil, err
+			}
+		case "approval.resolved":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"id": validationSchema{Type: "string"}, "message": validationSchema{Type: "string"}, "outcome": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "approval.resolved"}}, Required: []string{"type", "sessionId", "id", "outcome"}}); err != nil {
 				return nil, err
 			}
 		case "commands":
@@ -2807,6 +2843,7 @@ func ServerFrameTypes() []string {
 		"extensionEvent",
 		"sessions.activity",
 		"approval",
+		"approval.resolved",
 		"commands",
 		"models",
 		"entries",
@@ -3006,6 +3043,7 @@ func ClientFrameTypes() []string {
 var FrameKindToWireName = map[string]string{
 	"ack":                "ack",
 	"approval":           "approval",
+	"approval.resolved":  "approval.resolved",
 	"commands":           "commands",
 	"compaction.done":    "compaction.done",
 	"compaction.started": "compaction.started",

@@ -16,7 +16,7 @@
           "required": [
             "ready", "message.delta", "message", "tool", "state", "name", "stats",
             "models", "commands", "entries", "compaction.started", "compaction.done",
-            "control.result", "ack", "approval", "notice", "extensionEvent", "error",
+            "control.result", "ack", "approval", "approval.resolved", "notice", "extensionEvent", "error",
             "run.started", "run.done"
           ],
           "properties": {
@@ -35,6 +35,7 @@
             "control.result": { "const": "control.result" },
             "ack": { "const": "ack" },
             "approval": { "const": "approval" },
+            "approval.resolved": { "const": "approval.resolved" },
             "notice": { "const": "notice" },
             "extensionEvent": { "const": "extensionEvent" },
             "error": { "const": "error" },

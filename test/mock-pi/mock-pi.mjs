@@ -58,6 +58,8 @@ const CHUNKS = Math.max(1, parseInt(process.env.MOCK_PI_CHUNKS || '4', 10));
 const CHUNK_MODE = process.env.MOCK_PI_CHUNK_MODE === 'signal' ? 'signal' : 'turn';
 const USE_UNICODE = process.env.MOCK_PI_UNICODE === '1';
 const DO_APPROVE = process.env.MOCK_PI_APPROVE === '1';
+// Structured lifecycle mode: abort expires the asking operation over real frames.
+const DO_QUESTION = process.env.MOCK_PI_QUESTION === '1';
 const DO_TOOL = process.env.MOCK_PI_TOOL === '1';
 const DO_HOOK = process.env.MOCK_PI_HOOK === '1';
 const DO_EXT_EVENT = process.env.MOCK_PI_EXT_EVENT === '1';
@@ -263,8 +265,11 @@ async function streamTurn(S, userMessage, injectedMessage = null) {
     // Optional approval gate (simulates an extension requesting consent).
     if (DO_APPROVE) {
       const approveId = `approve-${++S.approvalSequence}`;
-      emit(S, { type: 'extension_ui_request', id: approveId, method: 'select', title: 'Allow ' + (DO_TOOL ? 'bash' : 'action') + '?', options: ['Allow', 'Block'] });
+      emit(S, DO_QUESTION
+        ? { type: 'extension_ui_request', id: approveId, method: 'question', questions: [{ id: 'q1', header: 'Stack', question: 'Which?', options: [{ label: 'Go' }] }] }
+        : { type: 'extension_ui_request', id: approveId, method: 'select', title: 'Allow ' + (DO_TOOL ? 'bash' : 'action') + '?', options: ['Allow', 'Block'] });
       const decision = await new Promise((resolve) => { S.pendingApprovals.set(approveId, { resolve }); });
+      if (DO_QUESTION && decision.answers) userMessage = JSON.stringify(decision.answers);
       if (decision.cancelled || /block/i.test(String(decision.value || ''))) {
         // Extension declined: end the turn without streaming.
         emit(S, { type: 'agent_start' });
@@ -428,6 +433,13 @@ function onCommand(S, cmd) {
       emit(S, { type: 'response', command: 'follow_up', success: true, id: cmd.id });
       return;
     case 'abort':
+      if (DO_QUESTION) {
+        for (const [id, pending] of S.pendingApprovals) {
+          S.pendingApprovals.delete(id);
+          emit(S, { type: 'question_resolved', id, outcome: 'aborted' });
+          pending.resolve({ cancelled: true });
+        }
+      }
       S.aborted = true;
       unblockChunk(S);
       if (HOLD_PROMPT) {
@@ -575,7 +587,7 @@ function onCommand(S, cmd) {
     }
     case 'extension_ui_response': {
       const p = S.pendingApprovals.get(cmd.id);
-      if (p) { S.pendingApprovals.delete(cmd.id); p.resolve({ value: cmd.value, confirmed: cmd.confirmed, cancelled: cmd.cancelled }); }
+      if (p) { S.pendingApprovals.delete(cmd.id); p.resolve({ value: cmd.value, confirmed: cmd.confirmed, cancelled: cmd.cancelled, answers: cmd.answers }); }
       return;
     }
     default:
