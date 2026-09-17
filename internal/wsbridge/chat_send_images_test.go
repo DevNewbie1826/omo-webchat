@@ -1,12 +1,14 @@
 package wsbridge
 
 import (
+	"context"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
-	"github.com/DevNewbie1826/omo-webchat/internal/sendqueue"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
+	"github.com/DevNewbie1826/omo-webchat/internal/session"
 )
 
 func TestChatSendImagePayloadIncludesType(t *testing.T) {
@@ -38,20 +40,85 @@ func TestChatSendImagePayloadIncludesType(t *testing.T) {
 		}
 	})
 
-	t.Run("queued send persists complete image block", func(t *testing.T) {
+	t.Run("queued_send_persists_complete_image_block", func(t *testing.T) {
 		h := newInPlaceBridgeHarness(t, "image-queued")
-		queue, err := sendqueue.Load(t.TempDir() + "/queue.json")
-		if err != nil {
-			t.Fatal(err)
+		queue := configureSendQueue(t, h)
+		conn, frames := h.connect(t)
+		writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "image-queued"})
+		frames.next(t, "ready")
+		frames.next(t, "queue")
+		frames.next(t, "queue") // refreshed from get_state
+
+		h.daemon.SetPromptScript(h.path,
+			map[string]any{"type": omorpctest.EventAgentStart},
+			map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+		)
+		releaseRun := h.daemon.HoldPrompt(h.path)
+		defer releaseRun()
+		writeClient(t, conn, map[string]any{
+			"type": "chat.send", "sessionId": "image-queued", "requestId": "running",
+			"run": map[string]any{"kind": "prompt", "message": "running"},
+		})
+		nextSuccessfulSendAcks(t, frames, "running")
+
+		writeClient(t, conn, map[string]any{
+			"type": "chat.send", "sessionId": "image-queued", "requestId": "queued-image",
+			"run": map[string]any{"kind": "followUp", "message": "look", "images": []any{map[string]any{"data": "aW1hZ2U=", "mimeType": "image/png"}}},
+		})
+		nextSuccessfulSendAcks(t, frames, "queued-image")
+
+		releaseFlush := h.daemon.BlockHandler(omorpc.CmdPrompt)
+		defer releaseFlush()
+		releaseRun()
+		frames.next(t, "run.done")
+		if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 2, 5*time.Second) {
+			t.Fatal("settle did not flush the queue head")
 		}
-		h.bridge.cfg.SendQueue = queue
-		_, _, err = queue.Append("image-queued", sendqueue.Item{Text: "queued", Images: []map[string]string{{"type": "image", "data": data, "mimeType": mimeType}}})
-		if err != nil {
-			t.Fatal(err)
+		// The request observation precedes its detached persistence callback.
+		// Subscribe while the flush is held, then join its completion and queued
+		// publications before socket/harness/TempDir cleanup (including Fatal paths).
+		sess, ok := h.manager.Get("image-queued")
+		if !ok {
+			t.Fatal("attached session disappeared")
 		}
-		item := queue.Snapshot("image-queued").Items[0]
-		if len(item.Images) != 1 || len(item.Images[0]) != 3 || item.Images[0]["type"] != "image" || item.Images[0]["data"] != data || item.Images[0]["mimeType"] != mimeType {
-			t.Fatalf("queued images = %#v", item.Images)
+		completion := &cancelSignalSubscriber{frames: make(chan session.Frame, 64), cancelled: make(chan struct{})}
+		detach := sess.Attach(completion)
+		t.Cleanup(func() {
+			defer detach()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			releaseFlush()
+			pending := map[string]bool{"running": true, "queued-image": true}
+			for {
+				select {
+				case outcome := <-completion.frames:
+					if outcome.Kind != session.FrameAck || outcome.Phase != "completed" {
+						continue
+					}
+					delete(pending, outcome.RequestID)
+					if len(pending) != 0 {
+						continue
+					}
+					// CompleteDetachedSend publishes the flush ack after enqueueing both
+					// the queue publication and idle drain. Join their FIFO position.
+					release, err := h.manager.EnterChat(ctx, "image-queued")
+					if err != nil {
+						t.Fatal(err)
+					}
+					release()
+					if got := queue.Snapshot("image-queued"); got.Dispatching != nil {
+						t.Fatal("queue dispatch completion still owns a persistence write at teardown")
+					}
+					return
+				case <-ctx.Done():
+					t.Fatal("timed out joining flushed queue head completion")
+				}
+			}
+		})
+		request := h.daemon.LastRequest(omorpc.CmdPrompt)
+		images, _ := request["images"].([]any)
+		if len(images) != 1 || !reflect.DeepEqual(images[0], map[string]any{"type": "image", "data": "aW1hZ2U=", "mimeType": "image/png"}) {
+			t.Fatalf("flushed prompt images = %#v", request["images"])
 		}
 	})
 }
