@@ -129,6 +129,7 @@ it("does not jump to the last row when a row is appended after the reader scroll
   // Mount/restore writes are marked programmatic; consume that, then record the
   // deliberate upward scroll so follow intent drops (button visible).
   act(() => body.dispatchEvent(new Event("scroll")));
+  act(() => body.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
   body.scrollTop = 300;
   act(() => body.dispatchEvent(new Event("scroll")));
   expect(container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
@@ -179,6 +180,7 @@ it("scrolls to the end on restoreVersion even when the reader is not following",
   const body = requireBody(container);
   installScroll(body, { scrollTop: 300, scrollHeight: 6000, clientHeight: 400 });
   act(() => body.dispatchEvent(new Event("scroll")));
+  act(() => body.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
   body.scrollTop = 300;
   act(() => body.dispatchEvent(new Event("scroll")));
   expect(container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
@@ -593,6 +595,7 @@ describe("reader ownership provenance and contacts", () => {
   it.each([false, true])("measurement echoes at a lagging DOM bottom cannot repin a parked reader (active=%s)", (active) => {
     automaticBottom();
     scroll();
+    dispatch(new WheelEvent("wheel", { deltaY: -400 }));
     body.scrollTop = 5200;
     scroll();
     expect(state.isFollowing()).toBe(false);
@@ -662,6 +665,7 @@ describe("reader ownership provenance and contacts", () => {
 
 it("still drops follow when the reader genuinely scrolls up while history warms", () => {
   const body = prepareWarmFollow();
+  act(() => body.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
   body.scrollTop = 9000;
   act(() => body.dispatchEvent(new Event("scroll")));
   expect(container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();

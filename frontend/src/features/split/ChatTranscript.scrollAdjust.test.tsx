@@ -109,6 +109,7 @@ function dispatchScrollend(h: Harness): void {
 
 /** Park the reader at a settled offset: scroll there, gesture ends. */
 function park(h: Harness, offset: number): void {
+  act(() => h.body.dispatchEvent(new WheelEvent("wheel", { deltaY: offset - h.getTop() })));
   h.setTop(offset);
   dispatchScroll(h);
   dispatchScrollend(h);
@@ -117,6 +118,7 @@ function park(h: Harness, offset: number): void {
 
 /** Begin a user gesture that lands on `offset` and stays in flight. */
 function beginGesture(h: Harness, offset: number): void {
+  act(() => h.body.dispatchEvent(new WheelEvent("wheel", { deltaY: offset - h.getTop() })));
   h.setTop(offset);
   dispatchScroll(h);
   expect(h.instance.isScrolling).toBe(true);

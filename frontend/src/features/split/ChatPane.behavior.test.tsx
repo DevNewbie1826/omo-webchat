@@ -152,6 +152,7 @@ describe("ChatPane composer, echo reconciliation, and layout", () => {
 		act(() => body.dispatchEvent(new Event("scroll", { bubbles: true })));
 
 		act(() => {
+			body.dispatchEvent(new WheelEvent("wheel", { deltaY: -2_000 }));
 			body.scrollTop = 3_000;
 			body.dispatchEvent(new Event("scroll", { bubbles: true }));
 		});

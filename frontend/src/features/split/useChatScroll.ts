@@ -41,9 +41,9 @@ export function useChatScroll(
   // Physical contacts survive an explicit handoff; only their ownership is
   // relinquished until genuine movement reclaims it.
   const contactsRef = useRef(new Map<number, { x: number; y: number; owns: boolean }>());
-  // Only reader-seeded events enter this streak. Quiet app echoes cannot seed
-  // one, and neutral echoes leave its position/time unchanged.
-  const lastScrollEventRef = useRef<{ pos: number; at: number } | null>(null);
+  // Motion inherits reader provenance, never ownership from unowned echoes.
+  // Neutral app echoes leave the streak's position/time unchanged.
+  const lastScrollEventRef = useRef<{ pos: number; at: number; reader: boolean } | null>(null);
   // Mutable accumulator: writes and their delayed echoes span multiple renders.
   const programmaticWritesRef = useRef<Array<{ value: number; at: number; origin: ProgrammaticWriteOrigin }>>([]);
   const pendingEchoRef = useRef<{ value: number; at: number; origin: ProgrammaticWriteOrigin } | null>(null);
@@ -157,19 +157,21 @@ export function useChatScroll(
     if (!element) return;
     const atBottom = element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_EPSILON;
     const readerActive = isReaderInputActive();
-    const origin = echoOrigin ?? (readerMotion && readerActive ? undefined : recentProgrammaticWrite(element.scrollTop)?.origin);
+    const origin = echoOrigin ?? (readerMotion ? undefined : recentProgrammaticWrite(element.scrollTop)?.origin);
     // Compensation may temporarily reach the DOM end while its sizer lags.
     // Its echo cannot grant follow intent (or revoke it), even mid-gesture.
     if (origin === "measurement") return;
     const appOwned = origin === "pin-intent";
-    if (readerActive) {
+    if (readerActive || readerMotion) {
       followRef.current = atBottom;
       setShowScrollToBottom(!atBottom);
       return;
     }
     if (!atBottom && appOwned) return;
-    followRef.current = atBottom;
-    setShowScrollToBottom(!atBottom);
+    // Unowned echoes (including deferred WebKit adjustments) cannot revoke follow.
+    if (!atBottom) return;
+    followRef.current = true;
+    setShowScrollToBottom(false);
   }, [isReaderInputActive, recentProgrammaticWrite]);
 
   const onScroll = useCallback<UIEventHandler<HTMLDivElement>>(() => {
@@ -188,20 +190,21 @@ export function useChatScroll(
     }
     const previous = lastScrollEventRef.current;
     const distance = previous === null ? 0 : Math.abs(pos - previous.pos);
-    // This predecessor exists only for reader-seeded motion. Cached coordinates
-    // may continue that motion, but a pair of app writes alone cannot create it.
+    // Cached coordinates may continue motion, but only a reader-attributed
+    // predecessor can carry ownership beyond physical-input grace.
     const continuingMotion = previous !== null && at - previous.at <= MOTION_STREAK_GAP_MS
       && distance > 0 && distance <= MOTION_STREAK_DISTANCE;
     const unwritten = !isRecentProgrammaticWrite(pos);
     const readerOwned = isReaderInputActive();
+    const readerMotion = readerOwned || (continuingMotion && previous.reader);
     if (continuingMotion || unwritten) {
-      lastScrollEventRef.current = { pos, at };
-      lastReaderSignalRef.current = at;
+      lastScrollEventRef.current = { pos, at, reader: readerMotion };
+      if (readerMotion) lastReaderSignalRef.current = at;
     } else if (readerOwned && (previous === null
       || (distance > 0 && at - previous.at > MOTION_STREAK_GAP_MS))) {
-      lastScrollEventRef.current = { pos, at };
+      lastScrollEventRef.current = { pos, at, reader: readerOwned };
     }
-    updateIntent(undefined, true);
+    updateIntent(undefined, readerMotion);
   }, [isReaderInputActive, isRecentProgrammaticWrite, updateIntent]);
 
   useLayoutEffect(() => {

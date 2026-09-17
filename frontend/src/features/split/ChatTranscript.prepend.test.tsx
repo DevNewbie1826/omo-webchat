@@ -123,6 +123,7 @@ function unmount(h: Harness): void {
 
 /** Park the reader at a settled offset: scroll there, gesture ends. */
 function park(h: Harness, offset: number): void {
+  act(() => h.body.dispatchEvent(new WheelEvent("wheel", { deltaY: offset - h.getTop() })));
   h.setTop(offset);
   act(() => h.body.dispatchEvent(new Event("scroll")));
   act(() => h.body.dispatchEvent(new Event("scrollend")));
