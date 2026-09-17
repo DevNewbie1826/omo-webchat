@@ -408,6 +408,7 @@ export function useChatSession(
     isCompacting: frameState.isCompacting,
     historyLoaded: frameState.historyLoaded,
     historyStatus: frameState.historyStatus,
+    historyWarming: frameState.historyWarming,
     connected: frameState.connected,
     recovery: frameState.recovery,
     commands: frameState.commands,

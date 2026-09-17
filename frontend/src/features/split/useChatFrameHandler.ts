@@ -81,6 +81,7 @@ interface ChatFrameHandlerBindings {
   readonly setCacheHitRate: StateSetter<number | null>;
   readonly setIsCompacting: StateSetter<boolean>;
   readonly setHistoryStatus: StateSetter<HistoryStatus>;
+  readonly setHistoryWarming: StateSetter<boolean>;
   readonly setCommands: StateSetter<readonly CommandEntry[]>;
   readonly setModels: StateSetter<ModelsFrame["models"]>;
   readonly setPendingApproval: StateSetter<ApprovalRequest | null>;
@@ -432,6 +433,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           // Rejection is not authoritative empty history. Drop only this
           // attempt's uncommitted pages, retaining the completed transcript
           // and pending input without running success reconciliation.
+          bindings.setHistoryWarming(false);
           bindings.externalRecoveryPendingRef.current = false;
           bindings.pageBuffer.reset();
           bindings.setHistoryStatus((current) => current === "loading" ? "failed" : current);
@@ -448,6 +450,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           bindings.pageBuffer.reset();
           bindings.setHistoryStatus((current) => current === "loading" ? "failed" : current);
           bindings.endResync(generation, true);
+          bindings.setHistoryWarming(false);
           // The pane-level banner owns the user-facing retry: the sidebar's
           // open-attempt UI never sees this rejection for stored chats.
           bindings.setSessionActive(true);
@@ -459,6 +462,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           // terminal for the current provider run (which may belong to B).
           if (frame.requestId) return;
           // Only a session-wide unload quietly clears all live surfaces.
+          bindings.setHistoryWarming(false);
           bindings.submitLatchRef.current = false;
           bindings.setDoneReason(null);
           clearLiveSurfaces();
@@ -473,6 +477,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           if (bindings.resyncGenerationRef.current !== null
             && bindings.resyncGenerationRef.current !== generation) return;
           bindings.externalRecoveryPendingRef.current = false;
+          bindings.setHistoryWarming(false);
           // This replay terminally failed: retire only its uncommitted pages
           // so a later same-socket query cannot commit the rejected prefix.
           // Reached only when no other resync owns the fence (checked above),
@@ -493,7 +498,10 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // A server-observed transport loss is surfaced by the recovery status
         // item, not the transient error text: the text would otherwise stay
         // red after the automatic recovery it announced has already completed.
-        if (frame.code === "provider_disconnected") return;
+        if (frame.code === "provider_disconnected") {
+          bindings.setHistoryWarming(false);
+          return;
+        }
         // Send-path command failures persist in a dedicated banner slot instead
         // of the transient error surface or capped transcript notices.
         const sendFailure = sendCommandFailureOf(frame);
@@ -606,6 +614,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
             : bindings.pageBuffer.prepend(page.entries, page.historyComplete);
           if (warmed === null) return;
           reconcileEntries(warmed, page.sessionId);
+          if (bindings.pageBuffer.historyRootKnown()) bindings.setHistoryWarming(false);
           return;
         }
         const terminal = frame.final !== false;
@@ -615,6 +624,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         const accepted = bindings.acceptHistoryPage?.(frame);
         const page = accepted?.frame ?? frame;
         if (!terminal) {
+          bindings.setHistoryWarming(!accepted?.resumed);
           bindings.pageBuffer.push(page.entries);
           bindings.armHistoryStall(true);
           return;
@@ -630,6 +640,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // its page-buffer fence.
         bindings.endResync(generation, true);
         reconcileEntries(bindings.pageBuffer.consume(page.entries, page.historyComplete), page.sessionId);
+        bindings.setHistoryWarming(!accepted?.resumed && !bindings.pageBuffer.historyRootKnown());
         if (!accepted?.resumed) bindings.setRestoreVersion((version) => version + 1);
         return;
       }

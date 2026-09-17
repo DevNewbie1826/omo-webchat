@@ -238,6 +238,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const [cacheHitRate, setCacheHitRate] = useState<number | null>(null);
   const [isCompacting, setIsCompacting] = useState(false);
   const [historyStatus, setHistoryStatus] = useState<HistoryStatus>("loading");
+  // Unlike historyStatus (which opens on the tail), this spans the head fill.
+  const [historyWarming, setHistoryWarming] = useState(true);
   const historyLoaded = historyStatus === "loaded";
   const [connected, setConnected] = useState(false);
   const [commands, setCommands] = useState<readonly CommandEntry[]>([]);
@@ -480,12 +482,14 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     // A reloaded branch already contains any accepted steer, so a retained
     // occurrence from the replaced load must never resolve against it.
     pendingSteersRef.current = [];
+    setHistoryWarming(true);
     setHistoryStatus("loading");
     applyError("");
     setResyncBusy(true);
   };
   const endResync = (generation: number, terminal = false): void => {
     if (resyncGenerationRef.current !== generation) return;
+    setHistoryWarming(false);
     if (resyncPendingRef.current) {
       resyncPendingRef.current = false;
       setResyncBusy(false);
@@ -500,6 +504,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     resyncGenerationRef.current = null;
     resyncPendingRef.current = false;
     setResyncBusy(false);
+    setHistoryWarming(false);
     setHistoryStatus((current) => current === "loading" ? "failed" : current);
   };
 
@@ -519,6 +524,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
         resyncPendingRef.current = false;
         setResyncBusy(false);
       }
+      setHistoryWarming(false);
       setHistoryStatus((current) => current === "loading" ? "failed" : current);
     }, HISTORY_STALL_MS);
   };
@@ -658,6 +664,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     setCacheHitRate,
     setIsCompacting,
     setHistoryStatus,
+    setHistoryWarming,
     setCommands,
     setModels,
     setPendingApproval,
@@ -827,6 +834,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     snapshotVersionRef.current = messageVersionRef.current;
     snapshotMessagesRef.current = messagesRef.current;
     historyLoadedRef.current = false;
+    // A reconnect with committed coverage requests a resume, not a new pin.
+    setHistoryWarming(resumeCoverage.current.cursor() === undefined);
     setHistoryStatus("loading");
     // A new socket makes a previous transport error stale — the same
     // reasoning beginResync already applies to its own reset.
@@ -857,6 +866,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
       resyncPendingRef.current = false;
       setResyncBusy(false);
     }
+    setHistoryWarming(false);
     setHistoryStatus((current) => current === "loading" ? "failed" : current);
     // The malformed-frame banner belongs to the transport that just died;
     // any other error survives for its own surface to resolve.
@@ -873,12 +883,14 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     historyLoadedRef.current = false;
     pageBuffer.reset();
     pendingSteersRef.current = [];
+    setHistoryWarming(true);
     setHistoryStatus("loading");
     applyError("");
   };
 
   const failExternalWriteRecovery = (): void => {
     externalRecoveryPendingRef.current = false;
+    setHistoryWarming(false);
     setHistoryStatus((current) => current === "loading" ? "failed" : current);
   };
 
@@ -915,6 +927,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     isCompacting,
     historyLoaded,
     historyStatus,
+    historyWarming,
     connected,
     commands,
     thinkingLevel: controls.thinkingLevel,
