@@ -128,15 +128,21 @@ func queueSnapshotLocked(rec *daemonSession) (followUp []string, ordered []any, 
 }
 
 // queueUpdateEventLocked builds the queue_update event payload for the
-// session. Callers hold d.mu.
+// session. Observed engine behavior: the live event carries both queues and
+// the ordered entries but NOT the pending count that get_state reports -
+// consumers derive the count from the arrays. Callers hold d.mu.
 func queueUpdateEventLocked(rec *daemonSession) map[string]any {
-	followUp, ordered, pending := queueSnapshotLocked(rec)
+	followUp, ordered, _ := queueSnapshotLocked(rec)
+	steering := make([]string, 0, len(rec.steering))
+	for _, it := range rec.steering {
+		steering = append(steering, it.text)
+	}
 	return map[string]any{
-		"type":                EventQueueUpdate,
-		"sessionId":           rec.rpcID,
-		"followUp":            followUp,
-		"ordered":             ordered,
-		"pendingMessageCount": pending,
+		"type":      EventQueueUpdate,
+		"sessionId": rec.rpcID,
+		"steering":  steering,
+		"followUp":  followUp,
+		"ordered":   ordered,
 	}
 }
 

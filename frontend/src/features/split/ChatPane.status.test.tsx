@@ -85,8 +85,18 @@ describe("ChatPane status row", () => {
     expect(steer.getAttribute("title")).toBe(original);
     expect(container.querySelector(".th-chat-status-item--live")).not.toBeNull();
     expect(container.querySelector(".th-chat-scrollport .th-chat-msg--user")).toBeNull();
+    // A completed ACK only means the engine parked the steer: the request
+    // retires, while the steer summary waits for the engine to consume it.
     act(() => deliver({ type: "ack", command: "chat.send", sessionId: chatSession.id, requestId, phase: "completed" }));
     expect(container.querySelector(".th-chat-send-status")).toBeNull();
+    expect(container.querySelector(".th-chat-status-item--steer")).not.toBeNull();
+    expect(container.querySelector(".th-chat-status-item--live")).not.toBeNull();
+    // The canonical echo is the engine consuming it, and retires the summary.
+    act(() => deliver({
+      type: "message",
+      sessionId: chatSession.id,
+      message: { role: "user", blocks: [{ kind: "text", text: original }], ts: 10 },
+    }));
     expect(container.querySelector(".th-chat-status-item--steer")).toBeNull();
     expect(container.querySelector(".th-chat-status-item--live")).not.toBeNull();
   });

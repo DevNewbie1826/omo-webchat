@@ -194,7 +194,7 @@ describe("useChatSession server-owned send queue", () => {
     expect(sent).toContainEqual({ type: "chat.queue.clear", sessionId: session.id, scope: "all" });
   });
 
-  it("steers without a transcript row and keeps a pending summary until its completed ACK", () => {
+  it("steers without a transcript row and keeps a pending summary until the engine echoes it", () => {
     beginRun();
     act(() => current?.steer("redirect now"));
 
@@ -207,6 +207,11 @@ describe("useChatSession server-owned send queue", () => {
     expect(current?.messages).toEqual([]);
     expect(current?.steerPending.map((item) => item.text)).toEqual(["redirect now"]);
 
+    // The engine answers the steer RPC as soon as it parks the message, so a
+    // completed ACK is admission, not delivery: the summary must survive it.
+    act(() => deliver({ type: "ack", sessionId: session.id, command: "chat.send", requestId: lastSend().requestId!, phase: "completed" }));
+    expect(current?.steerPending.map((item) => item.text)).toEqual(["redirect now"]);
+
     act(() => deliver({
       type: "message",
       sessionId: session.id,
@@ -215,8 +220,6 @@ describe("useChatSession server-owned send queue", () => {
     expect(current?.messages).toEqual([
       { role: "user", customType: "steer", blocks: [{ kind: "text", text: "redirect now" }], ts: 10 },
     ]);
-    expect(current?.steerPending).toHaveLength(1);
-    act(() => deliver({ type: "ack", sessionId: session.id, command: "chat.send", requestId: lastSend().requestId!, phase: "completed" }));
     expect(current?.steerPending).toEqual([]);
   });
 

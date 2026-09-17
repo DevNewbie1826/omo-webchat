@@ -113,8 +113,12 @@ describe("ChatComposer queue / steer / stop", () => {
 
 	it("keeps one stable action slot: the same slot becomes Stop while running and Send otherwise", () => {
 		render(true);
-		// One slot, one button: Send must not coexist with a second Stop button.
-		expect(container.querySelectorAll(".th-chat-input-inner > button.th-btn")).toHaveLength(1);
+		// One slot, one send/stop button: Send must not coexist with a second Stop
+		// button. The run-time steer control is a separate action that never takes
+		// the slot — it sits before it, so the slot itself never moves.
+		expect(container.querySelectorAll(".th-chat-input-inner > button.th-chat-send-btn")).toHaveLength(1);
+		expect([...container.querySelectorAll(".th-chat-input-inner > button.th-btn")].at(-1)?.className)
+			.toContain("th-chat-send-btn");
 		const stop = requireElement(
 			container.querySelector<HTMLButtonElement>(".th-chat-send-btn"),
 			"missing slot button while running",

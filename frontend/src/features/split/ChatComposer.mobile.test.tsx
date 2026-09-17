@@ -26,6 +26,7 @@ describe("ChatComposer mobile Enter behavior", () => {
 	let root: Root;
 	let container: HTMLDivElement;
 	let submitted: number;
+	let steered: string[];
 
 	beforeEach(() => {
 		vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -33,6 +34,7 @@ describe("ChatComposer mobile Enter behavior", () => {
 		document.body.appendChild(container);
 		root = createRoot(container);
 		submitted = 0;
+		steered = [];
 	});
 
 	afterEach(async () => {
@@ -43,20 +45,23 @@ describe("ChatComposer mobile Enter behavior", () => {
 		vi.unstubAllGlobals();
 	});
 
-	function render(): void {
+	function render(running = false): void {
 		act(() => {
 			root.render(
 				<I18nContext.Provider value={i18n}>
 					<ChatComposer
 						commands={[]}
-						running={false}
+						running={running}
 						isCompacting={false}
 						retryDraft={null}
 						onSubmit={() => {
 							submitted += 1;
 							return true;
 						}}
-						onSteer={() => true}
+						onSteer={(text) => {
+							steered.push(text);
+							return true;
+						}}
 						onStop={() => undefined}
 						provider="omo"
 						cwd="/tmp"
@@ -64,6 +69,10 @@ describe("ChatComposer mobile Enter behavior", () => {
 				</I18nContext.Provider>,
 			);
 		});
+	}
+
+	function steerButton(): HTMLButtonElement | null {
+		return container.querySelector<HTMLButtonElement>(".th-chat-steer-btn");
 	}
 
 	it("does not submit on Enter on a touch device (Enter becomes a newline)", () => {
@@ -94,6 +103,40 @@ describe("ChatComposer mobile Enter behavior", () => {
 		act(() => setTextareaValue(textarea, "line one"));
 		act(() => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
 		expect(submitted).toBe(1);
+	});
+
+	// A soft keyboard cannot produce Cmd/Ctrl+Enter, so a run-time steer needs a
+	// tap target of its own; without it the running composer offers only Stop.
+	it("steers from a tap while the agent runs on a touch device", () => {
+		mockMatchMedia([NARROW_QUERY, TOUCH_QUERY]);
+		render(true);
+		const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+		if (!textarea) throw new Error("missing textarea");
+		act(() => setTextareaValue(textarea, "redirect now"));
+		const steer = steerButton();
+		if (!steer) throw new Error("missing steer control");
+		expect(steer.disabled).toBe(false);
+		expect(steer.type).toBe("button");
+		act(() => steer.click());
+		expect(steered).toEqual(["redirect now"]);
+		expect(submitted).toBe(0);
+		expect(textarea.value).toBe("");
+	});
+
+	it("keeps the steer control out of the idle composer and inert without a draft", () => {
+		mockMatchMedia([NARROW_QUERY, TOUCH_QUERY]);
+		render(false);
+		expect(steerButton()).toBeNull();
+		render(true);
+		expect(steerButton()?.disabled).toBe(true);
+	});
+
+	it("leaves the fixed send/stop slot last so Stop never moves", () => {
+		mockMatchMedia([NARROW_QUERY, TOUCH_QUERY]);
+		render(true);
+		const buttons = [...container.querySelectorAll("button")];
+		expect(buttons.at(-1)?.className).toContain("th-chat-send-btn");
+		expect(buttons.at(-2)?.className).toContain("th-chat-steer-btn");
 	});
 });
 
@@ -135,6 +178,17 @@ describe("ChatComposer capsule geometry contracts", () => {
 			/\.th-chat-attach-btn,\s*\.th-chat-input \.th-chat-send-btn\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px/,
 		);
 		expect(narrow).toMatch(/\.th-chat-input textarea\s*\{[^}]*min-height:\s*44px/);
+	});
+
+	it("builds the run-time steer control from the same send slot geometry", () => {
+		const steer = css.match(/(?:^|\})\s*\.th-chat-input \.th-chat-steer-btn\s*\{([^}]*)\}/)?.[1] ?? "";
+		expect(steer).toMatch(/width:\s*36px/);
+		expect(steer).toMatch(/height:\s*36px/);
+		expect(steer).toMatch(/border-radius:\s*50%/);
+		expect(steer).toMatch(/background:\s*var\(--th-send\)/);
+		expect(steer).toMatch(/color:\s*var\(--th-send-fg\)/);
+		const narrow = css.match(/@container chat-pane \(max-width: 420px\) \{([\s\S]+)\}\s*$/)?.[1] ?? "";
+		expect(narrow).toMatch(/\.th-chat-input \.th-chat-steer-btn\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px/);
 	});
 
 	it("keeps textarea multiline growth capped at 160px inside the capsule", () => {

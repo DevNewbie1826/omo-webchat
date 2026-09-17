@@ -211,15 +211,21 @@ describe("canonical transcript and request outcomes", () => {
     expect(current.retryDraft).toBeNull();
     expect(current.running).toBe(true);
   });
-  it("retires steer feedback on completed ACK without stopping the run", () => {
+  it("retires the steer request on completed ACK but keeps its feedback until the echo", () => {
     act(() => deliver(state(true)));
     act(() => { current.steer("steer"); });
     const id = sent[0]!.requestId!;
     expect(current.steerPending).toHaveLength(1);
+    // Admission, not delivery: the request settles, the summary waits for the
+    // engine to consume the steer and echo it as a canonical user message.
     act(() => deliver(ack(id)));
-    expect(current.steerPending).toEqual([]);
+    expect(current.sendRequests).toEqual([]);
+    expect(current.steerPending).toHaveLength(1);
     expect(current.running).toBe(true);
     expect(rows()).toEqual([]);
+    act(() => deliver(user("steer")));
+    expect(current.steerPending).toEqual([]);
+    expect(rows()).toEqual(["steer"]);
   });
   it("retains late steer failure recovery after run.done", () => {
     act(() => { deliver(state(true)); current.steer("steer"); });

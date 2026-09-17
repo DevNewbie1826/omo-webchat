@@ -30,7 +30,11 @@ export function QueuePanel({ items, engine, placeholders, steerPending, onRemove
   const { t } = useT();
   const [expanded, setExpanded] = useState(false);
   const listId = useId();
-  if (items.length === 0 && placeholders.length === 0 && engine.pendingMessageCount === 0) return null;
+  // The engine's live queue event reports its rows but not always the count,
+  // so the mirrored rows are themselves evidence of a non-empty engine queue:
+  // a parked steer must never render as an absent panel.
+  const engineCount = Math.max(engine.pendingMessageCount, engine.ordered.length);
+  if (items.length === 0 && placeholders.length === 0 && engineCount === 0) return null;
   const count = items.length + placeholders.length;
 
   return (
@@ -43,8 +47,8 @@ export function QueuePanel({ items, engine, placeholders, steerPending, onRemove
         onClick={() => setExpanded((open) => !open)}
       >
         <span className="th-queue-title">{t("queue.count", { count })}</span>
-        {engine.pendingMessageCount > 0 && (
-          <span className="th-queue-engine">{t("queue.engineCount", { count: engine.pendingMessageCount })}</span>
+        {engineCount > 0 && (
+          <span className="th-queue-engine">{t("queue.engineCount", { count: engineCount })}</span>
         )}
         <IconChevron size={12} className={`th-queue-chevron${expanded ? " th-queue-chevron--open" : ""}`} />
       </button>
@@ -102,7 +106,7 @@ export function QueuePanel({ items, engine, placeholders, steerPending, onRemove
               </li>
             ))}
           </ul>
-          {count > 0 || engine.pendingMessageCount > 0 ? (
+          {count > 0 || engineCount > 0 ? (
             <button type="button" className="th-btn th-btn--ghost th-queue-clear" onClick={() => onClear("all")}>
               {t("queue.clearAll")}
             </button>

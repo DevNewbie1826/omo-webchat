@@ -178,6 +178,41 @@ func TestProtocolQueueUpdateEventParsing(t *testing.T) {
 		}
 	})
 
+	// The live event the engine actually emits carries steering/followUp/ordered
+	// and no count; a parked steer must still mirror as a non-empty queue.
+	t.Run("live_event_omits_count", func(t *testing.T) {
+		in, err := DecodeLine([]byte(`{"type":"queue_update","sessionId":"rpc-2","steering":["redirect"],"followUp":[],` +
+			`"ordered":[{"text":"redirect","mode":"steer","enqueueOrder":1}]}`))
+		if err != nil {
+			t.Fatalf("DecodeLine: %v", err)
+		}
+		qu, err := ParseQueueUpdate(in.Event)
+		if err != nil {
+			t.Fatalf("ParseQueueUpdate: %v", err)
+		}
+		if len(qu.Steering) != 1 || qu.Steering[0] != "redirect" {
+			t.Fatalf("steering: %+v", qu.Steering)
+		}
+		if qu.PendingMessageCount != 1 {
+			t.Fatalf("derived pendingMessageCount = %d, want 1", qu.PendingMessageCount)
+		}
+	})
+
+	t.Run("ordered_only_event_counts_rows", func(t *testing.T) {
+		in, err := DecodeLine([]byte(`{"type":"queue_update","sessionId":"rpc-2",` +
+			`"ordered":[{"text":"a","mode":"steer","enqueueOrder":1},{"text":"b","mode":"followUp","enqueueOrder":2}]}`))
+		if err != nil {
+			t.Fatalf("DecodeLine: %v", err)
+		}
+		qu, err := ParseQueueUpdate(in.Event)
+		if err != nil {
+			t.Fatalf("ParseQueueUpdate: %v", err)
+		}
+		if qu.PendingMessageCount != 2 {
+			t.Fatalf("derived pendingMessageCount = %d, want 2", qu.PendingMessageCount)
+		}
+	})
+
 	t.Run("nil_event_rejected", func(t *testing.T) {
 		if _, err := ParseQueueUpdate(nil); err == nil {
 			t.Fatal("nil event must error")

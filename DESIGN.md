@@ -687,6 +687,12 @@ invocation.
   narrow ones): the up-arrow glyph sends, the X glyph stops, and only the glyph
   swaps — the circle's geometry never changes between states. The visible label
   is screen-reader-only; the accessible name always matches the action.
+- While a run is in flight, a steer control of the same geometry and send fill
+  appears immediately before that slot — never inside it, so Stop keeps its
+  position. It carries the run-time steer that is otherwise reachable only
+  through Cmd/Ctrl+Enter, which a soft keyboard cannot produce; without it a
+  touch device can only stop a run it wants to redirect. An empty draft leaves
+  it disabled, and it is absent whenever no run is in flight.
 - Send's default fill is the measured primary action (`#dfdfdf` dark,
   `#1a1c1f` light) through `--th-send`, with the glyph inverted to the
   theme's canvas role through `--th-send-fg` (`#181818` dark, `#ffffff`

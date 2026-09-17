@@ -301,10 +301,15 @@ describe("useChatSession active-run sends", () => {
 		expect(current?.messages).toEqual([
 			{ role: "user", customType: "steer", blocks: [{ kind: "text", text: "queued work" }], ts: 10 },
 		]);
-		expect(current?.steerPending).toHaveLength(1);
-    const requestId = current!.steerPending[0]!.requestId;
-    act(() => deliver({ type: "ack", sessionId: session.id, command: "chat.send", requestId, phase: "completed" }));
-    expect(current?.steerPending).toEqual([]);
+		// The echo retires the steer summary because the engine consumed it, and
+		// never the request: that outcome stays open until its own send ACK.
+		expect(current?.steerPending).toEqual([]);
+		const steerFrame = sent.at(-1);
+		if (steerFrame?.type !== "chat.send" || steerFrame.requestId === undefined) throw new Error("missing steer request");
+		const requestId = steerFrame.requestId;
+		expect(current?.sendRequests.map((request) => request.requestId)).toEqual([requestId]);
+		act(() => deliver({ type: "ack", sessionId: "chat-1", command: "chat.send", requestId, phase: "completed" }));
+		expect(current?.sendRequests).toEqual([]);
 	});
 
 	it("sends an idle submission as a prompt", () => {
