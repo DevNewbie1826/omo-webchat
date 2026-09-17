@@ -121,6 +121,43 @@ it("replaces a structured deadline refresh in pane state and the rendered countd
   } finally { pane.dispose(); }
 });
 
+it("retires an expired request through the wire parser and removes its rendered controls", () => {
+  const pane = mountPaneState();
+  try {
+    pane.deliver(request);
+    pane.deliver({ type: "approval.resolved", sessionId: "s", id: "other", outcome: "expired" });
+    expect(pane.state.pendingQuestion).toEqual(request);
+    pane.deliver({ type: "approval.resolved", sessionId: "s", id: "ask", outcome: "expired", message: "expired" });
+    expect(pane.state.pendingQuestion).toBeNull();
+    expect(pane.state.error).toBe("expired");
+    expect(pane.container.querySelector(".th-approval-dock")).toBeNull();
+    expect(pane.respond).not.toHaveBeenCalled();
+  } finally { pane.dispose(); }
+});
+
+it.each([true, false])("does not restore an expired submitted request when resolution arrives first=%s", (resolutionFirst) => {
+  const pane = mountPaneState();
+  try {
+    pane.deliver(request);
+    const retained = pane.state.pendingQuestion;
+    act(() => {
+      pane.state.armControl("answer-1", "extension_ui_response:ask", () => pane.state.setPendingQuestion(retained), () => undefined);
+      pane.state.setPendingQuestion(null);
+    });
+    const resolution = { type: "approval.resolved", sessionId: "s", id: "ask", outcome: "expired", requestId: "answer-1" };
+    const failure = { type: "error", sessionId: "s", command: "approval.respond", requestId: "answer-1", message: "expired" };
+    for (const frame of resolutionFirst ? [resolution, failure] : [failure, resolution]) pane.deliver(frame);
+    expect(pane.state.pendingQuestion).toBeNull();
+    expect(pane.container.querySelector(".th-approval-dock")).toBeNull();
+    expect(pane.state.error).toBe(failure.message);
+  } finally { pane.dispose(); }
+});
+
+it("rejects malformed resolution identity at the wire boundary", () => {
+  expect(parseChatServerFrame({ type: "approval.resolved", sessionId: "s", id: 1, outcome: "expired" })).toBeNull();
+  expect(parseChatServerFrame({ type: "approval.resolved", sessionId: "s", id: "ask" })).toBeNull();
+});
+
 it("renders and answers a structured request without deadline fields", () => {
   const pane = mountPaneState();
   try {
