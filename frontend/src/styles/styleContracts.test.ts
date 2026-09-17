@@ -470,6 +470,26 @@ describe("visual accessibility contracts", () => {
     expect(declarationValue(ruleBody(chatPane, ".th-chat-run-indicator"), "width")).toBe("12px");
   });
 
+  it("wraps the full engine-queue original in the expanded panel while waiting rows stay single-line", () => {
+    // The status strip's inspect dialog is retired: the expanded queue panel
+    // is the record for a parked steer. The engine-mirror rows must show the
+    // complete original — wrapping over as many lines as needed, breaking
+    // long unbroken strings instead of overflowing — so their text rule must
+    // not carry the single-line truncation. The webchat-owned waiting rows
+    // (reorder/remove controls) keep the base ellipsis treatment.
+    const engineText = ruleBody(chatPane, ".th-queue-row--engine .th-queue-text");
+    expect(engineText, "engine-row text rule").not.toBe("");
+    expect(declarationValue(engineText, "white-space"), "engine row must not nowrap").not.toBe("nowrap");
+    expect(declarationValue(engineText, "white-space")).toBe("pre-wrap");
+    expect(engineText, "engine row must not ellipsize").not.toMatch(/text-overflow\s*:\s*ellipsis/);
+    expect(declarationValue(engineText, "overflow-wrap"), "long unbroken strings must break").toBe("anywhere");
+    expect(declarationValue(engineText, "overflow"), "wrapped text must never clip").toBe("visible");
+
+    const baseText = ruleBody(chatPane, ".th-queue-text");
+    expect(declarationValue(baseText, "white-space"), "waiting rows keep one line").toBe("nowrap");
+    expect(declarationValue(baseText, "text-overflow"), "waiting rows keep the ellipsis").toBe("ellipsis");
+  });
+
   it("reflows the sheet header by local width without shrinking the close or fragmenting identity", () => {
     expect(declarationValue(ruleBody(chatPane, ".th-model-picker-popover--sheet"), "container"))
       .toBe("model-sheet / inline-size");
