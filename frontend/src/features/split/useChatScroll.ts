@@ -37,6 +37,7 @@ export function useChatScroll(
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
+  const readerEngagedRef = useRef(false);
   const lastReaderSignalRef = useRef(-Infinity);
   // Physical contacts survive an explicit handoff; only their ownership is
   // relinquished until genuine movement reclaims it.
@@ -58,7 +59,10 @@ export function useChatScroll(
   useEffect(() => {
     const element = scrollRef.current;
     if (!element) return;
-    const noteSignal = (): void => { lastReaderSignalRef.current = performance.now(); };
+    const noteSignal = (): void => {
+      readerEngagedRef.current = true;
+      lastReaderSignalRef.current = performance.now();
+    };
     const pointerDown = (event: PointerEvent): void => {
       contactsRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY, owns: true });
       noteSignal();
@@ -155,6 +159,12 @@ export function useChatScroll(
   const updateIntent = useCallback((echoOrigin?: ProgrammaticWriteOrigin, readerMotion = false) => {
     const element = scrollRef.current;
     if (!element) return;
+    // Attach stays pinned until physical engagement, regardless of attribution.
+    if (!readerEngagedRef.current) {
+      followRef.current = true;
+      setShowScrollToBottom(false);
+      return;
+    }
     const atBottom = element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_EPSILON;
     const readerActive = isReaderInputActive();
     const origin = echoOrigin ?? (readerMotion ? undefined : recentProgrammaticWrite(element.scrollTop)?.origin);
@@ -210,6 +220,7 @@ export function useChatScroll(
   useLayoutEffect(() => {
     if (restoredVersionRef.current === restoreVersion) return;
     restoredVersionRef.current = restoreVersion;
+    readerEngagedRef.current = false;
     scrollToBottom();
   }, [restoreVersion, scrollToBottom]);
 
