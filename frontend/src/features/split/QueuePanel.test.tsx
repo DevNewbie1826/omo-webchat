@@ -96,6 +96,19 @@ describe("QueuePanel", () => {
     expect(header()?.getAttribute("aria-expanded")).toBe("false");
   });
 
+  it("mirrors an engine queue whose live event reported rows without a count", () => {
+    // Observed engine behavior: queue_update carries steering/followUp/ordered
+    // and no pendingMessageCount, so the mirrored rows are the only evidence
+    // that a steer is parked. Hiding the panel on the missing count erased it.
+    render({ engine: engineOf(0, [{ text: "redirect now", mode: "steer" }]) });
+    expect(panel()).not.toBeNull();
+    expect(header()?.textContent).toContain(translate("en", "queue.engineCount", { count: 1 }));
+
+    act(() => header()?.click());
+    const engineRow = container.querySelector<HTMLElement>(".th-queue-row--engine");
+    expect(engineRow?.textContent).toContain("redirect now");
+  });
+
   it("shows the engine count only when the engine queue is non-empty", () => {
     render({ items: [item("q-1", "first")], engine: engineOf(3) });
     expect(header()?.textContent).toContain(translate("en", "queue.engineCount", { count: 3 }));
