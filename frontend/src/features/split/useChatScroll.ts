@@ -168,8 +168,10 @@ export function useChatScroll(
       return;
     }
     if (!atBottom && appOwned) return;
-    followRef.current = atBottom;
-    setShowScrollToBottom(!atBottom);
+    // Unowned echoes (including deferred WebKit adjustments) cannot revoke follow.
+    if (!atBottom) return;
+    followRef.current = true;
+    setShowScrollToBottom(false);
   }, [isReaderInputActive, recentProgrammaticWrite]);
 
   const onScroll = useCallback<UIEventHandler<HTMLDivElement>>(() => {
@@ -196,7 +198,6 @@ export function useChatScroll(
     const readerOwned = isReaderInputActive();
     if (continuingMotion || unwritten) {
       lastScrollEventRef.current = { pos, at };
-      lastReaderSignalRef.current = at;
     } else if (readerOwned && (previous === null
       || (distance > 0 && at - previous.at > MOTION_STREAK_GAP_MS))) {
       lastScrollEventRef.current = { pos, at };
