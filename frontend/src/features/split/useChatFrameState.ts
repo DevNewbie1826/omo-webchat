@@ -622,6 +622,10 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     pendingSteersRef.current = pendingSteersRef.current.filter(pending => pending.requestId !== requestId);
     dropSteerPending(requestId);
   };
+  const dropAllPendingSteers = (): void => {
+    pendingSteersRef.current = [];
+    setSteerPending([]);
+  };
 
   const baseHandleFrame = createChatFrameHandler({
     acceptHistoryPage: (frame) => {
@@ -647,6 +651,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     bindPendingSteerEcho,
     retireUnmaterializedPendingSteers,
     dropPendingSteer,
+    dropAllPendingSteers,
     cancelQueuedRecovery,
     messageVersionRef,
     snapshotVersionRef,

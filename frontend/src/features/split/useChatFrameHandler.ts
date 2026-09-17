@@ -48,6 +48,8 @@ interface ChatFrameHandlerBindings {
   readonly retireUnmaterializedPendingSteers: () => void;
   /** Drop a retained steer occurrence whose send was rejected. */
   readonly dropPendingSteer: (requestId: string) => void;
+  /** Retire every pending steer summary for this pane. */
+  readonly dropAllPendingSteers: () => void;
   readonly cancelQueuedRecovery: (requestIds: ReadonlySet<string>) => void;
   readonly messageVersionRef: Current<number>;
   readonly snapshotVersionRef: Current<number>;
@@ -413,7 +415,14 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // Ownership is looked up before replay handling or request-specific UI.
         // Another pane observes this same logical-chat store, never a global ledger.
         const receipt = frame.requestId ? bindings.sends.terminal(frame.requestId) : undefined;
-        if (receipt && receipt !== "queued") return;
+        if (receipt && receipt !== "queued") {
+          // Another pane already recorded this rejection. A completed ACK only
+          // parks the steer; failed/queueFailed means it will never echo.
+          if (frame.requestId && (receipt === "failed" || receipt === "queueFailed")) {
+            bindings.dropPendingSteer(frame.requestId);
+          }
+          return;
+        }
         const owned = frame.requestId ? bindings.sends.get(frame.requestId) : undefined;
         if (frame.requestId && (owned || receipt === "queued")) {
           const failed = bindings.sends.fail(frame.requestId);
@@ -501,6 +510,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // red after the automatic recovery it announced has already completed.
         if (frame.code === "provider_disconnected") {
           bindings.setHistoryWarming(false);
+          bindings.dropAllPendingSteers();
           return;
         }
         // Send-path command failures persist in a dedicated banner slot instead
