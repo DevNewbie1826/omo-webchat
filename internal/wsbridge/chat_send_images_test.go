@@ -66,6 +66,17 @@ func TestChatSendImagePayloadIncludesType(t *testing.T) {
 			"run": map[string]any{"kind": "followUp", "message": "look", "images": []any{map[string]any{"data": "aW1hZ2U=", "mimeType": "image/png"}}},
 		})
 		nextSuccessfulSendAcks(t, frames, "queued-image")
+		frame := frames.next(t, "queue")
+		items := frame["items"].([]any)
+		if len(items) == 0 || items[len(items)-1].(map[string]any)["text"] != "look" {
+			t.Fatalf("queue frame = %v", frame)
+		}
+		if items[len(items)-1].(map[string]any)["hasImage"] != true {
+			t.Fatalf("queued image flag missing: %v", frame)
+		}
+		if got := h.daemon.RequestCount(omorpc.CmdPrompt); got != 1 {
+			t.Fatalf("prompt requests before settle = %d, want 1", got)
+		}
 
 		releaseFlush := h.daemon.BlockHandler(omorpc.CmdPrompt)
 		defer releaseFlush()
