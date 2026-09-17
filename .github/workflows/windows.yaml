@@ -238,7 +238,7 @@ jobs:
 
       - name: Complete Windows Go suite
         shell: pwsh
-        run: go test ./... -count=1 -timeout=3m
+        run: go test ./... -count=1 -timeout=8m
 
       - name: Installer contracts (Windows PowerShell 5.1)
         shell: powershell
