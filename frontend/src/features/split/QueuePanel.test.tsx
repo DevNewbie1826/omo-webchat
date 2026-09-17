@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nContext, translate, type I18nValue } from "../../i18n";
 import { QueuePanel } from "./QueuePanel";
-import type { QueueEngineItem, QueueEngineSummary, QueuePlaceholder, QueueSlotItem, SteerPendingItem } from "./chatSessionTypes";
+import type { QueueEngineItem, QueueEngineSummary, QueuePlaceholder, QueueSlotItem } from "./chatSessionTypes";
 
 const i18n: I18nValue = {
   lang: "en",
@@ -52,7 +52,6 @@ describe("QueuePanel", () => {
   interface RenderOptions {
     readonly items?: readonly QueueSlotItem[];
     readonly placeholders?: readonly QueuePlaceholder[];
-    readonly steerPending?: readonly SteerPendingItem[];
     readonly engine?: QueueEngineSummary;
   }
 
@@ -67,7 +66,6 @@ describe("QueuePanel", () => {
             items={options.items ?? []}
             engine={options.engine ?? { pendingMessageCount: 0, ordered: [] }}
             placeholders={options.placeholders ?? []}
-            steerPending={options.steerPending ?? []}
             onRemove={(itemId) => {
               removed.push(itemId);
             }}

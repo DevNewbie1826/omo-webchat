@@ -311,7 +311,6 @@ export function ChatPane({
           items={chat.queueItems}
           engine={chat.queueEngine}
           placeholders={chat.queuePlaceholders}
-          steerPending={chat.steerPending}
           onRemove={chat.queueRemove}
           onMove={chat.queueMove}
           onClear={chat.queueClear}

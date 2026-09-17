@@ -73,7 +73,8 @@ export interface QueuePlaceholder {
   readonly hasImage: boolean;
 }
 
-/** A steer summary awaiting its request outcome or the current run terminal. */
+/** One sent steer confirmed in the status strip for its own short window.
+ *  The engine queue mirror, not this item, records what stays parked. */
 export interface SteerPendingItem {
   readonly requestId: string;
   readonly text: string;

@@ -1,7 +1,7 @@
 import { useId, useState } from "react";
 import { IconArrowUp, IconChevron, IconTrash } from "../../components/icons";
 import { useT } from "../../i18n";
-import type { QueueEngineSummary, QueuePlaceholder, QueueSlotItem, SteerPendingItem } from "./chatSessionTypes";
+import type { QueueEngineSummary, QueuePlaceholder, QueueSlotItem } from "./chatSessionTypes";
 
 export type QueueClearScope = "webchat" | "engine" | "all";
 
@@ -12,8 +12,6 @@ interface QueuePanelProps {
   readonly engine: QueueEngineSummary;
   /** Local submissions awaiting their confirming queue frame. */
   readonly placeholders: readonly QueuePlaceholder[];
-  /** Steers forwarded to the engine whose user echo has not rendered yet. */
-  readonly steerPending: readonly SteerPendingItem[];
   readonly onRemove: (itemId: string) => boolean | void;
   readonly onMove: (itemId: string, toIndex: number) => boolean | void;
   readonly onClear: (scope: QueueClearScope) => boolean | void;
@@ -26,7 +24,7 @@ interface QueuePanelProps {
  * carry a distinct waiting style so they cannot be mistaken for sent
  * messages; engine-queue rows are a read-only mirror.
  */
-export function QueuePanel({ items, engine, placeholders, steerPending, onRemove, onMove, onClear }: QueuePanelProps) {
+export function QueuePanel({ items, engine, placeholders, onRemove, onMove, onClear }: QueuePanelProps) {
   const { t } = useT();
   const [expanded, setExpanded] = useState(false);
   const listId = useId();
