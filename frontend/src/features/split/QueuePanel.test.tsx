@@ -96,13 +96,37 @@ describe("QueuePanel", () => {
     expect(header()?.getAttribute("aria-expanded")).toBe("false");
   });
 
+  it("names the engine queue by what is parked in it", () => {
+    // A parked steer and a queued follow-up mean different things to the user;
+    // the mirrored rows carry the mode, so the header says which it is.
+    render({ engine: engineOf(1, [{ text: "redirect now", mode: "steer" }]) });
+    expect(header()?.textContent).toContain(translate("en", "queue.engineSteer", { count: 1 }));
+
+    render({ engine: engineOf(2, [{ text: "later", mode: "followUp" }, { text: "also later", mode: "followUp" }]) });
+    expect(header()?.textContent).toContain(translate("en", "queue.engineFollowUp", { count: 2 }));
+
+    render({ engine: engineOf(3, [
+      { text: "redirect now", mode: "steer" },
+      { text: "later", mode: "followUp" },
+      { text: "also later", mode: "followUp" },
+    ]) });
+    expect(header()?.textContent).toContain(translate("en", "queue.engineSteer", { count: 1 }));
+    expect(header()?.textContent).toContain(translate("en", "queue.engineFollowUp", { count: 2 }));
+  });
+
+  it("falls back to the plain engine count when only a count arrived", () => {
+    // get_state reports the count without the rows; there is no mode to name.
+    render({ engine: engineOf(2, []) });
+    expect(header()?.textContent).toContain(translate("en", "queue.engineCount", { count: 2 }));
+  });
+
   it("mirrors an engine queue whose live event reported rows without a count", () => {
     // Observed engine behavior: queue_update carries steering/followUp/ordered
     // and no pendingMessageCount, so the mirrored rows are the only evidence
     // that a steer is parked. Hiding the panel on the missing count erased it.
     render({ engine: engineOf(0, [{ text: "redirect now", mode: "steer" }]) });
     expect(panel()).not.toBeNull();
-    expect(header()?.textContent).toContain(translate("en", "queue.engineCount", { count: 1 }));
+    expect(header()?.textContent).toContain(translate("en", "queue.engineSteer", { count: 1 }));
 
     act(() => header()?.click());
     const engineRow = container.querySelector<HTMLElement>(".th-queue-row--engine");

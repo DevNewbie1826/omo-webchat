@@ -34,6 +34,16 @@ export function QueuePanel({ items, engine, placeholders, steerPending, onRemove
   // so the mirrored rows are themselves evidence of a non-empty engine queue:
   // a parked steer must never render as an absent panel.
   const engineCount = Math.max(engine.pendingMessageCount, engine.ordered.length);
+  // A parked steer lands in the running turn, a follow-up waits for the whole
+  // run: name them apart whenever the mirrored rows say which is which, and
+  // fall back to the bare count when only get_state's number arrived.
+  const engineSteer = engine.ordered.filter((row) => row.mode === "steer").length;
+  const engineFollowUp = engine.ordered.filter((row) => row.mode === "followUp").length;
+  const engineModeLabel = [
+    engineSteer > 0 ? t("queue.engineSteer", { count: engineSteer }) : "",
+    engineFollowUp > 0 ? t("queue.engineFollowUp", { count: engineFollowUp }) : "",
+  ].filter(Boolean).join(" · ");
+  const engineLabel = engineModeLabel === "" ? t("queue.engineCount", { count: engineCount }) : engineModeLabel;
   if (items.length === 0 && placeholders.length === 0 && engineCount === 0) return null;
   const count = items.length + placeholders.length;
 
@@ -47,9 +57,7 @@ export function QueuePanel({ items, engine, placeholders, steerPending, onRemove
         onClick={() => setExpanded((open) => !open)}
       >
         <span className="th-queue-title">{t("queue.count", { count })}</span>
-        {engineCount > 0 && (
-          <span className="th-queue-engine">{t("queue.engineCount", { count: engineCount })}</span>
-        )}
+        {engineCount > 0 && <span className="th-queue-engine">{engineLabel}</span>}
         <IconChevron size={12} className={`th-queue-chevron${expanded ? " th-queue-chevron--open" : ""}`} />
       </button>
       {expanded && (
