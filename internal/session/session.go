@@ -2109,7 +2109,9 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 				}
 				page.Entries = entries
 			}
-			page.HistorySessionID = s.durableID
+			if resume != nil {
+				page.HistorySessionID = s.durableID
+			}
 			frame.Data = page
 		}
 		if target != nil {

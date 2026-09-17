@@ -114,36 +114,85 @@ export function mergeTranscriptItems(
 
 type HistoryPage = Extract<ChatServerFrame, { type: "entries" }>;
 
+const historyEntryId = (entry: unknown): string | undefined => typeof entry === "object" && entry !== null && "id" in entry && typeof entry.id === "string" ? entry.id : undefined;
+
+function uniqueHistoryEntries(entries: unknown[]): unknown[] {
+  const positions = new Map<string, number>();
+  const result: unknown[] = [];
+  for (const entry of entries) {
+    const id = historyEntryId(entry);
+    const position = id === undefined ? undefined : positions.get(id);
+    if (position !== undefined) result[position] = entry;
+    else {
+      if (id !== undefined) positions.set(id, result.length);
+      result.push(entry);
+    }
+  }
+  return result;
+}
+
+// Shared IDs anchor the ordered union; reversed anchors contradict continuity.
+function mergeHistoryEntries(earlier: unknown[], later: unknown[]): unknown[] | null {
+  const left = uniqueHistoryEntries(earlier);
+  const right = uniqueHistoryEntries(later);
+  const positions = new Map(left.flatMap((entry, index) => {
+    const id = historyEntryId(entry);
+    return id === undefined ? [] : [[id, index] as const];
+  }));
+  const result: unknown[] = [];
+  let next = 0;
+  let pending: unknown[] = [];
+  for (const entry of right) {
+    const id = historyEntryId(entry);
+    const position = id === undefined ? undefined : positions.get(id);
+    if (position === undefined) pending.push(entry);
+    else {
+      if (position < next) return null;
+      result.push(...left.slice(next, position), ...pending, entry);
+      pending = [];
+      next = position + 1;
+    }
+  }
+  return [...result, ...left.slice(next), ...pending];
+}
+
 export function createHistoryResumeCoverage() {
   let committed: unknown[] = [];
   let pending: unknown[] = [];
   let cursor: HistoryResumeCursor | undefined;
-  const id = (entry: unknown): string | undefined => typeof entry === "object" && entry !== null && "id" in entry && typeof entry.id === "string" ? entry.id : undefined;
+  let continuity = true;
   return {
+    entries: () => committed,
     cursor: () => cursor,
-    reconnect: () => { pending = []; },
-    reset: () => { committed = []; pending = []; cursor = undefined; },
+    reconnect: () => { pending = []; continuity = true; },
+    reset: () => { committed = []; pending = []; cursor = undefined; continuity = true; },
     accept(frame: HistoryPage): { frame: HistoryPage; resumed: boolean } {
       const echo = frame.resume;
-      const resumed = echo !== undefined && cursor !== undefined
+      let resumed = continuity && echo !== undefined && cursor !== undefined
+        && frame.historySessionId === cursor.sessionId
         && echo.sessionId === cursor.sessionId && echo.firstEntryId === cursor.firstEntryId
         && echo.lastEntryId === cursor.lastEntryId && echo.historyComplete === cursor.historyComplete;
       if (frame.segment === "head") {
         if (committed.length === 0) return { frame, resumed: false };
-        committed = concatEntries([frame.entries, committed]);
+        committed = mergeHistoryEntries(concatEntries([frame.entries]), committed) ?? uniqueHistoryEntries(concatEntries([frame.entries]));
       } else {
+        continuity = resumed;
         pending.push(frame.entries);
         if (frame.final === false) return { frame, resumed };
-        committed = concatEntries(resumed ? [committed, ...pending] : pending);
+        const received = uniqueHistoryEntries(concatEntries(pending));
+        const merged = resumed ? mergeHistoryEntries(committed, received) : null;
+        resumed = resumed && merged !== null;
+        committed = merged ?? received;
         pending = [];
+        continuity = true;
       }
-      const firstEntryId = id(committed[0]);
-      const lastEntryId = id(committed[committed.length - 1]);
+      const firstEntryId = historyEntryId(committed[0]);
+      const lastEntryId = historyEntryId(committed[committed.length - 1]);
       const sessionId = frame.historySessionId ?? (frame.segment === "head" ? cursor?.sessionId : undefined);
       cursor = firstEntryId && lastEntryId && sessionId ? {
         sessionId, firstEntryId, lastEntryId, historyComplete: frame.historyComplete === true,
       } : undefined;
-      return { frame: resumed && frame.segment !== "head" ? { ...frame, entries: committed } : frame, resumed };
+      return { frame: { ...frame, entries: committed }, resumed };
     },
   };
 }
@@ -161,6 +210,12 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const resumeCoverage = useRef(createHistoryResumeCoverage());
   const pageBuffer = {
     ...entriesBuffer,
+    prepend: (page: unknown, historyComplete?: boolean) => {
+      if (entriesBuffer.prepend(page, historyComplete) === null) return null;
+      const entries = mergeHistoryEntries(concatEntries([page]), resumeCoverage.current.entries())
+        ?? uniqueHistoryEntries(concatEntries([page]));
+      return entriesBuffer.consume(entries, historyComplete === true);
+    },
     reset: () => { entriesBuffer.reset(); resumeCoverage.current.reconnect(); },
   };
   const [thinking, setThinking] = useState("");
@@ -514,11 +569,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const baseHandleFrame = createChatFrameHandler({
     acceptHistoryPage: (frame) => {
       const accepted = resumeCoverage.current.accept(frame);
-      if (accepted.resumed && frame.segment !== "head" && frame.final !== false) {
-        pageBuffer.reset();
-        snapshotMessagesRef.current = [];
-        snapshotVersionRef.current = -1;
-      }
+      if (frame.segment !== "head" && frame.final !== false) entriesBuffer.reset();
       return accepted;
     },
     t,

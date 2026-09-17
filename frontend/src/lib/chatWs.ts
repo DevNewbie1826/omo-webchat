@@ -335,6 +335,10 @@ export const connectChat: ChatConnector = (handlers) => {
           const resume = handlers.getHistoryResume?.();
           if (resume) m = { ...m, resume };
         }
+        // Empty anchors opt into cursor bootstrap without claiming coverage.
+        if (handlers.getHistoryResume && !m.resume) {
+          m = { ...m, resume: { sessionId: "", firstEntryId: "", lastEntryId: "", historyComplete: false } };
+        }
         const { resume: _resume, ...freshCreate } = m;
         lastCreate = freshCreate;
         createSentSinceOpen = true;
