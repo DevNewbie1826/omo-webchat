@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useId, useLayoutEffect, useMemo, useState } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { IconMenu, IconPower, IconSplitH, IconSplitV, IconX } from "../../components/icons";
 import { ModalDialog } from "../../components/ModalDialog";
 import type { ToastKind } from "../../components/SessionTree";
@@ -7,10 +7,11 @@ import { useT } from "../../i18n";
 import type { ChatConnector } from "../../lib/chatWs";
 import { FileBrowser } from "../terminal/FileBrowser";
 import type { ChatSessionRef } from "../workspace/workspace";
-import { ApprovalDock } from "./ApprovalDock";
+import { QuestionNoticeBand } from "./QuestionNoticeBand";
+import { QuestionWindow } from "./QuestionWindow";
+import type { ApprovalRequest, ApprovalResponse } from "./QuestionWindow";
 import { QuestionDraftProvider } from "./ApprovalDockQuestions";
 import { approvalRequestOf } from "./chatSessionState";
-import { QuestionBar } from "./QuestionBar";
 import { ActivityShelf } from "./ActivityShelf";
 import { ChatComposer } from "./ChatComposer";
 import { ExternalWriteBanner } from "./ExternalWriteBanner";
@@ -29,6 +30,41 @@ import { useUpdateDialog } from "./useUpdateDialog";
 
 /** Every thinking level; an authoritative unknown value is still listed. */
 const THINKING_LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+interface QuestionSurfaceProps {
+  readonly request: ApprovalRequest;
+  readonly windowOpen: boolean;
+  readonly onOpenWindow: () => void;
+  readonly onCollapseWindow: () => void;
+  readonly onRespond: (response: ApprovalResponse) => void;
+  readonly focusComposer: () => void;
+}
+
+/** One pending request's two surfaces: the notice band (always, while the
+ *  request is pending) and the modal window (the answering surface). The
+ *  band stays mounted behind the open window so closing it always lands on
+ *  the band. */
+function QuestionSurface({
+  request,
+  windowOpen,
+  onOpenWindow,
+  onCollapseWindow,
+  onRespond,
+  focusComposer,
+}: QuestionSurfaceProps) {
+  return (
+    <>
+      <QuestionNoticeBand request={request} onOpen={onOpenWindow} />
+      <QuestionWindow
+        request={request}
+        open={windowOpen}
+        onCollapse={onCollapseWindow}
+        onRespond={onRespond}
+        focusComposer={focusComposer}
+      />
+    </>
+  );
+}
 
 export interface ChatPaneProps {
   readonly chatSession: ChatSessionRef;
@@ -78,6 +114,45 @@ export function ChatPane({
   const [inspectedOriginal, setInspectedOriginal] = useState<{ text: string; trigger: HTMLButtonElement } | null>(null);
   const chat = useChatSession(chatSession, connect, onChatName);
   const update = useUpdateDialog(chat.commands, chat.submit);
+  // Question/approval surfaces: a one-line notice band in the column (where
+  // the inline dock lived) plus a separate modal window per pending request.
+  // A newly arrived request opens its window — the blocking surfaces' focus
+  // takeover, the old dock's arrival expansion. Collapsing is keyed by
+  // request id: a replay of the same id honours the user's collapse (or
+  // keeps an open window open), while a new id re-opens. A non-blocking
+  // question never auto-opens: its window opens only from the band, keeping
+  // ordinary chat typing uninterrupted.
+  const focusComposer = (): void => {
+    pane?.querySelector<HTMLElement>(".th-chat-input textarea")?.focus();
+  };
+  const approvalId = chat.pendingApproval?.id ?? null;
+  const [approvalWindowForId, setApprovalWindowForId] = useState<string | null>(null);
+  const seenApprovalIdRef = useRef<string | null>(null);
+  if (approvalId !== seenApprovalIdRef.current) {
+    seenApprovalIdRef.current = approvalId;
+    if (approvalId !== null) setApprovalWindowForId(approvalId);
+  }
+  const approvalWindowOpen = approvalId !== null && approvalWindowForId === approvalId;
+  const questionFrame = chat.pendingQuestion;
+  const questionId = questionFrame?.id ?? null;
+  const [questionWindowForId, setQuestionWindowForId] = useState<string | null>(null);
+  const seenQuestionIdRef = useRef<string | null>(null);
+  if (questionId !== seenQuestionIdRef.current) {
+    seenQuestionIdRef.current = questionId;
+    if (questionFrame === null) {
+      // The request exited (answered or dismissed): retire the open-window
+      // owner with it, so a restored non-blocking question waits in its
+      // notice band until the user opens the window again. A restored
+      // blocking question still auto-opens through the arrival branch below.
+      setQuestionWindowForId(null);
+    } else if (questionFrame.nonBlocking !== true) {
+      setQuestionWindowForId(questionId);
+    }
+  }
+  const questionRequest = questionFrame === null
+    ? null
+    : approvalRequestOf({ ...questionFrame, method: "question" });
+  const questionWindowOpen = questionId !== null && questionWindowForId === questionId;
   // Notices replay before history, so keep them gated until the monotonic
   // history lifecycle either completes or proves that history is unavailable.
   // Send-path command failures surface in the persistent banner below, so
@@ -337,33 +412,39 @@ export function ChatPane({
           </div>
           {modelPicker}
         </div>
-        {/* Inline approval dock: a fixed band in the pane column directly
-           above the composer, so computeShelfAvailableSpace budgets it like
-           any other column child and the transcript keeps its reserve. */}
-        {chat.pendingApproval && <ApprovalDock request={chat.pendingApproval} onRespond={chat.respondApproval} />}
+        {/* Notice band + separate modal window for each pending request: the
+           band is the request's one-line anchor in the column (closing the
+           window leaves it; reopening happens from its Open button), and
+           the window is the answering surface. A non-blocking question
+           renders the band alone until the user opens the window, so
+           ordinary typing is never interrupted. */}
+        {chat.pendingApproval && (
+          <QuestionSurface
+            request={chat.pendingApproval}
+            windowOpen={approvalWindowOpen}
+            onOpenWindow={() => setApprovalWindowForId(chat.pendingApproval?.id ?? null)}
+            onCollapseWindow={() => setApprovalWindowForId(null)}
+            onRespond={chat.respondApproval}
+            focusComposer={focusComposer}
+          />
+        )}
         {/* A structured question request is an approval-shaped ask: the same
-           inline dock renders it as one tabbed panel (a tab per question) and
-           sends one structured response keyed by question id. */}
-        {/* Non-blocking question: a one-line band directly above the
-           composer. It never takes over the composer — ordinary typing and
-           Enter still send normal chat messages and leave the question
-           pending; only the widget's own controls answer it. It stacks with
-           the approval dock when both are pending. */}
-        {chat.pendingQuestion && <QuestionDraftProvider key={chat.pendingQuestion.id} requestId={chat.pendingQuestion.id}>
-          {chat.pendingQuestion.nonBlocking !== true ? (
-            /* Absent or false flag: today's blocking behaviour, unchanged —
-               the dock takes over the space above the composer. */
-            <ApprovalDock
-              request={approvalRequestOf({ ...chat.pendingQuestion, method: "question" })}
+           band + window renders it as one tabbed panel (a tab per question)
+           and sends one structured response keyed by question id. The draft
+           provider stays mounted across window collapse/reopen so typed
+           answers never reset. */}
+        {questionRequest && chat.pendingQuestion && (
+          <QuestionDraftProvider key={chat.pendingQuestion.id} requestId={chat.pendingQuestion.id}>
+            <QuestionSurface
+              request={questionRequest}
+              windowOpen={questionWindowOpen}
+              onOpenWindow={() => setQuestionWindowForId(chat.pendingQuestion?.id ?? null)}
+              onCollapseWindow={() => setQuestionWindowForId(null)}
               onRespond={chat.respondQuestion}
+              focusComposer={focusComposer}
             />
-          ) : (
-            <QuestionBar
-              request={chat.pendingQuestion}
-              onAnswer={(answers, comment) => chat.respondQuestion({ answers, ...(comment !== undefined ? { comment } : {}) })}
-            />
-          )}
-        </QuestionDraftProvider>}
+          </QuestionDraftProvider>
+        )}
         <ChatComposer
           session={chatSession}
           commands={chat.commands}

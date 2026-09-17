@@ -239,12 +239,12 @@ func TestEveryFixtureKindHasFixture(t *testing.T) {
 }
 
 // TestWireNameMappingIsTotal pins the bridge-owned mapping: every v2 session
-// FrameKind (20, from internal/session/stub.go) maps to a known server wire type.
+// FrameKind (21, from internal/session/stub.go) maps to a known server wire type.
 func TestWireNameMappingIsTotal(t *testing.T) {
 	frameKinds := []string{
 		"ready", "message.delta", "message", "tool", "state", "name", "stats",
 		"models", "commands", "entries", "compaction.started", "compaction.done",
-		"control.result", "ack", "approval", "notice", "extensionEvent", "error",
+		"control.result", "ack", "approval", "approval.resolved", "notice", "extensionEvent", "error",
 		"run.started", "run.done",
 	}
 	serverTypes := ServerFrameTypes()

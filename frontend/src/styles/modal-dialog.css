@@ -11,7 +11,18 @@
 
 .th-modal-overlay {
   position: fixed;
-  inset: 0;
+  /* Bound the surface to the VISUAL viewport, not the layout viewport. The
+     parse-time boot script publishes the visible region on <html>:
+     --th-vv-top/--th-vv-left pan origin, --th-vv-width, and --th-vh-unit
+     (1% of the visible height). When a keyboard opens on iOS the layout
+     viewport stays full-height, so a layout-fixed inset: 0 overlay centers
+     the panel's lower half under the keyboard; the fallbacks reproduce
+     inset: 0 exactly for ordinary frames (and without the boot script).
+     Same pattern as the mobile drawer and the model-picker sheet. */
+  top: var(--th-vv-top, 0px);
+  left: var(--th-vv-left, 0px);
+  width: var(--th-vv-width, 100%);
+  height: calc(var(--th-vh-unit, 1vh) * 100);
   z-index: 70;
   display: flex;
   align-items: center;
@@ -30,7 +41,11 @@
   position: relative;
   width: 100%;
   max-width: 480px;
-  max-height: calc(100dvh - 48px);
+  /* The visible height minus the overlay's two --th-space-6 padding steps:
+     the panel always fits inside the bounded overlay (the former 100dvh
+     max-height stayed full-height when the keyboard shrank only the visual
+     viewport). */
+  max-height: calc(var(--th-vh-unit, 1dvh) * 100 - var(--th-space-6) - var(--th-space-6));
   display: flex;
   flex-direction: column;
   background: var(--th-surface-overlay);
@@ -87,7 +102,7 @@
 .th-modal--media .th-modal-media-image {
   display: block;
   max-width: 100%;
-  max-height: calc(100dvh - 120px);
+  max-height: calc(var(--th-vh-unit, 1dvh) * 100 - 120px);
   object-fit: contain;
   border-radius: var(--th-radius);
 }

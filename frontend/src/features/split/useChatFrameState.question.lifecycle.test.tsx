@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { I18nContext, type I18nValue } from "../../i18n";
 import { parseChatServerFrame } from "../../lib/chatWsParse";
 import { parseClientFrame } from "../../lib/contract/types_gen";
-import { ApprovalDock } from "./ApprovalDock";
+import { QuestionWindow } from "./QuestionWindow";
 import { approvalRequestOf } from "./chatSessionState";
 import { useChatFrameState } from "./useChatFrameState";
 
@@ -39,14 +39,16 @@ function mountPaneState() {
   function Probe() {
     state = useChatFrameState();
     const pending = state.pendingQuestion;
-    return pending && <ApprovalDock
+    return pending && <QuestionWindow
       request={approvalRequestOf({ ...pending, method: "question" })}
+      open
+      onCollapse={() => undefined}
       onRespond={(answer) => respond(parseClientFrame({ type: "approval.respond", sessionId: pending.sessionId, id: pending.id, ...answer }))}
     />;
   }
   act(() => root.render(<I18nContext.Provider value={i18n}><Probe /></I18nContext.Provider>));
   function click(selector: string, index = 0) {
-    const button = container.querySelectorAll<HTMLButtonElement>(selector)[index];
+    const button = document.querySelectorAll<HTMLButtonElement>(selector)[index];
     if (!button) throw new Error(`Missing button: ${selector}[${index}]`);
     act(() => button.click());
   }
@@ -63,7 +65,7 @@ function mountPaneState() {
       click(".th-approval-question-option", 1);
       click('[role="tab"]', 1);
       click(".th-approval-question-option", 1);
-      const submit = Array.from(container.querySelectorAll<HTMLButtonElement>(".th-approval-question-actions button"))
+      const submit = Array.from(document.querySelectorAll<HTMLButtonElement>(".th-approval-question-actions button"))
         .find(button => button.textContent === "approval.submit");
       if (!submit) throw new Error("Missing submit button");
       act(() => submit.click());
@@ -88,7 +90,7 @@ it("replays an intact structured request after reconnect and remains answerable"
     pane.deliver(JSON.parse(JSON.stringify(request)));
     expect(pane.state.pendingQuestion).toEqual(request);
     expect(pane.state.pendingApproval).toBeNull();
-    expect(pane.container.querySelectorAll('[role="tab"]')).toHaveLength(2);
+    expect(document.querySelectorAll('[role="tab"]')).toHaveLength(2);
     pane.answer();
   } finally { pane.dispose(); }
 });
@@ -99,10 +101,10 @@ it("ignores a mismatched acknowledgement and clears a structured request answere
     pane.deliver(request);
     pane.deliver({ type: "ack", sessionId: "s", command: "extension_ui_response", id: "different", requestId: "other-client-1" });
     expect(pane.state.pendingQuestion).toEqual(request);
-    expect(pane.container.querySelectorAll('[role="tab"]')).toHaveLength(2);
+    expect(document.querySelectorAll('[role="tab"]')).toHaveLength(2);
     pane.deliver({ type: "ack", sessionId: "s", command: "extension_ui_response", id: "ask", requestId: "other-client-2" });
     expect(pane.state.pendingQuestion).toBeNull();
-    expect(pane.container.querySelector(".th-approval-dock")).toBeNull();
+    expect(document.querySelector(".th-modal")).toBeNull();
     expect(pane.respond).not.toHaveBeenCalled();
   } finally { pane.dispose(); }
 });
@@ -113,12 +115,49 @@ it("replaces a structured deadline refresh in pane state and the rendered countd
   const pane = mountPaneState();
   try {
     pane.deliver({ ...request, deadlineAtMs: 1_005_000, remainingMs: 5_000 });
-    expect(pane.container.querySelector(".th-approval-dock-countdown")?.textContent).toBe("5");
+    expect(document.querySelector(".th-question-window-countdown")?.textContent).toBe("5");
     pane.deliver({ ...request, deadlineAtMs: 1_020_000, remainingMs: 20_000 });
     expect(pane.state.pendingQuestion).toEqual({ ...request, deadlineAtMs: 1_020_000, remainingMs: 20_000 });
-    expect(pane.container.querySelector(".th-approval-dock-countdown")?.textContent).toBe("20");
+    expect(document.querySelector(".th-question-window-countdown")?.textContent).toBe("20");
     expect(pane.respond).not.toHaveBeenCalled();
   } finally { pane.dispose(); }
+});
+
+it("retires an expired request through the wire parser and removes its rendered controls", () => {
+  const pane = mountPaneState();
+  try {
+    pane.deliver(request);
+    pane.deliver({ type: "approval.resolved", sessionId: "s", id: "other", outcome: "expired" });
+    expect(pane.state.pendingQuestion).toEqual(request);
+    pane.deliver({ type: "approval.resolved", sessionId: "s", id: "ask", outcome: "expired", message: "expired" });
+    expect(pane.state.pendingQuestion).toBeNull();
+    expect(pane.state.error).toBe("expired");
+    expect(pane.container.querySelector(".th-approval-dock")).toBeNull();
+    expect(pane.respond).not.toHaveBeenCalled();
+  } finally { pane.dispose(); }
+});
+
+it.each([true, false])("does not restore an expired submitted request when resolution arrives first=%s", (resolutionFirst) => {
+  const pane = mountPaneState();
+  try {
+    pane.deliver(request);
+    const retained = pane.state.pendingQuestion;
+    act(() => {
+      pane.state.armControl("answer-1", "extension_ui_response:ask", () => pane.state.setPendingQuestion(retained), () => undefined);
+      pane.state.setPendingQuestion(null);
+    });
+    const resolution = { type: "approval.resolved", sessionId: "s", id: "ask", outcome: "expired", requestId: "answer-1" };
+    const failure = { type: "error", sessionId: "s", command: "approval.respond", requestId: "answer-1", message: "expired" };
+    for (const frame of resolutionFirst ? [resolution, failure] : [failure, resolution]) pane.deliver(frame);
+    expect(pane.state.pendingQuestion).toBeNull();
+    expect(pane.container.querySelector(".th-approval-dock")).toBeNull();
+    expect(pane.state.error).toBe(failure.message);
+  } finally { pane.dispose(); }
+});
+
+it("rejects malformed resolution identity at the wire boundary", () => {
+  expect(parseChatServerFrame({ type: "approval.resolved", sessionId: "s", id: 1, outcome: "expired" })).toBeNull();
+  expect(parseChatServerFrame({ type: "approval.resolved", sessionId: "s", id: "ask" })).toBeNull();
 });
 
 it("renders and answers a structured request without deadline fields", () => {
@@ -127,8 +166,8 @@ it("renders and answers a structured request without deadline fields", () => {
     pane.deliver(request);
     expect(pane.state.pendingQuestion).not.toHaveProperty("deadlineAtMs");
     expect(pane.state.pendingQuestion).not.toHaveProperty("remainingMs");
-    expect(pane.container.querySelector(".th-approval-dock-countdown")).toBeNull();
-    expect(pane.container.querySelectorAll('[role="tab"]')).toHaveLength(2);
+    expect(document.querySelector(".th-question-window-countdown")).toBeNull();
+    expect(document.querySelectorAll('[role="tab"]')).toHaveLength(2);
     pane.answer();
   } finally { pane.dispose(); }
 });

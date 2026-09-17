@@ -5,7 +5,7 @@ import { useT } from "../../i18n";
 import { newUuid } from "../../lib/uuid";
 import { isFallbackApprovalFrame } from "../../lib/chatWsParseFallback";
 import type { ChatDraft } from "./chatSessionTypes";
-import type { ApprovalResponse } from "./ApprovalDock";
+import type { ApprovalResponse } from "./QuestionWindow";
 import { getChatActivity } from "./activityHistory";
 import { getChatGoal, type ChatGoal } from "./goalState";
 import { COMPACT_COMMAND, isCuratedCompact, isCuratedReload, RELOAD_COMMAND } from "./curatedCommands";

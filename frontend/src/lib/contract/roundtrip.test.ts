@@ -177,8 +177,9 @@ describe("contract requirements pinned by fixtures", () => {
 });
 
 describe("wire-name mapping (bridge-owned, v1 continuity)", () => {
-  it("maps all 20 v2 FrameKinds onto known server wire types", () => {
-    expect(Object.keys(FrameKindToWireName).length).toBe(20);
+  it("maps all 21 v2 FrameKinds onto known server wire types", () => {
+    expect(Object.keys(FrameKindToWireName).length).toBe(21);
+    expect(FrameKindToWireName["approval.resolved"]).toBe("approval.resolved");
     expect(FrameKindToWireName["message.delta"]).toBe("messageDelta");
     expect(FrameKindToWireName["name"]).toBe("chat.name");
     for (const wire of Object.values(FrameKindToWireName)) {

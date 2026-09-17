@@ -11,6 +11,7 @@ import {
 } from "./chatWsParseFields";
 
 type LifecycleFrameType =
+  | "approval.resolved"
   | "compaction.started"
   | "compaction.done"
   | "run.started"
@@ -58,6 +59,17 @@ export function parseLifecycleFrame(
   sessionId: string | null,
 ): ChatServerFrame | null {
   switch (type) {
+    case "approval.resolved": {
+      const id = reqString(msg, "id");
+      const outcome = reqString(msg, "outcome");
+      const requestId = optString(msg, "requestId");
+      const message = optString(msg, "message");
+      if (sessionId === null || id === null || outcome === null || requestId === null || message === null) return null;
+      return { type, sessionId, id, outcome,
+        ...(requestId === undefined ? {} : { requestId }),
+        ...(message === undefined ? {} : { message }),
+      };
+    }
     case "compaction.started": {
       if (sessionId === null) return null;
       return { type: "compaction.started", sessionId };

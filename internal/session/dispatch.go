@@ -146,6 +146,12 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		if command == omorpc.CmdCloseSession && success {
 			s.markProviderUnloadedLocked()
 		}
+		if command == omorpc.CmdExtensionUIResponse && !success {
+			// Notify has no RPC correlation. A provider rejection therefore
+			// arrives as an unsolicited response, possibly after our write ack.
+			s.resolveApprovalLocked(stringValue(raw["id"]), "", "expired", errApprovalExpired.Error())
+			s.publishLocked(Frame{Kind: FrameError, SessionID: s.durableID, Command: command, Data: ErrorInfo{Code: "provider_error", Message: stringValue(raw["error"])}})
+		}
 	case "state", "state_changed":
 		payload := eventPayload(raw)
 		if model, ok := payload["model"].(map[string]any); ok {
@@ -194,13 +200,23 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		frame := Frame{Kind: FrameApproval, SessionID: s.durableID, RequestID: stringValue(raw["requestId"]), ApprovalID: stringValue(raw["id"]), Data: payload}
 		// Interactive methods await a client answer; retain the latest one so a
 		// subscriber attaching after the broadcast still sees the pending ask.
-		if awaitsAnswer {
+		if awaitsAnswer || !known {
+			if s.activeApprovals == nil {
+				s.activeApprovals = make(map[string]struct{})
+			}
+			s.activeApprovals[frame.ApprovalID] = struct{}{}
 			s.pendingApproval = &frame
 		}
 		s.publishLocked(frame)
 	case "question_resolved":
-		if s.pendingApproval != nil && s.pendingApproval.ApprovalID == stringValue(raw["id"]) {
-			s.pendingApproval = nil
+		id := stringValue(raw["id"])
+		if _, active := s.activeApprovals[id]; active {
+			outcome := stringValue(raw["outcome"])
+			message := ""
+			if outcome != "answered" {
+				message = errApprovalExpired.Error()
+			}
+			s.resolveApprovalLocked(id, "", outcome, message)
 		}
 	case "question_updated":
 		if s.pendingApproval != nil && s.pendingApproval.ApprovalID == stringValue(raw["id"]) {

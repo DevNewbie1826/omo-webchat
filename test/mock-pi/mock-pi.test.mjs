@@ -142,6 +142,27 @@ function runMock(env = {}, args = []) {
   ok(mock.frames.some((frame) => frame.type === 'message_update' && frame.assistantMessageEvent?.type === 'text_delta'), 'streamed text after approval');
 }
 
+// Unknown approval IDs are one-way silent drops, including after an ask aborts.
+{
+  const mock = runMock({ MOCK_PI_APPROVE: '1', MOCK_PI_QUESTION: '1' });
+  const approval = mock.waitFor(frame => frame.type === 'extension_ui_request', 'question request');
+  mock.send({ type: 'prompt', id: 'ask', message: 'ask' });
+  const request = await approval;
+  const resolved = mock.waitFor(frame => frame.type === 'question_resolved', 'question abort');
+  const settled = mock.waitFor(frame => frame.type === 'agent_settled', 'aborted question settlement');
+  mock.send({ type: 'abort', id: 'abort' });
+  await Promise.all([resolved, settled]);
+  const start = mock.frames.length;
+  const fence = mock.waitFor(frame => frame.id === 'after-stale', 'same-stream command fence');
+  mock.send({ type: 'extension_ui_response', id: request.id, answers: { q1: { selected: ['Go'] } } });
+  mock.send({ type: 'get_state', id: 'after-stale' });
+  await fence;
+  const after = mock.frames.slice(start);
+  ok(after.length === 1 && after[0].command === 'get_state', 'unknown approval is silently ignored: no acknowledgement, rejection, or resumed stream');
+  console.log('unknown approval frame flow:', JSON.stringify(after));
+  await mock.close();
+}
+
 // Queries resolve from their exact response frames.
 {
   const mock = runMock();

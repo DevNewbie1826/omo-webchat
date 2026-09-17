@@ -1,7 +1,7 @@
 import type { Translate } from "../../i18n";
 import type { ChatServerFrame, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
 import { isFallbackApprovalFrame } from "../../lib/chatWsParseFallback";
-import type { ApprovalRequest } from "./ApprovalDock";
+import type { ApprovalRequest } from "./QuestionWindow";
 import type { ApprovalFrame } from "../../lib/contract/types_gen";
 import type { HistoryStatus, MissingOriginal } from "./useChatFrameState";
 import { applyActivityEvent, applyRunFlight, validatedActivityEvent } from "./activityState";
@@ -379,6 +379,17 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         }
         return;
       }
+      case "approval.resolved":
+        // Terminal, not retryable: do not let a correlated error restore the
+        // expired request through the optimistic-control rollback ledger.
+        if (frame.requestId) {
+          bindings.controls.ledger.commit(frame.requestId);
+          bindings.controls.ledger.dropRestoreRequest(frame.requestId);
+        }
+        bindings.setPendingApproval(current => current?.id === frame.id ? null : current);
+        bindings.setPendingQuestion(current => current?.id === frame.id ? null : current);
+        if (frame.message) bindings.setError(frame.message);
+        return;
       case "ack":
         if (frame.command === "chat.send" && frame.requestId) {
           if (frame.phase === "completed") bindings.sends.complete(frame.requestId);

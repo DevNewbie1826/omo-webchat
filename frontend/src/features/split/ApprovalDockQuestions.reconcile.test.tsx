@@ -12,7 +12,7 @@ beforeEach(() => {
  container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
-const button = (label: string) => requireElement([...container.querySelectorAll("button")].find(b => b.textContent === label), label);
+const button = (label: string) => requireElement([...document.querySelectorAll("button")].find(b => b.textContent === label), label);
 const click = (label: string) => act(() => button(label).click());
 const question = { id: "target", multiSelect: true, options: [{ label: "Red" }, { label: "Blue" }] };
 const request = { type: "approval", sessionId: "chat-1", id: "refresh", method: "question", nonBlocking: false } as const;
@@ -22,7 +22,7 @@ it.each(["options", "single", "text", "removed"])("reconciles preserved drafts w
  const { deliver, sent } = renderChatPane(root);
  await act(async () => deliver({ ...request, questions: [scenario === "text" ? { id: "target" } : question] }));
  if (scenario === "text") act(() => {
-  const input = requireElement(container.querySelector("input"), "text input");
+  const input = requireElement(document.querySelector(".th-approval-question-text"), "text input");
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "obsolete");
   input.dispatchEvent(new Event("input", { bubbles: true }));
  });
@@ -32,7 +32,7 @@ it.each(["options", "single", "text", "removed"])("reconciles preserved drafts w
  const refreshed = scenario === "options" ? { ...question, options: [{ label: "Blue" }, { label: "Green" }] } : { ...question, multiSelect: scenario !== "single" };
  act(() => deliver({ ...request, nonBlocking: scenario === "options", questions: [refreshed] }));
  if (scenario !== "single") click("Blue");
- click(scenario === "options" ? "question.submit" : "approval.submit");
+ click("approval.submit");
  // Then only valid selections are sent; single-select keeps the first valid
  // choice. A typed draft survives a refresh that turns the question into a
  // choice question as that question's own free-text answer (the dedicated

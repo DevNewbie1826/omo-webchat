@@ -4,8 +4,8 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { I18nValue } from "../../i18n";
 import { I18nContext } from "../../i18n";
-import type { ApprovalRequest } from "./ApprovalDock";
-import { ApprovalDock } from "./ApprovalDock";
+import type { ApprovalRequest } from "./QuestionWindow";
+import { QuestionWindow } from "./QuestionWindow";
 import { renderChatPane, requireElement } from "./chatPaneTestHarness";
 
 const i18n: I18nValue = {
@@ -58,21 +58,21 @@ describe("per-question free text under an options question", () => {
 		vi.unstubAllGlobals();
 	});
 
-	function renderDock(request: ApprovalRequest, onRespond = vi.fn()): void {
+	function renderWindow(request: ApprovalRequest, onRespond = vi.fn()): void {
 		act(() => {
 			root.render(
 				<I18nContext.Provider value={i18n}>
-					<ApprovalDock request={request} onRespond={onRespond} />
+					<QuestionWindow request={request} open onCollapse={vi.fn()} onRespond={onRespond} />
 				</I18nContext.Provider>,
 			);
 		});
 	}
 
 	const tabs = (): HTMLButtonElement[] =>
-		Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+		Array.from(document.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
 	const option = (label: string): HTMLButtonElement | undefined =>
 		Array.from(
-			container.querySelectorAll<HTMLButtonElement>(".th-approval-question-option"),
+			document.querySelectorAll<HTMLButtonElement>(".th-approval-question-option"),
 		).find((button) => button.textContent === label);
 	const click = (el: HTMLElement | undefined): void => {
 		act(() => el?.click());
@@ -87,17 +87,17 @@ describe("per-question free text under an options question", () => {
 
 	it("sends text typed under an options question as that question's answer, never as the comment", () => {
 		const onRespond = vi.fn();
-		renderDock(TWO_OPTIONS_QUESTIONS, onRespond);
+		renderWindow(TWO_OPTIONS_QUESTIONS, onRespond);
 
 		// The request-level comment keeps its own visible label so it can no
 		// longer masquerade as the answer box for the questions above it.
-		const commentLabel = container.querySelector(".th-approval-question-comment-label");
+		const commentLabel = document.querySelector(".th-approval-question-comment-label");
 		expect(commentLabel?.textContent).toContain("approval.question.commentLabel");
 
 		// Q2 (an options question) owns a dedicated text input directly under
 		// its options, and typing there answers Q2 — not the overall comment.
 		click(tabs()[1]);
-		const own = container.querySelector<HTMLInputElement>(".th-approval-question-text");
+		const own = document.querySelector<HTMLInputElement>(".th-approval-question-text");
 		expect(own).not.toBeNull();
 		expect(own?.placeholder).toBe("approval.question.answerOptionPlaceholder");
 		if (!own) return;
@@ -105,13 +105,37 @@ describe("per-question free text under an options question", () => {
 		click(option("eu-west"));
 
 		const submit = Array.from(
-			container.querySelectorAll<HTMLButtonElement>(".th-approval-question-actions button"),
+			document.querySelectorAll<HTMLButtonElement>(".th-approval-question-actions button"),
 		).find((button) => button.textContent === "approval.submit");
 		click(submit);
 
 		expect(onRespond).toHaveBeenCalledWith({
 			answers: { q2: { selected: ["eu-west"], text: "ap-southeast" } },
 		});
+	});
+
+	it.each(["option-first", "text-first"].flatMap(order =>
+		["submit", "next", "tab"].map(action => ({ order, action })),
+	))("preserves deferred IME text in $order order through $action", ({ order, action }) => {
+		const onRespond = vi.fn();
+		renderWindow(action === "submit"
+			? { ...TWO_OPTIONS_QUESTIONS, questions: [TWO_OPTIONS_QUESTIONS.questions![0]!] }
+			: TWO_OPTIONS_QUESTIONS, onRespond);
+		const input = requireElement(document.querySelector<HTMLInputElement>(".th-approval-question-text"), "answer input");
+		if (order === "option-first") click(option("Go"));
+		act(() => {
+			input.focus();
+			input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+			// The IME has changed the live editor, but its input/change notification
+			// has not arrived when the user activates an option or Submit.
+			Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "한글 답변");
+			input.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true, data: "한글 답변" }));
+		});
+		if (order === "text-first") click(option("Go"));
+		if (action === "tab") click(tabs()[1]);
+		if (action === "next") click(requireElement(document.querySelector<HTMLButtonElement>(".th-approval-question-actions button"), "next"));
+		click(requireElement(document.querySelector<HTMLButtonElement>(".th-approval-question-actions button"), "submit"));
+		expect(onRespond).toHaveBeenCalledExactlyOnceWith({ answers: { q1: { selected: ["Go"], text: "한글 답변" } } });
 	});
 
 	it("keeps an options question's typed text through a refresh of the same request", async () => {
@@ -128,7 +152,7 @@ describe("per-question free text under an options question", () => {
 		await act(async () => deliver({ ...request, questions: [question] }));
 		act(() => {
 			const input = requireElement(
-				container.querySelector<HTMLInputElement>(".th-approval-question-text"),
+				document.querySelector<HTMLInputElement>(".th-approval-question-text"),
 				"per-question text input",
 			);
 			Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
@@ -141,18 +165,18 @@ describe("per-question free text under an options question", () => {
 		await act(async () => deliver({ ...request, nonBlocking: true, questions: [question] }));
 		await act(async () => deliver({ ...request, nonBlocking: false, questions: [question] }));
 		// Then the typed text survived the refresh.
-		expect(container.querySelector<HTMLInputElement>(".th-approval-question-text")?.value).toBe(
+		expect(document.querySelector<HTMLInputElement>(".th-approval-question-text")?.value).toBe(
 			"mixed",
 		);
 		act(() =>
 			requireElement(
-				[...container.querySelectorAll("button")].find((b) => b.textContent === "Blue"),
+				[...document.querySelectorAll("button")].find((b) => b.textContent === "Blue"),
 				"Blue",
 			).click(),
 		);
 		act(() =>
 			requireElement(
-				[...container.querySelectorAll("button")].find((b) => b.textContent === "approval.submit"),
+				[...document.querySelectorAll("button")].find((b) => b.textContent === "approval.submit"),
 				"approval.submit",
 			).click(),
 		);

@@ -164,6 +164,7 @@ export type ChatServerFrame =
   | ct.ChatGoalFrame
   | ct.ChatTodoFrame
   | ct.ApprovalFrame
+  | ct.ApprovalResolvedFrame
   | FallbackApprovalFrame
   | ct.CommandsFrame
   | ct.ModelsFrame

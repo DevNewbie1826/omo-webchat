@@ -1,4 +1,4 @@
-import { createContext, useContext, useId, useLayoutEffect, useState } from "react";
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { Dispatch, ReactElement, SetStateAction } from "react";
 import { useT } from "../../i18n";
 import { lostQuestionAnswer, QuestionDraftNotice, RemovedQuestionNoticeContext } from "./QuestionDraftNotice";
@@ -65,6 +65,156 @@ function reconcileDraft(draft: QuestionDraft, questions: readonly Question[]): Q
 type QuestionDraftState = readonly [QuestionDraft, Dispatch<SetStateAction<QuestionDraft>>];
 const QuestionDraftContext = createContext<QuestionDraftState | null>(null);
 
+/** How long after a touch gesture a click is treated as the same tap. */
+const TOUCH_CLICK_DEDUP_MS = 500;
+
+/** How far the first touch may drift before a tap becomes a scroll drag. */
+const TOUCH_MOVE_THRESHOLD_PX = 10;
+
+/** One in-flight touch gesture on an option button: the first touch only
+ *  (extra touches are ignored), tracked from touchstart to its touchend. */
+interface OptionTouchGesture {
+	/** Identifier of the tracked first touch, or null when the touchstart
+	 *  carried no touch list (synthetic events in tests). */
+	readonly identifier: number | null;
+	readonly startX: number;
+	readonly startY: number;
+	lastY: number;
+	moved: boolean;
+	readonly scroller: HTMLElement | null;
+}
+
+/** One option toggle of a structured question. Touch contract (ported from
+ *  the PR #177 keyboard work, selectors adapted to the window DOM — the
+ *  focus scope is the dialog and the drag-scroll target is the window body):
+ *  - FOCUS SCOPE: the touch contract applies only while focus is inside the
+ *    question window (the typing context where the software keyboard must
+ *    survive). With focus anywhere else, touches behave natively: nothing
+ *    is canceled, the browser scrolls the list itself, and the synthesized
+ *    click activates the option through onClick.
+ *  - FOCUS KEEP: with focus inside the window, iOS Safari steals focus at
+ *    the TOUCH level, before pointerdown - so touchstart is canceled. React
+ *    registers root touchstart listeners as passive (scrolling-intervention
+ *    emulation), which silently ignores preventDefault, hence native
+ *    non-passive listeners on the button.
+ *  - MOVEMENT GATE: the first touch's start point is recorded at
+ *    touchstart; a displacement over TOUCH_MOVE_THRESHOLD_PX marks the
+ *    gesture a drag. touchend activates only for taps (not moved) - a drag
+ *    across the options must never submit the option it started on.
+ *  - DRAG SCROLL: canceling touchstart kills native scrolling for the
+ *    gesture, so while the contract is active a drag scrolls the window
+ *    body manually by the touch delta on each touchmove.
+ *  - CLICK DEDUP: canceling touchstart/touchend suppresses the synthesized
+ *    click, so touchend applies the toggle itself for taps. onClick stays
+ *    the mouse/keyboard path; a click landing within TOUCH_CLICK_DEDUP_MS of
+ *    any completed gesture - tap OR drag, whose timestamp is recorded
+ *    without activating - is that gesture's echo and ignored, so a drag's
+ *    stray click cannot toggle either. The synthesized click always targets
+ *    the touched button, so the dedup timestamp lives per button.
+ *  - onPointerDown/onMouseDown preventDefault remains for desktop mouse
+ *    focus (mousedown fires without any touch). Tabs and the action row
+ *    keep default focus behavior: they switch or end the editing context,
+ *    where focus-follows-tap is the honest outcome. */
+function OptionButton({
+	label,
+	description,
+	selected,
+	onToggle,
+}: {
+	readonly label: string;
+	readonly description: string | undefined;
+	readonly selected: boolean;
+	readonly onToggle: () => void;
+}): ReactElement {
+	const buttonRef = useRef<HTMLButtonElement | null>(null);
+	const lastTouchActivation = useRef(0);
+	const touchGesture = useRef<OptionTouchGesture | null>(null);
+	useEffect(() => {
+		const button = buttonRef.current;
+		if (!button) return undefined;
+		const windowRoot = button.closest(".th-question-window");
+		const focusInsideWindow = (): boolean => {
+			const active = document.activeElement;
+			return windowRoot !== null && active !== null && windowRoot.contains(active);
+		};
+		const onTouchStart = (event: TouchEvent): void => {
+			if (!focusInsideWindow()) return; // native: browser scrolls, click activates
+			event.preventDefault();
+			const touch = event.touches?.[0];
+			touchGesture.current = {
+				identifier: touch?.identifier ?? null,
+				startX: touch?.clientX ?? 0,
+				startY: touch?.clientY ?? 0,
+				lastY: touch?.clientY ?? 0,
+				moved: false,
+				scroller: button.closest<HTMLElement>(".th-question-window-body"),
+			};
+		};
+		const onTouchMove = (event: TouchEvent): void => {
+			const gesture = touchGesture.current;
+			if (!gesture || gesture.identifier === null) return;
+			const touch = Array.from(event.touches ?? [])
+				.concat(Array.from(event.changedTouches ?? []))
+				.find((entry) => entry.identifier === gesture.identifier);
+			if (!touch) return;
+			if (!gesture.moved
+				&& Math.hypot(touch.clientX - gesture.startX, touch.clientY - gesture.startY)
+					<= TOUCH_MOVE_THRESHOLD_PX) {
+				gesture.lastY = touch.clientY;
+				return;
+			}
+			gesture.moved = true;
+			event.preventDefault();
+			if (gesture.scroller) gesture.scroller.scrollTop += gesture.lastY - touch.clientY;
+			gesture.lastY = touch.clientY;
+		};
+		const onTouchEnd = (event: TouchEvent): void => {
+			const gesture = touchGesture.current;
+			if (!gesture) return; // contract inactive: the native click activates
+			if (gesture.identifier !== null
+				&& !Array.from(event.changedTouches ?? [])
+					.some((entry) => entry.identifier === gesture.identifier)) {
+				return; // an ignored extra touch ended; the first is still down
+			}
+			touchGesture.current = null;
+			event.preventDefault();
+			// Taps and drags alike record the dedup timestamp: a drag must not
+			// activate, and its stray click must not toggle afterwards either.
+			lastTouchActivation.current = Date.now();
+			if (!gesture.moved) onToggle();
+		};
+		button.addEventListener("touchstart", onTouchStart, { passive: false });
+		button.addEventListener("touchmove", onTouchMove, { passive: false });
+		button.addEventListener("touchend", onTouchEnd, { passive: false });
+		return () => {
+			button.removeEventListener("touchstart", onTouchStart);
+			button.removeEventListener("touchmove", onTouchMove);
+			button.removeEventListener("touchend", onTouchEnd);
+		};
+	}, [onToggle]);
+	return (
+		<button
+			ref={buttonRef}
+			type="button"
+			className="th-approval-question-option"
+			aria-pressed={selected}
+			onClick={() => {
+				if (Date.now() - lastTouchActivation.current < TOUCH_CLICK_DEDUP_MS) return;
+				onToggle();
+			}}
+			onPointerDown={(event) => event.preventDefault()}
+			onMouseDown={(event) => event.preventDefault()}
+		>
+			<span className="th-approval-question-option-label">{label}</span>
+			{description && (
+				<span className="th-approval-question-option-description">
+					{description}
+				</span>
+			)}
+		</button>
+	);
+}
+
 /** This owner stays mounted when the same request changes presentation. */
 export function QuestionDraftProvider({ requestId, children }: {
 	readonly requestId: string;
@@ -125,11 +275,31 @@ export function ApprovalQuestionPanel({
 }: ApprovalQuestionPanelProps) {
 	const { t } = useT();
 	const commentId = useId();
+	const answerInputRef = useRef<HTMLInputElement>(null);
 	const draft = reconcileDraft(storedDraft, questions);
 	useLayoutEffect(() => {
 		if (draft !== storedDraft) setDraft(draft);
 	}, [draft, storedDraft, setDraft]);
 	const activeIndex = Math.min(draft.activeIndex, Math.max(questions.length - 1, 0));
+
+	// An IME can update the editor before notifying React. Snapshot that
+	// live value before an option re-render, tab unmount, or submission;
+	// waiting for compositionend/blur can be too late once the request exits.
+	const readLiveDraft = (): QuestionDraft => {
+		const input = answerInputRef.current;
+		const question = questions[activeIndex];
+		if (!input || !question) return draft;
+		const key = questionKey(question, activeIndex);
+		const previous = draft.answers.get(key) ?? { selected: [], text: "", completed: false };
+		if (input.value === previous.text) return draft;
+		return {
+			...draft,
+			answering: true,
+			answers: new Map(draft.answers).set(key, {
+				...previous, text: input.value, textAnswered: false, invalidated: false,
+			}),
+		};
+	};
 
 	const patchDraft = (
 		index: number,
@@ -138,11 +308,12 @@ export function ApprovalQuestionPanel({
 		const question = questions[index];
 		if (!question) return;
 		const key = questionKey(question, index);
-		const previous = draft.answers.get(key) ?? { selected: [], text: "", completed: false };
+		const liveDraft = readLiveDraft();
+		const previous = liveDraft.answers.get(key) ?? { selected: [], text: "", completed: false };
 		setDraft({
-			...draft,
-			answering: patch.text !== undefined ? true : draft.answering,
-			answers: new Map(draft.answers).set(key, {
+			...liveDraft,
+			answering: patch.text !== undefined ? true : liveDraft.answering,
+			answers: new Map(liveDraft.answers).set(key, {
 				...previous,
 				invalidated: false,
 				selected: patch.selected ?? previous.selected,
@@ -169,7 +340,7 @@ export function ApprovalQuestionPanel({
 		}
 	};
 
-	const submit = (): void => onSubmit(questionDraftResponse(draft, questions));
+	const submit = (): void => onSubmit(questionDraftResponse(readLiveDraft(), questions));
 	const isLastQuestion = activeIndex >= questions.length - 1;
 	const unanswered = questions.filter((question, index) => {
 		const entry = draft.answers.get(questionKey(question, index));
@@ -188,7 +359,7 @@ export function ApprovalQuestionPanel({
 						aria-selected={index === activeIndex}
 						className="th-approval-question-tab"
 						data-approval-primary={index === 0 ? "" : undefined}
-						onClick={() => setDraft({ ...draft, activeIndex: index })}
+						onClick={() => setDraft({ ...readLiveDraft(), activeIndex: index })}
 					>
 						{question.header ??
 							question.question ??
@@ -218,35 +389,14 @@ export function ApprovalQuestionPanel({
 								<div className="th-approval-question-options">
 									{options.map((option) => {
 										const label = option.label ?? "";
-										const selected = entry.selected.includes(label);
 										return (
-											<button
+											<OptionButton
 												key={label}
-												type="button"
-												className="th-approval-question-option"
-												aria-pressed={selected}
-												onClick={() => toggleOption(index, label)}
-												// Keyboard continuity: tapping a non-input moves focus
-												// to it, blurring the answer box below and dismissing
-												// the software keyboard on iOS - so a user mixing
-												// typed answers with option taps must reopen the
-												// keyboard on every tap. Canceling the pointerdown
-												// default keeps focus in the input (the click still
-												// fires); mousedown mirrors it for environments
-												// without pointer events. Tabs and the action row
-												// keep default focus behavior: they switch or end
-												// the editing context, where focus-follows-tap is
-												// the honest outcome.
-												onPointerDown={(event) => event.preventDefault()}
-												onMouseDown={(event) => event.preventDefault()}
-											>
-												<span className="th-approval-question-option-label">{label}</span>
-												{option.description && (
-													<span className="th-approval-question-option-description">
-														{option.description}
-													</span>
-												)}
-											</button>
+												label={label}
+												description={option.description}
+												selected={entry.selected.includes(label)}
+												onToggle={() => toggleOption(index, label)}
+											/>
 										);
 									})}
 								</div>
@@ -255,6 +405,7 @@ export function ApprovalQuestionPanel({
 								 * submitted as THIS question's answer alongside any selected
 								 * option - never as the overall comment below. */}
 								<input
+									ref={answerInputRef}
 									type="text"
 									className="th-approval-input th-approval-question-text"
 									placeholder={t("approval.question.answerOptionPlaceholder")}
@@ -264,6 +415,7 @@ export function ApprovalQuestionPanel({
 							</>
 						) : (
 							<input
+								ref={answerInputRef}
 								type="text"
 								className="th-approval-input th-approval-question-text"
 								placeholder={t("approval.question.answerPlaceholder")}
@@ -284,7 +436,7 @@ export function ApprovalQuestionPanel({
 					className="th-approval-input th-approval-question-comment"
 					placeholder={t("approval.question.commentPlaceholder")}
 					value={draft.comment}
-					onChange={(event) => setDraft({ ...draft, comment: event.target.value })}
+					onChange={(event) => setDraft({ ...readLiveDraft(), comment: event.target.value })}
 				/>
 			</div>
 			<div className="th-approval-question-actions">
@@ -301,7 +453,7 @@ export function ApprovalQuestionPanel({
 					<button
 						type="button"
 						className="th-btn"
-						onClick={() => setDraft({ ...draft, activeIndex: activeIndex + 1 })}
+						onClick={() => setDraft({ ...readLiveDraft(), activeIndex: activeIndex + 1 })}
 					>
 						{t("approval.question.next")}
 					</button>
