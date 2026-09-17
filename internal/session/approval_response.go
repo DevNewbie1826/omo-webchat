@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
@@ -34,24 +35,54 @@ func (s *Session) RespondApprovalFrame(ctx context.Context, frame wscontract.App
 	return s.respondExtensionUI(ctx, requestID, response)
 }
 
+var errApprovalExpired = errors.New("This question has expired. Ask the assistant to request it again.")
+
 func (s *Session) respondExtensionUI(ctx context.Context, requestID string, response omorpc.ExtensionUIResponse) error {
 	if err := s.prepareWrite(ctx); err != nil {
+		s.lifecycleMu.Lock()
+		s.resolveApprovalLocked(response.ID, requestID, "expired", errApprovalExpired.Error())
+		s.lifecycleMu.Unlock()
 		return err
 	}
 	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	route, err := s.routeLocked()
-	// Dismiss before the ack so live subscribers and replay agree.
+	_, active := s.activeApprovals[response.ID]
+	if err == nil && !active {
+		err = errApprovalExpired
+	}
+	if err == nil {
+		response.SessionID = route
+		// Serialize lifecycle dispatch with the write: a resumed engine stream
+		// cannot overtake the ack, and failed writes never receive a success ack.
+		// Notify is one-way; success proves a write, not engine acceptance.
+		err = s.client.Notify(ctx, response)
+	}
+	if err != nil {
+		s.resolveApprovalLocked(response.ID, requestID, "expired", errApprovalExpired.Error())
+		return err
+	}
+	delete(s.activeApprovals, response.ID)
 	if s.pendingApproval != nil && s.pendingApproval.ApprovalID == response.ID {
 		s.pendingApproval = nil
 	}
-	if err == nil {
-		s.publishLocked(Frame{Kind: FrameAck, SessionID: s.durableID, Command: omorpc.CmdExtensionUIResponse, RequestID: requestID, ApprovalID: response.ID})
+	s.publishLocked(Frame{Kind: FrameAck, SessionID: s.durableID, Command: omorpc.CmdExtensionUIResponse, RequestID: requestID, ApprovalID: response.ID})
+	return nil
+}
+
+// A terminal outcome is distinct from a successful answer acknowledgement.
+// Clear only this request; a late response must not retire its replacement.
+func (s *Session) resolveApprovalLocked(id, requestID, outcome, message string) {
+	delete(s.activeApprovals, id)
+	if s.pendingApproval != nil && s.pendingApproval.ApprovalID == id {
+		s.pendingApproval = nil
 	}
-	s.lifecycleMu.Unlock()
-	if err != nil {
-		return err
+	payload := map[string]any{"id": id, "outcome": outcome}
+	if requestID != "" {
+		payload["requestId"] = requestID
 	}
-	routed := response
-	routed.SessionID = route
-	return s.client.Notify(ctx, routed)
+	if message != "" {
+		payload["message"] = message
+	}
+	s.publishLocked(Frame{Kind: FrameApprovalResolved, SessionID: s.durableID, Data: payload})
 }
