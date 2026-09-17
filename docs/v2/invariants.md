@@ -310,6 +310,7 @@ Client -> SPA server (decoded ONLY through `ParseClientFrame` — keep this chok
 - `ping` — liveness; answered by `pong` without a session.
 - `chat.create` — `{wsId, chatId, recovery?}`: bind socket to a chat (the only frame that may run before a session is bound). For an in-place acquisition, `recovery` is an optional explicit user authorization to stop and reopen the exact original session after a conflict; it never authorizes a fresh fallback.
 - `chat.send` — user prompt (+ optional `images`); refused while run/compaction active (invariant 16).
+- Every `images` item is forwarded to the engine as a complete content block carrying `type: "image"`, `data`, and `mimeType`; the engine splices items directly into the user message content and adds no discriminator of its own.
 - `chat.abort` — abort current run (fire-and-forget `abort` to provider).
 - `chat.set` — set model / thinking level; acks with `requestId` then `control.result`.
 - `approval.respond` — answer an approval request (ack ordered before resumed stream).

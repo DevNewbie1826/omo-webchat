@@ -796,7 +796,7 @@ func (c *connection) handleChatSend(ctx context.Context, workspaceID, chatID str
 	}
 	op.images = make([]map[string]string, len(f.Run.Images))
 	for i, image := range f.Run.Images {
-		op.images[i] = map[string]string{"data": image.Data, "mimeType": image.MimeType}
+		op.images[i] = map[string]string{"type": "image", "data": image.Data, "mimeType": image.MimeType}
 	}
 	if op.kind != "prompt" && op.kind != "steer" && op.kind != "follow_up" && op.kind != "followUp" {
 		c.sendError("bad_frame", "unknown run kind", "chat.send", op.requestID)
