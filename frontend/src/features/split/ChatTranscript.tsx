@@ -573,8 +573,21 @@ export function ChatTranscript({
   // shifts any other row's key and no visible row remounts. Only after
   // identity assignment are zero-renderable-block rows hidden from the
   // virtualized window.
+  const itemKeys = useMemo(() => transcriptItemKeys(items), [items]);
+  // Mounting each earlier-history chunk changes the scrollport height before
+  // the bottom pin catches up. While following during fill, keep the same
+  // leading row instead; release on completion, reader takeover or a missing
+  // seam (for example an orphan result folded into its loaded invocation).
+  const fillHoldKeyRef = useRef<string | null>(null);
+  if (!historyWarming || !isFollowing()) fillHoldKeyRef.current = null;
+  else if (fillHoldKeyRef.current === null) fillHoldKeyRef.current = itemKeys[0] ?? null;
+  const holdIndex = fillHoldKeyRef.current === null ? 0 : itemKeys.indexOf(fillHoldKeyRef.current);
+  const heldItems = useMemo(() => holdIndex > 0 ? items.slice(holdIndex) : items, [items, holdIndex]);
+  const heldKeys = useMemo(() => holdIndex > 0 ? itemKeys.slice(holdIndex) : itemKeys, [itemKeys, holdIndex]);
+
   const { rows, keys } = useMemo(() => {
-    const allKeys = transcriptItemKeys(items);
+    const items = heldItems;
+    const allKeys = heldKeys;
     const rows: TranscriptItem[] = [];
     const keys: string[] = [];
     items.forEach((item, index) => {
@@ -638,7 +651,7 @@ export function ChatTranscript({
       leadingKeyRef.current = leading;
     }
     return { rows, keys };
-  }, [items, rowMetrics, estimateCache]);
+  }, [heldItems, heldKeys, rowMetrics, estimateCache]);
   // Include rowMetrics so a typography/width update rebuilds measurements
   // in the same render that installs the new estimates. Content-only
   // updates still hit the frozen per-key estimate cache; measured sizes
@@ -852,7 +865,10 @@ export function ChatTranscript({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focused, restoreVersion, virtualizer]);
 
-  useEffect(() => {
+  // Before paint: the held earlier history mounts in one commit, so a pin
+  // scheduled after paint would let the reader see one frame at the
+  // pre-admission offset.
+  useLayoutEffect(() => {
     if (rows.length === 0 || !isFollowing()) return;
     virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
   }, [rows.length, isFollowing, virtualizer]);
