@@ -1,5 +1,5 @@
 import type { ChatClientFrame, ChatServerFrame, ContentBlock, ToolPayload } from "../../lib/chatWs";
-import type { ApprovalRequest } from "./ApprovalDock";
+import type { ApprovalRequest } from "./QuestionWindow";
 import type { UiMessage } from "./chatEntries";
 import { messageText, parseEntries } from "./chatEntries";
 import type { ChatDraft, ToolEntry, ToolResultImage } from "./chatSessionTypes";
@@ -144,7 +144,7 @@ export function mergeToolResultMedia(
   return changed ? next : null;
 }
 
-/** Map a server approval frame onto the dock request, keeping defined fields only. */
+/** Map a server approval frame onto the window request, keeping defined fields only. */
 export function approvalRequestOf(frame: ApprovalFrame & { readonly method: ApprovalRequest["method"] }): ApprovalRequest {
   return {
     id: frame.id,

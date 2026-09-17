@@ -85,7 +85,7 @@ describe("ChatPane tool cards and approvals", () => {
 		return { deliver: (f) => deliver?.(f), sent };
 	}
 
-	it("shows an inline approval dock and sends approval.respond on choice", () => {
+	it("auto-opens the question window for an approval and sends approval.respond on choice", () => {
 		const { deliver, sent } = renderWithFakeConnect();
 		act(() => {
 			deliver({
@@ -98,16 +98,17 @@ describe("ChatPane tool cards and approvals", () => {
 			});
 		});
 		expect(document.body.textContent).toContain("Allow bash?");
-		// Inline dock: no modal overlay, and the dock lives inside the pane
-		// column as the band directly above the composer.
-		expect(document.querySelector(".th-modal-overlay")).toBeNull();
+		// Separate window: a modal overlay hosts the request, and the notice
+		// band lives inside the pane column as the band directly above the
+		// composer (the slot the inline dock occupied).
+		expect(document.querySelector(".th-modal-overlay")).not.toBeNull();
 		const column = container.querySelector<HTMLElement>(".th-chat-main");
 		expect(column).not.toBeNull();
-		const dock = container.querySelector<HTMLElement>(".th-approval-dock");
-		expect(dock).not.toBeNull();
-		expect(column?.contains(dock as Node)).toBe(true);
-		expect(dock?.previousElementSibling?.classList.contains("th-chat-controls")).toBe(true);
-		expect(dock?.nextElementSibling?.classList.contains("th-chat-input")).toBe(true);
+		const band = container.querySelector<HTMLElement>(".th-question-band");
+		expect(band).not.toBeNull();
+		expect(column?.contains(band as Node)).toBe(true);
+		expect(band?.previousElementSibling?.classList.contains("th-chat-controls")).toBe(true);
+		expect(band?.nextElementSibling?.classList.contains("th-chat-input")).toBe(true);
 		const buttons = document.querySelectorAll<HTMLButtonElement>(
 			".th-approval-options .th-btn",
 		);
@@ -123,10 +124,12 @@ describe("ChatPane tool cards and approvals", () => {
 			id: "approve-1",
 			value: "Allow",
 		});
-		expect(document.querySelector(".th-approval-dock")).toBeNull();
+		// The answered request leaves the pane: window and band both go.
+		expect(document.querySelector(".th-modal-overlay")).toBeNull();
+		expect(container.querySelector(".th-question-band")).toBeNull();
 	});
 
-	it("dismisses the approval dock when another client answers the request", () => {
+	it("dismisses the approval window when another client answers the request", () => {
 		const { deliver } = renderWithFakeConnect();
 		act(() => {
 			deliver({
@@ -138,7 +141,7 @@ describe("ChatPane tool cards and approvals", () => {
 				options: ["Allow", "Block"],
 			});
 		});
-		expect(document.querySelector(".th-approval-dock")).not.toBeNull();
+		expect(document.querySelector(".th-modal")).not.toBeNull();
 
 		// The ack carries the provider-native request id, not the answering
 		// client's control requestId.
@@ -150,10 +153,10 @@ describe("ChatPane tool cards and approvals", () => {
 				id: "approve-1",
 			});
 		});
-		expect(document.querySelector(".th-approval-dock")).toBeNull();
+		expect(document.querySelector(".th-modal")).toBeNull();
 	});
 
-	it("keeps the approval dock open for an ack of a different request", () => {
+	it("keeps the approval window open for an ack of a different request", () => {
 		const { deliver } = renderWithFakeConnect();
 		act(() => {
 			deliver({
@@ -172,7 +175,7 @@ describe("ChatPane tool cards and approvals", () => {
 				id: "approve-2",
 			});
 		});
-		expect(document.querySelector(".th-approval-dock")).not.toBeNull();
+		expect(document.querySelector(".th-modal")).not.toBeNull();
 	});
 
 	it("restores history from an entries frame without duplicating on later messages", () => {

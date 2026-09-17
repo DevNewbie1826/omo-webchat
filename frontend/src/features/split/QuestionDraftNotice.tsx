@@ -38,9 +38,9 @@ export function QuestionDraftNotice({ answers, questions, removedQuestions }: {
  const affectedKeys = JSON.stringify([...removed, ...affected].map(question => question.key));
  useLayoutEffect(() => {
   if (affectedKeys === "[]") return;
-  // Reveal a new notice in the dock's own scrollport, never scroll the page
-  // or move keyboard focus. It remains in normal flow so controls stay usable.
-  const scrollport = noticeRef.current?.closest(".th-approval-dock-body, .th-approval-dock-summary");
+  // Reveal a new notice in the window body's own scrollport, never scroll the
+  // page or move keyboard focus. It remains in normal flow so controls stay usable.
+  const scrollport = noticeRef.current?.closest(".th-question-window-body");
   if (scrollport) scrollport.scrollTop = 0;
  }, [affectedKeys]);
  return <div ref={noticeRef} role="status" aria-atomic="true" className="th-question-draft-notice">

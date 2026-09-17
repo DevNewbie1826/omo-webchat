@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useT } from "../../i18n";
 import type { ChatClient, ChatServerFrame, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
-import type { ApprovalRequest } from "./ApprovalDock";
+import type { ApprovalRequest } from "./QuestionWindow";
 import type { ApprovalFrame } from "../../lib/contract/types_gen";
 import { useConfirmedControls } from "./chatConfirmedControls";
 import { concatEntries, messageText, type UiMessage } from "./chatEntries";

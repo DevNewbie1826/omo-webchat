@@ -58,13 +58,13 @@ describe("computeShelfAvailableSpace", () => {
     expect(computeShelfAvailableSpace(column, selfPanel)).toBe(462);
   });
 
-  it("counts the approval dock as a fixed band above the composer", () => {
+  it("counts a notice band as a fixed band above the composer", () => {
     const column = measured("th-chat-main", 800);
     const content = measured("th-chat-main-content", 0);
     const scrollport = measured("th-chat-scrollport", 400);
     content.append(scrollport);
     const controls = measured("th-chat-controls", 24);
-    const dock = measured("th-approval-dock", 60);
+    const dock = measured("th-question-band", 60);
     const composer = measured("th-chat-input", 100);
     column.append(content, controls, dock, composer);
     document.body.appendChild(column);
@@ -84,7 +84,7 @@ describe("computeShelfAvailableSpace", () => {
 	it("counts the measured panel's own margins against its budget", () => {
 		const column = measured("th-chat-main", 800);
 		const composer = measured("th-chat-input", 100);
-		const dock = measured("th-approval-dock", 60, "4px");
+		const dock = measured("th-question-band", 60, "4px");
 		dock.style.marginBottom = "2px";
 		column.append(dock, composer);
 		document.body.appendChild(column);
@@ -98,7 +98,7 @@ describe("computeShelfAvailableSpace", () => {
 		const column = measured("th-chat-main", 300);
 		const controls = measured("th-chat-controls", 24);
 		const composer = measured("th-chat-input", 100);
-		const dock = measured("th-approval-dock", 60);
+		const dock = measured("th-question-band", 60);
 		column.append(controls, dock, composer);
 		document.body.appendChild(column);
 
@@ -119,7 +119,7 @@ describe("computeShelfAvailableSpace", () => {
 	it("excludes the panel under measurement from the fixed bands", () => {
 		const column = measured("th-chat-main", 800);
 		const composer = measured("th-chat-input", 100);
-		const dock = measured("th-approval-dock", 60);
+		const dock = measured("th-question-band", 60);
 		column.append(composer, dock);
 		document.body.appendChild(column);
 
