@@ -25,7 +25,10 @@ type StateSetter<T> = (value: T | ((current: T) => T)) => void;
 type Current<T> = { current: T };
 type ModelsFrame = Extract<ChatServerFrame, { readonly type: "models" }>;
 
+type HistoryPage = Extract<ChatServerFrame, { type: "entries" }>;
+
 interface ChatFrameHandlerBindings {
+  readonly acceptHistoryPage?: (frame: HistoryPage) => { frame: HistoryPage; resumed: boolean };
   readonly t: Translate;
   readonly controls: ReturnType<typeof useConfirmedControls>;
   readonly streaming: ReturnType<typeof useStreamingBuffer>;
@@ -597,6 +600,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
             && bindings.resyncGenerationRef.current !== generation) return;
           const warmed = bindings.pageBuffer.prepend(frame.entries, frame.historyComplete);
           if (warmed === null) return;
+          bindings.acceptHistoryPage?.(frame);
           reconcileEntries(warmed, frame.sessionId);
           return;
         }
@@ -604,8 +608,10 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         const generation = bindings.claimHistoryGeneration(connectionGeneration, terminal);
         if (bindings.resyncGenerationRef.current !== null
           && bindings.resyncGenerationRef.current !== generation) return;
+        const accepted = bindings.acceptHistoryPage?.(frame);
+        const page = accepted?.frame ?? frame;
         if (!terminal) {
-          bindings.pageBuffer.push(frame.entries);
+          bindings.pageBuffer.push(page.entries);
           bindings.armHistoryStall(true);
           return;
         }
@@ -619,8 +625,8 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // the matching terminal page also proves the replay landed and closes
         // its page-buffer fence.
         bindings.endResync(generation, true);
-        reconcileEntries(bindings.pageBuffer.consume(frame.entries, frame.historyComplete), frame.sessionId);
-        bindings.setRestoreVersion((version) => version + 1);
+        reconcileEntries(bindings.pageBuffer.consume(page.entries, page.historyComplete), page.sessionId);
+        if (!accepted?.resumed) bindings.setRestoreVersion((version) => version + 1);
         return;
       }
       default:

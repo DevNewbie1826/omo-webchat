@@ -28,6 +28,8 @@ export function useChatSession(
   const onChatNameRef = useRef(onChatName);
   const markOpenRef = useRef<() => number>(() => 0);
   const markCloseRef = useRef<() => void>(() => undefined);
+  const historyResumeRef = useRef(frameState.getHistoryResume);
+  historyResumeRef.current = frameState.getHistoryResume;
   const requestSeqRef = useRef(0);
   // Receipt objects remain the owners while their responses are in flight.
   // A new receipt supersedes a surface even when it is optimistically empty.
@@ -50,16 +52,18 @@ export function useChatSession(
     // with session_mismatch, so the initial stats request waits for ready and
     // fires at most once per connection.
     let initialStatsSent = false;
-    const sendInitialFrames = (client: ChatClient): void => {
-      client.send(createFrame);
+    const sendInitialFrames = (client: ChatClient, reconnected = false): void => {
+      const resume = reconnected ? historyResumeRef.current() : undefined;
+      client.send({ ...createFrame, ...(resume ? { resume } : {}) });
     };
     const client = connect({
+      getHistoryResume: () => historyResumeRef.current(),
       onOpen: () => {
         const reconnected = opened;
         opened = true;
         connectionGenerationRef.current = markOpenRef.current();
         if (clientRef.current) {
-          sendInitialFrames(clientRef.current);
+          sendInitialFrames(clientRef.current, reconnected);
           // Reconnects replay the activity cache: the server answers with the
           // extensionEvent frames missed while the socket was down. The initial
           // open skips it - the attach flow delivers the snapshots itself.

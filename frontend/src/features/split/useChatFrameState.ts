@@ -4,7 +4,8 @@ import type { ChatClient, ChatServerFrame, CommandEntry, ContextUsage, JsonObjec
 import type { ApprovalRequest } from "./ApprovalDock";
 import type { ApprovalFrame } from "../../lib/contract/types_gen";
 import { useConfirmedControls } from "./chatConfirmedControls";
-import { messageText, type UiMessage } from "./chatEntries";
+import { concatEntries, messageText, type UiMessage } from "./chatEntries";
+import type { HistoryResumeCursor } from "../../lib/contract/types_gen";
 import {
   applyActivityEvent,
   applyTaskHistorySnapshot,
@@ -111,6 +112,42 @@ export function mergeTranscriptItems(
   return items;
 }
 
+type HistoryPage = Extract<ChatServerFrame, { type: "entries" }>;
+
+export function createHistoryResumeCoverage() {
+  let committed: unknown[] = [];
+  let pending: unknown[] = [];
+  let cursor: HistoryResumeCursor | undefined;
+  const id = (entry: unknown): string | undefined => typeof entry === "object" && entry !== null && "id" in entry && typeof entry.id === "string" ? entry.id : undefined;
+  return {
+    cursor: () => cursor,
+    reconnect: () => { pending = []; },
+    reset: () => { committed = []; pending = []; cursor = undefined; },
+    accept(frame: HistoryPage): { frame: HistoryPage; resumed: boolean } {
+      const echo = frame.resume;
+      const resumed = echo !== undefined && cursor !== undefined
+        && echo.sessionId === cursor.sessionId && echo.firstEntryId === cursor.firstEntryId
+        && echo.lastEntryId === cursor.lastEntryId && echo.historyComplete === cursor.historyComplete;
+      if (frame.segment === "head") {
+        if (committed.length === 0) return { frame, resumed: false };
+        committed = concatEntries([frame.entries, committed]);
+      } else {
+        pending.push(frame.entries);
+        if (frame.final === false) return { frame, resumed };
+        committed = concatEntries(resumed ? [committed, ...pending] : pending);
+        pending = [];
+      }
+      const firstEntryId = id(committed[0]);
+      const lastEntryId = id(committed[committed.length - 1]);
+      const sessionId = frame.historySessionId ?? (frame.segment === "head" ? cursor?.sessionId : undefined);
+      cursor = firstEntryId && lastEntryId && sessionId ? {
+        sessionId, firstEntryId, lastEntryId, historyComplete: frame.historyComplete === true,
+      } : undefined;
+      return { frame: resumed && frame.segment !== "head" ? { ...frame, entries: committed } : frame, resumed };
+    },
+  };
+}
+
 export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">) {
   const { store: sends, requests: sendRequests } = useSessionSends(session);
   const { cancelRecovery } = useSessionDraft(session);
@@ -120,7 +157,12 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const ledger = controls.ledger;
   const [messages, setMessages] = useState<readonly UiMessage[]>([]);
   const streaming = useStreamingBuffer();
-  const pageBuffer = useEntriesPageBuffer();
+  const entriesBuffer = useEntriesPageBuffer();
+  const resumeCoverage = useRef(createHistoryResumeCoverage());
+  const pageBuffer = {
+    ...entriesBuffer,
+    reset: () => { entriesBuffer.reset(); resumeCoverage.current.reconnect(); },
+  };
   const [thinking, setThinking] = useState("");
   const [toolCalls, setToolCalls] = useState<Readonly<Record<string, ToolEntry>>>({});
   const [running, setRunning] = useState(false);
@@ -363,6 +405,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   // already released the action's own busy marker, fencing older page streams
   // away from the reset buffer.
   const beginResync = (): void => {
+    resumeCoverage.current.reset();
     todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
     const generation = beginReplay(connectionGenerationRef.current);
     resyncGenerationRef.current = generation;
@@ -469,6 +512,15 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   };
 
   const baseHandleFrame = createChatFrameHandler({
+    acceptHistoryPage: (frame) => {
+      const accepted = resumeCoverage.current.accept(frame);
+      if (accepted.resumed && frame.segment !== "head" && frame.final !== false) {
+        pageBuffer.reset();
+        snapshotMessagesRef.current = [];
+        snapshotVersionRef.current = -1;
+      }
+      return accepted;
+    },
     t,
     controls,
     streaming,
@@ -695,6 +747,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     sendDraft({ text, image: null }, requestId, sessionId, client, "steer");
 
   const markOpen = (): number => {
+    resumeCoverage.current.reconnect();
     todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
     applyRecovery(recoveryAfterOpen(recoveryRef.current));
     socketOpenRef.current = true;
@@ -748,6 +801,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   };
 
   const beginExternalWriteRecovery = (): void => {
+    resumeCoverage.current.reset();
     todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
     externalRecoveryPendingRef.current = true;
     externalRecoveryReadyRef.current = false;
@@ -819,6 +873,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     notices,
     recovery,
     handleFrame,
+    getHistoryResume: () => resumeCoverage.current.cursor(),
     beginActivityHydration,
     cancelActivityHydration,
     hydrateActivities,
