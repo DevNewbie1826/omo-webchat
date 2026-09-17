@@ -282,8 +282,8 @@ describe("ChatPane send-error banner", () => {
 		expect(sent.filter((frame) => frame.type === "chat.send")[0]).toMatchObject({
 			run: { kind: "steer", message: "redirect" },
 		});
-		// The steer summary lives in the status strip, not the transcript.
-		expect(statusText()).toContain("chat.steerPending");
+		// The steer confirmation lives in the status strip, not the transcript.
+		expect(statusText()).toContain("chat.steerSent");
 		expect(container.querySelectorAll(".th-chat-scrollport .th-chat-msg--user")).toHaveLength(0);
 
 		submit("while running");

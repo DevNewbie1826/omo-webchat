@@ -75,6 +75,9 @@ export type HistoryStatus = "loading" | "loaded" | "failed";
 // Inactivity window since the last sign of history progress: active multi-page
 // loads may run indefinitely, while a silent provider cannot hide advisories forever.
 const HISTORY_STALL_MS = 30_000;
+/** How long a sent steer is confirmed in the status strip. The engine queue
+ *  mirror, not this line, is the durable record of what is parked. */
+const STEER_CONFIRM_MS = 3_000;
 
 /**
  * One row of the unified transcript render list: a conversation entry or an
@@ -280,8 +283,43 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   // summary therefore outlives the request itself and retires on its canonical
   // echo, the run terminal, or a lost socket.
   const [steerPending, setSteerPending] = useState<readonly SteerPendingItem[]>([]);
-  const dropSteerPending = (requestId: string): void =>
-    setSteerPending(pending => pending.filter(item => item.requestId !== requestId));
+  const steerPendingRef = useRef<readonly SteerPendingItem[]>([]);
+  const steerConfirmTimersRef = useRef<Map<string, number>>(new Map());
+  // Sent steers in FIFO order, independent of the confirmation window. A late
+  // echo must consume the occurrence it belongs to even after that occurrence's
+  // confirmation has already expired, so it cannot steal a later same-text send.
+  const outstandingSteersRef = useRef<Array<{ readonly requestId: string; readonly text: string }>>([]);
+  const publishSteerPending = (next: readonly SteerPendingItem[]): void => {
+    steerPendingRef.current = next;
+    setSteerPending(next);
+  };
+  const clearSteerConfirmTimers = (): void => {
+    for (const timer of steerConfirmTimersRef.current.values()) window.clearTimeout(timer);
+    steerConfirmTimersRef.current.clear();
+  };
+  const dropSteerPending = (requestId: string): void => {
+    const timer = steerConfirmTimersRef.current.get(requestId);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      steerConfirmTimersRef.current.delete(requestId);
+    }
+    publishSteerPending(steerPendingRef.current.filter(item => item.requestId !== requestId));
+  };
+  const dropOutstandingSteer = (requestId: string): void => {
+    outstandingSteersRef.current = outstandingSteersRef.current.filter(item => item.requestId !== requestId);
+  };
+  const clearSteerPending = (): void => {
+    clearSteerConfirmTimers();
+    outstandingSteersRef.current = [];
+    publishSteerPending([]);
+  };
+  /** Confirm one sent steer for its own window; each steer expires on its own. */
+  const confirmSteer = (requestId: string, text: string): void => {
+    publishSteerPending([...steerPendingRef.current, { requestId, text }]);
+    outstandingSteersRef.current = [...outstandingSteersRef.current, { requestId, text }];
+    steerConfirmTimersRef.current.set(requestId,
+      window.setTimeout(() => dropSteerPending(requestId), STEER_CONFIRM_MS));
+  };
   const messagesRef = useRef<readonly UiMessage[]>([]);
   const runningRef = useRef(false);
   const submitLatchRef = useRef(false);
@@ -436,7 +474,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     runningRef.current = false;
     sends.endRun();
     // A steer the run never consumed cannot still be pending against it.
-    setSteerPending([]);
+    clearSteerPending();
     setRunning(false);
     streaming.clear();
     setThinking("");
@@ -506,7 +544,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     // A reloaded branch already contains any accepted steer, so a retained
     // occurrence from the replaced load must never resolve against it.
     pendingSteersRef.current = [];
-    setSteerPending([]);
+    clearSteerPending();
     setHistoryWarming(true);
     setHistoryStatus("loading");
     applyError("");
@@ -600,12 +638,14 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   // the engine consuming that steer, which also retires its pending summary.
   const bindPendingSteerEcho = (sessionId: string, message: UiMessage): void => {
     const text = messageText(message);
-    // The echo materialized: the engine has consumed this steer, so its
-    // pending summary retires here rather than on the transport ACK.
-    setSteerPending(pending => {
-      const match = pending.find(item => item.text === text);
-      return match === undefined ? pending : pending.filter(item => item !== match);
-    });
+    // Correlate the echo with the oldest outstanding send of this text, not
+    // with whichever confirmation is still on screen. Retiring that request id
+    // is a no-op when its window already expired.
+    const matched = outstandingSteersRef.current.find(item => item.text === text);
+    if (matched !== undefined) {
+      outstandingSteersRef.current = outstandingSteersRef.current.filter(item => item !== matched);
+      dropSteerPending(matched.requestId);
+    }
     if (pendingSteersRef.current.length === 0) return;
     const match = pendingSteersRef.current.find(pending =>
       pending.sessionId === sessionId && pending.echo === undefined && pending.text === text);
@@ -620,11 +660,12 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   };
   const dropPendingSteer = (requestId: string): void => {
     pendingSteersRef.current = pendingSteersRef.current.filter(pending => pending.requestId !== requestId);
+    dropOutstandingSteer(requestId);
     dropSteerPending(requestId);
   };
   const dropAllPendingSteers = (): void => {
     pendingSteersRef.current = [];
-    setSteerPending([]);
+    clearSteerPending();
   };
 
   const baseHandleFrame = createChatFrameHandler({
@@ -826,7 +867,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
       replaceToolCalls({});
     }
     if (kind === "steer") {
-      setSteerPending(pending => [...pending, { requestId, text }]);
+      confirmSteer(requestId, text);
       if (pageBuffer.historyRootKnown()) {
         const marks = steerMarks(sessionId);
         const ordinal = Math.max(messagesRef.current.filter(message => message.role === "user").length, ...marks.map(mark => mark.ordinal)) + 1;
@@ -855,6 +896,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
       if (kind === "steer") {
         forgetSteerMark(sessionId, requestId);
         pendingSteersRef.current = pendingSteersRef.current.filter(pending => pending.requestId !== requestId);
+        dropOutstandingSteer(requestId);
         dropSteerPending(requestId);
       }
     }
@@ -896,7 +938,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     setConnected(true);
     pageBuffer.reset();
     pendingSteersRef.current = [];
-    setSteerPending([]);
+    clearSteerPending();
     return connectionGeneration;
   };
   const markClose = (): void => {
@@ -907,8 +949,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     clearHistoryStall();
     sends.disconnect(socketRef.current);
     // The socket carried the only evidence of the steer's fate; recovery
-    // republishes it through history rather than a stale live summary.
-    setSteerPending([]);
+    // republishes it through history rather than a stale live confirmation.
+    clearSteerPending();
     const closedGeneration = connectionGenerationRef.current;
     const closedReplays = replayQueueRef.current.filter((candidate) =>
       candidate.connectionGeneration === closedGeneration);
@@ -947,7 +989,10 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     setHistoryStatus((current) => current === "loading" ? "failed" : current);
   };
 
-  useEffect(() => () => clearHistoryStall(), []);
+  useEffect(() => () => {
+    clearHistoryStall();
+    clearSteerConfirmTimers();
+  }, []);
 
   return {
     messages,

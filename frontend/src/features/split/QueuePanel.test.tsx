@@ -1,9 +1,10 @@
+import { readFileSync } from "node:fs";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nContext, translate, type I18nValue } from "../../i18n";
 import { QueuePanel } from "./QueuePanel";
-import type { QueueEngineItem, QueueEngineSummary, QueuePlaceholder, QueueSlotItem, SteerPendingItem } from "./chatSessionTypes";
+import type { QueueEngineItem, QueueEngineSummary, QueuePlaceholder, QueueSlotItem } from "./chatSessionTypes";
 
 const i18n: I18nValue = {
   lang: "en",
@@ -25,6 +26,7 @@ const item = (id: string, text: string): QueueSlotItem => ({
 describe("QueuePanel", () => {
   let root: Root;
   let container: HTMLDivElement;
+  let styleEl: HTMLStyleElement | null = null;
   let removed: string[];
   let moved: Array<{ itemId: string; toIndex: number }>;
   let cleared: string[];
@@ -40,6 +42,8 @@ describe("QueuePanel", () => {
   });
 
   afterEach(async () => {
+    styleEl?.remove();
+    styleEl = null;
     await act(async () => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
@@ -48,7 +52,6 @@ describe("QueuePanel", () => {
   interface RenderOptions {
     readonly items?: readonly QueueSlotItem[];
     readonly placeholders?: readonly QueuePlaceholder[];
-    readonly steerPending?: readonly SteerPendingItem[];
     readonly engine?: QueueEngineSummary;
   }
 
@@ -63,7 +66,6 @@ describe("QueuePanel", () => {
             items={options.items ?? []}
             engine={options.engine ?? { pendingMessageCount: 0, ordered: [] }}
             placeholders={options.placeholders ?? []}
-            steerPending={options.steerPending ?? []}
             onRemove={(itemId) => {
               removed.push(itemId);
             }}
@@ -96,13 +98,37 @@ describe("QueuePanel", () => {
     expect(header()?.getAttribute("aria-expanded")).toBe("false");
   });
 
+  it("names the engine queue by what is parked in it", () => {
+    // A parked steer and a queued follow-up mean different things to the user;
+    // the mirrored rows carry the mode, so the header says which it is.
+    render({ engine: engineOf(1, [{ text: "redirect now", mode: "steer" }]) });
+    expect(header()?.textContent).toContain(translate("en", "queue.engineSteer", { count: 1 }));
+
+    render({ engine: engineOf(2, [{ text: "later", mode: "followUp" }, { text: "also later", mode: "followUp" }]) });
+    expect(header()?.textContent).toContain(translate("en", "queue.engineFollowUp", { count: 2 }));
+
+    render({ engine: engineOf(3, [
+      { text: "redirect now", mode: "steer" },
+      { text: "later", mode: "followUp" },
+      { text: "also later", mode: "followUp" },
+    ]) });
+    expect(header()?.textContent).toContain(translate("en", "queue.engineSteer", { count: 1 }));
+    expect(header()?.textContent).toContain(translate("en", "queue.engineFollowUp", { count: 2 }));
+  });
+
+  it("falls back to the plain engine count when only a count arrived", () => {
+    // get_state reports the count without the rows; there is no mode to name.
+    render({ engine: engineOf(2, []) });
+    expect(header()?.textContent).toContain(translate("en", "queue.engineCount", { count: 2 }));
+  });
+
   it("mirrors an engine queue whose live event reported rows without a count", () => {
     // Observed engine behavior: queue_update carries steering/followUp/ordered
     // and no pendingMessageCount, so the mirrored rows are the only evidence
     // that a steer is parked. Hiding the panel on the missing count erased it.
     render({ engine: engineOf(0, [{ text: "redirect now", mode: "steer" }]) });
     expect(panel()).not.toBeNull();
-    expect(header()?.textContent).toContain(translate("en", "queue.engineCount", { count: 1 }));
+    expect(header()?.textContent).toContain(translate("en", "queue.engineSteer", { count: 1 }));
 
     act(() => header()?.click());
     const engineRow = container.querySelector<HTMLElement>(".th-queue-row--engine");
@@ -186,5 +212,50 @@ describe("QueuePanel", () => {
     expect(engineRows).toHaveLength(1);
     expect(engineRows[0]?.querySelector<HTMLElement>(".th-queue-text")?.textContent).toBe("engine item");
     expect(engineRows[0]?.querySelectorAll("button")).toHaveLength(0);
+  });
+
+  it("shows the complete parked steer original in the expanded engine row", () => {
+    // The status strip's inspect dialog is retired: the expanded queue panel
+    // is the record, so a long parked steer must read in full there. jsdom
+    // runs the real cascade (selector matching, specificity, order) once the
+    // real stylesheet is injected, so getComputedStyle observes the same
+    // truncation a browser paints; it needs no layout for the declarations
+    // asserted here, which carry no var() (see typeScale.test.ts).
+    styleEl = document.createElement("style");
+    styleEl.textContent = readFileSync("src/styles/chat-pane.css", "utf8");
+    document.head.appendChild(styleEl);
+
+    // 210 characters: the original that measured 966px of content inside a
+    // 332px box in the real Chromium render of the truncated panel.
+    const sentence =
+      "steer: hold the queue, rework the migration around the renamed fields, and confirm the plan before resuming; ";
+    const original = (sentence + sentence).slice(0, 210);
+    expect(original).toHaveLength(210);
+
+    render({
+      items: [item("q-1", "queued webchat message")],
+      engine: engineOf(0, [{ text: original, mode: "steer" }]),
+    });
+    act(() => header()?.click());
+
+    const row = container.querySelector<HTMLElement>(".th-queue-row--engine");
+    const text = row?.querySelector<HTMLElement>(".th-queue-text");
+    expect(row && text).toBeTruthy();
+    // The row carries the complete original, not a truncation of it.
+    expect(row?.textContent).toBe(original);
+    expect(text?.getAttribute("title")).toBe(original);
+    // ...and the cascade lets it read instead of ellipsizing: the engine
+    // mirror wraps over as many lines as it needs and breaks long unbroken
+    // strings rather than clipping them.
+    const computed = getComputedStyle(text as HTMLElement);
+    expect(computed.whiteSpace).toBe("pre-wrap");
+    expect(computed.overflowWrap).toBe("anywhere");
+    expect(computed.overflow).toBe("visible");
+
+    // The webchat-owned waiting rows keep their single-line truncation.
+    const waitingText = container.querySelector<HTMLElement>(".th-queue-row--waiting .th-queue-text");
+    const waitingComputed = getComputedStyle(waitingText as HTMLElement);
+    expect(waitingComputed.whiteSpace).toBe("nowrap");
+    expect(waitingComputed.textOverflow).toBe("ellipsis");
   });
 });

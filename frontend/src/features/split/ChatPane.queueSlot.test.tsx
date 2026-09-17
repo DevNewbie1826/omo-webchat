@@ -57,7 +57,7 @@ describe("ChatPane queue slot placement", () => {
 		expect(container.querySelectorAll(".th-chat-scrollport .th-chat-msg--user")).toHaveLength(0);
 	});
 
-	it("shows the steer pending summary in the fixed status strip", () => {
+	it("shows the steer confirmation in the fixed status strip", () => {
 		const { deliver } = renderChatPane(root, chatSession);
 		act(() => deliver({ type: "run.started", sessionId: chatSession.id }));
 		const input = requireElement(container.querySelector<HTMLTextAreaElement>("textarea"), "missing composer");
@@ -70,7 +70,7 @@ describe("ChatPane queue slot placement", () => {
 		})));
 
 		const status = requireElement(container.querySelector<HTMLElement>(".th-chat-status"), "missing status strip");
-		expect(status.textContent).toContain("chat.steerPending");
+		expect(status.textContent).toContain("chat.steerSent");
 		expect(container.querySelector(".th-chat-scrollport .th-chat-msg--user")).toBeNull();
 	});
 });

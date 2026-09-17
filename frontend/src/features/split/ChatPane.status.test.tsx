@@ -80,18 +80,22 @@ describe("ChatPane status row", () => {
       expect(status.getAttribute("title")).toBe(original);
       expect(status.querySelector(".th-chat-status-spinner")).toBeNull();
     }
+    // The steer line is a confirmation, not a record: one localized label, no
+    // original preview inside it. The parked steer itself lives in the queue
+    // panel, so the strip never wraps to a second line for it.
     const steer = requireElement(container.querySelector(".th-chat-status-item--steer"), "steer status");
-    expect(steer.querySelector(".th-chat-status-label")?.textContent).toBe(translate(lang, "chat.steerPending", { text: "" }));
+    expect(steer.textContent).toBe(translate(lang, "chat.steerSent"));
+    expect(steer.querySelector(".th-chat-send-preview")).toBeNull();
     expect(steer.getAttribute("title")).toBe(original);
     expect(container.querySelector(".th-chat-status-item--live")).not.toBeNull();
     expect(container.querySelector(".th-chat-scrollport .th-chat-msg--user")).toBeNull();
     // A completed ACK only means the engine parked the steer: the request
-    // retires, while the steer summary waits for the engine to consume it.
+    // retires, while the confirmation keeps its own short window.
     act(() => deliver({ type: "ack", command: "chat.send", sessionId: chatSession.id, requestId, phase: "completed" }));
     expect(container.querySelector(".th-chat-send-status")).toBeNull();
     expect(container.querySelector(".th-chat-status-item--steer")).not.toBeNull();
     expect(container.querySelector(".th-chat-status-item--live")).not.toBeNull();
-    // The canonical echo is the engine consuming it, and retires the summary.
+    // The canonical echo is the engine consuming it, and retires the line.
     act(() => deliver({
       type: "message",
       sessionId: chatSession.id,
@@ -101,24 +105,23 @@ describe("ChatPane status row", () => {
     expect(container.querySelector(".th-chat-status-item--live")).not.toBeNull();
   });
 
-  it.each(["sending", "admitted", "unknown", "steer"] as const)("inspects the full %s original without mutating request, queue or draft state", async (phase) => {
+  // The steer line carries no preview button by design (its original lives in
+  // the queue panel), so only the request phases own an inspect trigger.
+  it.each(["sending", "admitted", "unknown"] as const)("inspects the full %s original without mutating request, queue or draft state", async (phase) => {
     const { deliver, sent } = renderChatPane(root);
     const original = "same-request-prefix " + "readable-original ".repeat(10) + "TAIL-ALPHA";
     expect(original).toHaveLength(210);
     const input = requireElement(container.querySelector<HTMLTextAreaElement>("textarea"), "composer");
-    if (phase === "steer") act(() => deliver({ type: "run.started", sessionId: chatSession.id }));
     act(() => setTextareaValue(input, original));
-    act(() => phase === "steer"
-      ? input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true }))
-      : container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    act(() => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
     const request = sent.find(frame => frame.type === "chat.send");
     if (request?.type !== "chat.send" || !request.requestId) throw new Error("missing request");
     const requestId = request.requestId;
     if (phase === "admitted") act(() => deliver({ type: "ack", command: "chat.send", sessionId: chatSession.id, requestId, phase }));
     if (phase === "unknown") act(() => deliver({ type: "run.done", sessionId: chatSession.id, reason: "local_command" }));
     act(() => setTextareaValue(input, "newer unsent draft"));
-    const status = requireElement(container.querySelector(phase === "steer" ? ".th-chat-status-item--steer" : `[data-request-id="${request.requestId}"]`), "status");
-    if (phase !== "steer") expect(status.getAttribute("data-send-phase")).toBe(phase);
+    const status = requireElement(container.querySelector(`[data-request-id="${request.requestId}"]`), "status");
+    expect(status.getAttribute("data-send-phase")).toBe(phase);
     expect(status.getAttribute("title")).toBe(original);
     const before = { status: container.querySelector(".th-chat-status")!.innerHTML, queue: container.querySelector(".th-queue")?.innerHTML, frames: [...sent] };
     const trigger = status.querySelector<HTMLButtonElement>("button.th-chat-send-preview");

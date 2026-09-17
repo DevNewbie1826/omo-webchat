@@ -387,6 +387,20 @@
   white-space: nowrap;
 }
 
+/* The expanded panel is the record for a parked steer (the retired status
+   strip's inspect dialog left no other reading surface): engine-mirror rows
+   show the complete original instead of the row default's single-line
+   ellipsis, wrapping over as many lines as needed — the body's capped
+   scrollport keeps a long entry scrolling in place. Long unbroken strings
+   break rather than overflowing, matching the retired original dialog's
+   .th-chat-original-text. The collapsed header and the webchat-owned waiting
+   rows keep the base single-line treatment. */
+.th-queue-row--engine .th-queue-text {
+  overflow: visible;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .th-queue-actions {
   flex: none;
   display: flex;
