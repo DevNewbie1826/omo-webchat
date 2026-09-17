@@ -13,11 +13,15 @@ import (
 
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/transport"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 )
 
-// The current server speaks Unix-socket RPC. Adapt only the transport of the
-// executable stdio fixture; every request and event remains real JSONL.
+// The current server speaks socket RPC. Adapt only the transport of the
+// executable stdio fixture; every request and event remains real JSONL. The
+// listener comes from the shared test transport so the harness speaks the
+// platform's own channel (a Unix socket, or a named pipe on Windows) instead
+// of assuming one of them.
 func newAnswerDeliveryHarness(t *testing.T) *inPlaceBridgeHarness {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "answer-rpc-")
@@ -26,7 +30,7 @@ func newAnswerDeliveryHarness(t *testing.T) *inPlaceBridgeHarness {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	socket := filepath.Join(dir, "rpc.sock")
-	listener, err := net.Listen("unix", socket)
+	listener, err := transport.Listen(socket)
 	if err != nil {
 		t.Fatal(err)
 	}
