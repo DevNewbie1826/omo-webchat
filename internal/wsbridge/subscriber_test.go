@@ -2,6 +2,7 @@ package wsbridge
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -34,8 +35,8 @@ func TestSubscriberActivationUsesGenerationBoundClaimAndDetachEndsReplay(t *test
 	// An unmapped frame exercises activation's pending flush without requiring
 	// a socket; stale mapped frames below are rejected by the captured claim.
 	s.Deliver(session.Frame{Kind: session.FrameKind("unmapped")})
-	if !s.activate(context.Background(), false) {
-		t.Fatal("subscriber did not activate")
+	if err := s.activate(context.Background(), false); err != nil {
+		t.Fatalf("subscriber did not activate: %v", err)
 	}
 	if s.claim.chatID != "original" || s.claim.generation != 7 || s.claim.session != sess {
 		t.Fatalf("captured write claim = %+v", s.claim)
@@ -123,8 +124,8 @@ func TestSubscriberActivationOverflowFailsWithoutCancelingSocket(t *testing.T) {
 		s.Deliver(session.Frame{Kind: session.FrameKind("unmapped")})
 	}
 
-	if s.activate(t.Context(), false) {
-		t.Fatal("overflowed subscriber activated")
+	if err := s.activate(t.Context(), false); !errors.Is(err, session.ErrSubscriberOverflow) {
+		t.Fatalf("activation error = %v, want subscriber overflow", err)
 	}
 
 	s.mu.Lock()

@@ -34,6 +34,7 @@ const (
 	MinContractVersion  = 2
 	defaultWriteTimeout = 10 * time.Second
 	controlFrameTimeout = 15 * time.Second
+	closeFrameTimeout   = 2 * time.Second
 	// openFrameTimeout preserves the previous effective HistoryTimeout maximum
 	// while making the route-layer opening budget explicit.
 	openFrameTimeout          = 120 * time.Second
@@ -335,7 +336,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, cancel := context.WithCancel(h.cfg.Context)
-	c := &connection{bridge: h, socket: sock, ctx: ctx, cancel: cancel, work: make(chan []byte, 64), queueWork: make(chan queuePublication, 64)}
+	c := &connection{
+		bridge:             h,
+		socket:             sock,
+		ctx:                ctx,
+		cancel:             cancel,
+		work:               make(chan []byte, 64),
+		queueWork:          make(chan queuePublication, 64),
+		subscriberRecovery: make(chan subscriberRecovery, 1),
+	}
 	c.sub = newSubscriber(c)
 	h.conns.Store(sock, c)
 	if h.shuttingDown.Load() || h.cfg.Context.Err() != nil || h.shutdownGeneration.Load() != generation {
@@ -409,31 +418,44 @@ type queuePublication struct {
 	frame   wscontract.QueueFrame
 }
 
+type subscriberRecovery struct {
+	sub       *subscriber
+	bindingID string
+}
+
 type connection struct {
-	bridge            *Handler
-	socket            *gws.Conn
-	ctx               context.Context
-	cancel            context.CancelFunc
-	sub               *subscriber
-	outboundMu        sync.Mutex
-	replayActive      bool
-	replayDone        chan struct{}
-	replayOwner       *subscriber
-	stateMu           sync.Mutex
-	wsID, chatID      string
-	bindingGeneration uint64
-	sess              *session.Session
-	detach            func()
-	goalCancel        context.CancelFunc
-	todoBindingID     string
-	todo              *todoWatch
-	activityMu        sync.Mutex
-	activity          *activitySubscription
-	hello             bool
-	helloVersion      int
-	work              chan []byte
-	queueWork         chan queuePublication
-	closed            atomic.Bool
+	bridge             *Handler
+	socket             *gws.Conn
+	ctx                context.Context
+	cancel             context.CancelFunc
+	sub                *subscriber
+	outboundMu         sync.Mutex
+	replayActive       bool
+	replayDone         chan struct{}
+	replayOwner        *subscriber
+	stateMu            sync.Mutex
+	wsID, chatID       string
+	bindingGeneration  uint64
+	sess               *session.Session
+	detach             func()
+	goalCancel         context.CancelFunc
+	todoBindingID      string
+	todo               *todoWatch
+	activityMu         sync.Mutex
+	activity           *activitySubscription
+	hello              bool
+	helloVersion       int
+	work               chan []byte
+	queueWork          chan queuePublication
+	subscriberRecovery chan subscriberRecovery
+	closed             atomic.Bool
+}
+
+func (c *connection) logger() *slog.Logger {
+	if c.bridge != nil && c.bridge.cfg.Logger != nil {
+		return c.bridge.cfg.Logger
+	}
+	return slog.Default()
 }
 
 func (c *connection) write(v any) error {
@@ -523,10 +545,19 @@ func (c *connection) shutdown() {
 	c.activityMu.Unlock()
 	activity.stop()
 	c.unbind()
-	if nc := c.socket.NetConn(); nc != nil {
-		_ = c.socket.WriteClose(1011, []byte("connection shutdown"))
-		_ = nc.Close()
+	c.closeWebSocket(1011, "connection shutdown")
+}
+
+func (c *connection) closeWebSocket(code uint16, reason string) {
+	nc := c.socket.NetConn()
+	if nc == nil {
+		return
 	}
+	forceClose := time.AfterFunc(closeFrameTimeout, func() { _ = nc.Close() })
+	_ = nc.SetWriteDeadline(time.Now().Add(closeFrameTimeout))
+	_ = c.socket.WriteClose(code, []byte(reason))
+	forceClose.Stop()
+	_ = nc.Close()
 }
 
 func (c *connection) unbind() (string, *session.Session) {
@@ -579,8 +610,41 @@ func (c *connection) run() {
 			return
 		case raw := <-c.work:
 			c.route(raw)
+		case recovery := <-c.subscriberRecovery:
+			c.recoverSubscriber(recovery)
 		}
 	}
+}
+
+func (c *connection) enqueueSubscriberRecovery(recovery subscriberRecovery) {
+	select {
+	case c.subscriberRecovery <- recovery:
+	case <-c.ctx.Done():
+	default:
+		c.bridge.cfg.Logger.Warn("subscriber overflow recovery queue full; closing cleanly", "reason", "subscriber_recovery_queue_overflow")
+		c.sendError("subscriber_overflow", "could not recover the session stream; please reconnect", "", "")
+		c.shutdown()
+	}
+}
+
+func (c *connection) recoverSubscriber(recovery subscriberRecovery) {
+	c.stateMu.Lock()
+	current := !c.closed.Load() && c.sub == recovery.sub && c.wsID != "" && c.chatID != "" && c.sess != nil
+	workspaceID, chatID := c.wsID, c.chatID
+	c.stateMu.Unlock()
+	if !current || recovery.sub.bindingIdentity() != recovery.bindingID {
+		return
+	}
+	c.bridge.cfg.Logger.Warn("subscriber overflow; reattaching transport", "chat_id", chatID, "reason", "subscriber_queue_overflow")
+	ctx, cancel := context.WithTimeout(c.ctx, openFrameTimeout)
+	defer cancel()
+	c.create(ctx, &wscontract.ChatCreateFrame{Type: "chat.create", WsID: workspaceID, ChatID: chatID})
+	boundID, boundSession := c.binding()
+	if c.closed.Load() || boundID == chatID && boundSession != nil {
+		return
+	}
+	c.bridge.cfg.Logger.Warn("subscriber overflow recovery exhausted; closing cleanly", "chat_id", chatID, "reason", "subscriber_recovery_exhausted")
+	c.shutdown()
 }
 
 func (c *connection) runQueuePublications() {
@@ -951,7 +1015,7 @@ func (op *chatSendOperation) bindResumed(ctx context.Context, stale, acquired *s
 	op.conn.invalidateTodoWatchLocked()
 	op.conn.sess, op.conn.detach, op.conn.sub = acquired, wrappedDetach, sub
 	op.conn.stateMu.Unlock()
-	if !sub.activate(ctx, !started) {
+	if err := sub.activate(ctx, !started); err != nil {
 		op.conn.stateMu.Lock()
 		if op.conn.bindingGeneration == op.bindingGeneration && op.conn.sess == acquired {
 			op.conn.sess, op.conn.detach = stale, oldDetach
@@ -1224,12 +1288,19 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 		c.invalidateTodoWatchLocked()
 		c.wsID, c.chatID, c.sess, c.detach = f.WsID, f.ChatID, acquired, wrappedDetach
 		c.stateMu.Unlock()
-		if !sub.activate(ctx, !started) {
-			c.unbind()
-			if err := ctx.Err(); err != nil {
-				return err
+		if activateErr := sub.activate(ctx, !started); activateErr != nil {
+			if errors.Is(activateErr, session.ErrSubscriberOverflow) {
+				c.stateMu.Lock()
+				if c.sub == sub && c.sess == acquired {
+					c.invalidateTodoWatchLocked()
+					c.wsID, c.chatID, c.sess, c.detach = "", "", nil, nil
+					c.bindingGeneration++
+				}
+				c.stateMu.Unlock()
+				return activateErr
 			}
-			return session.ErrSubscriberDetached
+			c.unbind()
+			return activateErr
 		}
 		c.initializeBinding(ctx, f.ChatID, acquired)
 		return nil
@@ -1237,11 +1308,14 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 	var sess *session.Session
 	var detach func()
 	recovery := f.Recovery != nil && *f.Recovery
-	validate := func() error {
-		if guarded && c.bridge.cfg.ChatVersion(f.ChatID) != preparedGeneration {
-			return ErrChatDeleted
+	var validate func() error
+	if guarded {
+		validate = func() error {
+			if c.bridge.cfg.ChatVersion(f.ChatID) != preparedGeneration {
+				return ErrChatDeleted
+			}
+			return nil
 		}
-		return nil
 	}
 	var stagedSession *session.Session
 	var stagedStarted bool
@@ -1261,13 +1335,15 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 		}
 		stagedSession, stagedStarted, stagedDetach = nil, false, nil
 		if !guarded {
+			var initializeErr error
 			initialize := func(acquired *session.Session, started bool, acquiredDetach func()) {
-				_ = commitBinding(acquired, started, acquiredDetach)
+				initializeErr = commitBinding(acquired, started, acquiredDetach)
 			}
+			after := func(*session.Session) error { return initializeErr }
 			if recovery {
-				sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedWithRecovery(ctx, ref, sub, initialize)
+				sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedWithRecoveryAndRun(ctx, ref, sub, initialize, nil, after)
 			} else {
-				sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRunRecovering(ctx, ref, sub, initialize, nil, nil)
+				sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRunRecovering(ctx, ref, sub, initialize, nil, after)
 			}
 		} else if recovery {
 			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedWithRecoveryAndRun(ctx, ref, sub, stage, validate, commit)
@@ -1276,6 +1352,14 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 		}
 	}
 	acquire()
+	if recovery && errors.Is(err, session.ErrSubscriberOverflow) {
+		if detach != nil {
+			detach()
+		}
+		sub.DiscardHydrationAttempt()
+		c.bridge.cfg.Logger.Warn("retrying overflowed recovery attach", "chat_id", f.ChatID, "attempt", 2)
+		acquire()
+	}
 	if errors.Is(err, omorpc.ErrDisconnected) {
 		c.unbind()
 		if waitErr := c.bridge.cfg.Manager.WaitForConnection(ctx); waitErr == nil {
@@ -1295,6 +1379,9 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 		code := "start_failed"
 		message := "could not open the session; please retry"
 		switch {
+		case errors.Is(err, session.ErrSubscriberOverflow):
+			code = "subscriber_overflow"
+			message = "could not recover the session stream; please reconnect"
 		case errors.Is(err, ErrChatDeleted):
 			code = "no_chat"
 		case errors.Is(err, cursorstore.ErrAdoptionRequired):
@@ -1310,6 +1397,9 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 			}
 		}
 		c.sendError(code, message, "", "")
+		if errors.Is(err, session.ErrSubscriberOverflow) {
+			c.shutdown()
+		}
 		return
 	}
 	c.stateMu.Lock()

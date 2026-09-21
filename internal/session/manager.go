@@ -923,14 +923,17 @@ func (m *Manager) AcquireInitializedCheckedAndRunRecovering(ctx context.Context,
 	}
 	for attempt := 0; attempt < 2; attempt++ {
 		s, started, detach, acquireErr := m.acquire(ctx, chat, sub, initialize, validate, run, nil, false, resumeOnly, true)
-		if !errors.Is(acquireErr, ErrSessionResumable) || attempt == 1 {
+		retryable := errors.Is(acquireErr, ErrSessionResumable) || errors.Is(acquireErr, ErrSubscriberOverflow)
+		if !retryable || attempt == 1 {
 			return s, started, detach, acquireErr
 		}
 		if detach != nil {
 			detach()
 		}
 		discardHydrationAttempt(sub)
-		resumeOnly = true
+		if errors.Is(acquireErr, ErrSessionResumable) {
+			resumeOnly = true
+		}
 	}
 	return nil, false, nil, ErrSessionResumable
 }

@@ -24,12 +24,37 @@ func TestRecoveryAttachSurvivesLiveFrameOverflow(t *testing.T) {
 	}
 
 	release()
-	select {
-	case <-h.soleServerConnectionDone(t):
-		t.Fatal("connection closed after pre-activation overflow")
-	case <-time.After(5 * time.Second):
+	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, 2, 15*time.Second) {
+		t.Fatal("overflowed hydration did not re-enter attach")
 	}
 	frames.nextWithin(t, "ready", 15*time.Second)
-	writeClient(t, conn, map[string]any{"type": "ping"})
-	frames.nextWithin(t, "pong", 5*time.Second)
+	frames.nextMatching(t, "entries", 15*time.Second, func(frame map[string]any) bool {
+		return frame["final"] == true
+	})
+
+	h.daemon.EmitSession(h.path, map[string]any{"type": "agent_start"})
+	frames.nextWithin(t, "run.started", 5*time.Second)
+}
+
+func TestLiveSubscriberOverflowReattachesAndContinuesDelivery(t *testing.T) {
+	h := newInPlaceBridgeHarnessWithHistory(t, "live-overflow", 10)
+	conn, frames := h.connect(t)
+	defer func() { _ = conn.WriteClose(1000, nil) }()
+	attachAndAwaitHistory(t, conn, frames, "live-overflow")
+
+	server := h.soleServerConnection(t)
+	server.stateMu.Lock()
+	overflowed := server.sub
+	server.stateMu.Unlock()
+	if err := overflowed.CancelDelivery(); err != nil {
+		t.Fatal(err)
+	}
+	overflowed.RecoverSubscriberOverflow()
+
+	frames.nextWithin(t, "ready", 15*time.Second)
+	frames.nextMatching(t, "entries", 15*time.Second, func(frame map[string]any) bool {
+		return frame["final"] == true
+	})
+	h.daemon.EmitSession(h.path, map[string]any{"type": "agent_start"})
+	frames.nextWithin(t, "run.started", 5*time.Second)
 }

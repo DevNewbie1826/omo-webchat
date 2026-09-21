@@ -2,11 +2,12 @@ package session
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 )
 
 type errorDeliverer interface{ DeliverFrame(Frame) error }
+type deliveryInterrupter interface{ CancelDelivery() error }
+type overflowRecoverer interface{ RecoverSubscriberOverflow() }
 
 type queuedFrame struct {
 	frame     Frame
@@ -23,6 +24,7 @@ type subscription struct {
 	initialRemaining int
 	initialOnce      sync.Once
 	stopOnce         sync.Once
+	stopReason       error
 	retire           func(error)
 
 	replayMu    sync.Mutex
@@ -143,7 +145,12 @@ func (x *subscription) endReplay() {
 }
 
 func (x *subscription) stop(cancel bool) {
+	x.stopWithReason(ErrSubscriberDetached, cancel)
+}
+
+func (x *subscription) stopWithReason(reason error, cancel bool) {
 	x.stopOnce.Do(func() {
+		x.stopReason = reason
 		close(x.stopCh)
 		x.endReplay()
 		if cancel {
@@ -190,7 +197,7 @@ func (x *subscription) enqueueReplay(ctx context.Context, f Frame, terminal bool
 	select {
 	case x.q <- item:
 	case <-x.stopCh:
-		return ErrSubscriberDetached
+		return x.stopReason
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -201,7 +208,7 @@ func (x *subscription) enqueueReplay(ctx context.Context, f Frame, terminal bool
 	case <-item.delivered:
 		return nil
 	case <-x.stopCh:
-		return ErrSubscriberDetached
+		return x.stopReason
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -214,7 +221,7 @@ func (x *subscription) enqueueReplayBarrier(ctx context.Context) error {
 	select {
 	case x.q <- item:
 	case <-x.stopCh:
-		return ErrSubscriberDetached
+		return x.stopReason
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -222,7 +229,7 @@ func (x *subscription) enqueueReplayBarrier(ctx context.Context) error {
 	case <-item.delivered:
 		return nil
 	case <-x.stopCh:
-		return ErrSubscriberDetached
+		return x.stopReason
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -306,11 +313,19 @@ func (b *broadcaster) finish(x *subscription, reason error, wait, cancel bool) {
 	b.notifyDetach(x, reason)
 }
 
-func (b *broadcaster) finishAsync(x *subscription, reason error, cancel bool) {
-	x.stop(cancel)
+func (b *broadcaster) finishOverflowAsync(x *subscription) {
+	x.stopWithReason(ErrSubscriberOverflow, false)
 	go func() {
+		if interrupter, ok := x.sub.(deliveryInterrupter); ok {
+			_ = interrupter.CancelDelivery()
+		} else {
+			_ = x.sub.Cancel()
+		}
 		<-x.exited
-		b.notifyDetach(x, reason)
+		b.notifyDetach(x, ErrSubscriberOverflow)
+		if recoverer, ok := x.sub.(overflowRecoverer); ok {
+			recoverer.RecoverSubscriberOverflow()
+		}
 	}()
 }
 
@@ -338,8 +353,7 @@ func (b *broadcaster) publishExcept(f Frame, except *subscription) {
 	}
 	b.mu.Unlock()
 	for _, x := range retired {
-		slog.Warn("subscriber overflow retired without transport close", "frame_kind", f.Kind)
-		b.finishAsync(x, ErrSubscriberOverflow, false)
+		b.finishOverflowAsync(x)
 	}
 }
 

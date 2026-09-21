@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -25,10 +24,12 @@ type subscriber struct {
 	mu             sync.Mutex
 	active         bool
 	detached       bool
+	detachReason   error
 	replaying      bool
 	treatAsResumed bool
 	claim          queryBinding
 	bindingID      string
+	recoveryID     string
 	pending        []session.Frame
 	overflowed     bool
 	ready          chan struct{}
@@ -83,6 +84,12 @@ func (s *subscriber) DiscardHydrationAttempt() {
 	s.replaying = false
 	s.claim = queryBinding{}
 	s.bindingID = rand.Text()
+	s.detached = false
+	s.detachReason = nil
+	s.ready = make(chan struct{})
+	s.readyOnce = sync.Once{}
+	s.detachSignal = make(chan struct{})
+	s.detachOnce = sync.Once{}
 }
 func (s *subscriber) ReplayBackpressure() (<-chan struct{}, bool) {
 	s.mu.Lock()
@@ -125,25 +132,31 @@ func (s *subscriber) DeliverFrame(f session.Frame) error {
 	}
 	return err
 }
-func (s *subscriber) activate(ctx context.Context, reattach bool) bool {
+func (s *subscriber) activate(ctx context.Context, reattach bool) error {
 	select {
 	case <-s.ready:
 	case <-s.detachSignal:
-		return false
+		return s.detachmentError()
 	case <-ctx.Done():
-		return false
+		return ctx.Err()
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.detached || ctx.Err() != nil {
-		return false
+	if s.detached {
+		if s.detachReason != nil {
+			return s.detachReason
+		}
+		return session.ErrSubscriberDetached
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if s.active {
-		return true
+		return nil
 	}
 	claim, ok := s.conn.subscriberClaim(s)
 	if !ok {
-		return false
+		return session.ErrSubscriberDetached
 	}
 	s.treatAsResumed = reattach
 	s.claim = claim
@@ -161,23 +174,28 @@ func (s *subscriber) activate(ctx context.Context, reattach bool) bool {
 		s.replaying = false
 		s.claim = queryBinding{}
 		s.bindingID = rand.Text()
-		slog.Warn("subscriber activation overflow retired without transport close", "reason", "pre_activation_buffer_overflow")
-		return false
+		s.conn.logger().Warn("subscriber activation overflow; retrying attach", "reason", "pre_activation_buffer_overflow")
+		return session.ErrSubscriberOverflow
 	}
 	for _, f := range s.pending {
 		if err := s.deliver(f); err != nil {
 			s.pending = nil
 			go s.Cancel()
-			return true
+			return nil
 		}
 	}
 	s.pending = nil
-	return true
+	return nil
 }
 func (s *subscriber) signalDetach() {
+	s.signalDetachWithReason(session.ErrSubscriberDetached)
+}
+
+func (s *subscriber) signalDetachWithReason(reason error) {
 	s.detachOnce.Do(func() {
 		s.mu.Lock()
 		s.detached = true
+		s.detachReason = reason
 		if s.active && s.replaying {
 			s.conn.endReplay(s)
 		}
@@ -186,6 +204,15 @@ func (s *subscriber) signalDetach() {
 		close(s.detachSignal)
 		s.readyOnce.Do(func() { close(s.ready) })
 	})
+}
+
+func (s *subscriber) detachmentError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.detachReason != nil {
+		return s.detachReason
+	}
+	return session.ErrSubscriberDetached
 }
 func (s *subscriber) wrapDetach(detach func()) func() {
 	var once sync.Once
@@ -198,12 +225,30 @@ func (s *subscriber) wrapDetach(detach func()) func() {
 }
 func (s *subscriber) Cancel() error {
 	s.signalDetach()
-	if nc := s.conn.socket.NetConn(); nc != nil {
-		slog.Warn("subscriber canceled; closing websocket cleanly", "reason", "subscriber_cancel")
-		_ = s.conn.socket.WriteClose(1011, []byte("subscriber canceled"))
-		_ = nc.Close()
-	}
+	s.conn.logger().Warn("subscriber canceled; closing websocket cleanly", "reason", "subscriber_cancel")
+	s.conn.closeWebSocket(1011, "subscriber canceled")
 	return nil
+}
+
+func (s *subscriber) CancelDelivery() error {
+	s.mu.Lock()
+	s.recoveryID = s.bindingID
+	s.mu.Unlock()
+	s.signalDetachWithReason(session.ErrSubscriberOverflow)
+	return nil
+}
+
+func (s *subscriber) RecoverSubscriberOverflow() {
+	s.mu.Lock()
+	recoveryID := s.recoveryID
+	s.mu.Unlock()
+	s.conn.enqueueSubscriberRecovery(subscriberRecovery{sub: s, bindingID: recoveryID})
+}
+
+func (s *subscriber) bindingIdentity() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.bindingID
 }
 func (s *subscriber) deliver(f session.Frame) error {
 	wire, err := mapFrame(f, s.claim.chatID, s.treatAsResumed)
