@@ -36,6 +36,7 @@ type subscription struct {
 	replayMu    sync.Mutex
 	replaying   bool
 	pendingLive []Frame
+	replayDrain []Frame
 }
 
 type overflowTransfer struct {
@@ -161,23 +162,27 @@ func (x *subscription) finishReplay() bool {
 			x.replayMu.Unlock()
 			return true
 		}
-		if len(x.pendingLive) == 0 {
-			x.replaying = false
-			if replay, ok := x.sub.(ReplayBackpressureSubscriber); ok {
-				replay.EndReplay()
+		if len(x.replayDrain) == 0 {
+			if len(x.pendingLive) == 0 {
+				x.replaying = false
+				if replay, ok := x.sub.(ReplayBackpressureSubscriber); ok {
+					replay.EndReplay()
+				}
+				x.replayMu.Unlock()
+				return true
 			}
-			x.replayMu.Unlock()
-			return true
+			x.replayDrain = x.pendingLive
+			x.pendingLive = nil
 		}
-		pending := x.pendingLive
-		x.pendingLive = nil
+		frame := x.replayDrain[0]
 		x.replayMu.Unlock()
 
-		for _, frame := range pending {
-			if !x.deliver(frame) {
-				return false
-			}
+		if !x.deliver(frame) {
+			return false
 		}
+		x.replayMu.Lock()
+		x.replayDrain = x.replayDrain[1:]
+		x.replayMu.Unlock()
 	}
 }
 
@@ -191,6 +196,14 @@ func (x *subscription) endReplay() {
 		}
 	}
 	x.replayMu.Unlock()
+}
+
+func (x *subscription) drainReplayTail() []Frame {
+	x.replayMu.Lock()
+	defer x.replayMu.Unlock()
+	frames := x.replayDrain
+	x.replayDrain = nil
+	return frames
 }
 
 func (x *subscription) beginOverflowTransfer(f Frame) ([]Frame, bool) {
@@ -453,7 +466,7 @@ func (b *broadcaster) finish(x *subscription, reason error, wait, cancel bool) {
 	x.cleanupOnce.Do(func() { close(x.cleanupDone) })
 }
 
-func (b *broadcaster) finishOverflowAsync(x *subscription, transferKey string, replaying bool) {
+func (b *broadcaster) finishOverflowAsync(x *subscription, transferKey string, replayFrames []Frame) {
 	x.stopWithReason(ErrSubscriberOverflow, false)
 	go func() {
 		if interrupter, ok := x.sub.(deliveryInterrupter); ok {
@@ -462,10 +475,15 @@ func (b *broadcaster) finishOverflowAsync(x *subscription, transferKey string, r
 			_ = x.sub.Cancel()
 		}
 		<-x.exited
-		if transferKey != "" && !replaying {
+		if transferKey != "" {
 			b.mu.Lock()
 			if transfer := b.overflowTransfers[transferKey]; transfer != nil {
-				transfer.finalize(x.drainOverflowQueue())
+				if replayFrames != nil {
+					prefix := append(x.drainReplayTail(), replayFrames...)
+					transfer.finalize(prefix)
+				} else {
+					transfer.finalize(x.drainOverflowQueue())
+				}
 			}
 			b.mu.Unlock()
 		}
@@ -489,9 +507,9 @@ func (b *broadcaster) publish(f Frame) {
 
 func (b *broadcaster) publishExcept(f Frame, except *subscription) {
 	type retiredSubscription struct {
-		sub         *subscription
-		transferKey string
-		replaying   bool
+		sub          *subscription
+		transferKey  string
+		replayFrames []Frame
 	}
 	var retired []retiredSubscription
 	b.mu.Lock()
@@ -514,7 +532,7 @@ func (b *broadcaster) publishExcept(f Frame, except *subscription) {
 					}
 					transfer := &overflowTransfer{}
 					if replaying {
-						transfer.finalize(replayFrames)
+						transfer.reserved = len(replayFrames)
 					} else {
 						transfer.reserved = cap(x.q) + 1
 						transfer.append(f)
@@ -522,12 +540,12 @@ func (b *broadcaster) publishExcept(f Frame, except *subscription) {
 					b.overflowTransfers[transferKey] = transfer
 				}
 			}
-			retired = append(retired, retiredSubscription{sub: x, transferKey: transferKey, replaying: replaying})
+			retired = append(retired, retiredSubscription{sub: x, transferKey: transferKey, replayFrames: replayFrames})
 		}
 	}
 	b.mu.Unlock()
 	for _, retired := range retired {
-		b.finishOverflowAsync(retired.sub, retired.transferKey, retired.replaying)
+		b.finishOverflowAsync(retired.sub, retired.transferKey, retired.replayFrames)
 	}
 }
 
