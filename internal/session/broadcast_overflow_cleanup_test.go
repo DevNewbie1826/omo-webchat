@@ -118,3 +118,42 @@ func TestOverflowTransferRejectsBacklogBeyondBound(t *testing.T) {
 		t.Fatalf("overflowed transfer left %d active subscriptions", got)
 	}
 }
+
+type synchronousBoundedTransferSubscriber struct {
+	*boundedTransferSubscriber
+}
+
+func (*synchronousBoundedTransferSubscriber) SynchronousAttach() {}
+
+func TestOverflowTransferRejectsSynchronousAttachWithoutWaitingForInitial(t *testing.T) {
+	sub := &synchronousBoundedTransferSubscriber{
+		boundedTransferSubscriber: &boundedTransferSubscriber{recovered: make(chan struct{})},
+	}
+	b := &broadcaster{}
+	_, pump, detach := b.attach(sub, 1, []Frame{{Kind: FrameReady}})
+	pump.beginReplay()
+	for i := range SubscriberOverflowTransferCapacity + 1 {
+		b.publish(Frame{Kind: FrameNotice, Data: map[string]any{"seq": i}})
+	}
+	select {
+	case <-sub.recovered:
+	case <-time.After(time.Second):
+		t.Fatal("overflow recovery notification did not finish")
+	}
+	detach()
+
+	result := make(chan error, 1)
+	go func() {
+		_, replacement, replacementDetach := b.attach(sub, 1, []Frame{{Kind: FrameReady}})
+		result <- replacement.stopReason
+		replacementDetach()
+	}()
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrSubscriberOverflow) {
+			t.Fatalf("replacement stop reason = %v, want %v", err, ErrSubscriberOverflow)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("rejected synchronous attach waited for an initial frame that was never queued")
+	}
+}

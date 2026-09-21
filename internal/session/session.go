@@ -1576,13 +1576,14 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 	var id uint64
 	var target *subscription
 	var rawDetach func()
+	var attachErr error
 	attach := func(notices []Frame) {
 		initial = append(initial, notices...)
 		queueSize := s.queueSize
 		if queueSize < len(initial) {
 			queueSize = len(initial)
 		}
-		id, target, rawDetach = s.broadcast.attach(sub, queueSize, initial)
+		id, target, rawDetach, attachErr = s.broadcast.attachWithError(sub, queueSize, initial)
 	}
 	if s.manager != nil {
 		s.manager.withNoticeReplay(s.chatID, s, attach)
@@ -1592,12 +1593,12 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 	for _, frame := range replayInitial {
 		s.publishLocked(frame)
 	}
-	if replay && target != nil {
+	if replay && target != nil && attachErr == nil {
 		target.beginReplay()
 	}
 	s.lifecycleMu.Unlock()
 	var once sync.Once
-	return func() {
+	detach := func() {
 		once.Do(func() {
 			rawDetach()
 			if id != 0 {
@@ -1609,7 +1610,12 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 				s.lifecycleMu.Unlock()
 			}
 		})
-	}, target, nil
+	}
+	if attachErr != nil {
+		detach()
+		return nil, target, attachErr
+	}
+	return detach, target, nil
 }
 
 func (s *Session) Close() error { return s.closeContext(context.Background()) }

@@ -337,8 +337,13 @@ type broadcaster struct {
 }
 
 func (b *broadcaster) attach(sub Subscriber, size int, initial []Frame) (uint64, *subscription, func()) {
+	id, target, detach, _ := b.attachWithError(sub, size, initial)
+	return id, target, detach
+}
+
+func (b *broadcaster) attachWithError(sub Subscriber, size int, initial []Frame) (uint64, *subscription, func(), error) {
 	if sub == nil {
-		return 0, nil, func() {}
+		return 0, nil, func() {}, nil
 	}
 	b.mu.Lock()
 	if b.subs == nil {
@@ -381,20 +386,23 @@ func (b *broadcaster) attach(sub Subscriber, size int, initial []Frame) (uint64,
 		x.initialOnce.Do(func() { close(x.initialDone) })
 	}
 	x.start()
-	if _, synchronous := sub.(SynchronousAttachHook); synchronous {
-		<-x.initialDone
-	}
 	if !accepted {
 		x.stopWithReason(ErrSubscriberOverflow, false)
 		<-x.exited
 		b.notifyDetach(x, ErrSubscriberOverflow)
 		x.cleanupOnce.Do(func() { close(x.cleanupDone) })
+	} else if _, synchronous := sub.(SynchronousAttachHook); synchronous {
+		<-x.initialDone
 	}
 	var once sync.Once
-	return id, x, func() {
+	detach := func() {
 		once.Do(func() { b.retire(id, ErrSubscriberDetached, false) })
 		<-x.cleanupDone
 	}
+	if !accepted {
+		return id, x, detach, ErrSubscriberOverflow
+	}
+	return id, x, detach, nil
 }
 
 func mergeOverflowTransfer(initial, transfer []Frame) []Frame {

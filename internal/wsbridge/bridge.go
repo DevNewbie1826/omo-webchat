@@ -638,7 +638,7 @@ func (c *connection) recoverSubscriber(recovery subscriberRecovery) {
 	c.bridge.cfg.Logger.Warn("subscriber overflow; reattaching transport", "chat_id", chatID, "reason", "subscriber_queue_overflow")
 	ctx, cancel := context.WithTimeout(c.ctx, openFrameTimeout)
 	defer cancel()
-	c.create(ctx, &wscontract.ChatCreateFrame{Type: "chat.create", WsID: workspaceID, ChatID: chatID})
+	c.createWithTransfer(ctx, &wscontract.ChatCreateFrame{Type: "chat.create", WsID: workspaceID, ChatID: chatID}, recovery.sub.SubscriberOverflowTransferKey())
 	boundID, boundSession := c.binding()
 	if c.closed.Load() || boundID == chatID && boundSession != nil {
 		return
@@ -1202,10 +1202,17 @@ func resumeFailureInfo(err error) session.ErrorInfo {
 }
 
 func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFrame) {
+	c.createWithTransfer(routeCtx, f, "")
+}
+
+func (c *connection) createWithTransfer(routeCtx context.Context, f *wscontract.ChatCreateFrame, transferID string) {
 	ctx, cancel := context.WithTimeout(routeCtx, c.bridge.cfg.HistoryTimeout)
 	defer cancel()
 	c.unbind()
 	c.sub = newSubscriber(c)
+	if transferID != "" {
+		c.sub.transferID = transferID
+	}
 	sub := c.sub
 	var preparedGeneration uint64
 	guarded := c.bridge.cfg.PrepareChatVersion != nil && c.bridge.cfg.ChatVersion != nil
@@ -1342,11 +1349,15 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 			after := func(*session.Session) error { return initializeErr }
 			if recovery {
 				sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedWithRecoveryAndRun(ctx, ref, sub, initialize, nil, after)
+			} else if transferID != "" {
+				sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRun(ctx, ref, sub, initialize, nil, after)
 			} else {
 				sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRunRecovering(ctx, ref, sub, initialize, nil, after)
 			}
 		} else if recovery {
 			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedWithRecoveryAndRun(ctx, ref, sub, stage, validate, commit)
+		} else if transferID != "" {
+			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRun(ctx, ref, sub, stage, validate, commit)
 		} else {
 			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRunRecovering(ctx, ref, sub, stage, validate, commit)
 		}

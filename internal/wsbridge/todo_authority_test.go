@@ -162,13 +162,13 @@ func TestTodoAuthorityHydrationRetryRenewsBindingEvenWithSamePointer(t *testing.
 	c := &connection{}
 	s := newSubscriber(c)
 	c.chatID, c.sess, c.sub = "retry", &session.Session{}, s
-	s.readyOnce.Do(func() { close(s.ready) })
+	s.attempt.readyOnce.Do(func() { close(s.attempt.ready) })
 	if err := s.activate(t.Context(), false); err != nil {
 		t.Fatalf("initial activation failed: %v", err)
 	}
 	old := s.claim
 	s.DiscardHydrationAttempt()
-	s.readyOnce.Do(func() { close(s.ready) })
+	s.attempt.readyOnce.Do(func() { close(s.attempt.ready) })
 	if err := s.activate(t.Context(), true); err != nil {
 		t.Fatalf("retry activation failed: %v", err)
 	}
