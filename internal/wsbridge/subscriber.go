@@ -12,7 +12,18 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
 
-const preActivationBufferCapacity = session.DefaultQueueSize + 1 + session.SendOperationLedgerCapacity + session.NoticeJournalCapacity
+const preActivationBufferCapacity = session.DefaultQueueSize + 1 + session.SendOperationLedgerCapacity + session.NoticeJournalCapacity + session.SubscriberOverflowTransferCapacity
+
+type subscriberAttempt struct {
+	ready        chan struct{}
+	readyOnce    sync.Once
+	detachSignal chan struct{}
+	detachOnce   sync.Once
+}
+
+func newSubscriberAttempt() *subscriberAttempt {
+	return &subscriberAttempt{ready: make(chan struct{}), detachSignal: make(chan struct{})}
+}
 
 // subscriber buffers the complete attach-time replay plus the normal live-frame
 // headroom until the bridge publishes its binding. Durable history starts after
@@ -24,20 +35,20 @@ type subscriber struct {
 	mu             sync.Mutex
 	active         bool
 	detached       bool
+	detachReason   error
 	replaying      bool
 	treatAsResumed bool
 	claim          queryBinding
 	bindingID      string
+	transferID     string
+	recoveryID     string
 	pending        []session.Frame
 	overflowed     bool
-	ready          chan struct{}
-	readyOnce      sync.Once
-	detachSignal   chan struct{}
-	detachOnce     sync.Once
+	attempt        *subscriberAttempt
 }
 
 func newSubscriber(c *connection) *subscriber {
-	return &subscriber{conn: c, bindingID: rand.Text(), ready: make(chan struct{}), detachSignal: make(chan struct{})}
+	return &subscriber{conn: c, bindingID: rand.Text(), transferID: rand.Text(), attempt: newSubscriberAttempt()}
 }
 
 // SynchronousAttach asks session's broadcaster to finish queueing its initial
@@ -82,11 +93,14 @@ func (s *subscriber) DiscardHydrationAttempt() {
 	s.replaying = false
 	s.claim = queryBinding{}
 	s.bindingID = rand.Text()
+	s.detached = false
+	s.detachReason = nil
+	s.attempt = newSubscriberAttempt()
 }
 func (s *subscriber) ReplayBackpressure() (<-chan struct{}, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.detachSignal, s.replaying
+	return s.attempt.detachSignal, s.replaying
 }
 
 // ProgressiveHistory reports whether the socket's client hello negotiated a
@@ -100,10 +114,11 @@ func (s *subscriber) ProgressiveHistory() bool {
 
 func (s *subscriber) Deliver(f session.Frame) { _ = s.DeliverFrame(f) }
 func (s *subscriber) DeliverFrame(f session.Frame) error {
-	if f.Kind == session.FrameReady {
-		s.readyOnce.Do(func() { close(s.ready) })
-	}
 	s.mu.Lock()
+	attempt := s.attempt
+	if f.Kind == session.FrameReady {
+		attempt.readyOnce.Do(func() { close(attempt.ready) })
+	}
 	if s.detached {
 		s.mu.Unlock()
 		return nil
@@ -124,25 +139,37 @@ func (s *subscriber) DeliverFrame(f session.Frame) error {
 	}
 	return err
 }
-func (s *subscriber) activate(ctx context.Context, reattach bool) bool {
+func (s *subscriber) activate(ctx context.Context, reattach bool) error {
+	s.mu.Lock()
+	attempt := s.attempt
+	s.mu.Unlock()
 	select {
-	case <-s.ready:
-	case <-s.detachSignal:
-		return false
+	case <-attempt.ready:
+	case <-attempt.detachSignal:
+		return s.detachmentError()
 	case <-ctx.Done():
-		return false
+		return ctx.Err()
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.detached || ctx.Err() != nil {
-		return false
+	if s.attempt != attempt {
+		return session.ErrSubscriberDetached
+	}
+	if s.detached {
+		if s.detachReason != nil {
+			return s.detachReason
+		}
+		return session.ErrSubscriberDetached
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if s.active {
-		return true
+		return nil
 	}
 	claim, ok := s.conn.subscriberClaim(s)
 	if !ok {
-		return false
+		return session.ErrSubscriberDetached
 	}
 	s.treatAsResumed = reattach
 	s.claim = claim
@@ -151,32 +178,63 @@ func (s *subscriber) activate(ctx context.Context, reattach bool) bool {
 		s.conn.beginReplay(s)
 	}
 	if s.overflowed {
+		if s.replaying {
+			s.conn.endReplay(s)
+		}
+		s.active = false
 		s.pending = nil
-		go s.Cancel()
-		return true
+		s.overflowed = false
+		s.replaying = false
+		s.claim = queryBinding{}
+		s.bindingID = rand.Text()
+		s.conn.logger().Warn("subscriber activation overflow; retrying attach", "reason", "pre_activation_buffer_overflow")
+		return session.ErrSubscriberOverflow
 	}
 	for _, f := range s.pending {
 		if err := s.deliver(f); err != nil {
 			s.pending = nil
 			go s.Cancel()
-			return true
+			return nil
 		}
 	}
 	s.pending = nil
-	return true
+	return nil
 }
 func (s *subscriber) signalDetach() {
-	s.detachOnce.Do(func() {
+	s.signalDetachWithReason(session.ErrSubscriberDetached)
+}
+
+func (s *subscriber) signalDetachWithReason(reason error) {
+	s.mu.Lock()
+	attempt := s.attempt
+	s.mu.Unlock()
+	s.signalDetachAttemptWithReason(attempt, reason)
+}
+
+func (s *subscriber) signalDetachAttemptWithReason(attempt *subscriberAttempt, reason error) {
+	attempt.detachOnce.Do(func() {
 		s.mu.Lock()
-		s.detached = true
-		if s.active && s.replaying {
-			s.conn.endReplay(s)
+		if s.attempt == attempt {
+			s.detached = true
+			s.detachReason = reason
+			if s.active && s.replaying {
+				s.conn.endReplay(s)
+			}
+			s.replaying = false
 		}
-		s.replaying = false
 		s.mu.Unlock()
-		close(s.detachSignal)
-		s.readyOnce.Do(func() { close(s.ready) })
+		close(attempt.detachSignal)
+		attempt.readyOnce.Do(func() { close(attempt.ready) })
 	})
+}
+
+func (s *subscriber) detachmentError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.detachReason != nil {
+		return s.detachReason
+	}
+	return session.ErrSubscriberDetached
 }
 func (s *subscriber) wrapDetach(detach func()) func() {
 	var once sync.Once
@@ -189,11 +247,35 @@ func (s *subscriber) wrapDetach(detach func()) func() {
 }
 func (s *subscriber) Cancel() error {
 	s.signalDetach()
-	if nc := s.conn.socket.NetConn(); nc != nil {
-		return nc.Close()
-	}
+	s.conn.logger().Warn("subscriber canceled; closing websocket cleanly", "reason", "subscriber_cancel")
+	s.conn.closeWebSocket(1011, "subscriber canceled")
 	return nil
 }
+
+func (s *subscriber) CancelDelivery() error {
+	s.mu.Lock()
+	s.recoveryID = s.bindingID
+	attempt := s.attempt
+	s.mu.Unlock()
+	s.signalDetachAttemptWithReason(attempt, session.ErrSubscriberOverflow)
+	return nil
+}
+
+func (s *subscriber) RecoverSubscriberOverflow() {
+	s.mu.Lock()
+	recoveryID := s.recoveryID
+	s.mu.Unlock()
+	s.conn.enqueueSubscriberRecovery(subscriberRecovery{sub: s, bindingID: recoveryID})
+}
+
+func (s *subscriber) bindingIdentity() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.bindingID
+}
+
+func (s *subscriber) SubscriberOverflowTransferKey() string { return s.transferID }
+
 func (s *subscriber) deliver(f session.Frame) error {
 	wire, err := mapFrame(f, s.claim.chatID, s.treatAsResumed)
 	if err != nil {

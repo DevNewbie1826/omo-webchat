@@ -2,8 +2,11 @@ package wsbridge
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/lxzan/gws"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 )
@@ -28,12 +31,12 @@ func TestSubscriberActivationUsesGenerationBoundClaimAndDetachEndsReplay(t *test
 	conn.stateMu.Unlock()
 
 	s.BeginReplay()
-	s.readyOnce.Do(func() { close(s.ready) })
+	s.attempt.readyOnce.Do(func() { close(s.attempt.ready) })
 	// An unmapped frame exercises activation's pending flush without requiring
 	// a socket; stale mapped frames below are rejected by the captured claim.
 	s.Deliver(session.Frame{Kind: session.FrameKind("unmapped")})
-	if !s.activate(context.Background(), false) {
-		t.Fatal("subscriber did not activate")
+	if err := s.activate(context.Background(), false); err != nil {
+		t.Fatalf("subscriber did not activate: %v", err)
 	}
 	if s.claim.chatID != "original" || s.claim.generation != 7 || s.claim.session != sess {
 		t.Fatalf("captured write claim = %+v", s.claim)
@@ -107,5 +110,71 @@ func TestSubscriberDetachBeforeReadyReleasesInitializationFlight(t *testing.T) {
 	s.mu.Unlock()
 	if active {
 		t.Fatal("detached subscriber activated without Ready delivery")
+	}
+}
+
+func TestSubscriberActivationOverflowFailsWithoutCancelingSocket(t *testing.T) {
+	conn := &connection{socket: &gws.Conn{}}
+	sess := &session.Session{}
+	s := newSubscriber(conn)
+	conn.chatID, conn.sess, conn.sub = "overflow", sess, s
+	oldBindingID := s.bindingID
+	s.attempt.readyOnce.Do(func() { close(s.attempt.ready) })
+	for range preActivationBufferCapacity + 1 {
+		s.Deliver(session.Frame{Kind: session.FrameKind("unmapped")})
+	}
+
+	if err := s.activate(t.Context(), false); !errors.Is(err, session.ErrSubscriberOverflow) {
+		t.Fatalf("activation error = %v, want subscriber overflow", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active || s.overflowed || s.pending != nil || s.claim != (queryBinding{}) {
+		t.Fatalf("overflowed subscriber was not reset: active=%v overflowed=%v pending=%d claim=%+v", s.active, s.overflowed, len(s.pending), s.claim)
+	}
+	if s.bindingID == oldBindingID {
+		t.Fatal("overflowed subscriber retained its binding claim identity")
+	}
+}
+
+func TestDiscardHydrationAttemptIsolatesLateDetachCallback(t *testing.T) {
+	s := newSubscriber(nil)
+	oldAttempt := s.attempt
+	callbackStarted := make(chan struct{})
+	allowCallback := make(chan struct{})
+	callbackDone := make(chan struct{})
+	go func() {
+		close(callbackStarted)
+		<-allowCallback
+		s.signalDetachAttemptWithReason(oldAttempt, session.ErrSubscriberOverflow)
+		close(callbackDone)
+	}()
+	<-callbackStarted
+
+	s.DiscardHydrationAttempt()
+	s.mu.Lock()
+	currentAttempt := s.attempt
+	s.mu.Unlock()
+	if currentAttempt == oldAttempt {
+		t.Fatal("retry retained the shutdown attempt state")
+	}
+
+	close(allowCallback)
+	<-callbackDone
+	select {
+	case <-oldAttempt.detachSignal:
+	default:
+		t.Fatal("late callback did not finish the superseded attempt")
+	}
+	select {
+	case <-currentAttempt.detachSignal:
+		t.Fatal("late callback detached the retry attempt")
+	default:
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.detached || s.detachReason != nil {
+		t.Fatalf("late callback mutated retry state: detached=%v reason=%v", s.detached, s.detachReason)
 	}
 }

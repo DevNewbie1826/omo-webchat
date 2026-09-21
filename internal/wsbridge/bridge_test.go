@@ -884,7 +884,7 @@ func TestCheckedBindingActivatesAfterTerminalHistoryValidation(t *testing.T) {
 	release := h.daemon.BlockHandler(omorpc.CmdGetEntries)
 	defer release()
 	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "checked-large-history", "recovery": true})
-	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, 1, 5*time.Second) {
+	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, 1, historyE2ETestBudget) {
 		t.Fatal("checked acquisition did not reach history hydration")
 	}
 	if sess, ok := h.manager.Get("checked-large-history"); !ok || sess == nil {

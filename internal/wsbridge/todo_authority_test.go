@@ -162,14 +162,15 @@ func TestTodoAuthorityHydrationRetryRenewsBindingEvenWithSamePointer(t *testing.
 	c := &connection{}
 	s := newSubscriber(c)
 	c.chatID, c.sess, c.sub = "retry", &session.Session{}, s
-	s.readyOnce.Do(func() { close(s.ready) })
-	if !s.activate(t.Context(), false) {
-		t.Fatal("initial activation failed")
+	s.attempt.readyOnce.Do(func() { close(s.attempt.ready) })
+	if err := s.activate(t.Context(), false); err != nil {
+		t.Fatalf("initial activation failed: %v", err)
 	}
 	old := s.claim
 	s.DiscardHydrationAttempt()
-	if !s.activate(t.Context(), true) {
-		t.Fatal("retry activation failed")
+	s.attempt.readyOnce.Do(func() { close(s.attempt.ready) })
+	if err := s.activate(t.Context(), true); err != nil {
+		t.Fatalf("retry activation failed: %v", err)
 	}
 	if s.claim.session != old.session || s.claim.generation != old.generation || s.claim.bindingID == old.bindingID {
 		t.Fatalf("retry did not renew same-pointer claim: old=%+v new=%+v", old, s.claim)
