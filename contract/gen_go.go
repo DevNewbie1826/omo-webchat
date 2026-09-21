@@ -47,8 +47,6 @@ func fatal(format string, args ...any) {
 	os.Exit(1)
 }
 
-// ---------------------------------------------------------------- schema load
-
 type gen struct {
 	schemasDir string
 	files      map[string]schema // file id ("server-frames.json") -> parsed doc
@@ -60,7 +58,6 @@ type structDef struct {
 	Name   string
 	Doc    string
 	Fields []fieldDef
-	Marker string // interface marker method receiver comment, "" for shared types
 }
 
 type fieldDef struct {
@@ -129,10 +126,6 @@ func (g *gen) defRef(fileID, name string) schema {
 		fatal("missing $defs/%s in %s", name, fileID)
 	}
 	return d
-}
-
-func (g *gen) isJSONValue(ref, ctxFile string) bool {
-	return opaque(g.def(ref, ctxFile))
 }
 
 func nullable(node schema) bool {
@@ -379,8 +372,6 @@ func (g *gen) unionDefs(fileID string) ([]string, []string) {
 	return names, consts
 }
 
-// ------------------------------------------------------------------ Go naming
-
 var goInitialisms = map[string]bool{
 	"id": true, "api": true, "ui": true, "url": true, "pi": true, "json": true,
 }
@@ -427,11 +418,9 @@ func splitWords(s string) []string {
 	return parts
 }
 
-// ---------------------------------------------------------------- Go type map
-
 func (g *gen) goType(node schema, ctxFile, suggest string) string {
 	if ref, ok := node["$ref"].(string); ok {
-		if g.isJSONValue(ref, ctxFile) {
+		if opaque(g.def(ref, ctxFile)) {
 			return "json.RawMessage"
 		}
 		return goIdent(defName(ref))
@@ -524,8 +513,6 @@ func (g *gen) emitStruct(node schema, ctxFile, name, doc string) {
 	}
 	g.structs = append(g.structs, sd)
 }
-
-// ------------------------------------------------------------------- generate
 
 func (g *gen) generate(outPath string) {
 	var b strings.Builder

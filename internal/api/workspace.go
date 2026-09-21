@@ -49,7 +49,7 @@ func projectChat(c cursorstore.Chat) chatResponse {
 func (s *Server) projectWorkspace(ws cursorstore.Workspace) workspaceResponse {
 	rows := s.cursors.ListChats(ws.ID)
 	sort.SliceStable(rows, func(i, j int) bool {
-		ai, aj := cursorRecency(rows[i]), cursorRecency(rows[j])
+		ai, aj := cursorstore.RecencyMillis(rows[i]), cursorstore.RecencyMillis(rows[j])
 		if ai != aj {
 			return ai > aj
 		}
@@ -61,10 +61,6 @@ func (s *Server) projectWorkspace(ws cursorstore.Workspace) workspaceResponse {
 	}
 	return workspaceResponse{ID: ws.ID, Name: ws.Name, Path: ws.Path, Chats: chats}
 }
-func cursorRecency(c cursorstore.Chat) int64 {
-	return cursorstore.RecencyMillis(c)
-}
-
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, _ *http.Request) {
 	rows := s.cursors.ListWorkspaces()
 	out := make([]workspaceResponse, len(rows))

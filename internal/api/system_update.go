@@ -11,19 +11,26 @@ import (
 
 const installationUpdateTimeout = 10 * time.Minute
 
-func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
-	// There is deliberately no command, argument, package, or version input.
-	// Require exactly one empty JSON object rather than silently ignoring fields.
+func decodeEmptyObjectRequest(w http.ResponseWriter, r *http.Request) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, 1024)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	var request *struct{}
 	if err := decoder.Decode(&request); err != nil || request == nil {
 		writeError(w, http.StatusBadRequest, "expected an empty JSON object")
-		return
+		return false
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		writeError(w, http.StatusBadRequest, "expected a single empty JSON object")
+		return false
+	}
+	return true
+}
+
+func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
+	// There is deliberately no command, argument, package, or version input.
+	// Require exactly one empty JSON object rather than silently ignoring fields.
+	if !decodeEmptyObjectRequest(w, r) {
 		return
 	}
 	if !s.updateMu.TryLock() {

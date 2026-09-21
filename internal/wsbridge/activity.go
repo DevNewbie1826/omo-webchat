@@ -151,12 +151,7 @@ func (p *activityPump) enqueue(summary session.Summary, upstreamOverflow bool) {
 		p.mu.Unlock()
 		return
 	}
-	overflow := upstreamOverflow
-	if len(p.queue) >= activityQueueSize {
-		p.queue = p.queue[1:]
-		overflow = true
-	}
-	p.queue = append(p.queue, queuedActivity{summary: summary, overflow: overflow})
+	p.appendLockedItem(queuedActivity{summary: summary, overflow: upstreamOverflow})
 	active := p.active
 	p.mu.Unlock()
 	if active {
@@ -174,7 +169,7 @@ func (p *activityPump) start(initial []session.Summary) {
 	pending := p.queue
 	p.queue = nil
 	for _, summary := range initial {
-		p.appendLocked(cloneActivitySummary(summary))
+		p.appendLockedItem(queuedActivity{summary: cloneActivitySummary(summary)})
 	}
 	for _, item := range pending {
 		p.appendLockedItem(item)
@@ -186,10 +181,6 @@ func (p *activityPump) start(initial []session.Summary) {
 	case p.notify <- struct{}{}:
 	default:
 	}
-}
-
-func (p *activityPump) appendLocked(summary session.Summary) {
-	p.appendLockedItem(queuedActivity{summary: summary})
 }
 
 func (p *activityPump) appendLockedItem(item queuedActivity) {

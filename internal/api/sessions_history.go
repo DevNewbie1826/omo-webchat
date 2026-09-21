@@ -108,14 +108,12 @@ type sessionHistoryCursor struct {
 	ID        string `json:"i"`
 }
 
-func codingAgentDir() string { return session.CodingAgentDir() }
-
 // sessionDirNameForCwd delegates to the shared session-package encoder so the
 // disk-session lister and the goal-state reader agree on one layout.
 func sessionDirNameForCwd(cwd string) string { return session.SessionDirNameForCwd(cwd) }
 
 func sessionsDirForCwd(cwd string) string {
-	agentDir := codingAgentDir()
+	agentDir := session.CodingAgentDir()
 	if agentDir == "" {
 		return ""
 	}
@@ -126,7 +124,7 @@ func sessionsDirForCwd(cwd string) string {
 }
 
 func listDiskSessions(cwd string) ([]diskSession, bool) {
-	agentDir := codingAgentDir()
+	agentDir := session.CodingAgentDir()
 	canonicalCWD, ok := canonicalSessionCWD(cwd)
 	if agentDir == "" || !ok {
 		return nil, false
@@ -164,19 +162,6 @@ func listDiskSessions(cwd string) ([]diskSession, bool) {
 		out = append(out, sess)
 	}
 	return out, true
-}
-
-// resolveDiskSessionPath accepts only an exact path or session ID returned by
-// the disk-session lister for cwd. It returns the lister's path so the provider
-// always receives a workspace-owned sessionPath, even when the client used an ID.
-func resolveDiskSessionPath(cwd, identity string) (string, bool) {
-	sessions, _ := listDiskSessions(cwd)
-	for _, sess := range sessions {
-		if identity == sess.Path || identity == sess.ID {
-			return sess.Path, true
-		}
-	}
-	return "", false
 }
 
 func canonicalSessionCWD(path string) (string, bool) {
@@ -269,7 +254,7 @@ func readSessionNameSource(path string) (name string, established bool) {
 			if established {
 				return name, true
 			}
-			return deriveSessionTitle(firstUserText), false
+			return session.DeriveSessionTitle(firstUserText), false
 		}
 	}
 }
@@ -329,8 +314,6 @@ func readJSONLLine(r *bufio.Reader) ([]byte, bool, error) {
 		return bytes.TrimSpace(line), tooLong, err
 	}
 }
-
-func deriveSessionTitle(prompt string) string { return session.DeriveSessionTitle(prompt) }
 
 func populateSessionHistoryNames(items []sessionHistoryItem) {
 	for i := range items {

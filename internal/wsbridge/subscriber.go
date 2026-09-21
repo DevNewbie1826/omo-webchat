@@ -330,7 +330,11 @@ func mapFrame(f session.Frame, chatID string, reattach bool) (any, error) {
 		return out, nil
 	case session.FrameApproval:
 		m := dataMap(f.Data)
-		m["id"] = firstNonempty(f.ApprovalID, stringField(m, "id"))
+		if f.ApprovalID != "" {
+			m["id"] = f.ApprovalID
+		} else {
+			m["id"] = stringField(m, "id")
+		}
 		return mergeMap(typ, chatID, m), nil
 	case session.FrameTool:
 		m := dataMap(f.Data)
@@ -420,12 +424,6 @@ func cloneMap(x map[string]any) map[string]any {
 	return out
 }
 func stringField(m map[string]any, k string) string { x, _ := m[k].(string); return x }
-func firstNonempty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
-}
 
 func normalizedErrorCode(code string) string {
 	switch code {

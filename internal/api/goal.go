@@ -12,13 +12,11 @@ type chatGoalResponse struct {
 	Goal *session.GoalState `json:"goal"`
 }
 
-// handleGetChatGoal serves the live goal state for one catalog chat. It is
-// protected, catalog-scoped, and confined exactly like the stage-12 activity
-// reader: the chat must belong to the workspace and its cwd must resolve
-// inside the workspace. The goal document itself lives in the coding agent
-// dir keyed by the encoded cwd and the chat's durable session id (layout
-// verified by live protocol probing), so the raw chat cwd is what gets
-// encoded — matching the path the engine wrote.
+// handleGetChatGoal serves the live goal state for one catalog chat. The chat
+// must belong to the workspace and its cwd must resolve inside the workspace.
+// The goal document is keyed by the encoded raw chat cwd and the chat's
+// durable session id, so the raw cwd is what gets encoded — matching the path
+// the engine wrote.
 func (s *Server) handleGetChatGoal(w http.ResponseWriter, r *http.Request) {
 	workspace, err := s.cursors.GetWorkspace(r.PathValue("wsId"))
 	if err != nil {

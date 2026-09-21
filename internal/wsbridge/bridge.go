@@ -1700,22 +1700,8 @@ func (c *connection) sendExternalWriteError(drift *session.ExternalWriteError, c
 }
 
 func (c *connection) sendSessionError(err error, command, requestID string) {
-	var drift *session.ExternalWriteError
-	if errors.As(err, &drift) {
-		c.sendExternalWriteError(drift, command, requestID)
-		return
-	}
-	code := "provider_error"
-	if errors.Is(err, session.ErrPromptInFlight) {
-		code = "prompt_in_flight"
-	}
-	if errors.Is(err, session.ErrCompactionInFlight) {
-		code = "compaction_in_flight"
-	}
-	if errors.Is(err, session.ErrSendBackpressure) {
-		code = "send_backpressure"
-	}
-	c.sendError(code, err.Error(), command, requestID)
+	sid, _ := c.binding()
+	_ = c.write(sessionErrorFrame(err, command, requestID, sid))
 }
 
 func isSessionActiveError(err error) bool {

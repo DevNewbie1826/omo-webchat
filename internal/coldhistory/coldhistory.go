@@ -128,13 +128,21 @@ func Stream(ctx context.Context, sessionPath string, options Options, emit func(
 		return Metadata{}, err
 	}
 
+	return withSessionFile(sessionPath, func(source io.ReadSeeker) (Metadata, error) {
+		return stream(ctx, source, opts, emit)
+	})
+}
+
+// withSessionFile owns the single open/close/error-wrapping path shared by the
+// public entry points.
+func withSessionFile(sessionPath string, read func(io.ReadSeeker) (Metadata, error)) (Metadata, error) {
 	f, err := fileio.Open(sessionPath)
 	if err != nil {
 		return Metadata{}, fmt.Errorf("coldhistory: open %q: %w", sessionPath, err)
 	}
 	defer f.Close()
 
-	metadata, err := stream(ctx, f, opts, emit)
+	metadata, err := read(f)
 	if err != nil {
 		return Metadata{}, fmt.Errorf("coldhistory: read %q: %w", sessionPath, err)
 	}
@@ -166,17 +174,9 @@ func StreamTailFirst(ctx context.Context, sessionPath string, options Options, t
 		return Metadata{}, err
 	}
 
-	f, err := fileio.Open(sessionPath)
-	if err != nil {
-		return Metadata{}, fmt.Errorf("coldhistory: open %q: %w", sessionPath, err)
-	}
-	defer f.Close()
-
-	metadata, err := streamTailFirst(ctx, f, opts, tailEntries, warmChunk, emit)
-	if err != nil {
-		return Metadata{}, fmt.Errorf("coldhistory: read %q: %w", sessionPath, err)
-	}
-	return metadata, nil
+	return withSessionFile(sessionPath, func(source io.ReadSeeker) (Metadata, error) {
+		return streamTailFirst(ctx, source, opts, tailEntries, warmChunk, emit)
+	})
 }
 
 func stream(ctx context.Context, source io.ReadSeeker, opts normalizedOptions, emit func(Metadata, Page) error) (Metadata, error) {
@@ -223,12 +223,8 @@ func streamTailFirst(ctx context.Context, source io.ReadSeeker, opts normalizedO
 			if err != nil {
 				return Metadata{}, err
 			}
-			for pos := first; pos > 0; {
-				start := max(0, pos-warmChunk)
-				if err := emitRange(ctx, source, opts, metadata, branch, start, pos, true, start == 0, emit); err != nil {
-					return Metadata{}, err
-				}
-				pos = start
+			if err := emitWarmRanges(ctx, source, opts, metadata, branch, first, warmChunk, emit); err != nil {
+				return Metadata{}, err
 			}
 			return metadata, nil
 		}
@@ -492,18 +488,19 @@ func emitBranch(ctx context.Context, file io.ReadSeeker, opts normalizedOptions,
 
 func emitTailFirst(ctx context.Context, file io.ReadSeeker, opts normalizedOptions, metadata Metadata, branch []entryRef, tailEntries, warmChunk int, emit func(Metadata, Page) error) error {
 	n := len(branch)
-	tailStart := n - tailEntries
-	if tailStart < 0 {
-		tailStart = 0
-	}
+	tailStart := max(0, n-tailEntries)
 	if err := emitRange(ctx, file, opts, metadata, branch, tailStart, n, false, tailStart == 0, emit); err != nil {
 		return err
 	}
-	for pos := tailStart; pos > 0; {
-		start := pos - warmChunk
-		if start < 0 {
-			start = 0
-		}
+	return emitWarmRanges(ctx, file, opts, metadata, branch, tailStart, warmChunk, emit)
+}
+
+// emitWarmRanges emits [0, pos) as warmChunk-sized ranges newest-first, so a
+// prepend-style consumer rebuilds the branch by stacking pages in arrival
+// order.
+func emitWarmRanges(ctx context.Context, file io.ReadSeeker, opts normalizedOptions, metadata Metadata, branch []entryRef, pos, warmChunk int, emit func(Metadata, Page) error) error {
+	for pos > 0 {
+		start := max(0, pos-warmChunk)
 		if err := emitRange(ctx, file, opts, metadata, branch, start, pos, true, start == 0, emit); err != nil {
 			return err
 		}
@@ -616,9 +613,9 @@ func readRecord(file io.ReadSeeker, ref entryRef, chunkBytes int) (json.RawMessa
 	}
 	remaining := ref.length
 	raw := make([]byte, 0, ref.length)
-	buffer := make([]byte, min64(int64(chunkBytes), remaining))
+	buffer := make([]byte, min(int64(chunkBytes), remaining))
 	for remaining > 0 {
-		want := min64(int64(len(buffer)), remaining)
+		want := min(int64(len(buffer)), remaining)
 		n, err := io.ReadFull(file, buffer[:want])
 		raw = append(raw, buffer[:n]...)
 		remaining -= int64(n)
@@ -631,11 +628,4 @@ func readRecord(file io.ReadSeeker, ref entryRef, chunkBytes int) (json.RawMessa
 		return nil, fmt.Errorf("entry changed while streaming")
 	}
 	return json.RawMessage(raw), nil
-}
-
-func min64(a, b int64) int {
-	if a < b {
-		return int(a)
-	}
-	return int(b)
 }
