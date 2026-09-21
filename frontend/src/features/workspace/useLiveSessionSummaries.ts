@@ -15,13 +15,12 @@ import { applyLeanSummary, hasLeanSummary } from "./useLiveSessionSummariesLean"
 /** Per-session rollup shown by the sessions overview and the tree badge.
  * Running counts come from the server's pre-truncation scalars whenever the
  * transports carry them; retained rows only back the legacy fallback. */
-/** Quiet-running cutoff for summaries whose session liveness is not already
- * established by the shared poller (WS-only override summaries); mirrors
- * OVERRIDE_TTL_MS in liveBadgeStore. A session the poller lists keeps its
- * running tasks counted no matter how long they have been quiet - zombie
- * pruning happens when the session leaves the live list. */
+/** Quiet-running cutoff shared by summaries and WS-only overrides. A session
+ * the poller lists keeps its running tasks counted no matter how long they
+ * have been quiet - zombie pruning happens when the session leaves the live
+ * list. */
 export const STALE_RUNNING_WINDOW_MS = 90_000;
-const FRESHNESS_TICK_MS = 15_000;
+export const FRESHNESS_TICK_MS = 15_000;
 
 export interface LiveSessionSummary {
   /** Accepted server scalars survive attached-socket fallback merging. */
@@ -95,10 +94,6 @@ function digestUpdatedMs(updatedAt: string | undefined): number | null {
   if (updatedAt === undefined) return null;
   const ms = Date.parse(updatedAt);
   return Number.isNaN(ms) ? null : ms;
-}
-
-function digestReceivedMs(receivedAt: string | undefined): number | null {
-  return digestUpdatedMs(receivedAt);
 }
 
 /** Freshness inputs beyond the raw payloads. sessionLive records that the
@@ -253,7 +248,7 @@ export function summarizeLiveSession(
         taskDigest.tasks,
         nowMs,
         runningDagTaskIds,
-        digestReceivedMs(taskDigest.receivedAt),
+        digestUpdatedMs(taskDigest.receivedAt),
         freshness,
       );
   // The dag scalar is a node-based sum over all runs, without task-roster

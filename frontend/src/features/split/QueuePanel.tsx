@@ -3,7 +3,7 @@ import { IconArrowUp, IconChevron, IconTrash } from "../../components/icons";
 import { useT } from "../../i18n";
 import type { QueueEngineSummary, QueuePlaceholder, QueueSlotItem } from "./chatSessionTypes";
 
-export type QueueClearScope = "webchat" | "engine" | "all";
+type QueueClearScope = "webchat" | "engine" | "all";
 
 interface QueuePanelProps {
   /** Webchat-owned queued sends, head-first (server queue snapshot order). */
@@ -112,11 +112,9 @@ export function QueuePanel({ items, engine, placeholders, onRemove, onMove, onCl
               </li>
             ))}
           </ul>
-          {count > 0 || engineCount > 0 ? (
-            <button type="button" className="th-btn th-btn--ghost th-queue-clear" onClick={() => onClear("all")}>
-              {t("queue.clearAll")}
-            </button>
-          ) : null}
+          <button type="button" className="th-btn th-btn--ghost th-queue-clear" onClick={() => onClear("all")}>
+            {t("queue.clearAll")}
+          </button>
         </div>
       )}
     </section>

@@ -38,7 +38,7 @@ export interface QuestionWindowProps {
 	 *  without responding. Reopening happens from the band. */
 	readonly onCollapse: () => void;
 	readonly onRespond: (response: ApprovalResponse) => void;
-	/** Focus handoff target for every exit (the C3 semantics): the owning
+	/** Focus handoff target for every exit: the owning
 	 *  pane's composer. Optional so headless unit mounts stay valid. */
 	readonly focusComposer?: () => void;
 }
@@ -107,8 +107,8 @@ const pendingFocusHandoffs = new Map<string, ReturnType<typeof setTimeout>>();
  *  window chrome (portal, overlay, initial focus, aria-modal, Escape, focus
  *  trap) belongs to ModalDialog; only the request content lives here.
  *
- *  Exits and focus (the C3 semantics): answering or cancelling is an
- *  explicit exit and hands focus to the pane's composer synchronously.
+ *  Exits and focus: answering or cancelling is an explicit exit and hands
+ *  focus to the pane's composer synchronously.
  *  Closing (X / backdrop / Escape) folds the window back to the notice band
  *  and likewise hands focus back — but only when NO dialog remains: while
  *  another request's dialog survives a close, the modal stack restores focus

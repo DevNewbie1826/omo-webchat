@@ -7,21 +7,19 @@ import type { ActivityDagRun, ActivityTask } from "./activityTypes";
  * task row). Project each run's nodes into the agents-section shape so
  * workflow subagents appear when only nodes exist, but drop a node whose
  * taskId already has a task row so a child is never listed twice.
- * A prefix overlapping any task row cannot establish a distinct child:
- * suppress that node and retain the identity uncertainty for count callers.
+ * A prefix overlapping any task row is ambiguous:
+ * suppress that node so it cannot produce a duplicate row.
  */
 export function workflowNodeTasks(
   runs: readonly ActivityDagRun[],
   knownTaskIds: ReadonlySet<string> = new Set(),
-): { readonly tasks: readonly ActivityTask[]; readonly identityPartial: boolean } {
-  let identityPartial = false;
+): { readonly tasks: readonly ActivityTask[] } {
   const tasks = runs.flatMap((run) =>
     run.nodes
       .filter((node) => {
         if (node.taskIdPrefix !== undefined) {
           for (const taskId of knownTaskIds) {
             if (taskId.startsWith(node.taskIdPrefix)) {
-              identityPartial = true;
               return false;
             }
           }
@@ -55,5 +53,5 @@ export function workflowNodeTasks(
       };
       }),
   );
-  return { tasks, identityPartial };
+  return { tasks };
 }

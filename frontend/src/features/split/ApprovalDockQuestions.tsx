@@ -84,9 +84,9 @@ interface OptionTouchGesture {
 	readonly scroller: HTMLElement | null;
 }
 
-/** One option toggle of a structured question. Touch contract (ported from
- *  the PR #177 keyboard work, selectors adapted to the window DOM — the
- *  focus scope is the dialog and the drag-scroll target is the window body):
+/** One option toggle of a structured question. Touch contract (selectors
+ *  adapted to the window DOM; the focus scope is the dialog and the
+ *  drag-scroll target is the window body):
  *  - FOCUS SCOPE: the touch contract applies only while focus is inside the
  *    question window (the typing context where the software keyboard must
  *    survive). With focus anywhere else, touches behave natively: nothing

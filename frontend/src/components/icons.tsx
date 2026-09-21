@@ -37,15 +37,6 @@ export function IconTrash(props: IconProps) {
   );
 }
 
-export function IconCopy(props: IconProps) {
-  return (
-    <svg {...base(props)}>
-      <rect x="9" y="9" width="13" height="13" rx="2" />
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-    </svg>
-  );
-}
-
 export function IconFolder(props: IconProps) {
   return (
     <svg {...base(props)}>
@@ -83,14 +74,6 @@ export function IconX(props: IconProps) {
   return (
     <svg {...base(props)}>
       <path d="M18 6 6 18M6 6l12 12" />
-    </svg>
-  );
-}
-
-export function IconPaperclip(props: IconProps) {
-  return (
-    <svg {...base(props)}>
-      <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
     </svg>
   );
 }
@@ -226,15 +209,6 @@ export function IconPower(props: IconProps) {
     <svg {...base(props)}>
       <path d="M12 2v10" />
       <path d="M18.4 6.6a9 9 0 1 1-12.77.04" />
-    </svg>
-  );
-}
-
-export function IconKeyboard(props: IconProps) {
-  return (
-    <svg {...base(props)}>
-      <rect x="2" y="4" width="20" height="16" rx="2" />
-      <path d="M6 8h.001M10 8h.001M14 8h.001M18 8h.001M8 12h.001M12 12h.001M16 12h.001M7 16h10" />
     </svg>
   );
 }

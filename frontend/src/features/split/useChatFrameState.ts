@@ -44,6 +44,14 @@ import {
 
 export type { RecoveryPhase, RecoveryState } from "./recoveryState";
 
+function nextUserOrdinal(sessionId: string, messages: readonly UiMessage[]): number {
+  const marks = steerMarks(sessionId);
+  return Math.max(
+    messages.filter(message => message.role === "user").length,
+    ...marks.map(mark => mark.ordinal),
+  ) + 1;
+}
+
 /**
  * Set when a resume_failed error frame proved the stored identity dangling:
  * the raw error string is suppressed in favor of the banner, and the state
@@ -625,8 +633,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
         }
       }
       if (ordinal === null) {
-        const marks = steerMarks(steer.sessionId);
-        ordinal = Math.max(messages.filter(message => message.role === "user").length, ...marks.map(mark => mark.ordinal)) + 1;
+        ordinal = nextUserOrdinal(steer.sessionId, messages);
       }
       recordSteerMark(steer.sessionId, { requestId: steer.requestId, text: steer.text, ordinal });
     }
@@ -869,8 +876,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     if (kind === "steer") {
       confirmSteer(requestId, text);
       if (pageBuffer.historyRootKnown()) {
-        const marks = steerMarks(sessionId);
-        const ordinal = Math.max(messagesRef.current.filter(message => message.role === "user").length, ...marks.map(mark => mark.ordinal)) + 1;
+        const ordinal = nextUserOrdinal(sessionId, messagesRef.current);
         recordSteerMark(sessionId, { requestId, text, ordinal });
       } else {
         // A bounded tail cannot resolve the root-relative ordinal; retain the

@@ -25,7 +25,7 @@ let fallbackPaneId = 0;
  * the persisted layout. randomUUID is secure-context-only, so retain a
  * timestamped fallback for plain-HTTP LAN deployments.
  */
-export function newPaneId(): string {
+function newPaneId(): string {
   const crypto = globalThis.crypto;
   if (typeof crypto?.randomUUID === "function") return `pane-${crypto.randomUUID()}`;
   fallbackPaneId += 1;
@@ -55,7 +55,7 @@ export function findLeaf(node: PaneNode, id: string): PaneNode | null {
   return findLeaf(node.first, id) ?? findLeaf(node.second, id);
 }
 
-export function replaceNode(root: PaneNode, id: string, next: PaneNode): PaneNode {
+function replaceNode(root: PaneNode, id: string, next: PaneNode): PaneNode {
   if (root.id === id) return next;
   if (root.kind === "leaf") return root;
   const first = replaceNode(root.first, id, next);

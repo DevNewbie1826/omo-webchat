@@ -1,17 +1,11 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { parseDagActivity, parseTaskUpdated } from "../split/activityParse";
 import { parseDagCounts } from "../split/activityParseDag";
-import { summarizeLiveSession } from "./useLiveSessionSummaries";
+import { FRESHNESS_TICK_MS, STALE_RUNNING_WINDOW_MS, summarizeLiveSession } from "./useLiveSessionSummaries";
 import type { AcceptedAgentAggregate, LiveSessionSummary } from "./useLiveSessionSummaries";
 import { applyTaskActivity, mergeTaskAuthorities, reconcileTaskSources, taskAuthorityPayload, applyCountAuthority, type CountAuthority, type TaskAuthority } from "../split/taskAuthority";
 import type { TaskDigest, DagDigest } from "./activityDigest";
 import type { LiveSessionInfo } from "./useLiveSessionsLean";
-
-/** How long a WS-pushed side or heartbeat-stamp set stays authoritative,
- * mirroring STALE_RUNNING_WINDOW_MS in useLiveSessionSummaries. */
-const OVERRIDE_TTL_MS = 90_000;
-/** Re-evaluation cadence for expiry, mirroring the poll summaries' freshness tick. */
-const FRESHNESS_TICK_MS = 15_000;
 
 const TASK_FRAME = "omo.task.updated";
 const DAG_FRAME = "omo.dag.updated";
@@ -147,12 +141,6 @@ export function projectLiveTaskInfo<T extends { readonly id: string }>(info: T):
   return { ...info, task: taskAuthorityPayload(authority), taskOversized: authority.taskUnavailable === true, taskDigest: undefined };
 }
 
-/** Snapshot subscription also makes attached task updates visible to overview consumers. */
-export function useAcceptedLiveTaskInfos(infos: readonly LiveSessionInfo[]): readonly LiveSessionInfo[] {
-  const authority = useSyncExternalStore(subscribeOverrides, getTaskAuthorities);
-  return useMemo(() => infos.map(projectLiveTaskInfo), [infos, authority]);
-}
-
 /** The accepted agent-count aggregate per canonical session id: the running
  * authority the shared store elected by admission ordering across task and
  * DAG deliveries. */
@@ -210,13 +198,13 @@ function sweepExpired(nowMs: number): void {
   let changed = false;
   const next = new Map<string, SessionOverride>();
   for (const [id, entry] of overrides) {
-    const task = entry.task !== undefined && nowMs - entry.task.receivedAt <= OVERRIDE_TTL_MS
+    const task = entry.task !== undefined && nowMs - entry.task.receivedAt <= STALE_RUNNING_WINDOW_MS
       ? entry.task
       : undefined;
-    const dag = entry.dag !== undefined && nowMs - entry.dag.receivedAt <= OVERRIDE_TTL_MS
+    const dag = entry.dag !== undefined && nowMs - entry.dag.receivedAt <= STALE_RUNNING_WINDOW_MS
       ? entry.dag
       : undefined;
-    const activity = entry.activity !== undefined && nowMs - entry.activity.receivedAt <= OVERRIDE_TTL_MS
+    const activity = entry.activity !== undefined && nowMs - entry.activity.receivedAt <= STALE_RUNNING_WINDOW_MS
       ? entry.activity
       : undefined;
     if (task !== entry.task || dag !== entry.dag || activity !== entry.activity) changed = true;
@@ -482,7 +470,7 @@ function newerPayload(
   nowMs: number,
 ): { readonly payload: unknown; readonly replaced: boolean } {
   if (side === undefined || side.payload === null) return { payload: pollPayload, replaced: false };
-  if (nowMs - side.receivedAt > OVERRIDE_TTL_MS) return { payload: pollPayload, replaced: false };
+  if (nowMs - side.receivedAt > STALE_RUNNING_WINDOW_MS) return { payload: pollPayload, replaced: false };
   return { payload: side.payload, replaced: true };
 }
 

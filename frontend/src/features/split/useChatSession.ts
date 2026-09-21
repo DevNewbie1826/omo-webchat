@@ -119,7 +119,7 @@ export function useChatSession(
     };
   }, [connect, session.id, session.wsId]);
 
-  // Attach-time goal hydration (stage-13): the REST fetch establishes the
+  // Attach-time goal hydration: the REST fetch establishes the
   // initial state; a chat.goal push that arrives while the request is in
   // flight is newer, so the response is dropped in that case.
   useEffect(() => {

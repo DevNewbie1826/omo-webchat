@@ -1,4 +1,5 @@
 import { apiJson } from "../../lib/api";
+import { isRecord } from "../../lib/chatWsParseFields";
 
 /**
  * The projected live goal for one chat, exactly the REST /goal and chat.goal
@@ -13,10 +14,6 @@ export interface ChatGoal {
   readonly createdAt?: number;
   readonly updatedAt?: number;
   readonly completedAt?: number;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parseGoalState(value: unknown): ChatGoal | null {
