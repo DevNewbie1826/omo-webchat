@@ -12,7 +12,7 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
 
-const preActivationBufferCapacity = session.DefaultQueueSize + 1 + session.SendOperationLedgerCapacity + session.NoticeJournalCapacity
+const preActivationBufferCapacity = session.DefaultQueueSize + 1 + session.SendOperationLedgerCapacity + session.NoticeJournalCapacity + session.SubscriberOverflowTransferCapacity
 
 // subscriber buffers the complete attach-time replay plus the normal live-frame
 // headroom until the bridge publishes its binding. Durable history starts after
@@ -29,6 +29,7 @@ type subscriber struct {
 	treatAsResumed bool
 	claim          queryBinding
 	bindingID      string
+	transferID     string
 	recoveryID     string
 	pending        []session.Frame
 	overflowed     bool
@@ -39,7 +40,7 @@ type subscriber struct {
 }
 
 func newSubscriber(c *connection) *subscriber {
-	return &subscriber{conn: c, bindingID: rand.Text(), ready: make(chan struct{}), detachSignal: make(chan struct{})}
+	return &subscriber{conn: c, bindingID: rand.Text(), transferID: rand.Text(), ready: make(chan struct{}), detachSignal: make(chan struct{})}
 }
 
 // SynchronousAttach asks session's broadcaster to finish queueing its initial
@@ -250,6 +251,9 @@ func (s *subscriber) bindingIdentity() string {
 	defer s.mu.Unlock()
 	return s.bindingID
 }
+
+func (s *subscriber) SubscriberOverflowTransferKey() string { return s.transferID }
+
 func (s *subscriber) deliver(f session.Frame) error {
 	wire, err := mapFrame(f, s.claim.chatID, s.treatAsResumed)
 	if err != nil {

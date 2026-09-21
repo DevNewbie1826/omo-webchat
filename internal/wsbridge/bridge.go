@@ -1369,6 +1369,9 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 		}
 	}
 	if err != nil {
+		if detach != nil {
+			detach()
+		}
 		c.unbind()
 		c.bridge.cfg.Logger.Warn("opening v2 chat session", "chat_id", f.ChatID, "error", err)
 		var drift *session.ExternalWriteError
