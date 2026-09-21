@@ -223,9 +223,8 @@ export function emptyActivityState(): ActivityState {
 export function applyRunFlight(state: ActivityState, inFlight: boolean): ActivityState {
   if (!inFlight) {
     if ((state.runInFlight ?? false) === false) return state;
-    const next: ActivityState & { lifeSeenThisRun?: ReadonlySet<string> } = { ...state, runInFlight: false };
-    delete next.lifeSeenThisRun;
-    return next;
+    const { lifeSeenThisRun: _lifeSeenThisRun, ...withoutLife } = state as LifeLatchedActivityState;
+    return { ...withoutLife, runInFlight: false };
   }
   const next: LifeLatchedActivityState = { ...state, runInFlight: true, lifeSeenThisRun: new Set<string>() };
   return next;

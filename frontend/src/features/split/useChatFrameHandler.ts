@@ -439,9 +439,9 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           const failed = bindings.sends.fail(frame.requestId);
           if (failed) {
             if (failed.kind === "steer") {
-            forgetSteerMark(frame.sessionId ?? "", failed.requestId);
-            bindings.dropPendingSteer(failed.requestId);
-          }
+              forgetSteerMark(frame.sessionId ?? "", failed.requestId);
+              bindings.dropPendingSteer(failed.requestId);
+            }
             bindings.offerFailedDraft(failed);
           }
         } else if (frame.requestId && frame.command === "chat.send") {

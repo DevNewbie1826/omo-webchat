@@ -110,16 +110,16 @@ function parseBlocks(content: unknown): readonly ContentBlock[] {
   return blocks;
 }
 
-function toolResultText(content: unknown): string {
-  return parseBlocks(content)
+function toolResultText(blocks: readonly ContentBlock[]): string {
+  return blocks
     .filter((block) => block.kind === "text")
     .map((block) => block.text ?? "")
     .join("");
 }
 
 /** Image blocks carried by a restored toolResult's content, in content order. */
-function toolResultImages(content: unknown): readonly ContentBlock[] {
-  return parseBlocks(content).filter((block) => block.kind === "image" || block.kind === "image_ref");
+function toolResultImages(blocks: readonly ContentBlock[]): readonly ContentBlock[] {
+  return blocks.filter((block) => block.kind === "image" || block.kind === "image_ref");
 }
 
 /**
@@ -134,10 +134,11 @@ function mergeToolResultMessage(messages: UiMessage[], message: Readonly<Record<
   const toolCallId = message["toolCallId"];
   const toolName = message["toolName"];
   const isError = message["isError"];
-  const text = toolResultText(message["content"]);
+  const blocks = parseBlocks(message["content"]);
+  const text = toolResultText(blocks);
   // The ContentBlock shape carries one image slot, so the first image's fields
   // land on the merged block; additional images survive as standalone blocks.
-  const images = toolResultImages(message["content"]);
+  const images = toolResultImages(blocks);
   const image = images[0];
   const result: ContentBlock = {
     kind: "tool",

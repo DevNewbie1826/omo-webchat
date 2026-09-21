@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
@@ -69,6 +69,25 @@ function clampPanelHeight(px: number): number {
   return Math.min(maxPanelHeight(), Math.max(PANEL_MIN, Math.round(px)));
 }
 
+function taskActivitiesOf(
+  tasks: readonly ActivityTask[],
+  dags: readonly ActivityDagRun[],
+  knownTaskIds: ReadonlySet<string>,
+): {
+  readonly tasks: readonly ActivityTask[];
+  readonly workflow: ReturnType<typeof workflowNodeTasks>;
+} {
+  const workflow = workflowNodeTasks(dags, knownTaskIds);
+  return {
+    tasks: orderActivities(
+      [...tasks, ...workflow.tasks],
+      (task) => TERMINAL_TASK_STATUSES.has(task.status),
+      agentTimeMs,
+    ),
+    workflow,
+  };
+}
+
 function mergeRosterTasks(
   roster: readonly ActivityTask[],
   live: ReadonlyMap<string, ActivityTask>,
@@ -82,12 +101,7 @@ function mergeRosterTasks(
   for (const [id, task] of live) {
     if (!byId.has(id)) byId.set(id, task);
   }
-  const workflow = workflowNodeTasks(dags, new Set(byId.keys()));
-  return orderActivities(
-    [...byId.values(), ...workflow.tasks],
-    (task) => TERMINAL_TASK_STATUSES.has(task.status),
-    agentTimeMs,
-  );
+  return taskActivitiesOf([...byId.values()], dags, new Set(byId.keys())).tasks;
 }
 
 function detectPanelHeight(): number | null {
@@ -103,7 +117,7 @@ function detectPanelHeight(): number | null {
 export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
   const { t } = useT();
   const [open, setOpen] = useState(false);
-  // Graph is the P6 default; the choice survives tab and fold switches.
+  // Graph is the default; the choice survives tab and fold switches.
   const [view, setView] = useState<DagView>("graph");
   // null = no explicit choice yet: selection derives from availability in
   // user order. Once chosen, new activity never steals the selection.
@@ -152,8 +166,13 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
   };
   const panelId = useId();
   const [nowMs, setNowMs] = useState(Date.now);
+  const runActivityMsByTask = useMemo(() => runActivityMsByTaskOf(activities), [activities]);
   const taskRows = [...activities.tasks.values()];
-  const workflow = workflowNodeTasks([...activities.dags.values()], new Set(taskRows.map((task) => task.taskId)));
+  const { tasks, workflow } = taskActivitiesOf(
+    taskRows,
+    [...activities.dags.values()],
+    new Set(taskRows.map((task) => task.taskId)),
+  );
   // ActivityState is also the task authority at runtime. Keep this local view
   // until the shared UI state type exposes the authority scalars directly.
   const taskCounts = activities as ActivityState & {
@@ -165,11 +184,6 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
     readonly dagRunTotalCount?: number;
     readonly dagRunCountsUnavailable?: boolean;
   };
-  const tasks = orderActivities(
-    [...taskRows, ...workflow.tasks],
-    (task) => TERMINAL_TASK_STATUSES.has(task.status),
-    agentTimeMs,
-  );
   const dags = orderActivities(
     [...activities.dags.values()],
     (run) => TERMINAL_DAG_STATUSES.has(run.status),
@@ -445,7 +459,7 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
                 data-activity-roster-status={tab === "agents" ? taskRoster.status : undefined}
               >
                 {tab === "todo" && (activities.todo !== null
-                  ? <TodoSection phases={activities.todo} t={t} />
+                  ? <TodoSection phases={activities.todo} />
                   : <p className="th-activity-empty">{t("activity.emptyTodo")}</p>)}
                 {tab === "agents" && (taskRoster.status === "loading"
                   ? <p className="th-activity-empty" role="status">{t("chat.loading")}</p>
@@ -460,7 +474,7 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
                         freshnessCtx={{
                           runInFlight: activities.runInFlight === true,
                           lifeSeenThisRun: lifeSeenThisRunOf(activities),
-                          runActivityMsByTask: runActivityMsByTaskOf(activities),
+                          runActivityMsByTask,
                         }}
                         t={t}
                       />

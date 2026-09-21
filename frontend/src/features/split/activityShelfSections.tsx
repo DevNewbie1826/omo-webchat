@@ -111,7 +111,6 @@ export function AgentSection({ tasks, nowMs, freshnessCtx, t }: {
 
 export function TodoSection({ phases }: {
   readonly phases: readonly TodoPhase[];
-  readonly t: Translate;
 }) {
   // The tab carries the section title; the panel body stays pure phases.
   return (

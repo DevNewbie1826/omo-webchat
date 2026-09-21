@@ -115,6 +115,8 @@ export function SessionTree({
         const mergedSessionIds = new Set(ws.chats.map((chat) => chat.id));
         for (const session of sessionLists.get(ws.id) ?? []) mergedSessionIds.add(session.id);
         for (const id of aggregateSessionIds?.get(ws.id) ?? []) mergedSessionIds.add(id);
+        const workspaceRunning = Array.from(mergedSessionIds).reduce((total, id) => total + (runningCounts?.get(id) ?? 0), 0);
+        const workspaceMainRunning = Array.from(mergedSessionIds).some((id) => activeSessions?.has(id));
         const renamingWs =
           rename && rename.kind === "workspace" && rename.wsId === ws.id ? rename : null;
         return (
@@ -147,21 +149,14 @@ export function SessionTree({
                 </button>
               )}
               <span className="th-tree-count">{mergedSessionIds.size}</span>
-              {(() => {
-                const workspaceRunning = Array.from(mergedSessionIds).reduce((total, id) => total + (runningCounts?.get(id) ?? 0), 0);
-                const mainRunning = Array.from(mergedSessionIds).some((id) => activeSessions?.has(id));
-                return workspaceRunning > 0 || mainRunning ? (
-                  <span
-                    className="th-tree-running th-tree-running--workspace"
-                    role="img"
-                    aria-label={workspaceRunning > 0 ? t("sidebar.ws.runningAgents", { n: workspaceRunning }) : t("sidebar.tm.mainRunning")}
-                    title={mainRunning ? t("sidebar.tm.mainRunning") : undefined}
-                  >
-                    <span className="th-tree-running-dot" aria-hidden="true" />
-                    {workspaceRunning > 0 ? workspaceRunning : null}
-                  </span>
-                ) : null;
-              })()}
+              {workspaceRunning > 0 || workspaceMainRunning ? (
+                <RunningChip
+                  className="th-tree-running th-tree-running--workspace"
+                  count={workspaceRunning}
+                  countLabelKey="sidebar.ws.runningAgents"
+                  mainRunning={workspaceMainRunning}
+                />
+              ) : null}
               <span className="th-tree-actions">
                 <button
                   type="button"
@@ -288,15 +283,12 @@ export function SessionTree({
                       </span>
                     )}
                     {(running > 0 || mainRunning) && (
-                      <span
+                      <RunningChip
                         className="th-tree-running"
-                        role="img"
-                        aria-label={running > 0 ? t("sidebar.tm.runningAgents", { n: running }) : t("sidebar.tm.mainRunning")}
-                        title={mainRunning ? t("sidebar.tm.mainRunning") : undefined}
-                      >
-                        <span className="th-tree-running-dot" aria-hidden="true" />
-                        {running > 0 ? running : null}
-                      </span>
+                        count={running}
+                        countLabelKey="sidebar.tm.runningAgents"
+                        mainRunning={mainRunning}
+                      />
                     )}
                     {tm ? (
                       <span className="th-tree-actions">
@@ -337,6 +329,29 @@ export function SessionTree({
         );
       })}
     </div>
+  );
+}
+
+interface RunningChipProps {
+  readonly className: string;
+  /** Exact child-agent count; the chip falls back to the main-running label at 0. */
+  readonly count: number;
+  readonly countLabelKey: string;
+  readonly mainRunning: boolean;
+}
+
+function RunningChip({ className, count, countLabelKey, mainRunning }: RunningChipProps) {
+  const { t } = useT();
+  return (
+    <span
+      className={className}
+      role="img"
+      aria-label={count > 0 ? t(countLabelKey, { n: count }) : t("sidebar.tm.mainRunning")}
+      title={mainRunning ? t("sidebar.tm.mainRunning") : undefined}
+    >
+      <span className="th-tree-running-dot" aria-hidden="true" />
+      {count > 0 ? count : null}
+    </span>
   );
 }
 

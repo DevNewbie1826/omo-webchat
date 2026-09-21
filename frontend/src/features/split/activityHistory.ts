@@ -1,4 +1,5 @@
 import { apiJson } from "../../lib/api";
+import { isRecord } from "../../lib/chatWsParseFields";
 
 export interface ChatActivityHistory {
   readonly task: unknown;
@@ -11,10 +12,6 @@ export interface ChatActivityResponse {
   readonly history: ChatActivityHistory;
   readonly taskDigest?: unknown;
   readonly dagDigest?: unknown;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parseChatActivity(value: unknown): ChatActivityResponse {

@@ -26,9 +26,6 @@ export async function renameTerminal(wsId: string, tmId: string, name: string): 
   );
 }
 
-
-
-
 export async function uploadFiles(wsId: string, tmId: string, files: readonly File[]): Promise<void> {
   const form = new FormData();
   for (const file of files) form.append("files", file, file.name);

@@ -13,11 +13,12 @@ export function NewChatDialog({ open, providerDiscovery, onRetryProviders, onClo
   const { t } = useT();
   const unavailable = providerDiscovery.status === "loaded"
     && !providerDiscovery.providers.some((provider) => provider.id === "omo" && provider.available);
-  const messageKey = providerDiscovery.status === "error"
-    ? "newChat.providersError"
-    : unavailable
-      ? "newChat.unavailable"
-      : "newChat.providersLoading";
+  let messageKey = "newChat.providersLoading";
+  if (providerDiscovery.status === "error") {
+    messageKey = "newChat.providersError";
+  } else if (unavailable) {
+    messageKey = "newChat.unavailable";
+  }
   const messageRole = providerDiscovery.status === "loading" ? "status" : "alert";
 
   return (

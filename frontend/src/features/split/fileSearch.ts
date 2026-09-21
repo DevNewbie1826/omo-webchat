@@ -1,4 +1,5 @@
 import { ApiError, apiJson } from "../../lib/api";
+import { scanTrigger } from "./commandMatch";
 
 export interface FileMatch {
   readonly path: string;
@@ -71,19 +72,7 @@ export async function listDir(cwd: string, query: string, signal?: AbortSignal):
 }
 
 export function detectFileTrigger(input: string, caret: number): FileTrigger | null {
-  if (caret <= 0) return null;
-  const prev = input[caret - 1];
-  if (prev === " " || prev === "\n" || prev === "\t") return null;
-  for (let i = caret - 1; i >= 0; i -= 1) {
-    const ch = input[i];
-    if (ch === "@") {
-      const before = i === 0 ? " " : input[i - 1];
-      if (before === " " || before === "\n" || before === "\t") {
-        return { start: i, query: input.slice(i + 1, caret) };
-      }
-      return null;
-    }
-    if (ch === " " || ch === "\n" || ch === "\t") return null;
-  }
-  return null;
+  const trigger = scanTrigger(input, caret, ["@"]);
+  if (trigger === null) return null;
+  return { start: trigger.start, query: trigger.query };
 }

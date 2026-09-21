@@ -13,15 +13,13 @@ import type { ActivityDagRun, ActivityTask } from "./activityTypes";
 export function workflowNodeTasks(
   runs: readonly ActivityDagRun[],
   knownTaskIds: ReadonlySet<string> = new Set(),
-): { readonly tasks: readonly ActivityTask[]; readonly identityPartial: boolean } {
-  let identityPartial = false;
+): { readonly tasks: readonly ActivityTask[] } {
   const tasks = runs.flatMap((run) =>
     run.nodes
       .filter((node) => {
         if (node.taskIdPrefix !== undefined) {
           for (const taskId of knownTaskIds) {
             if (taskId.startsWith(node.taskIdPrefix)) {
-              identityPartial = true;
               return false;
             }
           }
@@ -55,5 +53,5 @@ export function workflowNodeTasks(
       };
       }),
   );
-  return { tasks, identityPartial };
+  return { tasks };
 }

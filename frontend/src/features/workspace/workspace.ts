@@ -1,4 +1,5 @@
 import { ApiError, apiJson, apiVoid, qs } from "../../lib/api";
+import { isRecord } from "../../lib/chatWsParseFields";
 import { parseDagDigest, parseTaskDigest, type DagDigest, type TaskDigest } from "./activityDigest";
 
 export type ChatProvider = "omo";
@@ -63,8 +64,8 @@ function parseLiveSession(value: unknown): LiveSessionInfo | null {
   if (typeof value === "string") {
     return value.length > 0 ? { id: value, title: "", task: null, dag: null } : null;
   }
-  if (typeof value !== "object" || value === null) return null;
-  const record = value as Record<string, unknown>;
+  if (!isRecord(value)) return null;
+  const record = value;
   const id = record["id"];
   if (typeof id !== "string" || id.length === 0) return null;
   const title = record["title"];

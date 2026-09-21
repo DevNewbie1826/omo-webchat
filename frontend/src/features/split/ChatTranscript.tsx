@@ -11,7 +11,7 @@ import {
   fetchChatMediaObjectUrl,
   formatByteLength,
   type ChatMediaSource,
-} from "../../lib/chatMedia";;
+} from "../../lib/chatMedia";
 import type { Paragraph, Root } from "mdast";
 import type {} from "mdast-util-math";
 import type { UiMessage } from "./chatEntries";
@@ -56,7 +56,7 @@ function blockMedia(block: NonNullable<UiMessage["blocks"]>[number]): ToolResult
   };
 }
 
-function messageText(message: UiMessage): string {
+function rowText(message: UiMessage): string {
   return (message.blocks ?? [])
     .map((block) => block.text ?? block.thinking ?? "")
     .filter((text) => text.length > 0)
@@ -158,7 +158,6 @@ const MISSING_ROW: TranscriptItem = {
   message: { role: "assistant", blocks: [] },
 };
 
-/** Inline image carried on a preserved block: bytes already inline as base64. */
 /** Stable logical identity of a zoomed image's trigger, threaded onto the
  * button as data-zoom-key so a close-time re-resolution never has to match
  * on the raw <img> src (ambiguous when two images share bytes). Referenced
@@ -166,6 +165,7 @@ const MISSING_ROW: TranscriptItem = {
  * key already used as the React key. */
 type ZoomOpen = (src: string, trigger: HTMLElement) => void;
 
+/** Inline image carried on a preserved block: bytes already inline as base64. */
 function InlineImage({ data, mimeType, alt, zoomKey, onZoom }: {
   readonly data: string;
   readonly mimeType: string | undefined;
@@ -914,7 +914,7 @@ export function ChatTranscript({
                     {message.customType === "steer" ? (
                       <div className="th-chat-msg th-chat-msg--steer" role="note">
                         <span className="th-chat-steer-mark">{t("chat.steer")}</span>
-                        <span className="th-chat-steer-text">{messageText(message)}</span>
+                        <span className="th-chat-steer-text">{rowText(message)}</span>
                       </div>
                     ) : message.summaryKind !== undefined ? (
                       // Hydrated summary entries render as summary boxes in
@@ -925,7 +925,7 @@ export function ChatTranscript({
                       // "branch_summary" stays on the HookCard path below.
                       <SummaryNoticeBox
                         label={message.summaryKind === "compaction" ? "[compaction]" : "[branch]"}
-                        summary={messageText(message)}
+                        summary={rowText(message)}
                         {...(message.summaryKind === "compaction" && typeof message.tokensBefore === "number"
                           ? { tokensBefore: message.tokensBefore }
                           : {})}
@@ -935,7 +935,7 @@ export function ChatTranscript({
                         at={message.ts ?? 0}
                       />
                     ) : message.role === "custom" ? (
-                      <HookCard hookType={message.customType ?? "hook"} text={messageText(message)} />
+                      <HookCard hookType={message.customType ?? "hook"} text={rowText(message)} />
                     ) : (
                       <>
                         {renderMessageBlocks(message, String(virtualItem.key))}

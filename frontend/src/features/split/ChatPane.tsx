@@ -30,6 +30,25 @@ import { useUpdateDialog } from "./useUpdateDialog";
 
 /** Every thinking level; an authoritative unknown value is still listed. */
 const THINKING_LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+const NARROW_PANE_MAX_WIDTH = 600;
+const RECOVERY_LABEL_KEYS = {
+  reconnecting: "chat.reconnecting",
+  resuming: "chat.recoveryResuming",
+  incomplete: "chat.recoveryIncomplete",
+} as const;
+
+type RequestWindowArrival = "open" | "close" | "preserve";
+
+function useRequestWindow(requestId: string | null, arrival: RequestWindowArrival) {
+  const [windowForId, setWindowForId] = useState<string | null>(null);
+  const seenIdRef = useRef<string | null>(null);
+  if (requestId !== seenIdRef.current) {
+    seenIdRef.current = requestId;
+    if (arrival === "open") setWindowForId(requestId);
+    else if (arrival === "close") setWindowForId(null);
+  }
+  return [requestId !== null && windowForId === requestId, setWindowForId] as const;
+}
 
 interface QuestionSurfaceProps {
   readonly request: ApprovalRequest;
@@ -97,11 +116,11 @@ export function ChatPane({
 }: ChatPaneProps) {
   const { t } = useT();
   const [pane, setPane] = useState<HTMLElement | null>(null);
-  const [narrow, setNarrow] = useState(() => window.innerWidth <= 600);
+  const [narrow, setNarrow] = useState(() => window.innerWidth <= NARROW_PANE_MAX_WIDTH);
   useLayoutEffect(() => {
     if (!pane || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(([entry]) => {
-      if (entry) setNarrow(entry.contentRect.width <= 600);
+      if (entry) setNarrow(entry.contentRect.width <= NARROW_PANE_MAX_WIDTH);
     });
     observer.observe(pane);
     return () => observer.disconnect();
@@ -126,33 +145,19 @@ export function ChatPane({
     pane?.querySelector<HTMLElement>(".th-chat-input textarea")?.focus();
   };
   const approvalId = chat.pendingApproval?.id ?? null;
-  const [approvalWindowForId, setApprovalWindowForId] = useState<string | null>(null);
-  const seenApprovalIdRef = useRef<string | null>(null);
-  if (approvalId !== seenApprovalIdRef.current) {
-    seenApprovalIdRef.current = approvalId;
-    if (approvalId !== null) setApprovalWindowForId(approvalId);
-  }
-  const approvalWindowOpen = approvalId !== null && approvalWindowForId === approvalId;
+  const [approvalWindowOpen, setApprovalWindowForId] = useRequestWindow(
+    approvalId,
+    approvalId === null ? "preserve" : "open",
+  );
   const questionFrame = chat.pendingQuestion;
   const questionId = questionFrame?.id ?? null;
-  const [questionWindowForId, setQuestionWindowForId] = useState<string | null>(null);
-  const seenQuestionIdRef = useRef<string | null>(null);
-  if (questionId !== seenQuestionIdRef.current) {
-    seenQuestionIdRef.current = questionId;
-    if (questionFrame === null) {
-      // The request exited (answered or dismissed): retire the open-window
-      // owner with it, so a restored non-blocking question waits in its
-      // notice band until the user opens the window again. A restored
-      // blocking question still auto-opens through the arrival branch below.
-      setQuestionWindowForId(null);
-    } else if (questionFrame.nonBlocking !== true) {
-      setQuestionWindowForId(questionId);
-    }
-  }
+  const [questionWindowOpen, setQuestionWindowForId] = useRequestWindow(
+    questionId,
+    questionFrame === null ? "close" : questionFrame.nonBlocking === true ? "preserve" : "open",
+  );
   const questionRequest = questionFrame === null
     ? null
     : approvalRequestOf({ ...questionFrame, method: "question" });
-  const questionWindowOpen = questionId !== null && questionWindowForId === questionId;
   // Notices replay before history, so keep them gated until the monotonic
   // history lifecycle either completes or proves that history is unavailable.
   // Send-path command failures surface in the persistent banner below, so
@@ -183,10 +188,9 @@ export function ChatPane({
   // cannot tell a pending rebinding replay or a failed resume apart from a
   // plain drop. Incomplete recovery is always a warning with the server's
   // reason, never a normal or success treatment.
-  const recoveryLabel = chat.recovery === null ? undefined
-    : chat.recovery.phase === "reconnecting" ? t("chat.reconnecting")
-    : chat.recovery.phase === "resuming" ? t("chat.recoveryResuming")
-    : t("chat.recoveryIncomplete");
+  const recoveryLabel = chat.recovery === null
+    ? undefined
+    : t(RECOVERY_LABEL_KEYS[chat.recovery.phase]);
 
   const modelPicker = (
     <ModelPicker

@@ -53,7 +53,8 @@ function waveOf(record: Record<string, unknown>): ActivityDagWave | null {
 function countsOf(value: unknown, nodes: readonly ActivityDagNode[]): ActivityDagCounts | null {
   if (!isRecord(value)) return null;
   const counts = { total: nodes.length, pending: 0, blocked: 0, scheduled: 0, running: 0, completed: 0, failed: 0, cancelled: 0, skipped: 0 };
-  for (const key of DAG_STATES) counts[key] = nodes.filter(node => node.state === key).length;
+  // nodeOf already validated state against DAG_STATES; the parsed literal is recovered here.
+  for (const node of nodes) counts[node.state as keyof typeof counts] += 1;
   for (const key of ["total", ...DAG_STATES] as const) if (value[key] !== counts[key]) return null;
   return counts;
 }
