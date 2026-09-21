@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 )
 
@@ -337,7 +338,8 @@ func (b *broadcaster) publishExcept(f Frame, except *subscription) {
 	}
 	b.mu.Unlock()
 	for _, x := range retired {
-		b.finishAsync(x, ErrSubscriberOverflow, true)
+		slog.Warn("subscriber overflow retired without transport close", "frame_kind", f.Kind)
+		b.finishAsync(x, ErrSubscriberOverflow, false)
 	}
 }
 

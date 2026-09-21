@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -151,9 +152,17 @@ func (s *subscriber) activate(ctx context.Context, reattach bool) bool {
 		s.conn.beginReplay(s)
 	}
 	if s.overflowed {
+		if s.replaying {
+			s.conn.endReplay(s)
+		}
+		s.active = false
 		s.pending = nil
-		go s.Cancel()
-		return true
+		s.overflowed = false
+		s.replaying = false
+		s.claim = queryBinding{}
+		s.bindingID = rand.Text()
+		slog.Warn("subscriber activation overflow retired without transport close", "reason", "pre_activation_buffer_overflow")
+		return false
 	}
 	for _, f := range s.pending {
 		if err := s.deliver(f); err != nil {
@@ -190,7 +199,9 @@ func (s *subscriber) wrapDetach(detach func()) func() {
 func (s *subscriber) Cancel() error {
 	s.signalDetach()
 	if nc := s.conn.socket.NetConn(); nc != nil {
-		return nc.Close()
+		slog.Warn("subscriber canceled; closing websocket cleanly", "reason", "subscriber_cancel")
+		_ = s.conn.socket.WriteClose(1011, []byte("subscriber canceled"))
+		_ = nc.Close()
 	}
 	return nil
 }

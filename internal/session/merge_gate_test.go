@@ -590,16 +590,19 @@ func (s *cancellableSub) Deliver(f Frame) {
 	s.once.Do(func() { close(s.entered) })
 	<-s.stop
 }
-func (s *cancellableSub) Cancel() error {
+func (s *cancellableSub) unblock() {
 	select {
 	case <-s.stop:
 	default:
 		close(s.stop)
 	}
+}
+func (s *cancellableSub) Cancel() error {
+	s.unblock()
 	return nil
 }
 
-func TestMergeGateOverflowCancelsAndDetachesOnce(t *testing.T) {
+func TestMergeGateOverflowRetiresWithoutCancelAndDetachesOnce(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
 	detached := make(chan error, 2)
@@ -634,6 +637,15 @@ func TestMergeGateOverflowCancelsAndDetachesOnce(t *testing.T) {
 			t.Fatalf("healthy frame %d: %+v", i, f)
 		}
 	}
+	if got := s.broadcast.count(); got != 1 {
+		t.Fatalf("subscriptions = %d, want healthy sibling only", got)
+	}
+	select {
+	case <-slow.stop:
+		t.Fatal("overflow canceled the retired subscriber")
+	default:
+	}
+	slow.unblock()
 	select {
 	case reason := <-detached:
 		if !errors.Is(reason, ErrSubscriberOverflow) {
@@ -641,9 +653,6 @@ func TestMergeGateOverflowCancelsAndDetachesOnce(t *testing.T) {
 		}
 	case <-time.After(testTimeout):
 		t.Fatal("overflow did not detach")
-	}
-	if got := s.broadcast.count(); got != 1 {
-		t.Fatalf("subscriptions = %d, want healthy sibling only", got)
 	}
 }
 

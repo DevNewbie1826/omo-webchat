@@ -524,6 +524,7 @@ func (c *connection) shutdown() {
 	activity.stop()
 	c.unbind()
 	if nc := c.socket.NetConn(); nc != nil {
+		_ = c.socket.WriteClose(1011, []byte("connection shutdown"))
 		_ = nc.Close()
 	}
 }
@@ -598,6 +599,7 @@ func (c *connection) enqueueQueuePublication(publication queuePublication) {
 	case c.queueWork <- publication:
 	case <-c.ctx.Done():
 	default:
+		c.bridge.cfg.Logger.Warn("connection queue overflow; closing cleanly", "reason", "queue_publication_overflow")
 		go c.shutdown()
 	}
 }

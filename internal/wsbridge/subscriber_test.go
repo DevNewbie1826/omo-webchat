@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lxzan/gws"
+
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 )
 
@@ -107,5 +109,30 @@ func TestSubscriberDetachBeforeReadyReleasesInitializationFlight(t *testing.T) {
 	s.mu.Unlock()
 	if active {
 		t.Fatal("detached subscriber activated without Ready delivery")
+	}
+}
+
+func TestSubscriberActivationOverflowFailsWithoutCancelingSocket(t *testing.T) {
+	conn := &connection{socket: &gws.Conn{}}
+	sess := &session.Session{}
+	s := newSubscriber(conn)
+	conn.chatID, conn.sess, conn.sub = "overflow", sess, s
+	oldBindingID := s.bindingID
+	s.readyOnce.Do(func() { close(s.ready) })
+	for range preActivationBufferCapacity + 1 {
+		s.Deliver(session.Frame{Kind: session.FrameKind("unmapped")})
+	}
+
+	if s.activate(t.Context(), false) {
+		t.Fatal("overflowed subscriber activated")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active || s.overflowed || s.pending != nil || s.claim != (queryBinding{}) {
+		t.Fatalf("overflowed subscriber was not reset: active=%v overflowed=%v pending=%d claim=%+v", s.active, s.overflowed, len(s.pending), s.claim)
+	}
+	if s.bindingID == oldBindingID {
+		t.Fatal("overflowed subscriber retained its binding claim identity")
 	}
 }
