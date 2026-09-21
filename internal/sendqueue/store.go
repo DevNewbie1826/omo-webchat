@@ -100,10 +100,8 @@ func (s *Store) Append(chatID string, item Item) (string, int64, error) {
 	prior := queue
 	queue.Revision++
 	queue.Items = append(cloneItems(queue.Items), item)
-	s.chats[chatID] = queue
-	if err := s.persistLocked(); err != nil {
-		s.chats[chatID] = prior
-		return "", prior.Revision, fmt.Errorf("append send queue: %w", err)
+	if err := s.commitLocked(chatID, prior, &queue, "append send queue"); err != nil {
+		return "", prior.Revision, err
 	}
 	return item.ID, queue.Revision, nil
 }
@@ -119,12 +117,7 @@ func (s *Store) Remove(chatID, id string) error {
 	prior := queue
 	queue.Items = append(cloneItems(queue.Items[:index]), cloneItems(queue.Items[index+1:])...)
 	queue.Revision++
-	s.chats[chatID] = queue
-	if err := s.persistLocked(); err != nil {
-		s.chats[chatID] = prior
-		return fmt.Errorf("remove from send queue: %w", err)
-	}
-	return nil
+	return s.commitLocked(chatID, prior, &queue, "remove from send queue")
 }
 
 func (s *Store) Move(chatID, id string, toIndex int) error {
@@ -153,12 +146,7 @@ func (s *Store) Move(chatID, id string, toIndex int) error {
 	items[toIndex] = item
 	queue.Items = items
 	queue.Revision++
-	s.chats[chatID] = queue
-	if err := s.persistLocked(); err != nil {
-		s.chats[chatID] = prior
-		return fmt.Errorf("move send queue item: %w", err)
-	}
-	return nil
+	return s.commitLocked(chatID, prior, &queue, "move send queue item")
 }
 
 func (s *Store) Clear(chatID string) error {
@@ -171,12 +159,7 @@ func (s *Store) Clear(chatID string) error {
 	prior := queue
 	queue.Items = []Item{}
 	queue.Revision++
-	s.chats[chatID] = queue
-	if err := s.persistLocked(); err != nil {
-		s.chats[chatID] = prior
-		return fmt.Errorf("clear send queue: %w", err)
-	}
-	return nil
+	return s.commitLocked(chatID, prior, &queue, "clear send queue")
 }
 
 // BeginDispatch durably reserves the queue head for delivery. A dispatch left
@@ -202,10 +185,8 @@ func (s *Store) BeginDispatch(chatID string) (Item, bool, error) {
 	queue.Items = cloneItems(queue.Items[1:])
 	queue.Dispatching = cloneItemPtr(&item)
 	queue.Revision++
-	s.chats[chatID] = queue
-	if err := s.persistLocked(); err != nil {
-		s.chats[chatID] = prior
-		return Item{}, false, fmt.Errorf("begin send queue dispatch: %w", err)
+	if err := s.commitLocked(chatID, prior, &queue, "begin send queue dispatch"); err != nil {
+		return Item{}, false, err
 	}
 	return item, true, nil
 }
@@ -225,10 +206,8 @@ func (s *Store) MarkDispatchAttempted(chatID, deliveryID, cursor string) (int64,
 	item.HistoryCursor = cursor
 	queue.Dispatching = &item
 	queue.Revision++
-	s.chats[chatID] = queue
-	if err := s.persistLocked(); err != nil {
-		s.chats[chatID] = prior
-		return prior.Revision, fmt.Errorf("mark send queue dispatch attempted: %w", err)
+	if err := s.commitLocked(chatID, prior, &queue, "mark send queue dispatch attempted"); err != nil {
+		return prior.Revision, err
 	}
 	return queue.Revision, nil
 }
@@ -244,10 +223,8 @@ func (s *Store) CompleteDispatch(chatID, deliveryID string) (int64, error) {
 	prior := queue
 	queue.Dispatching = nil
 	queue.Revision++
-	s.chats[chatID] = queue
-	if err := s.persistLocked(); err != nil {
-		s.chats[chatID] = prior
-		return prior.Revision, fmt.Errorf("complete send queue dispatch: %w", err)
+	if err := s.commitLocked(chatID, prior, &queue, "complete send queue dispatch"); err != nil {
+		return prior.Revision, err
 	}
 	return queue.Revision, nil
 }
@@ -266,10 +243,8 @@ func (s *Store) RestoreDispatch(chatID, deliveryID string) (int64, error) {
 	queue.Dispatching = nil
 	queue.Items = append([]Item{item}, cloneItems(queue.Items)...)
 	queue.Revision++
-	s.chats[chatID] = queue
-	if err := s.persistLocked(); err != nil {
-		s.chats[chatID] = prior
-		return prior.Revision, fmt.Errorf("restore send queue dispatch: %w", err)
+	if err := s.commitLocked(chatID, prior, &queue, "restore send queue dispatch"); err != nil {
+		return prior.Revision, err
 	}
 	return queue.Revision, nil
 }
@@ -287,10 +262,8 @@ func (s *Store) ClaimHead(chatID string) (Item, bool, error) {
 	item := cloneItem(queue.Items[0])
 	queue.Items = cloneItems(queue.Items[1:])
 	queue.Revision++
-	s.chats[chatID] = queue
-	if err := s.persistLocked(); err != nil {
-		s.chats[chatID] = prior
-		return Item{}, false, fmt.Errorf("claim send queue head: %w", err)
+	if err := s.commitLocked(chatID, prior, &queue, "claim send queue head"); err != nil {
+		return Item{}, false, err
 	}
 	return item, true, nil
 }
@@ -302,10 +275,8 @@ func (s *Store) RestoreHead(chatID string, item Item) (int64, error) {
 	prior := queue
 	queue.Items = append([]Item{cloneItem(item)}, cloneItems(queue.Items)...)
 	queue.Revision++
-	s.chats[chatID] = queue
-	if err := s.persistLocked(); err != nil {
-		s.chats[chatID] = prior
-		return prior.Revision, fmt.Errorf("restore send queue head: %w", err)
+	if err := s.commitLocked(chatID, prior, &queue, "restore send queue head"); err != nil {
+		return prior.Revision, err
 	}
 	return queue.Revision, nil
 }
@@ -318,12 +289,7 @@ func (s *Store) Delete(chatID string) error {
 	if !ok {
 		return nil
 	}
-	delete(s.chats, chatID)
-	if err := s.persistLocked(); err != nil {
-		s.chats[chatID] = prior
-		return fmt.Errorf("delete send queue: %w", err)
-	}
-	return nil
+	return s.commitLocked(chatID, prior, nil, "delete send queue")
 }
 
 // Bump advances the shared queue-frame revision for an engine-side change.
@@ -333,10 +299,8 @@ func (s *Store) Bump(chatID string) (int64, error) {
 	queue := s.chats[chatID]
 	prior := queue
 	queue.Revision++
-	s.chats[chatID] = queue
-	if err := s.persistLocked(); err != nil {
-		s.chats[chatID] = prior
-		return prior.Revision, fmt.Errorf("bump send queue revision: %w", err)
+	if err := s.commitLocked(chatID, prior, &queue, "bump send queue revision"); err != nil {
+		return prior.Revision, err
 	}
 	return queue.Revision, nil
 }
@@ -353,6 +317,22 @@ func (s *Store) HasBacklog(chatID string) bool {
 	defer s.mu.Unlock()
 	queue := s.chats[chatID]
 	return queue.Dispatching != nil || len(queue.Items) != 0
+}
+
+// commitLocked installs next as the chat's queue and persists it, restoring
+// prior when the write fails so memory keeps matching disk. A nil next removes
+// the chat entry instead of replacing it. Callers hold s.mu.
+func (s *Store) commitLocked(chatID string, prior chatQueue, next *chatQueue, msg string) error {
+	if next == nil {
+		delete(s.chats, chatID)
+	} else {
+		s.chats[chatID] = *next
+	}
+	if err := s.persistLocked(); err != nil {
+		s.chats[chatID] = prior
+		return fmt.Errorf("%s: %w", msg, err)
+	}
+	return nil
 }
 
 func (s *Store) persistLocked() error {

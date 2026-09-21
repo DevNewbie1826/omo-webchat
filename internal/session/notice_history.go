@@ -12,12 +12,6 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/coldhistory"
 )
 
-// Hydration streams only active ancestry. The observed engine contract counts
-// compactions on every branch, through the same validated disk boundary.
-func persistedCompactionCount(ctx context.Context, path, leaf string) (int, error) {
-	return scanNoticeHistory(ctx, path, leaf, nil)
-}
-
 func scanNoticeHistory(ctx context.Context, path, leaf string, replay *transcriptNoticeReplay) (int, error) {
 	if leaf == "" {
 		return 0, nil

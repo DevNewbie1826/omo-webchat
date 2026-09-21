@@ -43,7 +43,6 @@ type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now() }
 
-// NameSource values for Chat.NameSource.
 const (
 	NameSourceAuto = "auto"
 	NameSourceUser = "user"
@@ -250,13 +249,11 @@ func (s *Store) SaveWorkspace(ws Workspace) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	candidate := cloneState(s.data)
-	for i := range candidate.Workspaces {
-		if candidate.Workspaces[i].ID == ws.ID {
-			candidate.Workspaces[i] = ws
-			return s.flushLocked(candidate)
-		}
+	if i := indexWorkspace(candidate.Workspaces, ws.ID); i >= 0 {
+		candidate.Workspaces[i] = ws
+	} else {
+		candidate.Workspaces = append(candidate.Workspaces, ws)
 	}
-	candidate.Workspaces = append(candidate.Workspaces, ws)
 	return s.flushLocked(candidate)
 }
 
@@ -264,10 +261,8 @@ func (s *Store) SaveWorkspace(ws Workspace) error {
 func (s *Store) GetWorkspace(id string) (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, ws := range s.data.Workspaces {
-		if ws.ID == id {
-			return ws, nil
-		}
+	if i := indexWorkspace(s.data.Workspaces, id); i >= 0 {
+		return s.data.Workspaces[i], nil
 	}
 	return Workspace{}, ErrNotFound
 }
@@ -280,16 +275,15 @@ func (s *Store) UpdateWorkspace(ws Workspace) (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	candidate := cloneState(s.data)
-	for i := range candidate.Workspaces {
-		if candidate.Workspaces[i].ID == ws.ID {
-			candidate.Workspaces[i] = ws
-			if err := s.flushLocked(candidate); err != nil {
-				return Workspace{}, err
-			}
-			return ws, nil
-		}
+	i := indexWorkspace(candidate.Workspaces, ws.ID)
+	if i < 0 {
+		return Workspace{}, ErrNotFound
 	}
-	return Workspace{}, ErrNotFound
+	candidate.Workspaces[i] = ws
+	if err := s.flushLocked(candidate); err != nil {
+		return Workspace{}, err
+	}
+	return ws, nil
 }
 
 // RenameWorkspace updates only the workspace's display name.
@@ -297,16 +291,15 @@ func (s *Store) RenameWorkspace(id, name string) (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	candidate := cloneState(s.data)
-	for i := range candidate.Workspaces {
-		if candidate.Workspaces[i].ID == id {
-			candidate.Workspaces[i].Name = name
-			if err := s.flushLocked(candidate); err != nil {
-				return Workspace{}, err
-			}
-			return candidate.Workspaces[i], nil
-		}
+	i := indexWorkspace(candidate.Workspaces, id)
+	if i < 0 {
+		return Workspace{}, ErrNotFound
 	}
-	return Workspace{}, ErrNotFound
+	candidate.Workspaces[i].Name = name
+	if err := s.flushLocked(candidate); err != nil {
+		return Workspace{}, err
+	}
+	return candidate.Workspaces[i], nil
 }
 
 // ListWorkspaces returns a snapshot of all workspace metadata.
@@ -322,13 +315,7 @@ func (s *Store) ListWorkspaces() []Workspace {
 func (s *Store) DeleteWorkspace(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	idx := -1
-	for i := range s.data.Workspaces {
-		if s.data.Workspaces[i].ID == id {
-			idx = i
-			break
-		}
-	}
+	idx := indexWorkspace(s.data.Workspaces, id)
 	if idx < 0 {
 		return ErrNotFound
 	}
@@ -348,10 +335,8 @@ func (s *Store) SaveChat(c Chat) error {
 	if c.ID == "" {
 		return fmt.Errorf("%w: chat id empty", ErrNotFound)
 	}
-	switch c.NameSource {
-	case "", NameSourceAuto, NameSourceUser:
-	default:
-		return fmt.Errorf("%w: %q", ErrInvalidNameSource, c.NameSource)
+	if err := validateNameSource(c.NameSource); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -380,10 +365,8 @@ func (s *Store) UpdateChat(c Chat) error {
 	if c.WorkspaceID != current.WorkspaceID || !s.hasWorkspaceLocked(c.WorkspaceID) {
 		return ErrNotFound
 	}
-	switch c.NameSource {
-	case "", NameSourceAuto, NameSourceUser:
-	default:
-		return fmt.Errorf("%w: %q", ErrInvalidNameSource, c.NameSource)
+	if err := validateNameSource(c.NameSource); err != nil {
+		return err
 	}
 	candidate := cloneState(s.data)
 	candidate.Chats[c.ID] = c
@@ -436,10 +419,8 @@ func (s *Store) UpdateInPlaceIdentity(id, sessionFile, durableID string) error {
 // every other store mutation.
 func (s *Store) UpdateName(id, name, source string) error {
 	return s.updateChatFields(id, func(c *Chat) error {
-		switch source {
-		case "", NameSourceAuto, NameSourceUser:
-		default:
-			return fmt.Errorf("%w: %q", ErrInvalidNameSource, source)
+		if err := validateNameSource(source); err != nil {
+			return err
 		}
 		c.Name = name
 		c.NameSource = source
@@ -580,11 +561,9 @@ func (s *Store) TouchLastUsed(id string) error {
 // SetLayout persists a UI layout JSON document (passthrough, validated only
 // for well-formedness).
 func (s *Store) SetLayout(raw json.RawMessage) error {
-	if !json.Valid(raw) {
-		return ErrInvalidLayout
-	}
 	// Compact so the layout byte-roundtrips deterministically regardless of
-	// the surrounding document's indentation.
+	// the surrounding document's indentation; it also rejects malformed input,
+	// so no separate validity check is needed.
 	var compact bytes.Buffer
 	if err := json.Compact(&compact, raw); err != nil {
 		return ErrInvalidLayout
@@ -611,12 +590,27 @@ func (s *Store) GetLayout() json.RawMessage {
 }
 
 func (s *Store) hasWorkspaceLocked(id string) bool {
-	for _, ws := range s.data.Workspaces {
-		if ws.ID == id {
-			return true
+	return indexWorkspace(s.data.Workspaces, id) >= 0
+}
+
+// indexWorkspace returns the position of id in workspaces, or -1 when absent.
+func indexWorkspace(workspaces []Workspace, id string) int {
+	for i := range workspaces {
+		if workspaces[i].ID == id {
+			return i
 		}
 	}
-	return false
+	return -1
+}
+
+// validateNameSource reports whether source is a permitted Chat.NameSource.
+func validateNameSource(source string) error {
+	switch source {
+	case "", NameSourceAuto, NameSourceUser:
+		return nil
+	default:
+		return fmt.Errorf("%w: %q", ErrInvalidNameSource, source)
+	}
 }
 
 // cloneState deep-copies the state so a failed flush can be discarded

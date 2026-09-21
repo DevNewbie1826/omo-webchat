@@ -90,8 +90,8 @@ func ErrorFromResponse(resp *Response) error {
 // callers can write `if err := resp.Err(); err != nil`.
 func (r *Response) Err() error { return ErrorFromResponse(r) }
 
-// errMalformedFrames are decode-side failures; they are local protocol
-// violations, never stable agent codes.
+// errEmptyFrame is a decode-side failure; it is a local protocol violation,
+// never a stable agent code.
 var errEmptyFrame = errors.New("omorpc: empty frame")
 
 func errUnexpectedTail(err error) error {

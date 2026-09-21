@@ -46,9 +46,6 @@ func (e *ErrDaemonRuntimeFallback) Error() string {
 
 func (e *ErrDaemonRuntimeFallback) Unwrap() []error { return []error{e.Automatic, e.Node} }
 
-// ErrRuntimeFallback is a concise alias for the typed runtime-ladder failure.
-type ErrRuntimeFallback = ErrDaemonRuntimeFallback
-
 func (e *ErrIncompatibleDaemon) Error() string {
 	parts := make([]string, 0, 2)
 	if e.ProtocolVersion != 0 && e.ProtocolVersion != requiredProtocolVersion {
@@ -86,13 +83,10 @@ type EnsureConfig struct {
 	LockRetry    time.Duration
 }
 
-// EnsuredDaemon is a negotiated client plus ownership metadata. Warning and
-// VersionWarning carry the same non-fatal server-version mismatch text;
-// VersionWarning is the more explicit field for new callers.
+// EnsuredDaemon is a negotiated client plus ownership metadata.
 type EnsuredDaemon struct {
 	Client         *Client
 	Owned          bool
-	Warning        string
 	VersionWarning string
 	ProtocolInfo   *ProtocolInfo
 
@@ -671,7 +665,7 @@ func checkedDaemon(client *Client, cfg EnsureConfig, owned bool, supervisor *sup
 		warning = fmt.Sprintf("omorpc: daemon version %q differs from expected %q", info.ServerVersion, cfg.ExpectedVersion)
 	}
 	return &EnsuredDaemon{
-		Client: client, Owned: owned, Warning: warning, VersionWarning: warning,
+		Client: client, Owned: owned, VersionWarning: warning,
 		ProtocolInfo: info, supervisor: supervisor, waitCh: waitCh,
 	}, nil
 }
@@ -1107,17 +1101,6 @@ func launcherUpdateCommand(root string) string {
 		return fmt.Sprintf("bun add --cwd %s -g omo-ai@beta", shellQuote(root))
 	}
 	return "npm i -g omo-ai@beta"
-}
-
-func launcherNativeCommand(command string, env []string) (string, error) {
-	installation, recognized, err := resolveLauncherInstallation(command, env)
-	if err != nil {
-		return "", err
-	}
-	if !recognized {
-		return "", errors.New("launcher installation is unavailable")
-	}
-	return launcherNativeCommandFromRoot(installation.root)
 }
 
 func launcherNativeCommandFromRoot(root string) (string, error) {

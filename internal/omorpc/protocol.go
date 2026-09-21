@@ -152,8 +152,6 @@ type Notification interface {
 	notification()
 }
 
-// ---- Control commands (no sessionId) ----
-
 // GetProtocolInfo is the handshake command; the reply's data payload is a
 // ProtocolInfo.
 type GetProtocolInfo struct{}
@@ -203,8 +201,6 @@ func (CloseSession) commandName() string { return CmdCloseSession }
 type ListSessions struct{}
 
 func (ListSessions) commandName() string { return CmdListSessions }
-
-// ---- Session-scoped commands (required sessionId) ----
 
 // Prompt sends a user message. StreamingBehavior optionally marks it as an
 // in-run steer or a follow-up queued until the run settles.
@@ -387,8 +383,6 @@ type ClearQueue struct {
 
 func (ClearQueue) commandName() string { return CmdClearQueue }
 
-// ---- Typed data payloads ----
-
 // ProtocolInfo is the data payload of the get_protocol_info response.
 type ProtocolInfo struct {
 	ProtocolVersion int      `json:"protocolVersion"`
@@ -512,8 +506,6 @@ type OpenSessionData struct {
 	State     SessionState `json:"state"`
 }
 
-// ---- Encoding ----
-
 // EncodeFrame renders v as one wire frame: compact JSON terminated by
 // exactly one LF.
 func EncodeFrame(v any) ([]byte, error) {
@@ -562,8 +554,6 @@ func NewRequestID() string {
 	}
 	return hex.EncodeToString(b[:])
 }
-
-// ---- Decoding ----
 
 // DecodeLine classifies one wire record (a single JSON object; any
 // surrounding CR/LF whitespace is tolerated). Records with

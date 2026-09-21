@@ -2,9 +2,7 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"time"
 
@@ -27,16 +25,7 @@ type engineRestartResponse struct {
 func (s *Server) handleSystemEngineRestart(w http.ResponseWriter, r *http.Request) {
 	// There is deliberately no command, argument, or version input.
 	// Require exactly one empty JSON object rather than silently ignoring fields.
-	r.Body = http.MaxBytesReader(w, r.Body, 1024)
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	var request *struct{}
-	if err := decoder.Decode(&request); err != nil || request == nil {
-		writeError(w, http.StatusBadRequest, "expected an empty JSON object")
-		return
-	}
-	if err := decoder.Decode(new(any)); err != io.EOF {
-		writeError(w, http.StatusBadRequest, "expected a single empty JSON object")
+	if !decodeEmptyObjectRequest(w, r) {
 		return
 	}
 	// Installation updates and engine restarts replace the same binary, so

@@ -93,14 +93,14 @@ func Adopt(ctx context.Context, sourcePath, destinationDir, expectedSessionID st
 // Adopt without creating a destination or copying the session into web state.
 func Validate(ctx context.Context, sourcePath, expectedSessionID string) (Result, error) {
 	if ctx == nil || sourcePath == "" || expectedSessionID == "" {
-		return Result{}, fail(KindInvalidSource, "validate", sourcePath, 0, 0, errors.Join(ErrInvalidSource, errors.New("context, source, and expected session id are required")))
+		return Result{}, invalidInput("validate", sourcePath, "context, source, and expected session id are required")
 	}
 	metadata, _, err := validateSource(ctx, sourcePath, MaxSourceBytes)
 	if err != nil {
 		return Result{}, err
 	}
 	if metadata.Header.ID != expectedSessionID {
-		return Result{}, fail(KindInvalidSource, "validate expected session id", sourcePath, 0, 0, errors.Join(ErrInvalidSource, errors.New("session header id differs from expected durable session id")))
+		return Result{}, invalidInput("validate expected session id", sourcePath, "session header id differs from expected durable session id")
 	}
 	return Result{SessionID: metadata.Header.ID, Path: sourcePath}, nil
 }
@@ -129,10 +129,10 @@ func (h copyHooks) limit() int64 {
 
 func adopt(ctx context.Context, sourcePath, destinationDir, expectedSessionID string, hooks copyHooks) (result Result, retErr error) {
 	if ctx == nil {
-		return Result{}, fail(KindInvalidSource, "validate", sourcePath, 0, 0, errors.Join(ErrInvalidSource, errors.New("nil context")))
+		return Result{}, invalidInput("validate", sourcePath, "nil context")
 	}
 	if sourcePath == "" || destinationDir == "" || expectedSessionID == "" {
-		return Result{}, fail(KindInvalidSource, "validate", sourcePath, 0, 0, errors.Join(ErrInvalidSource, errors.New("source, destination directory, and expected session id are required")))
+		return Result{}, invalidInput("validate", sourcePath, "source, destination directory, and expected session id are required")
 	}
 
 	limit := hooks.limit()
@@ -142,7 +142,7 @@ func adopt(ctx context.Context, sourcePath, destinationDir, expectedSessionID st
 	}
 	result.SessionID = metadata.Header.ID
 	if result.SessionID != expectedSessionID {
-		return Result{}, fail(KindInvalidSource, "validate expected session id", sourcePath, 0, 0, errors.Join(ErrInvalidSource, errors.New("session header id differs from expected durable session id")))
+		return Result{}, invalidInput("validate expected session id", sourcePath, "session header id differs from expected durable session id")
 	}
 	result.Path = filepath.Join(destinationDir, DestinationName(result.SessionID))
 
@@ -540,38 +540,45 @@ func openDestination(path string) (*os.Root, error) {
 	return root, nil
 }
 
-func createRollback(root *os.Root, destinationName string) (string, error) {
+// createUniqueName allocates ".adopt-<random><suffix>" inside root, retrying only
+// while create reports that the candidate name already exists. kind names the
+// artifact in the exhaustion error.
+func createUniqueName(root *os.Root, suffix, kind string, create func(name string) error) (string, error) {
 	var random [16]byte
 	for attempts := 0; attempts < 100; attempts++ {
 		if _, err := rand.Read(random[:]); err != nil {
 			return "", err
 		}
-		name := ".adopt-" + hex.EncodeToString(random[:]) + ".rollback"
-		if err := root.Link(destinationName, name); err == nil {
+		name := ".adopt-" + hex.EncodeToString(random[:]) + suffix
+		if err := create(name); err == nil {
 			return name, nil
 		} else if !errors.Is(err, os.ErrExist) {
 			return "", err
 		}
 	}
-	return "", errors.New("could not allocate unique rollback name")
+	return "", errors.New("could not allocate unique " + kind + " name")
+}
+
+func createRollback(root *os.Root, destinationName string) (string, error) {
+	return createUniqueName(root, ".rollback", "rollback", func(name string) error {
+		return root.Link(destinationName, name)
+	})
 }
 
 func createStage(root *os.Root) (*os.File, string, error) {
-	var random [16]byte
-	for attempts := 0; attempts < 100; attempts++ {
-		if _, err := rand.Read(random[:]); err != nil {
-			return nil, "", err
+	var file *os.File
+	name, err := createUniqueName(root, ".tmp", "staging", func(name string) error {
+		opened, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+		if err != nil {
+			return err
 		}
-		name := ".adopt-" + hex.EncodeToString(random[:]) + ".tmp"
-		file, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
-		if err == nil {
-			return file, name, nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil, "", err
-		}
+		file = opened
+		return nil
+	})
+	if err != nil {
+		return nil, "", err
 	}
-	return nil, "", errors.New("could not allocate unique staging name")
+	return file, name, nil
 }
 
 func syncRoot(root *os.Root) error {
@@ -585,6 +592,12 @@ func syncRoot(root *os.Root) error {
 
 func fail(kind Kind, op, path string, size, limit int64, err error) *Error {
 	return &Error{Kind: kind, Op: op, Path: path, Size: size, Limit: limit, Err: err}
+}
+
+// invalidInput reports arguments rejected before any file access. Both public
+// entry points keep their own message text and share this construction.
+func invalidInput(op, path, message string) *Error {
+	return fail(KindInvalidSource, op, path, 0, 0, errors.Join(ErrInvalidSource, errors.New(message)))
 }
 
 type lockTable struct {
