@@ -537,8 +537,13 @@ func (b *broadcaster) publishExcept(f Frame, except *subscription) {
 	}
 	var retired []retiredSubscription
 	b.mu.Lock()
-	for _, transfer := range b.overflowTransfers {
-		transfer.append(f)
+	// Previews never enter a recovery transfer. droppableLiveFrame frames are
+	// superseded by a later authoritative frame, so counting them would exhaust
+	// SubscriberOverflowTransferCapacity and reject re-attach.
+	if !droppableLiveFrame(f) {
+		for _, transfer := range b.overflowTransfers {
+			transfer.append(f)
+		}
 	}
 	for id, x := range b.subs {
 		if x == except {
