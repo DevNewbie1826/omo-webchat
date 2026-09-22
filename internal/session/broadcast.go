@@ -13,14 +13,25 @@ type overflowTransferSubscriber interface{ SubscriberOverflowTransferKey() strin
 const SubscriberOverflowTransferCapacity = 256
 
 type queuedFrame struct {
-	frame     Frame
-	delivered chan struct{}
-	barrier   bool
+	frame       Frame
+	replayedIDs []string
+	delivered   chan struct{}
+	barrier     bool
 }
 
-// replayDedupDecider reports the durable entry id whose recent live append
-// carried the same canonical message payload as the frame data, if any.
-type replayDedupDecider func(data any) (entryID string, matched bool)
+// pendingLiveFrame carries one live frame retained behind a replay gate,
+// with the message-occurrence sequence the session assigned when the frame
+// was published (FrameMessage only; every other kind keeps zero).
+type pendingLiveFrame struct {
+	frame  Frame
+	msgSeq uint64
+}
+
+// replayDedupDecider reports, in append order, the durable entry ids whose
+// recent live append carried the same canonical message payload as the
+// frame data and whose append observation did not precede the frame's
+// publication sequence. The drain fails open on an empty result.
+type replayDedupDecider func(data any, msgSeq uint64) (entryIDs []string, matched bool)
 
 type subscription struct {
 	sub              Subscriber
@@ -39,10 +50,11 @@ type subscription struct {
 
 	replayMu        sync.Mutex
 	replaying       bool
-	pendingLive     []Frame
-	replayDrain     []Frame
+	pendingLive     []pendingLiveFrame
+	replayDrain     []pendingLiveFrame
 	replayedEntries map[string]struct{}
 	replayDedup     replayDedupDecider
+	msgSeqSource    func() uint64
 }
 
 type overflowTransfer struct {
@@ -114,6 +126,14 @@ func (x *subscription) run() {
 					x.failedFrame = &failed
 					retireReason = ErrSubscriberDelivery
 					return
+				}
+				// History pages record their entry ids in the delivery path: after
+				// the page frame was successfully delivered and strictly before
+				// the terminal item's finishReplay drain can consult them (this
+				// loop is the only drainer). A page admission that failed upstream
+				// never queues, so it leaves no ids behind.
+				if len(item.replayedIDs) > 0 {
+					x.noteReplayedEntryIDs(item.replayedIDs)
 				}
 				if x.initialRemaining > 0 {
 					x.initialRemaining--
@@ -190,12 +210,17 @@ func (x *subscription) finishReplay() bool {
 		// A message completing inside the replay window is both an entries-page
 		// entry and a pendingLive frame (observed engine order: message_end,
 		// persistence, entry_appended). The page already delivered it, so the
-		// drained duplicate is dropped. Every other frame kind always delivers,
-		// and an unmatched message (no entry_appended, mutated payload) still
-		// delivers, preserving pre-dedup behavior.
-		if frame.Kind == FrameMessage && dedup != nil && x.frameReplaysDeliveredEntry(frame, dedup) {
+		// drained duplicate is dropped. Suppression is occurrence-bound and
+		// fails open: the frame must correlate to an entry whose append this
+		// session observed at or after the frame's publication sequence, and
+		// each replayed entry id consumes itself suppressing exactly one frame,
+		// so an identical-payload frame whose own entry was never replayed
+		// always delivers. Every other frame kind delivers, as does an
+		// unmatched message (no entry_appended, mutated payload, or an append
+		// older than the frame), preserving pre-dedup behavior.
+		if frame.frame.Kind == FrameMessage && dedup != nil && x.frameReplaysDeliveredEntry(frame, dedup) {
 			// dropped: the replayed entry already carried this message
-		} else if !x.deliver(frame) {
+		} else if !x.deliver(frame.frame) {
 			return false
 		}
 		x.replayMu.Lock()
@@ -204,19 +229,26 @@ func (x *subscription) finishReplay() bool {
 	}
 }
 
-// frameReplaysDeliveredEntry resolves the frame's message to a recently
-// appended entry id and reports whether this replay's pages already delivered
-// that entry. The dedup call must stay outside replayMu: the session decider
-// takes the lifecycle lock, and replayMu -> lifecycleMu is never nested.
-func (x *subscription) frameReplaysDeliveredEntry(frame Frame, dedup replayDedupDecider) bool {
-	entryID, matched := dedup(frame.Data)
-	if !matched || entryID == "" {
+// frameReplaysDeliveredEntry resolves the frame's message to the entry ids
+// that can own its occurrence and reports whether this replay's pages
+// already delivered one of them, consuming that id: one replayed entry
+// occurrence can never suppress a second frame. The dedup call must stay
+// outside replayMu: the session decider takes the lifecycle lock, and
+// replayMu -> lifecycleMu is never nested.
+func (x *subscription) frameReplaysDeliveredEntry(pending pendingLiveFrame, dedup replayDedupDecider) bool {
+	entryIDs, matched := dedup(pending.frame.Data, pending.msgSeq)
+	if !matched || len(entryIDs) == 0 {
 		return false
 	}
 	x.replayMu.Lock()
-	_, replayed := x.replayedEntries[entryID]
-	x.replayMu.Unlock()
-	return replayed
+	defer x.replayMu.Unlock()
+	for _, id := range entryIDs {
+		if _, replayed := x.replayedEntries[id]; replayed {
+			delete(x.replayedEntries, id)
+			return true
+		}
+	}
+	return false
 }
 
 // setReplayDedup installs the session-supplied decider consulted by the
@@ -227,8 +259,20 @@ func (x *subscription) setReplayDedup(decider replayDedupDecider) {
 	x.replayMu.Unlock()
 }
 
+// setMessageSeqSource installs the session's message-occurrence sequence
+// reader consulted when a live FrameMessage is retained in pendingLive, so
+// the drain can tell occurrences of an identical payload apart. The read is
+// an atomic load, safe under replayMu. Callers install it before the replay
+// gate opens.
+func (x *subscription) setMessageSeqSource(source func() uint64) {
+	x.replayMu.Lock()
+	x.msgSeqSource = source
+	x.replayMu.Unlock()
+}
+
 // noteReplayedEntryIDs records the entry ids a replay page delivered to this
-// subscriber; ids never replayed cannot suppress any drained frame.
+// subscriber; ids never replayed cannot suppress any drained frame. Called
+// on the pump goroutine from the delivery path.
 func (x *subscription) noteReplayedEntryIDs(ids []string) {
 	x.replayMu.Lock()
 	if !x.replaying {
@@ -261,7 +305,10 @@ func (x *subscription) endReplay() {
 func (x *subscription) drainReplayTail() []Frame {
 	x.replayMu.Lock()
 	defer x.replayMu.Unlock()
-	frames := x.replayDrain
+	frames := make([]Frame, 0, len(x.replayDrain))
+	for _, pending := range x.replayDrain {
+		frames = append(frames, pending.frame)
+	}
 	x.replayDrain = nil
 	return frames
 }
@@ -273,7 +320,9 @@ func (x *subscription) beginOverflowTransfer(f Frame) ([]Frame, bool) {
 		return nil, false
 	}
 	frames := make([]Frame, 0, len(x.pendingLive)+1)
-	frames = append(frames, x.pendingLive...)
+	for _, pending := range x.pendingLive {
+		frames = append(frames, pending.frame)
+	}
 	frames = append(frames, f)
 	x.pendingLive = nil
 	return frames, true
@@ -326,7 +375,13 @@ func (x *subscription) enqueue(f Frame) bool {
 			x.replayMu.Unlock()
 			return false
 		}
-		x.pendingLive = append(x.pendingLive, f)
+		pending := pendingLiveFrame{frame: f}
+		if f.Kind == FrameMessage && x.msgSeqSource != nil {
+			// Captured at retention time: the sequence has advanced past every
+			// earlier publication by the time the drain runs.
+			pending.msgSeq = x.msgSeqSource()
+		}
+		x.pendingLive = append(x.pendingLive, pending)
 		x.replayMu.Unlock()
 		return true
 	}
@@ -339,12 +394,21 @@ func (x *subscription) enqueue(f Frame) bool {
 	}
 }
 
-// enqueueReplay admits one history frame to this subscriber only. Admission
-// and terminal delivery acknowledgment are both bounded by the history context.
-func (x *subscription) enqueueReplay(ctx context.Context, f Frame, terminal bool) error {
-	item := queuedFrame{frame: f}
+// enqueueReplay admits one history frame to this subscriber only. The
+// page's entry ids ride on the item so the pump records them after the page
+// is delivered, before any terminal drain. Admission and terminal delivery
+// acknowledgment are both bounded by the history context.
+func (x *subscription) enqueueReplay(ctx context.Context, f Frame, terminal bool, replayedIDs []string) error {
+	item := queuedFrame{frame: f, replayedIDs: replayedIDs}
 	if terminal {
 		item.delivered = make(chan struct{})
+	}
+	// Admission checks context liveness first: once the history context has
+	// expired, a page must deterministically fail admission - leaving no
+	// recorded entry ids for the drain to suppress live frames with - instead
+	// of racing the queue select between delivery and rejection.
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	select {
 	case x.q <- item:
