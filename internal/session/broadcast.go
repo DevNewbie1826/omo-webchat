@@ -236,6 +236,11 @@ func (x *subscription) finishReplay() bool {
 // outside replayMu: the session decider takes the lifecycle lock, and
 // replayMu -> lifecycleMu is never nested.
 func (x *subscription) frameReplaysDeliveredEntry(pending pendingLiveFrame, dedup replayDedupDecider) bool {
+	if pending.msgSeq == 0 {
+		// An occurrence retained before its sequence source was installed
+		// cannot be attributed, so it always delivers (fail open).
+		return false
+	}
 	entryIDs, matched := dedup(pending.frame.Data, pending.msgSeq)
 	if !matched || len(entryIDs) == 0 {
 		return false
