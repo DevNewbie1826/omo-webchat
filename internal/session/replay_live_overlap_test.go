@@ -441,6 +441,60 @@ func TestReplayOverlapRejectedPageAdmissionLeavesLiveFramesDelivered(t *testing.
 	}
 }
 
+// TestReplayOverlapUnattributedOccurrenceFailsOpen pins the initialization
+// window: a FrameMessage retained behind a gate before its sequence source
+// was installed cannot be attributed to a replayed entry, so it delivers even
+// when an identical-payload entry id is in the replayed set. Without the
+// fail-open guard the drain's watermark cannot discriminate the occurrence
+// and the round-1 identical-payload loss counter-case reopens.
+func TestReplayOverlapUnattributedOccurrenceFailsOpen(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 64)
+	s, _, detach := acquire(t, mgr, testChat{id: "init-window", cwd: t.TempDir()}, nil)
+	defer detach()
+
+	watcher := newRecorder(16)
+	_, target, rawDetach := s.broadcast.attach(watcher, 8, nil)
+	defer rawDetach()
+	// Initialization window: the gate is open before the hydration path
+	// installs the dedup pair (the pre-fix AcquireAttach ordering).
+	target.beginReplay()
+
+	injectEvent(t, s, map[string]any{"type": "message_end", "message": overlapDupMessage()})
+
+	// The hydration-side install and the replayed-id evidence arrive after
+	// the frame was already retained unattributed.
+	target.setReplayDedup(s.recentMessageEntryIDs)
+	target.setMessageSeqSource(s.messageSeq.Load)
+	injectEvent(t, s, map[string]any{
+		"type":  "entry_appended",
+		"entry": map[string]any{"type": "message", "id": "entry-9", "message": overlapDupMessage()},
+	})
+
+	page := Frame{Kind: FrameEntries, SessionID: s.ID(), Data: EntriesFrame{
+		Entries: []json.RawMessage{[]byte(`{"id":"entry-9","type":"message"}`)},
+		Final:   true,
+	}}
+	if err := target.enqueueReplay(context.Background(), page, true, []string{"entry-9"}); err != nil {
+		t.Fatalf("terminal page: %v", err)
+	}
+
+	_, got := watcher.await(t, FrameMessage)
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), overlapDupToken) {
+		t.Fatalf("unattributed occurrence was not delivered: %s", b)
+	}
+	for _, f := range watcher.drain() {
+		if f.Kind == FrameMessage {
+			t.Fatal("duplicate FrameMessage delivered")
+		}
+	}
+}
+
 func framesSummary(frames []Frame) string {
 	var b strings.Builder
 	for _, f := range frames {

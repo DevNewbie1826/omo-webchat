@@ -1606,6 +1606,12 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 		s.publishLocked(frame)
 	}
 	if replay && target != nil && attachErr == nil {
+		// Installed before ANY gate opens: a FrameMessage retained between
+		// this attach gate and the hydration gate must carry its occurrence
+		// sequence, or the drain's append watermark cannot attribute identical
+		// payloads and the round-1 loss counter-case reopens.
+		target.setReplayDedup(s.recentMessageEntryIDs)
+		target.setMessageSeqSource(s.messageSeq.Load)
 		target.beginReplay()
 	}
 	s.lifecycleMu.Unlock()
