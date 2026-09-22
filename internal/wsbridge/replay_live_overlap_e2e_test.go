@@ -200,11 +200,15 @@ func TestReplayOverlapWebSocketDeliversMessageExactlyOnce(t *testing.T) {
 	writeClient(t, conn, map[string]any{
 		"type": "chat.create", "wsId": h.workspace.ID, "chatId": "overlap-history",
 	})
-	deadline := time.Now().Add(historyE2ETestBudget)
-	// The barrier connection's attach already consumed one get_entries.
-	if !h.daemon.AwaitRequestCountForPath(omorpc.CmdGetEntries, opened.State.SessionFile, 2, time.Until(deadline)) {
-		t.Fatal("incremental tail fetch never arrived")
-	}
+	// Gate-open fence: ready rides the attach critical section's initial
+	// frames, and the same non-blocking section opens the replay gate, so
+	// observing ready proves the reattaching subscriber is registered before
+	// any live frame is injected. Request counts prove nothing here: under
+	// single-proc scheduling the second create's handler may not have run at
+	// all when an earlier request count is observed.
+	frames.next(t, "ready")
+	// The path-scoped block holds whichever tail fetch the reattach issues;
+	// the ready fence above already proves the attach.
 
 	// Engine wire order while the tail read is in flight: message_end, then
 	// persistence (AppendHistory makes the entry visible to the get_entries
@@ -233,10 +237,10 @@ func TestReplayOverlapWebSocketDeliversMessageExactlyOnce(t *testing.T) {
 	// Barrier: FIFO event dispatch means the sentinel observed on the first
 	// connection implies the dup frame and both entry_appended events were
 	// already consumed by the session.
-	awaitOverlapBarrier(t, preFrames, time.Until(deadline))
+	awaitOverlapBarrier(t, preFrames, historyE2ETestBudget)
 
 	releaseTail()
-	raws := awaitOverlapSettled(t, frames, time.Until(deadline))
+	raws := awaitOverlapSettled(t, frames, historyE2ETestBudget)
 
 	dupCount, sentinelCount, deltaCount := 0, 0, 0
 	for _, raw := range raws {
