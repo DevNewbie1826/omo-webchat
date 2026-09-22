@@ -246,6 +246,7 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		// the notice feed.
 	case "entry_appended":
 		entry, _ := raw["entry"].(map[string]any)
+		s.rememberRecentMessageEntryLocked(entry)
 		s.deriveEntryNoticeLocked(entry)
 		s.publishShownCustomEntryLocked(ev)
 	case "continuation_error":
@@ -623,6 +624,62 @@ func (s *Session) publishShownCustomEntryLocked(ev *omorpc.Event) {
 }
 
 func stringValue(v any) string { x, _ := v.(string); return x }
+
+// rememberRecentMessageEntryLocked maps the canonical transformed message
+// payload of a message entry to its durable id so the replay drain can
+// recognize the live frame whose entry a history page already delivered.
+// Observed engine order: message_end precedes entry persistence and
+// entry_appended, so the entry id confirms which live frames a replayed page
+// covers. Only ids appended while this session object observed the event are
+// remembered. Engines that never emit entry_appended, or mutate the message
+// between the wire event and persistence, leave frames unmatched — those
+// deliver, preserving pre-dedup behavior.
+func (s *Session) rememberRecentMessageEntryLocked(entry map[string]any) {
+	if entry["type"] != "message" {
+		return
+	}
+	id := stringValue(entry["id"])
+	if id == "" {
+		return
+	}
+	canonical, err := json.Marshal(messagePayload(entry))
+	if err != nil {
+		return
+	}
+	if s.recentMessageEntries == nil {
+		s.recentMessageEntries = make(map[string]string)
+	}
+	key := string(canonical)
+	// Latest append wins: an identical payload completing twice maps to the
+	// newest entry, so a replayed-page match can never drop the newer frame.
+	_, known := s.recentMessageEntries[key]
+	s.recentMessageEntries[key] = id
+	if !known {
+		s.recentMessageEntryFIFO = append(s.recentMessageEntryFIFO, key)
+		if len(s.recentMessageEntryFIFO) > maxRecentMessageEntries {
+			oldest := s.recentMessageEntryFIFO[0]
+			s.recentMessageEntryFIFO = s.recentMessageEntryFIFO[1:]
+			delete(s.recentMessageEntries, oldest)
+		}
+	}
+}
+
+// recentMessageEntryID is the drain-time dedup decider: it canonicalizes a
+// FrameMessage payload exactly as rememberRecentMessageEntryLocked
+// canonicalized the entry (json.Marshal sorts map keys, so equal messages
+// encode identically) and reports the appended entry id it maps to. It takes
+// the lifecycle lock; callers must hold no replayMu (established order:
+// lifecycleMu then replayMu, never nested the other way).
+func (s *Session) recentMessageEntryID(data any) (string, bool) {
+	canonical, err := json.Marshal(data)
+	if err != nil {
+		return "", false
+	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	id, ok := s.recentMessageEntries[string(canonical)]
+	return id, ok
+}
 func decodeEntries(raw map[string]any) ([]json.RawMessage, string, bool) {
 	b, _ := json.Marshal(raw["entries"])
 	var entries []json.RawMessage
@@ -630,4 +687,18 @@ func decodeEntries(raw map[string]any) ([]json.RawMessage, string, bool) {
 	leaf, _ := raw["leafId"].(string)
 	final, _ := raw["final"].(bool)
 	return entries, leaf, final
+}
+
+// entryIDs extracts the durable entry ids of one history page.
+func entryIDs(entries []json.RawMessage) []string {
+	ids := make([]string, 0, len(entries))
+	for _, raw := range entries {
+		var entry struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(raw, &entry) == nil && entry.ID != "" {
+			ids = append(ids, entry.ID)
+		}
+	}
+	return ids
 }

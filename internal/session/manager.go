@@ -812,6 +812,10 @@ func hydrateForSubscriber(ctx context.Context, s *Session, path string, target *
 		}
 		return nil
 	}
+	// Installed before the gate opens so the pendingLive drain can always
+	// consult it; suppression is id-confirmed, so without a decider every
+	// drained frame delivers as before.
+	target.setReplayDedup(s.recentMessageEntryID)
 	target.beginReplay()
 	return s.hydrateEntriesValidated(ctx, path, target, onValidated)
 }

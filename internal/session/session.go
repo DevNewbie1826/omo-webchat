@@ -21,6 +21,10 @@ const (
 	maxActivitySnapshotBytes = 64 << 10
 	entriesPageMaxBytes      = 256 << 10
 	entriesPageMaxCount      = 100
+	// maxRecentMessageEntries bounds the replay-dedup map. Only ids whose
+	// entry_appended this session observed live are remembered, so older
+	// warm-head history fills can never collide with remembered ids.
+	maxRecentMessageEntries = 64
 	// hydrationTailBudget bounds the branch entries streamed before the
 	// terminal live-tail page when the client negotiated progressive history.
 	hydrationTailBudget = 60
@@ -121,6 +125,8 @@ type Session struct {
 	completedCompactionFIFO                                                 [][]string
 	completedUnpaired                                                       []string
 	compactionDiagnostics                                                   [][2]string
+	recentMessageEntries                                                    map[string]string
+	recentMessageEntryFIFO                                                  []string
 	abortInFlight                                                           bool
 	sendOwner                                                               *sendOperationOwner
 	closeTxn                                                                *closeTransaction
@@ -2125,6 +2131,11 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 			frame.Data = page
 		}
 		if target != nil {
+			if page, ok := frame.Data.(EntriesFrame); ok {
+				// The drain-time dedup needs the ids this page actually delivers
+				// (post coveredTail filter), never the ids it dropped.
+				target.noteReplayedEntryIDs(entryIDs(page.Entries))
+			}
 			return target.enqueueReplay(ctx, frame, terminal)
 		}
 		s.lifecycleMu.Lock()

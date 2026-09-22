@@ -18,6 +18,10 @@ type queuedFrame struct {
 	barrier   bool
 }
 
+// replayDedupDecider reports the durable entry id whose recent live append
+// carried the same canonical message payload as the frame data, if any.
+type replayDedupDecider func(data any) (entryID string, matched bool)
+
 type subscription struct {
 	sub              Subscriber
 	q                chan queuedFrame
@@ -33,10 +37,12 @@ type subscription struct {
 	cleanupDone      chan struct{}
 	failedFrame      *Frame
 
-	replayMu    sync.Mutex
-	replaying   bool
-	pendingLive []Frame
-	replayDrain []Frame
+	replayMu        sync.Mutex
+	replaying       bool
+	pendingLive     []Frame
+	replayDrain     []Frame
+	replayedEntries map[string]struct{}
+	replayDedup     replayDedupDecider
 }
 
 type overflowTransfer struct {
@@ -148,6 +154,9 @@ func (x *subscription) beginReplay() {
 	x.replayMu.Lock()
 	if !x.replaying {
 		x.replaying = true
+		// The replayed-entry set is per replay: ids a previous replay
+		// delivered must not suppress frames drained after this one begins.
+		x.replayedEntries = nil
 		if replay, ok := x.sub.(ReplayBackpressureSubscriber); ok {
 			replay.BeginReplay()
 		}
@@ -175,15 +184,66 @@ func (x *subscription) finishReplay() bool {
 			x.pendingLive = nil
 		}
 		frame := x.replayDrain[0]
+		dedup := x.replayDedup
 		x.replayMu.Unlock()
 
-		if !x.deliver(frame) {
+		// A message completing inside the replay window is both an entries-page
+		// entry and a pendingLive frame (observed engine order: message_end,
+		// persistence, entry_appended). The page already delivered it, so the
+		// drained duplicate is dropped. Every other frame kind always delivers,
+		// and an unmatched message (no entry_appended, mutated payload) still
+		// delivers, preserving pre-dedup behavior.
+		if frame.Kind == FrameMessage && dedup != nil && x.frameReplaysDeliveredEntry(frame, dedup) {
+			// dropped: the replayed entry already carried this message
+		} else if !x.deliver(frame) {
 			return false
 		}
 		x.replayMu.Lock()
 		x.replayDrain = x.replayDrain[1:]
 		x.replayMu.Unlock()
 	}
+}
+
+// frameReplaysDeliveredEntry resolves the frame's message to a recently
+// appended entry id and reports whether this replay's pages already delivered
+// that entry. The dedup call must stay outside replayMu: the session decider
+// takes the lifecycle lock, and replayMu -> lifecycleMu is never nested.
+func (x *subscription) frameReplaysDeliveredEntry(frame Frame, dedup replayDedupDecider) bool {
+	entryID, matched := dedup(frame.Data)
+	if !matched || entryID == "" {
+		return false
+	}
+	x.replayMu.Lock()
+	_, replayed := x.replayedEntries[entryID]
+	x.replayMu.Unlock()
+	return replayed
+}
+
+// setReplayDedup installs the session-supplied decider consulted by the
+// pendingLive drain. Callers install it before the replay gate opens.
+func (x *subscription) setReplayDedup(decider replayDedupDecider) {
+	x.replayMu.Lock()
+	x.replayDedup = decider
+	x.replayMu.Unlock()
+}
+
+// noteReplayedEntryIDs records the entry ids a replay page delivered to this
+// subscriber; ids never replayed cannot suppress any drained frame.
+func (x *subscription) noteReplayedEntryIDs(ids []string) {
+	x.replayMu.Lock()
+	if !x.replaying {
+		x.replayMu.Unlock()
+		return
+	}
+	if x.replayedEntries == nil {
+		x.replayedEntries = make(map[string]struct{}, len(ids))
+	}
+	for _, id := range ids {
+		if id != "" {
+			x.replayedEntries[id] = struct{}{}
+		}
+	}
+	x.replayMu.Unlock()
 }
 
 func (x *subscription) endReplay() {
