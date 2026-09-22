@@ -253,7 +253,9 @@ func (x *subscription) stopWithReason(reason error, cancel bool) {
 
 // enqueue is non-blocking. While a targeted replay is active, live frames are
 // retained in a separate bounded FIFO so publishers never wait under session
-// or broadcaster locks and cannot overtake the replay terminal.
+// or broadcaster locks and cannot overtake the replay terminal. Transient
+// preview frames are shed at capacity instead of detaching the subscriber;
+// see droppableLiveFrame.
 func (x *subscription) enqueue(f Frame) bool {
 	select {
 	case <-x.stopCh:
@@ -264,7 +266,7 @@ func (x *subscription) enqueue(f Frame) bool {
 	if x.replaying {
 		if len(x.pendingLive) >= cap(x.q) {
 			x.replayMu.Unlock()
-			return false
+			return droppableLiveFrame(f)
 		}
 		x.pendingLive = append(x.pendingLive, f)
 		x.replayMu.Unlock()
@@ -274,6 +276,28 @@ func (x *subscription) enqueue(f Frame) bool {
 	select {
 	case x.q <- queuedFrame{frame: f}:
 		return true
+	default:
+		return droppableLiveFrame(f)
+	}
+}
+
+// droppableLiveFrame reports whether a live frame is a transient preview
+// whose committed content is re-delivered verbatim by a later authoritative
+// frame: streamed message deltas are superseded by the terminal message frame
+// at message_end, and tool execution updates by the terminal tool frame at
+// tool_execution_end. Shedding previews under backpressure preserves every
+// committed byte while keeping a slow consumer attached.
+func droppableLiveFrame(f Frame) bool {
+	switch f.Kind {
+	case FrameMessageDelta:
+		return true
+	case FrameTool:
+		payload, ok := f.Data.(map[string]any)
+		if !ok {
+			return false
+		}
+		phase, _ := payload["phase"].(string)
+		return phase == "update"
 	default:
 		return false
 	}
@@ -513,8 +537,13 @@ func (b *broadcaster) publishExcept(f Frame, except *subscription) {
 	}
 	var retired []retiredSubscription
 	b.mu.Lock()
-	for _, transfer := range b.overflowTransfers {
-		transfer.append(f)
+	// Previews never enter a recovery transfer. droppableLiveFrame frames are
+	// superseded by a later authoritative frame, so counting them would exhaust
+	// SubscriberOverflowTransferCapacity and reject re-attach.
+	if !droppableLiveFrame(f) {
+		for _, transfer := range b.overflowTransfers {
+			transfer.append(f)
+		}
 	}
 	for id, x := range b.subs {
 		if x == except {

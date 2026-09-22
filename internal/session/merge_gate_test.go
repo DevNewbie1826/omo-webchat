@@ -616,7 +616,7 @@ func TestMergeGateOverflowCancelsAndDetachesOnce(t *testing.T) {
 	healthy.next(t)
 	publish := func(n int) {
 		s.lifecycleMu.Lock()
-		s.publishLocked(Frame{Kind: FrameMessageDelta, SessionID: s.ID(), Data: n})
+		s.publishLocked(Frame{Kind: FrameMessage, SessionID: s.ID(), Data: n})
 		s.lifecycleMu.Unlock()
 	}
 	publish(0)
@@ -625,12 +625,12 @@ func TestMergeGateOverflowCancelsAndDetachesOnce(t *testing.T) {
 	case <-time.After(testTimeout):
 		t.Fatal("slow subscriber did not block")
 	}
-	if f := healthy.next(t); f.Kind != FrameMessageDelta {
+	if f := healthy.next(t); f.Kind != FrameMessage {
 		t.Fatalf("healthy first frame: %+v", f)
 	}
 	for i := 1; i < 5; i++ {
 		publish(i)
-		if f := healthy.next(t); f.Kind != FrameMessageDelta {
+		if f := healthy.next(t); f.Kind != FrameMessage {
 			t.Fatalf("healthy frame %d: %+v", i, f)
 		}
 	}
