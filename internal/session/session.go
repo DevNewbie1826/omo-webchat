@@ -21,6 +21,15 @@ const (
 	maxActivitySnapshotBytes = 64 << 10
 	entriesPageMaxBytes      = 256 << 10
 	entriesPageMaxCount      = 100
+	// maxRecentMessageEntries bounds the replay-dedup map's payload keys.
+	// Only ids whose entry_appended this session observed live are
+	// remembered, so older warm-head history fills can never collide with
+	// remembered ids.
+	maxRecentMessageEntries = 64
+	// maxRecentMessageEntryIDs bounds the appends remembered per identical
+	// payload: only the newest occurrences can still be the pendingLive
+	// frames of a current replay.
+	maxRecentMessageEntryIDs = 8
 	// hydrationTailBudget bounds the branch entries streamed before the
 	// terminal live-tail page when the client negotiated progressive history.
 	hydrationTailBudget = 60
@@ -121,6 +130,9 @@ type Session struct {
 	completedCompactionFIFO                                                 [][]string
 	completedUnpaired                                                       []string
 	compactionDiagnostics                                                   [][2]string
+	recentMessageEntries                                                    map[string][]recentMessageAppend
+	recentMessageEntryFIFO                                                  []string
+	messageSeq                                                              atomic.Uint64
 	abortInFlight                                                           bool
 	sendOwner                                                               *sendOperationOwner
 	closeTxn                                                                *closeTransaction
@@ -1874,6 +1886,12 @@ func (s *Session) publishLocked(f Frame) {
 	if f.Kind == FrameReady {
 		s.readyPublished = true
 	}
+	if f.Kind == FrameMessage {
+		// Message-occurrence sequence for replay dedup, assigned before
+		// fanout so a frame retained in pendingLive always reads its own
+		// sequence at enqueue time.
+		s.messageSeq.Add(1)
+	}
 	s.broadcast.publish(f)
 }
 
@@ -2125,7 +2143,16 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 			frame.Data = page
 		}
 		if target != nil {
-			return target.enqueueReplay(ctx, frame, terminal)
+			var replayedIDs []string
+			if page, ok := frame.Data.(EntriesFrame); ok {
+				// The drain-time dedup needs the ids this page actually delivers
+				// (post coveredTail filter), never the ids it dropped. They ride
+				// on the queued item: the pump records them in the delivery path
+				// after the page was admitted and delivered, so a page the
+				// history context rejected leaves no ids behind.
+				replayedIDs = entryIDs(page.Entries)
+			}
+			return target.enqueueReplay(ctx, frame, terminal, replayedIDs)
 		}
 		s.lifecycleMu.Lock()
 		defer s.lifecycleMu.Unlock()
