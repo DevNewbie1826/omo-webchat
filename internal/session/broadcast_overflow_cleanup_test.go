@@ -48,8 +48,8 @@ func TestOverflowDetachWaitsForDeliveryCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("delivery did not start")
 	}
-	b.publish(Frame{Kind: FrameMessageDelta})
-	b.publish(Frame{Kind: FrameMessageDelta})
+	b.publish(Frame{Kind: FrameNotice})
+	b.publish(Frame{Kind: FrameNotice})
 	select {
 	case <-sub.cancelEntered:
 	case <-time.After(time.Second):
@@ -81,6 +81,43 @@ func TestOverflowDetachWaitsForDeliveryCancellation(t *testing.T) {
 	case <-sub.recovered:
 	case <-time.After(time.Second):
 		t.Fatal("overflow recovery notification did not finish")
+	}
+}
+
+type previewShedSubscriber struct {
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (s *previewShedSubscriber) Deliver(Frame) {
+	s.once.Do(func() { close(s.entered) })
+}
+
+func (*previewShedSubscriber) Cancel() error { return nil }
+
+// Given: a subscriber whose single queue slot is occupied while its pump is
+// blocked in delivery. Transient previews (message deltas, tool updates) are
+// shed instead of detaching; an authoritative frame still overflows.
+func TestTransientPreviewFramesShedInsteadOfDetaching(t *testing.T) {
+	sub := &previewShedSubscriber{entered: make(chan struct{})}
+	b := &broadcaster{}
+	_, _, detach := b.attach(sub, 1, nil)
+	defer detach()
+	b.publish(Frame{Kind: FrameNotice})
+	select {
+	case <-sub.entered:
+	case <-time.After(time.Second):
+		t.Fatal("delivery did not start")
+	}
+	b.publish(Frame{Kind: FrameNotice})
+	b.publish(Frame{Kind: FrameMessageDelta})
+	b.publish(Frame{Kind: FrameTool, Data: map[string]any{"phase": "update"}})
+	if got := b.count(); got != 1 {
+		t.Fatalf("subscriptions after transient previews = %d, want still attached", got)
+	}
+	b.publish(Frame{Kind: FrameNotice})
+	if got := b.count(); got != 0 {
+		t.Fatalf("subscriptions after authoritative overflow = %d, want detached", got)
 	}
 }
 
