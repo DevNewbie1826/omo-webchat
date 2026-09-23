@@ -325,3 +325,16 @@ test('publication confirmation polls through delayed registry visibility', optio
   const archiveReads = ctx.registry.requests.filter((r) => r.method === 'GET' && r.path.includes('/-/')).length;
   assert.equal(archiveReads, ctx.m.packages.length, 'exactly one archive validation per package');
 });
+
+test('publication confirmation outlasts multi-minute registry propagation lag', options, async (t) => {
+  // The real registry has twice concealed a freshly published version beyond
+  // the historical 12x10s window (v0.3.2 linux-arm64 and wrapper): the packument
+  // only became consistent minutes later. 20 concealed reads at a 25ms cadence
+  // models that lag without slow tests.
+  const ctx = await setup(t, { hidePublishedGets: 20 });
+  ctx.env.NPM_CONFIRM_POLL_MS = '25';
+  const { ok } = await helpers;
+  ok(await publish(ctx));
+  assert.deepEqual(ctx.events.map((e) => e.name), ctx.m.packages.map((p) => p.name));
+  assert.equal(ctx.events.at(-1).name, 'omo-webchat');
+});
