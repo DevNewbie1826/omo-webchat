@@ -218,12 +218,14 @@ async function publish(manifestFile, tag, registry, provenance) {
         '--ignore-scripts', '--fetch-retries=0', '--fetch-timeout=30000', provenance ? '--provenance' : '--provenance=false'];
       await npm(args, { cwd: staging });
       // The registry is eventually consistent: a freshly published version
-      // can lag in the packument, so poll briefly instead of failing on the
-      // first read. NPM_CONFIRM_POLL_MS is a test-only cadence knob.
+      // can lag in the packument for minutes (v0.3.2 concealed linux-arm64
+      // and the wrapper beyond the old 2-minute window), so poll for up to
+      // ten minutes instead of failing on the first reads. NPM_CONFIRM_POLL_MS
+      // is a test-only cadence knob.
       const pollMs = Number(process.env.NPM_CONFIRM_POLL_MS ?? '10000');
       let document = await remote(endpoint, entry.name);
       let confirmed = document !== undefined && await matching(document, entry, tag);
-      for (let attempt = 0; attempt < 12 && !confirmed; attempt++) {
+      for (let attempt = 0; attempt < 60 && !confirmed; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, pollMs));
         document = await remote(endpoint, entry.name);
         confirmed = document !== undefined && await matching(document, entry, tag);

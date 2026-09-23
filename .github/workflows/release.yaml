@@ -23,7 +23,7 @@ jobs:
     needs: [validate]
     if: startsWith(github.ref, 'refs/tags/v') && vars.RELEASE_PUBLISH_ENABLED == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     environment: npm-release
     permissions:
       contents: read
