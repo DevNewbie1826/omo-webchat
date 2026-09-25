@@ -143,6 +143,35 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
   display: flex;
 }
 
+/* Coarse pointers: the icon-button hit rings (icon-button.css) consume 6px
+   of clear space on every side of the 32px buttons. The nav cluster's 2px
+   gap would make the two 44px rings overlap, so it widens to 14px (12px
+   ring-to-ring tiling plus a 2px dead band); the header's own 44px height
+   and the 12px inline padding already clear the rings vertically and
+   outward. The footer buttons previously sat on the inner column's bottom
+   edge with zero reserve, so the ring's 6px downward growth was clipped by
+   .th-sidebar-inner's overflow — an 8px bottom reserve absorbs it. The
+   footer's 8px top padding already keeps the upward growth off the session
+   tree above. Fine-pointer geometry is untouched. */
+@media (pointer: coarse) {
+  .th-sidebar-nav-actions {
+    gap: calc(var(--th-space-3) + var(--th-space-0-5));
+  }
+
+  /* The desktop collapse toggle is a pre-existing 28px box; on coarse
+     pointers it joins its 32px nav neighbours so the icon-button ring
+     yields a full 44x44 region. Fine-pointer geometry keeps the 28px
+     toggle. (0,2,0) outranks the (0,1,0) .th-sidebar-toggle rule. */
+  .th-sidebar-nav-actions .th-btn-icon {
+    width: 32px;
+    height: 32px;
+  }
+
+  .th-sidebar-footer {
+    padding-bottom: var(--th-space-2);
+  }
+}
+
 @media (max-width: 768px) {
   .th-sidebar {
     position: fixed;

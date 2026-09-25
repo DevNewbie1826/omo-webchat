@@ -50,17 +50,26 @@
   flex-direction: column;
   background: var(--th-surface-overlay);
   border: 1px solid var(--th-border-overlay);
-  border-radius: var(--th-radius-lg);
-  box-shadow: var(--th-shadow-overlay);
-  animation: th-modal-in var(--th-dur-slow) var(--th-ease);
+  border-radius: var(--th-radius-xl);
+  box-shadow: var(--th-shadow-overlay), var(--th-highlight);
+  animation: th-modal-in var(--th-dur) var(--th-ease-out);
   overflow-wrap: anywhere;
   word-break: keep-all;
+}
+
+/* Floating layer: glass over the scrim where backdrop-filter is available;
+   the solid Overlay fill above stands as the fallback. */
+@supports (backdrop-filter: blur(1px)) {
+  .th-modal {
+    background: var(--th-glass);
+    backdrop-filter: var(--th-glass-filter);
+  }
 }
 
 @keyframes th-modal-in {
   from {
     opacity: 0;
-    transform: translateY(14px) scale(0.98);
+    transform: translateY(4px) scale(0.98);
   }
   to {
     opacity: 1;

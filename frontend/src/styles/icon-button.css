@@ -3,8 +3,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border-radius: var(--th-radius-sm);
   color: var(--th-muted);
   transition: color var(--th-dur-fast) var(--th-ease),
@@ -30,27 +30,31 @@
   background: var(--th-error-bg);
 }
 
-/* Coarse pointers: the 28px visual is unchanged; an invisible ::before ring
-   grows the hitbox toward 40px on phones. The ring is scoped to the sidebar
-   nav-actions pair only (the two buttons inside .th-sidebar-nav-actions),
-   giving 30x40 effective; the pair sits only 2px apart (--th-space-0-5), so
-   its horizontal inset is capped at 1px to keep the two hitboxes from
-   overlapping. The footer buttons (settings/logout) are excluded: the
-   footer's own space above the button is only 8px padding + 1px border, so
-   any upward growth past that boundary steals clicks from the navigation
-   row above (measured), and the space below is clipped by the
-   .th-sidebar-inner overflow edge — their base 28px box stands, which is
-   still above the 24px touch floor. The empty-state button is excluded as
-   well: it already reaches 44px via app-empty.css, and re-anchoring it with
-   position:relative would capture its absolutely-positioned menu. */
+/* Coarse pointers: the 32px visual is unchanged; an invisible ::before ring
+   grows the hitbox to 44x44px (token contract: "Icon buttons: 32px (44px
+   coarse)"). The ring consumes 6px of clear space on every side, which the
+   sidebar containers supply on coarse pointers only (sidebar.css widens the
+   nav cluster gap and adds the footer's bottom reserve; the footer's top
+   padding and both inline paddings already clear the ring).
+
+   The ring is scoped to the sidebar nav-actions and footer buttons — the
+   surfaces this task verifies through native hit testing. Other icon
+   buttons keep their own existing coarse geometry: the pane header buttons
+   are full 44px boxes via chat-pane.css, the file panel/editor heads pin
+   44px boxes in their own stylesheets, the session-tree rows own their
+   44px coarse layout in session-tree.css (T3), and the empty-state menu is
+   a 44px absolute box in app-empty.css whose absolutely positioned popup a
+   re-anchored position:relative would capture. */
 @media (pointer: coarse) {
-  .th-sidebar-nav-actions .th-btn-icon {
+  .th-sidebar-nav-actions .th-btn-icon,
+  .th-sidebar-footer .th-btn-icon {
     position: relative;
   }
 
-  .th-sidebar-nav-actions .th-btn-icon::before {
+  .th-sidebar-nav-actions .th-btn-icon::before,
+  .th-sidebar-footer .th-btn-icon::before {
     content: "";
     position: absolute;
-    inset: -6px -1px;
+    inset: -6px;
   }
 }

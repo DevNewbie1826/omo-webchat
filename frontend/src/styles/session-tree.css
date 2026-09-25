@@ -224,7 +224,8 @@
 }
 
 .th-tree-node:hover .th-tree-actions,
-.th-tree-node:focus-within .th-tree-actions {
+.th-tree-node:focus-within .th-tree-actions,
+.th-tree-actions[data-th-restore-focus] {
   display: inline-flex;
 }
 
