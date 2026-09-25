@@ -45,6 +45,30 @@ const declarationValue = (body: string, property: string): string => {
 
 const wholeVarToken = (value: string): string => value.match(/^var\(\s*(--[\w-]+)\s*\)$/i)?.[1] ?? "";
 
+// Elevation shadow contract (v2): a level's box-shadow is its semantic
+// shadow token as the FIRST layer, plus at most one var(--th-highlight)
+// layer (the top-edge light floating layers carry). A repeated highlight
+// layer is a second extra layer and fails. Anything else (raw shadows,
+// other tokens, deeper stacks) fails.
+const checkLevelShadow = (value: string, shadowToken: string): string | null => {
+  const layers = value.split(",").map((layer) => layer.trim()).filter((layer) => layer.length > 0);
+  if (layers.length === 0 || wholeVarToken(layers[0] ?? "") !== shadowToken) {
+    return `first shadow layer must be var(${shadowToken}), got '${value}'`;
+  }
+  let highlightCount = 0;
+  for (const [index, layer] of layers.entries()) {
+    if (index === 0) continue;
+    if (wholeVarToken(layer) !== "--th-highlight") {
+      return `extra shadow layer '${layer}' is not var(--th-highlight)`;
+    }
+    highlightCount += 1;
+  }
+  if (highlightCount > 1) {
+    return `at most one var(--th-highlight) layer is allowed, got '${value}'`;
+  }
+  return null;
+};
+
 const containsVarToken = (value: string, token: string): boolean =>
   Array.from(value.matchAll(/var\(\s*(--[\w-]+)\s*\)/gi), (match) => match[1]).includes(token);
 
@@ -250,8 +274,19 @@ describe("spacing and elevation contracts", () => {
       if (!containsVarToken(body, borderToken)) {
         violations.push(`${file} ${selector} is missing var(${borderToken})`);
       }
-      if (wholeVarToken(declarationValue(body, "box-shadow")) !== shadowToken) {
-        violations.push(`${file} ${selector} is missing box-shadow: var(${shadowToken})`);
+      if (level === "surface") {
+        // Surface chrome (the pane header) is not a floating layer: its
+        // shadow stays the bare Surface token.
+        if (wholeVarToken(declarationValue(body, "box-shadow")) !== shadowToken) {
+          violations.push(`${file} ${selector} is missing box-shadow: var(${shadowToken})`);
+        }
+      } else {
+        // Raised and Overlay surfaces: semantic shadow first, --th-highlight
+        // optional second, nothing else.
+        const shadowError = checkLevelShadow(declarationValue(body, "box-shadow"), shadowToken);
+        if (shadowError !== null) {
+          violations.push(`${file} ${selector} ${shadowError}`);
+        }
       }
     }
     const mobileSidebar = sidebar.match(/@media \(max-width: 768px\) \{([\s\S]*)\}\s*$/)?.[1] ?? "";
@@ -262,10 +297,26 @@ describe("spacing and elevation contracts", () => {
     if (!containsVarToken(drawer, "--th-border-overlay")) {
       violations.push("sidebar.css mobile .th-sidebar is missing var(--th-border-overlay)");
     }
-    if (wholeVarToken(declarationValue(drawer, "box-shadow")) !== "--th-shadow-overlay") {
-      violations.push("sidebar.css mobile .th-sidebar is missing box-shadow: var(--th-shadow-overlay)");
+    const drawerShadowError = checkLevelShadow(declarationValue(drawer, "box-shadow"), "--th-shadow-overlay");
+    if (drawerShadowError !== null) {
+      violations.push(`sidebar.css mobile .th-sidebar ${drawerShadowError}`);
     }
     expect(violations).toEqual([]);
+  });
+
+  it("rejects a repeated --th-highlight layer on an elevation shadow", () => {
+    // Zero or one top-edge light is the contract. A second highlight layer
+    // used to pass because every extra layer was checked in isolation.
+    expect(checkLevelShadow("var(--th-shadow-overlay), var(--th-highlight)", "--th-shadow-overlay")).toBeNull();
+    expect(checkLevelShadow("var(--th-shadow-raised)", "--th-shadow-raised")).toBeNull();
+    expect(
+      checkLevelShadow(
+        "var(--th-shadow-overlay), var(--th-highlight), var(--th-highlight)",
+        "--th-shadow-overlay",
+      ),
+    ).toBe(
+      "at most one var(--th-highlight) layer is allowed, got 'var(--th-shadow-overlay), var(--th-highlight), var(--th-highlight)'",
+    );
   });
 
   it("consumes the dedicated user surface pair for the user bubble", () => {
@@ -293,10 +344,17 @@ describe("spacing and elevation contracts", () => {
 });
 
 describe("visual accessibility contracts", () => {
-  it("keeps every design duration token between 120ms and 180ms", () => {
+  it("keeps every design duration token between 120ms and 480ms with the full easing set", () => {
+    // v2 motion contract: 120 (hover/press) - 200 (state/popover) - 320
+    // (enter/disclosure) - 480ms (one-time choreography only), plus the four
+    // easings (standard, enter, move, small-pop spring).
     const durations = Array.from(tokens.matchAll(/--th-dur(?:-[\w-]+)?:\s*(\d+)ms/g), (match) => Number(match[1]));
     expect(durations.length).toBeGreaterThan(0);
-    expect(durations.every((duration) => duration >= 120 && duration <= 180)).toBe(true);
+    expect(durations.every((duration) => duration >= 120 && duration <= 480)).toBe(true);
+    expect(tokenValue("--th-dur-emph")).toBe("480ms");
+    for (const name of ["--th-ease", "--th-ease-out", "--th-ease-in-out", "--th-ease-spring"]) {
+      expect(tokenValue(name), `${name} must exist`).not.toBe("");
+    }
   });
 
   it("globally disables motion when reduced motion is requested", () => {

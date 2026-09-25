@@ -41,7 +41,7 @@ const TIERS: Readonly<Record<TierName, TierSpec>> = {
   display: { factor: 1.7143, line: 1.15, tracking: "-0.025em" },
   title: { factor: 1.2857, line: 1.25, tracking: "-0.018em" },
   input: { factor: 1.1429, line: 1.4, tracking: "-0.008em" },
-  body: { factor: 1, line: 1.6, tracking: "-0.005em" },
+  body: { factor: 1, line: 1.65, tracking: "-0.005em" },
   secondary: { factor: 0.9286, line: 1.45, tracking: "0" },
   label: { factor: 0.8571, line: 1.35, tracking: "0.01em" },
   micro: { factor: 0.7857, line: 1.3, tracking: "0.02em" },

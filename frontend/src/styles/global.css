@@ -47,6 +47,11 @@ body {
   font-size: var(--th-type-body-size);
   line-height: var(--th-type-body-line);
   letter-spacing: var(--th-type-body-tracking);
+  /* Pretendard ships stylistic sets on by default; ss06 (the straight-l
+     alternate used for disambiguation) reads poorly at UI sizes, so it is
+     explicitly disabled at the root. Tabular numerals stay scoped to the
+     countdown/stat surfaces that already request them. */
+  font-feature-settings: "ss06" off;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -76,13 +81,16 @@ ol {
 }
 
 ::selection {
-  background: var(--th-accent);
-  color: var(--th-accent-fg);
+  background: var(--th-accent-soft);
 }
 
 :focus-visible {
-  outline: 2px solid var(--th-accent);
+  /* A 3px accent-alpha ring (the contract's focus treatment): box-shadow
+     keeps rounded corners clean, and the transparent outline preserves a
+     visible indicator in forced-colours mode where box-shadow is dropped. */
+  outline: 2px solid transparent;
   outline-offset: 1px;
+  box-shadow: 0 0 0 3px var(--th-ring);
 }
 
 .th-app {
@@ -100,11 +108,31 @@ ol {
   background: var(--th-bg);
 }
 
+/* Root crossfade clock for runViewTransition. These pseudos are not matched
+   by the universal selector, so the duration is set on them directly. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--th-dur);
+  animation-timing-function: var(--th-ease-out);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
+    /* Global reduced-motion policy: every animation and transition
+       collapses to zero duration and a single iteration; components must
+       convey state by text/glyph alone under this preference. */
     animation: none !important;
     transition: none !important;
+  }
+
+  /* The universal rule above does not match view-transition pseudos. Duration
+     0 keeps the UA fade keyframes and jumps to their end state; animation: none
+     would leave the old and new snapshots stacked for a frame. */
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
   }
 }

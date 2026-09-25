@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import postcss from "postcss";
 import { describe, expect, it } from "vitest";
 import {
   compositeOver,
@@ -9,6 +10,7 @@ import {
   parseThemeScopes,
   relativeLuminance,
   scopeColor,
+  valueReferencesCustomProperty,
 } from "./contrast";
 import type { ThemeScope } from "./contrast";
 
@@ -220,6 +222,30 @@ describe("contrast utilities", () => {
     const scope = must(parseThemeScopes(":root { --th-bg: #000000; }")[0]);
     expect(() => scopeColor(scope, "--th-text")).toThrow(/--th-text/);
   });
+
+  it("parses var() references instead of matching one literal spelling", () => {
+    expect(valueReferencesCustomProperty("var(--th-faint)", "--th-faint")).toBe(true);
+    expect(valueReferencesCustomProperty("var( --th-faint )", "--th-faint")).toBe(true);
+    expect(valueReferencesCustomProperty("var(--th-faint, currentColor)", "--th-faint")).toBe(true);
+    expect(valueReferencesCustomProperty("var( --th-faint, currentColor )", "--th-faint")).toBe(true);
+    expect(valueReferencesCustomProperty("var(--th-text, var(--th-faint))", "--th-faint")).toBe(true);
+    expect(valueReferencesCustomProperty("var(--th-text, var( --th-faint ))", "--th-faint")).toBe(true);
+    expect(valueReferencesCustomProperty("color-mix(in srgb, var(--th-faint) 40%, transparent)", "--th-faint")).toBe(
+      true,
+    );
+    expect(valueReferencesCustomProperty("VAR(--th-faint)", "--th-faint")).toBe(true);
+    expect(valueReferencesCustomProperty("var(/*c*/--th-faint)", "--th-faint")).toBe(true);
+    expect(valueReferencesCustomProperty(String.raw`var(--th-\66 aint)`, "--th-faint")).toBe(true);
+    expect(valueReferencesCustomProperty(String.raw`var(--th-\000066aint)`, "--th-faint")).toBe(true);
+    expect(valueReferencesCustomProperty(String.raw`v\61 r(--th-faint)`, "--th-faint")).toBe(true);
+    expect(valueReferencesCustomProperty('"var(--th-faint)"', "--th-faint")).toBe(false);
+    expect(valueReferencesCustomProperty("'var(--th-faint)'", "--th-faint")).toBe(false);
+    expect(valueReferencesCustomProperty("/* var(--th-faint) */ var(--th-text)", "--th-faint")).toBe(false);
+    expect(valueReferencesCustomProperty("var(--th-text)", "--th-faint")).toBe(false);
+    expect(valueReferencesCustomProperty("var(--th-faint-extra)", "--th-faint")).toBe(false);
+    // A comment between the name and "(" is whitespace, so this is not a var() function.
+    expect(valueReferencesCustomProperty("var/*c*/(--th-faint)", "--th-faint")).toBe(false);
+  });
 });
 
 describe("token contrast contracts (WCAG 2.1)", () => {
@@ -232,35 +258,53 @@ describe("token contrast contracts (WCAG 2.1)", () => {
     readonly note?: string;
   };
 
-  const TEXT_TIERS = ["--th-text", "--th-text-dim", "--th-muted", "--th-faint"] as const;
-  // DESIGN.md "Theme contract": every text tier is tested on every elevation
-  // fill and every state fill it can land on, in both theme scopes. The
-  // composer capsule and the user bubble are elevation fills in their own
+  // v2 contract: the three reading tiers hold the 4.5:1 matrix on every
+  // elevation fill and every state fill in both theme scopes. The fourth
+  // tier, --th-faint, is METADATA ONLY: it holds a separate 3.0:1 rule on
+  // the fills metadata can land on, and the usage allowlist further down
+  // restricts it to enumerated metadata selectors.
+  const TEXT_TIERS = ["--th-text", "--th-text-dim", "--th-muted"] as const;
+  // The composer capsule and the user bubble are elevation fills in their own
   // right (placeholder, queued text, and steer rows land on them).
   const ELEVATION_FILLS = [
     "--th-bg", "--th-surface", "--th-surface-composer", "--th-surface-raised",
     "--th-surface-user", "--th-surface-overlay",
-    // Scoped tool material (P4): tool title, preview, status word, and status
-    // hues land on it in both disclosure states and both themes.
+    // Scoped tool material: tool title, preview, status word, and status hues
+    // land on it in both disclosure states and both themes.
     "--th-tool-surface",
   ] as const;
   const STATE_FILLS = ["--th-hover", "--th-active"] as const;
   const TEXT_BACKGROUNDS = [...ELEVATION_FILLS, ...STATE_FILLS] as const;
+  // The fills metadata (timestamps, counts, hints) actually lands on.
+  const FAINT_FILLS = [
+    "--th-bg", "--th-surface", "--th-surface-composer", "--th-surface-raised",
+    "--th-tool-surface",
+  ] as const;
+  // The violet accent is legible as text on the canvas and body surfaces;
+  // state and user fills sit too close to it for 4.5:1.
+  const ACCENT_TEXT_FILLS = ["--th-bg", "--th-surface"] as const;
   const STATUS_TOKENS = ["--th-error", "--th-success", "--th-warning"] as const;
   const NORMAL_TEXT = 4.5;
 
   // Pairs that are intentionally NOT held to the matrix requirement. Each entry
   // must name a tier x surface pair above and carry a one-line reason; the
   // exemption test re-measures it so a fixed token forces promotion to REQUIRED.
-  // Currently empty: the re-valued Raised fill lifts faint-on-raised above
-  // 4.5:1 in both themes, so that former exemption is now an ordinary
-  // REQUIRED pair inside the matrix below.
+  // Currently empty: the v2 matrix holds every tier on every fill.
   const EXEMPTIONS: readonly (ContrastPair & { readonly reason: string })[] = [];
 
   const REQUIRED: readonly ContrastPair[] = [
     ...TEXT_TIERS.flatMap((fg) => TEXT_BACKGROUNDS.map((bg): ContrastPair => ({ fg, bg, ratio: NORMAL_TEXT }))),
-    // Accent used as link or emphasis text on the elevation fills.
-    ...ELEVATION_FILLS.map(
+    // The metadata tier holds >=3.0:1 on the fills it can land on.
+    ...FAINT_FILLS.map(
+      (bg): ContrastPair => ({
+        fg: "--th-faint",
+        bg,
+        ratio: 3,
+        note: "--th-faint is METADATA ONLY; the usage allowlist below restricts it to metadata selectors",
+      }),
+    ),
+    // Accent used as link or emphasis text on the canvas and body surfaces.
+    ...ACCENT_TEXT_FILLS.map(
       (bg): ContrastPair => ({
         fg: "--th-accent",
         bg,
@@ -268,20 +312,29 @@ describe("token contrast contracts (WCAG 2.1)", () => {
         note: "accent used as link or emphasis text",
       }),
     ),
-    { fg: "--th-accent-fg", bg: "--th-accent", ratio: NORMAL_TEXT, note: "Approve-button text and ::selection" },
+    {
+      fg: "--th-accent",
+      bg: "--th-surface-raised",
+      ratio: NORMAL_TEXT,
+      note: "accent used as emphasis or glyph on raised cards and menus",
+    },
     {
       fg: "--th-accent-fg",
-      bg: "--th-accent-hover",
+      bg: "--th-accent-solid",
       ratio: NORMAL_TEXT,
-      note: "the accent's hover state keeps its label legible",
+      note: "filled-control labels (send, primary buttons, toggles) on the accent-solid fill",
+    },
+    {
+      fg: "--th-accent-fg",
+      bg: "--th-accent-solid-hover",
+      ratio: NORMAL_TEXT,
+      note: "filled-control labels keep 4.5:1 while hovered",
     },
     {
       fg: "--th-send-fg",
       bg: "--th-send",
-      ratio: 3,
-      note:
-        "the send control's visible content is an 18px SVG glyph and its text label is " +
-        "screen-reader-only, so WCAG 2.1 1.4.11 non-text contrast (3:1) applies",
+      ratio: NORMAL_TEXT,
+      note: "the send control's white label and glyph on the accent-solid fill",
     },
     {
       fg: "--th-send-fg",
@@ -353,7 +406,10 @@ describe("token contrast contracts (WCAG 2.1)", () => {
   const THEME_PARITY_EXEMPTIONS = [
     {
       reason: "Corner geometry is shared by every theme.",
-      names: ["--th-radius-sm", "--th-radius", "--th-radius-lg", "--th-radius-pill"],
+      names: [
+        "--th-radius-xs", "--th-radius-sm", "--th-radius", "--th-radius-lg",
+        "--th-radius-xl", "--th-radius-pill",
+      ],
     },
     {
       reason: "The font and type hierarchy is shared by every theme.",
@@ -382,8 +438,11 @@ describe("token contrast contracts (WCAG 2.1)", () => {
       names: ["--th-sidebar-w", "--th-header-h", "--th-node-h"],
     },
     {
-      reason: "Motion timing is shared by every theme.",
-      names: ["--th-ease", "--th-dur-fast", "--th-dur", "--th-dur-slow"],
+      reason: "Motion timing and easing are shared by every theme.",
+      names: [
+        "--th-ease", "--th-ease-out", "--th-ease-in-out", "--th-ease-spring",
+        "--th-dur-fast", "--th-dur", "--th-dur-slow", "--th-dur-emph",
+      ],
     },
   ] as const;
   const parityExemptionNames = new Set<string>(THEME_PARITY_EXEMPTIONS.flatMap((exemption) => exemption.names));
@@ -441,6 +500,149 @@ describe("token contrast contracts (WCAG 2.1)", () => {
       }
     }
     expect(failures).toEqual([]);
+  });
+
+  // --th-faint is the METADATA-ONLY tier (the >=3.0:1 rule above). Every
+  // selector that paints any property with it must be enumerated here with
+  // its metadata role; a new usage fails the allowlist test until it is
+  // either classified as metadata or re-tiered to --th-muted/--th-text-dim.
+  // The stale check fails when an entry no longer uses the token, so the
+  // list cannot silently rot. Readable prose, including expanded reasoning,
+  // is not metadata and is not listed.
+  const FAINT_METADATA_ALLOWLIST: Readonly<Record<string, string>> = {
+    ".th-empty": "empty-state container default; every rendered child carries its own tier",
+    ".th-settings-label": "settings section label",
+    ".th-overview-card-line": "running-session last-output identification line (micro, one ellipsized line)",
+    ".th-sidebar-live-label": "sidebar running-sessions section label",
+    ".th-login-foot": "login footer hint line",
+    ".th-input::placeholder": "input placeholder hint",
+    ".th-home-live-label": "empty-state running-sessions section label",
+    ".th-activity-bar-sep": "activity bar middot separator glyph",
+    ".th-tree-chevron": "session-tree disclosure chevron icon",
+    ".th-tree-placed": "session-tree placed-marker dot border",
+    ".th-tree-source": "session-tree source badge",
+    ".th-tree-count": "session-tree pending count pill",
+    ".th-files-chevron": "file-tree disclosure chevron icon",
+    ".th-files-childstatus": "file-tree child status metadata",
+    ".th-files-meta--dim": "file-row dim metadata",
+    ".th-sidebar-section-label": "sidebar section label",
+    ".th-tool-chevron": "tool record disclosure chevron icon",
+    ".th-tool-sep": "tool record separator glyph",
+    ".th-tool-caption": "tool record caption (timings/metadata)",
+    ".th-picker-pane-title": "new-chat pane label",
+  };
+
+  type FaintUsage = {
+    readonly file: string;
+    readonly selector: string;
+    readonly prop: string;
+    readonly line: number | undefined;
+  };
+
+  const ruleOf = (declaration: postcss.Declaration): postcss.Rule | undefined => {
+    let node = declaration.parent as postcss.Container | undefined;
+    while (node !== undefined) {
+      if (node.type === "rule") return node as postcss.Rule;
+      node = node.parent as postcss.Container | undefined;
+    }
+    return undefined;
+  };
+
+  const collectFaintUsages = (css: string, file: string): FaintUsage[] => {
+    const usages: FaintUsage[] = [];
+    postcss.parse(css, { from: file }).walkDecls((declaration) => {
+      if (!valueReferencesCustomProperty(declaration.value, "--th-faint")) return;
+      usages.push({
+        file,
+        selector: ruleOf(declaration)?.selector.trim() ?? "",
+        prop: declaration.prop,
+        line: declaration.source?.start?.line,
+      });
+    });
+    return usages;
+  };
+
+  const faintUsageViolations = (usages: readonly FaintUsage[]): string[] =>
+    usages.flatMap((usage) =>
+      FAINT_METADATA_ALLOWLIST[usage.selector] === undefined
+        ? [
+            `${usage.file}:${usage.line ?? "?"}: selector "${usage.selector}" paints ${usage.prop} ` +
+              "with --th-faint but is not in FAINT_METADATA_ALLOWLIST",
+          ]
+        : [],
+    );
+
+  it("restricts --th-faint to an explicit allowlist of metadata selectors", () => {
+    const stylesheetPaths = Object.keys(import.meta.glob("./*.css"));
+    const violations: string[] = [];
+    const seen = new Set<string>();
+    for (const path of stylesheetPaths) {
+      const file = path.slice(2);
+      const css = readFileSync(`src/styles/${file}`, "utf8");
+      const usages = collectFaintUsages(css, file);
+      for (const usage of usages) seen.add(usage.selector);
+      violations.push(...faintUsageViolations(usages));
+    }
+    for (const selector of Object.keys(FAINT_METADATA_ALLOWLIST)) {
+      if (!seen.has(selector)) {
+        violations.push(`FAINT_METADATA_ALLOWLIST: "${selector}" no longer uses --th-faint; remove the stale entry`);
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("rejects whitespace var() syntax that paints body prose with --th-faint", () => {
+    const usages = collectFaintUsages(".th-chat-markdown p { color: var( --th-faint ); }\n", "prose.css");
+    expect(faintUsageViolations(usages)).toEqual([
+      'prose.css:1: selector ".th-chat-markdown p" paints color with --th-faint but is not in FAINT_METADATA_ALLOWLIST',
+    ]);
+  });
+
+  it("rejects fallback var() syntax that paints body prose with --th-faint", () => {
+    const usages = collectFaintUsages(
+      ".th-chat-markdown p { color: var(--th-faint, currentColor); }\n",
+      "prose.css",
+    );
+    expect(faintUsageViolations(usages)).toEqual([
+      'prose.css:1: selector ".th-chat-markdown p" paints color with --th-faint but is not in FAINT_METADATA_ALLOWLIST',
+    ]);
+  });
+
+  it("rejects a nested var() reference that paints body prose with --th-faint", () => {
+    const usages = collectFaintUsages(
+      ".th-chat-markdown p { color: var(--th-text, var( --th-faint )); }\n",
+      "prose.css",
+    );
+    expect(faintUsageViolations(usages)).toEqual([
+      'prose.css:1: selector ".th-chat-markdown p" paints color with --th-faint but is not in FAINT_METADATA_ALLOWLIST',
+    ]);
+  });
+
+  it("allows enumerated metadata selectors to use --th-faint", () => {
+    const usages = collectFaintUsages(
+      [
+        ".th-sidebar-section-label { color: var(--th-faint); }",
+        ".th-tree-placed { border: 1px solid var(--th-faint); }",
+        ".th-login-foot { color: var( --th-faint ); }",
+        ".th-tree-count { color: var(--th-faint, currentColor); }",
+      ].join("\n"),
+      "metadata.css",
+    );
+    expect(usages.map((usage) => usage.selector)).toEqual([
+      ".th-sidebar-section-label",
+      ".th-tree-placed",
+      ".th-login-foot",
+      ".th-tree-count",
+    ]);
+    expect(faintUsageViolations(usages)).toEqual([]);
+  });
+
+  it("does not treat a string spelling of var(--th-faint) as metadata paint", () => {
+    const usages = collectFaintUsages(
+      '.th-chat-markdown p { content: "var(--th-faint)"; color: var(--th-text); }\n',
+      "prose.css",
+    );
+    expect(usages).toEqual([]);
   });
 
   it("measures the foreground and fill tokens requested by real error and disabled controls", () => {
@@ -582,22 +784,22 @@ describe("token contrast contracts (WCAG 2.1)", () => {
     expect(stale).toEqual([]);
   });
 
-  // DESIGN.md "Colour reference": the authenticated installed-Codex capture
-  // (authenticated-pixel-measurements.json). Fills pin exact captured values;
-  // derived roles pin ordering contracts instead of invented hexes.
+  // Token contract v2 (.omo/plans/visual-redesign-tokens.md): the values
+  // below are contract pins, not captured measurements. Fills pin exact
+  // hexes; derived roles pin ordering contracts instead of invented hexes.
   const REFERENCE_SURFACES = {
-    "#ffffff / #181818 canvas": { token: "--th-bg", light: "#ffffff", dark: "#181818" },
-    "#ffffff / #282828 elevated chrome": { token: "--th-surface", light: "#ffffff", dark: "#282828" },
-    "#ffffff / #2a2a2a composer approximation": { token: "--th-surface-composer", light: "#ffffff", dark: "#2a2a2a" },
-    "#ffffff / #2d2d2d menu surface": { token: "--th-surface-raised", light: "#ffffff", dark: "#2d2d2d" },
-    "#f2f3f3 / #3d3d3d highlighted row": { token: "--th-hover", light: "#f2f3f3", dark: "#3d3d3d" },
-    "#1a1c1f / #dfdfdf foreground": { token: "--th-text", light: "#1a1c1f", dark: "#dfdfdf" },
+    canvas: { token: "--th-bg", light: "#ffffff", dark: "#17181b" },
+    "sidebar/top-bar surface": { token: "--th-surface", light: "#f7f7f8", dark: "#1d1e22" },
+    "composer capsule": { token: "--th-surface-composer", light: "#ffffff", dark: "#232429" },
+    "raised card/menu fallback": { token: "--th-surface-raised", light: "#ffffff", dark: "#25262b" },
+    "hover state": { token: "--th-hover", light: "#f1f1f3", dark: "#2c2d33" },
+    "primary text": { token: "--th-text", light: "#18181b", dark: "#ededf0" },
   } as const;
 
   const hexChannels = (hex: string): number[] =>
     (hex.match(/\w\w/g) ?? []).map((channel) => parseInt(channel, 16));
 
-  it("pins every measured reference surface in both theme scopes", () => {
+  it("pins every contract reference surface in both theme scopes", () => {
     const failures: string[] = [];
     for (const [label, reference] of Object.entries(REFERENCE_SURFACES)) {
       for (const [selector, expected] of [
@@ -617,18 +819,15 @@ describe("token contrast contracts (WCAG 2.1)", () => {
     expect(failures).toEqual([]);
   });
 
-  // The authenticated reference identifies the composer's default primary
-  // action by its 28x28 bg-primary-solid button: dark fill #dfdfdf, light
-  // fill #1a1c1f, box-shadow none. The button's inherited colour equals its
-  // own fill, so the reference does not measure the glyph; the glyph instead
-  // inverts each theme's own measured canvas role, and hover - uncaptured in
-  // the reference - must stay a visible step toward that canvas.
+  // The composer send control is the accent-solid filled control: the same
+  // solid violet in both themes with a white glyph, so the label and glyph
+  // hold 4.5:1 (white on the lighter --th-accent text violet would not).
   const PRIMARY_ACTION = {
-    "--th-send": { light: "#1a1c1f", dark: "#dfdfdf" },
-    "--th-send-fg": { light: "#ffffff", dark: "#181818" },
+    "--th-send": { light: "#6d5bd0", dark: "#6d5bd0" },
+    "--th-send-fg": { light: "#ffffff", dark: "#ffffff" },
   } as const;
 
-  it("pins the measured primary composer action fill and its inverting glyph", () => {
+  it("pins the send control to the accent-solid fill with its white glyph", () => {
     const failures: string[] = [];
     for (const [token, expected] of Object.entries(PRIMARY_ACTION)) {
       for (const [selector, hex] of [
@@ -648,58 +847,121 @@ describe("token contrast contracts (WCAG 2.1)", () => {
     expect(failures).toEqual([]);
   });
 
-  it("keeps the menu's Raised shadow token at the measured none in both themes", () => {
-    // The measured chooser carries no box shadow and DESIGN.md assigns the
-    // menu role borders without shadows, so the Raised role must resolve to
-    // none in both scopes; the composer and Overlay shadows are separate
-    // roles and stay.
+  // The v2 shadow roles are literal contract values in both themes (the
+  // measured-none idiom retired with the Codex reference).
+  const REFERENCE_SHADOWS = {
+    "--th-shadow-surface": {
+      dark: "0 1px 2px rgba(0, 0, 0, 0.28), 0 4px 12px rgba(0, 0, 0, 0.16)",
+      light: "0 1px 2px rgba(24, 24, 27, 0.04), 0 4px 12px rgba(24, 24, 27, 0.05)",
+    },
+    "--th-shadow-raised": {
+      dark: "0 2px 6px rgba(0, 0, 0, 0.24), 0 10px 28px -8px rgba(0, 0, 0, 0.45)",
+      light: "0 1px 3px rgba(24, 24, 27, 0.06), 0 10px 28px -10px rgba(24, 24, 27, 0.14)",
+    },
+    "--th-shadow-overlay": {
+      dark: "0 8px 20px rgba(0, 0, 0, 0.30), 0 28px 64px -16px rgba(0, 0, 0, 0.60)",
+      light: "0 8px 20px rgba(24, 24, 27, 0.08), 0 28px 64px -16px rgba(24, 24, 27, 0.22)",
+    },
+  } as const;
+
+  it("pins the v2 shadow roles to their contract values in both themes", () => {
+    const squash = (value: string): string => value.replace(/\s+/g, " ").trim();
     const failures: string[] = [];
-    for (const scope of scopes) {
-      if (scope.tokens["--th-shadow-raised"] !== "none") {
-        failures.push(
-          `[${scope.selector}] --th-shadow-raised: '${scope.tokens["--th-shadow-raised"]}' != none (measured menu)`,
-        );
+    for (const [token, expected] of Object.entries(REFERENCE_SHADOWS)) {
+      for (const [selector, value] of [
+        [":root", expected.dark],
+        ['[data-theme="light"]', expected.light],
+      ] as const) {
+        const scope = must(scopes.find((candidate) => candidate.selector === selector));
+        const got = squash(scope.tokens[token] ?? "");
+        if (got !== squash(value)) {
+          failures.push(`[${selector}] ${token}: '${got}' != contract value '${squash(value)}'`);
+        }
       }
     }
     expect(failures).toEqual([]);
   });
 
-  it("moves the uncaptured send hover a visible step toward the canvas role", () => {
+  it("keeps the send hover a visible step from the send fill in both themes", () => {
     const failures: string[] = [];
     for (const scope of scopes) {
       const base = relativeLuminance(scopeColor(scope, "--th-send"));
       const hover = relativeLuminance(scopeColor(scope, "--th-send-hover"));
-      // Dark state treatments darken toward the dark canvas; light state
-      // treatments lighten toward the white canvas. The hover must follow
-      // its theme's direction so the state stays visible.
-      const towardCanvas = scope.selector === ":root" ? hover < base : hover > base;
-      if (!towardCanvas) {
-        failures.push(`[${scope.selector}] --th-send-hover is not a visible step from --th-send toward the canvas`);
+      if (hover === base) {
+        failures.push(`[${scope.selector}] --th-send-hover must differ from --th-send`);
+        continue;
+      }
+      // Hover deepens toward the darker violet in both themes so the white
+      // label keeps 4.5:1 while hovered; the step must be perceptible.
+      const direction = hover < base && (base + 0.05) / (hover + 0.05) >= 1.1;
+      if (!direction) {
+        failures.push(`[${scope.selector}] --th-send-hover is not a visible step from --th-send`);
       }
     }
     expect(failures).toEqual([]);
   });
 
-  it("keeps border tiers at the measured foreground/white alpha mixes", () => {
+  it("keeps border tiers at the contract hairline alpha mixes", () => {
     const failures: string[] = [];
     const expected = [
-      [":root", "--th-border-surface", 0.084, [255, 255, 255]],
-      [":root", "--th-border-strong", 0.156, [255, 255, 255]],
-      ['[data-theme="light"]', "--th-border-surface", 0.078, [26, 28, 31]],
-      ['[data-theme="light"]', "--th-border-strong", 0.117, [26, 28, 31]],
+      [":root", "--th-border-surface", 0.06, [255, 255, 255]],
+      [":root", "--th-border-strong", 0.10, [255, 255, 255]],
+      [":root", "--th-tool-border", 0.06, [255, 255, 255]],
+      ['[data-theme="light"]', "--th-border-surface", 0.07, [24, 24, 27]],
+      ['[data-theme="light"]', "--th-border-strong", 0.12, [24, 24, 27]],
+      ['[data-theme="light"]', "--th-tool-border", 0.06, [24, 24, 27]],
     ] as const;
     for (const [selector, token, alpha, tint] of expected) {
       const scope = must(scopes.find((candidate) => candidate.selector === selector));
       const got = scopeColor(scope, token);
       if (Math.abs(got.a - alpha) > 0.006 || [got.r, got.g, got.b].some((channel, i) => Math.abs(channel - must(tint[i])) > 0.5)) {
         failures.push(`[${selector}] ${token}: rgba(${got.r}, ${got.g}, ${got.b}, ${got.a}) != ` +
-          `the measured ${alpha} alpha over rgb(${tint.join(", ")})`);
+          `the contract ${alpha} alpha over rgb(${tint.join(", ")})`);
       }
     }
     expect(failures).toEqual([]);
   });
 
-  it("keeps derived roles ordered inside the measured hierarchy", () => {
+  it("pins the glass, backdrop, and highlight tokens to their contract values", () => {
+    const failures: string[] = [];
+    const translucent = [
+      [":root", "--th-glass", "rgba(38, 39, 44, 0.72)"],
+      ['[data-theme="light"]', "--th-glass", "rgba(255, 255, 255, 0.72)"],
+      [":root", "--th-backdrop", "rgba(10, 10, 12, 0.55)"],
+      ['[data-theme="light"]', "--th-backdrop", "rgba(24, 24, 27, 0.24)"],
+    ] as const;
+    for (const [selector, token, expected] of translucent) {
+      const scope = must(scopes.find((candidate) => candidate.selector === selector));
+      const got = scopeColor(scope, token);
+      const want = parseColor(expected);
+      const channelDrift = [got.r - want.r, got.g - want.g, got.b - want.b].some((drift) => Math.abs(drift) > 0.5);
+      if (channelDrift || Math.abs(got.a - want.a) > 0.006) {
+        failures.push(`[${selector}] ${token}: rgba(${got.r}, ${got.g}, ${got.b}, ${got.a}) != ${expected}`);
+      }
+    }
+    const squash = (value: string): string => value.replace(/\s+/g, " ").trim();
+    const filters = [
+      [":root", "blur(20px) saturate(1.5)"],
+      ['[data-theme="light"]', "blur(20px) saturate(1.8)"],
+    ] as const;
+    for (const [selector, expected] of filters) {
+      const scope = must(scopes.find((candidate) => candidate.selector === selector));
+      const got = squash(scope.tokens["--th-glass-filter"] ?? "");
+      if (got !== expected) failures.push(`[${selector}] --th-glass-filter: '${got}' != '${expected}'`);
+    }
+    const highlights = [
+      [":root", "inset 0 1px 0 rgba(255, 255, 255, 0.05)"],
+      ['[data-theme="light"]', "inset 0 1px 0 rgba(255, 255, 255, 0.7)"],
+    ] as const;
+    for (const [selector, expected] of highlights) {
+      const scope = must(scopes.find((candidate) => candidate.selector === selector));
+      const got = squash(scope.tokens["--th-highlight"] ?? "");
+      if (got !== squash(expected)) failures.push(`[${selector}] --th-highlight: '${got}' != '${squash(expected)}'`);
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it("keeps derived roles ordered inside the contract hierarchy", () => {
     const failures: string[] = [];
     const luminance = (scope: ThemeScope, token: string): number => {
       const channel = (value: number): number => {
@@ -710,7 +972,14 @@ describe("token contrast contracts (WCAG 2.1)", () => {
       return 0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b);
     };
     const dark = must(scopes.find((scope) => scope.selector === ":root"));
-    // Dark lifts by white-alpha steps: chrome < composer < menu < user < hover < active.
+    // Dark lifts by luminance steps: tool shares surface, overlay shares
+    // raised, then surface < composer < raised < user < hover < active.
+    if (luminance(dark, "--th-tool-surface") !== luminance(dark, "--th-surface")) {
+      failures.push("[dark] --th-tool-surface must equal --th-surface");
+    }
+    if (luminance(dark, "--th-surface-overlay") !== luminance(dark, "--th-surface-raised")) {
+      failures.push("[dark] --th-surface-overlay must equal --th-surface-raised");
+    }
     for (const [below, above] of [
       ["--th-surface", "--th-surface-composer"],
       ["--th-surface-composer", "--th-surface-raised"],
@@ -723,18 +992,31 @@ describe("token contrast contracts (WCAG 2.1)", () => {
       }
     }
     const light = must(scopes.find((scope) => scope.selector === '[data-theme="light"]'));
-    // Light state treatments darken the measured white surfaces; the composer,
-    // menus, and the user bubble share the measured canvas white.
-    for (const token of ["--th-surface", "--th-surface-composer", "--th-surface-raised", "--th-surface-user", "--th-surface-overlay"]) {
+    // Light: canvas, composer, raised, and overlay hold pure white; surface
+    // and tool sit one whisper below; user and hover share one grey step
+    // further down; active steps below that.
+    if (luminance(light, "--th-bg") !== 1) {
+      failures.push("[light] --th-bg must stay white");
+    }
+    for (const token of ["--th-surface-composer", "--th-surface-raised", "--th-surface-overlay"]) {
       if (luminance(light, token) !== 1) {
-        failures.push(`[light] ${token} must stay at the measured white`);
+        failures.push(`[light] ${token} must stay at the contract white`);
       }
     }
-    if (luminance(light, "--th-hover") >= luminance(light, "--th-bg")) {
-      failures.push("[light] --th-hover must darken the measured white canvas");
+    if (luminance(light, "--th-tool-surface") !== luminance(light, "--th-surface")) {
+      failures.push("[light] --th-tool-surface must equal --th-surface");
+    }
+    if (luminance(light, "--th-surface") >= luminance(light, "--th-bg")) {
+      failures.push("[light] --th-surface must sit one whisper below the white canvas");
+    }
+    if (luminance(light, "--th-surface-user") >= luminance(light, "--th-surface")) {
+      failures.push("[light] --th-surface-user must sit below --th-surface");
+    }
+    if (luminance(light, "--th-hover") !== luminance(light, "--th-surface-user")) {
+      failures.push("[light] --th-hover shares the user's grey step (#f1f1f3)");
     }
     if (luminance(light, "--th-active") >= luminance(light, "--th-hover")) {
-      failures.push("[light] --th-active must step one tier beyond --th-hover");
+      failures.push("[light] --th-active must darken --th-hover");
     }
     expect(failures).toEqual([]);
   });

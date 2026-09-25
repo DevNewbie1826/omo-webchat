@@ -336,3 +336,199 @@ export function pairRatio(scope: ThemeScope, fgToken: string, bgToken: string, o
   }
   return contrastRatio(foreground, background);
 }
+
+type ValueScan = {
+  readonly source: string;
+  index: number;
+  readonly customProperty: string;
+};
+
+const isCssWhitespace = (codePoint: number): boolean =>
+  codePoint === 0x20 || codePoint === 0x09 || codePoint === 0x0a || codePoint === 0x0c || codePoint === 0x0d;
+
+const isHexDigit = (codePoint: number): boolean =>
+  (codePoint >= 0x30 && codePoint <= 0x39) ||
+  (codePoint >= 0x41 && codePoint <= 0x46) ||
+  (codePoint >= 0x61 && codePoint <= 0x66);
+
+const isIdentStart = (codePoint: number): boolean =>
+  (codePoint >= 0x41 && codePoint <= 0x5a) ||
+  (codePoint >= 0x61 && codePoint <= 0x7a) ||
+  codePoint === 0x5f ||
+  codePoint >= 0x80;
+
+const isIdentCodePoint = (codePoint: number): boolean =>
+  isIdentStart(codePoint) || (codePoint >= 0x30 && codePoint <= 0x39) || codePoint === 0x2d;
+
+const peekCodePoint = (scan: ValueScan, codeUnitOffset = 0): number => {
+  const index = scan.index + codeUnitOffset;
+  if (index >= scan.source.length) return -1;
+  return scan.source.codePointAt(index) ?? -1;
+};
+
+const advanceCodePoint = (scan: ValueScan): void => {
+  const codePoint = peekCodePoint(scan);
+  if (codePoint < 0) return;
+  scan.index += codePoint > 0xffff ? 2 : 1;
+};
+
+/** CSS Syntax "consume an escaped code point", including the hex-escape terminator. */
+const consumeEscapedCodePoint = (scan: ValueScan): string => {
+  scan.index += 1;
+  if (scan.index >= scan.source.length) return "\uFFFD";
+  const first = peekCodePoint(scan);
+  if (!isHexDigit(first)) {
+    advanceCodePoint(scan);
+    return String.fromCodePoint(first);
+  }
+  let hex = "";
+  while (hex.length < 6 && isHexDigit(peekCodePoint(scan))) {
+    hex += String.fromCodePoint(peekCodePoint(scan));
+    scan.index += 1;
+  }
+  if (hex.length < 6 && isCssWhitespace(peekCodePoint(scan))) scan.index += 1;
+  const codePoint = Number.parseInt(hex, 16);
+  if (codePoint === 0 || codePoint > 0x10ffff) return "\uFFFD";
+  return String.fromCodePoint(codePoint);
+};
+
+const startsIdent = (scan: ValueScan): boolean => {
+  const codePoint = peekCodePoint(scan);
+  if (codePoint === 0x5c || isIdentStart(codePoint)) return true;
+  if (codePoint !== 0x2d) return false;
+  const next = peekCodePoint(scan, 1);
+  return next === 0x2d || next === 0x5c || isIdentStart(next);
+};
+
+const consumeIdent = (scan: ValueScan): string => {
+  let name = "";
+  while (scan.index < scan.source.length) {
+    const codePoint = peekCodePoint(scan);
+    if (codePoint === 0x5c) {
+      name += consumeEscapedCodePoint(scan);
+      continue;
+    }
+    if (!isIdentCodePoint(codePoint)) break;
+    name += String.fromCodePoint(codePoint);
+    advanceCodePoint(scan);
+  }
+  return name;
+};
+
+const consumeComment = (scan: ValueScan): void => {
+  scan.index += 2;
+  while (scan.index < scan.source.length) {
+    if (peekCodePoint(scan) === 0x2a && peekCodePoint(scan, 1) === 0x2f) {
+      scan.index += 2;
+      return;
+    }
+    advanceCodePoint(scan);
+  }
+};
+
+const consumeString = (scan: ValueScan): void => {
+  const quote = peekCodePoint(scan);
+  scan.index += 1;
+  while (scan.index < scan.source.length) {
+    const codePoint = peekCodePoint(scan);
+    if (codePoint === 0x5c) {
+      scan.index += 1;
+      if (scan.index < scan.source.length) advanceCodePoint(scan);
+      continue;
+    }
+    if (codePoint === quote) {
+      scan.index += 1;
+      return;
+    }
+    // An unescaped newline ends a bad string; leave it so the rest of the value is still scanned.
+    if (codePoint === 0x0a || codePoint === 0x0c || codePoint === 0x0d) return;
+    advanceCodePoint(scan);
+  }
+};
+
+const skipWsAndComments = (scan: ValueScan): void => {
+  while (scan.index < scan.source.length) {
+    const codePoint = peekCodePoint(scan);
+    if (isCssWhitespace(codePoint)) {
+      scan.index += 1;
+      continue;
+    }
+    if (codePoint === 0x2f && peekCodePoint(scan, 1) === 0x2a) {
+      consumeComment(scan);
+      continue;
+    }
+    break;
+  }
+};
+
+/**
+ * Body of a var() whose opening parenthesis is already consumed. The first
+ * argument is the custom property; a fallback, or a nested var(), is scanned
+ * too. Whitespace and comments between tokens are not part of the name.
+ */
+function scanVar(scan: ValueScan): boolean {
+  skipWsAndComments(scan);
+  let hit = false;
+  if (startsIdent(scan)) {
+    const saved = scan.index;
+    const name = consumeIdent(scan);
+    if (peekCodePoint(scan) === 0x28) {
+      // `var` + `(` with something other than a custom-property name. Rewind
+      // so the nested function is parsed as a function, not a bare ident.
+      scan.index = saved;
+    } else if (name === scan.customProperty) {
+      hit = true;
+    }
+  }
+  if (scanValue(scan, 0x29)) hit = true;
+  return hit;
+}
+
+function scanValue(scan: ValueScan, stop: number | null): boolean {
+  let hit = false;
+  while (scan.index < scan.source.length) {
+    const before = scan.index;
+    const codePoint = peekCodePoint(scan);
+    if (stop !== null && codePoint === stop) break;
+    if (isCssWhitespace(codePoint)) {
+      scan.index += 1;
+    } else if (codePoint === 0x2f && peekCodePoint(scan, 1) === 0x2a) {
+      consumeComment(scan);
+    } else if (codePoint === 0x22 || codePoint === 0x27) {
+      consumeString(scan);
+    } else if (codePoint === 0x28 || codePoint === 0x5b || codePoint === 0x7b) {
+      const end = codePoint === 0x28 ? 0x29 : codePoint === 0x5b ? 0x5d : 0x7d;
+      scan.index += 1;
+      if (scanValue(scan, end)) hit = true;
+      if (peekCodePoint(scan) === end) scan.index += 1;
+    } else if (startsIdent(scan)) {
+      const name = consumeIdent(scan);
+      if (peekCodePoint(scan) === 0x28) {
+        scan.index += 1;
+        if (name.toLowerCase() === "var") {
+          if (scanVar(scan)) hit = true;
+        } else if (scanValue(scan, 0x29)) {
+          hit = true;
+        }
+        if (peekCodePoint(scan) === 0x29) scan.index += 1;
+      }
+    } else {
+      advanceCodePoint(scan);
+    }
+    if (scan.index === before) scan.index += 1;
+  }
+  return hit;
+}
+
+/**
+ * True when a CSS declaration value contains a var() reference to
+ * `customProperty`. The walk is a CSS value parse: whitespace, comments,
+ * fallback arguments, escaped names, and var() nested in other functions or
+ * fallbacks all count. Strings do not, and a longer custom-property name
+ * does not. A literal `var(--token)` substring misses the first group and
+ * false-matches the other two.
+ */
+export function valueReferencesCustomProperty(value: string, customProperty: string): boolean {
+  const scan: ValueScan = { source: value, index: 0, customProperty };
+  return scanValue(scan, null);
+}

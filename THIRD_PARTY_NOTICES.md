@@ -2437,6 +2437,22 @@ THE SOFTWARE.
 
 ```
 
+## Pretendard Variable (SIL Open Font License 1.1)
+
+The UI face of the embedded React application, vendored under
+`frontend/src/fonts/pretendard/` and bundled by Vite into `dist/assets`.
+Version 1.3.9, the dynamic-subset WOFF2 build
+(`pretendardvariable-dynamic-subset.css` plus `woff2-dynamic-subset/*.woff2`,
+92 unicode-range subset files). Full OFL 1.1 text: `LICENSE.txt` in that
+directory, reproduced verbatim from the upstream release.
+
+Source: https://github.com/orioncactus/pretendard (release v1.3.9,
+https://github.com/orioncactus/pretendard/releases/tag/v1.3.9; dynamic-subset
+dist build as published in the `pretendard@1.3.9` npm package).
+
+Copyright (c) 2021, Kil Hyung-jin (https://github.com/orioncactus/pretendard),
+with Reserved Font Name Pretendard.
+
 ## KaTeX fonts (SIL Open Font License 1.1)
 
 The KaTeX JavaScript license does not replace the font license. The 20 font

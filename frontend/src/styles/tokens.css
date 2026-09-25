@@ -1,5 +1,5 @@
 /**
- * Application design tokens.
+ * Application design tokens — v2 (visual redesign foundation).
  *
  * Two colour themes share this file:
  *   :root                - the dark theme (the app's default and no-script
@@ -12,83 +12,113 @@
  * token names (enforced by contrast.test.ts) and set their own color-scheme
  * so native controls, scrollbars, and the caret follow the active theme.
  *
- * Elevation follows DESIGN.md's ladder, calibrated against the authenticated
- * installed-Codex capture (DESIGN.md "Colour reference"): both themes keep
- * every opaque fill in one narrow band and separate levels with
- * foreground-alpha hairline borders plus the measured composer shadow. Dark
- * lifts surfaces by measured white fills (`#282828` chrome, `#2a2a2a`
- * composer, `#2d2d2d` menus); light holds the measured white surfaces and
- * separates through borders and shadows. Text tiers deviate upward from the
- * native 65%/50% foreground alpha mixes because the 4.5:1 matrix on the
- * brighter elevated fills is a standing contract; DESIGN.md documents the
- * adaptation.
+ * The v2 system (governing plan: .omo/plans/visual-redesign.md, token
+ * contract: .omo/plans/visual-redesign-tokens.md) replaces the measured
+ * Codex-capture palette with a cool-tinted monochrome layer stack
+ * (Golo dark / Orbita light direction):
+ *
+ *   - Layers separate by luminance, not by stacked borders: one hairline
+ *     border alpha per theme does the boundary work, and surfaces sit in
+ *     narrow cool-grey steps above the canvas. --th-bg and --th-accent are
+ *     QA-pinned; remaining text-tier/status/border values may be tuned only
+ *     to satisfy the contrast contract encoded in contrast.test.ts.
+ *   - One violet accent family, reserved for agent-alive states: --th-accent
+ *     for text/glyph/ring/indicator, the darker --th-accent-solid for filled
+ *     controls (send, primary buttons) so white labels hold 4.5:1.
+ *   - Floating layers (popovers, palettes, menus, modal panels) render in
+ *     --th-glass with --th-glass-filter over a solid --th-surface-overlay
+ *     fallback, plus the --th-highlight top edge and --th-shadow-overlay.
+ *   - Text is a strict three-tier hierarchy (text > text-dim > muted) with a
+ *     fourth metadata-only tier, --th-faint, held to 3:1 and allowlisted to
+ *     metadata selectors by contrast.test.ts.
+ *   - Pretendard Variable is the UI face (--th-font-sans); mono is reserved
+ *     for code, paths, tool I/O, and identifiers.
+ *   - Radii are concentric (inner radius = outer radius - padding, min 6px);
+ *     motion animates only transform/opacity/filter (plus documented
+ *     exceptions) across a 120-480ms scale with four easings.
  */
 
 :root {
-  /* Canvas - the measured reference canvas. */
-  --th-bg: #181818;
-  /* Elevated chrome - the measured sidebar fill: sidebar, top bar, and the
-     expanded tool shell. */
-  --th-surface: #282828;
-  /* Composer - the measured composer material as an opaque approximation
-     (the native fill is translucent over an unknown underlay). */
-  --th-surface-composer: #2a2a2a;
-  /* Menus - the measured chooser fill. */
-  --th-surface-raised: #2d2d2d;
-  /* User - the authorship bubble: one visible step above the menu fill,
-     inside the measured white-alpha idiom (role not captured directly). */
-  --th-surface-user: #343434;
-  /* Overlay - the highest captured surface; the scrim and strong border do
-     the separating work. */
-  --th-surface-overlay: #2d2d2d;
+  /* Canvas - the app background behind every pane. QA-pinned (S1). */
+  --th-bg: #17181b;
+  /* Sidebar, top bar, tool timeline body, shelf: one cool step above Canvas. */
+  --th-surface: #1d1e22;
+  /* Composer capsule: a visible step above Surface in dark. */
+  --th-surface-composer: #232429;
+  /* Cards and menus' solid fallback. */
+  --th-surface-raised: #25262b;
+  /* User pill bubble: one step above Raised. */
+  --th-surface-user: #2a2b31;
+  /* Solid fallback for overlays (under --th-backdrop scrims). */
+  --th-surface-overlay: #25262b;
+  /* Floating layers only (popovers, palettes, menus, modal panel): the
+     translucent cool fill composited over content; pair with
+     --th-glass-filter under @supports and fall back to
+     --th-surface-overlay where backdrop-filter is unavailable. */
+  --th-glass: rgba(38, 39, 44, 0.72);
+  /* Backdrop filter recipe for floating layers; saturate lifts the glass
+     over busy transcript content. */
+  --th-glass-filter: blur(20px) saturate(1.5);
   /* Tool block - scoped material for executed tool records in both
-     disclosure states: the measured elevated-chrome fill behind the default
-     white-alpha hairline, visibly distinct from the Canvas without moving
-     the global palette (DESIGN.md "Tool-execution block anatomy"). */
-  --th-tool-surface: #282828;
-  --th-tool-border: rgba(255, 255, 255, 0.084);
-  /* State treatments are the measured highlighted row (#3d3d3d) plus one
-     alpha tier for press/selection. */
-  --th-hover: #3d3d3d;
-  --th-active: #454545;
+     disclosure states, behind the default hairline. */
+  --th-tool-surface: #1d1e22;
+  --th-tool-border: rgba(255, 255, 255, 0.06);
+  /* State treatments: hover lifts one step, press/selection one more. */
+  --th-hover: #2c2d33;
+  --th-active: #34353c;
 
-  /* Per-level borders at the measured alpha tiers: default 8.4%, strong
-     15.6% (the measured strong border). */
-  --th-border-surface: rgba(255, 255, 255, 0.084);
-  --th-border-raised: rgba(255, 255, 255, 0.084);
-  --th-border-user: rgba(255, 255, 255, 0.156);
-  --th-border-overlay: rgba(255, 255, 255, 0.156);
+  /* One hairline idiom per level: default 6% white, strong 10% white. */
+  --th-border-surface: rgba(255, 255, 255, 0.06);
+  --th-border-raised: rgba(255, 255, 255, 0.06);
+  --th-border-user: rgba(255, 255, 255, 0.10);
+  --th-border-overlay: rgba(255, 255, 255, 0.10);
   --th-border: var(--th-border-surface);
   --th-border-strong: var(--th-border-overlay);
 
-  /* The measured foreground, then the text ladder. The native 65%/50%
-     foreground mixes fail the 4.5:1 matrix on the brighter elevated fills,
-     so the tiers are brightened above native transparency (documented in
-     DESIGN.md); ordering stays text > dim > muted > faint. */
-  --th-text: #dfdfdf;
-  --th-text-dim: #c9c9c9;
-  --th-muted: #bcbcbc;
-  /* Dimmest text tier; >=4.5:1 on every elevation and state fill while
-     staying below --th-muted in the hierarchy. */
-  --th-faint: #b3b3b3;
-  --th-disabled-fg: #b3b3b3;
-  --th-disabled-bg: #282828;
+  /* Three-tier text hierarchy plus a metadata-only fourth tier. The tiers
+     hold the 4.5:1 matrix on every elevation and state fill (contract:
+     contrast.test.ts); --th-faint drops to the 3:1 metadata rule and may
+     appear only in allowlisted metadata selectors. Ordering stays
+     text > text-dim > muted > faint. */
+  --th-text: #ededf0;
+  --th-text-dim: #c4c4cc;
+  --th-muted: #a1a1aa;
+  /* METADATA ONLY (timestamps, counts, hints): >=3.0:1 on bg/surface/
+     composer/raised/tool-surface; usage allowlisted by contrast.test.ts. */
+  --th-faint: #71717a;
+  /* Disabled controls derive from the hierarchy: muted label on the level
+     the control sits at, so a disabled row never invents a new tier. */
+  --th-disabled-fg: var(--th-muted);
+  --th-disabled-bg: var(--th-surface);
 
-  --th-accent: #ffffff;
-  --th-accent-fg: #0a0a0a;
-  --th-accent-hover: #e2e2e2;
+  /* Violet accent family, reserved for agent-alive states. --th-accent and
+     --th-bg are QA-pinned (S1). */
+  --th-accent: #8b7cf6;
+  /* Link/emphasis hover: one visible step within the violet family. */
+  --th-accent-hover: #9d90f8;
+  /* Filled controls (send, primary buttons, toggles): the darker family
+     member keeps white foreground labels at >=4.5:1. */
+  --th-accent-solid: #6d5bd0;
+  --th-accent-solid-hover: #5b49c2;
+  /* Foreground on --th-accent-solid fills. */
+  --th-accent-fg: #ffffff;
+  /* Selection wash (::selection, selected rows) - accent at 14%. */
+  --th-accent-soft: color-mix(in srgb, var(--th-accent) 14%, transparent);
+  /* Halo/glow for running indicators - accent at 35%. */
+  --th-accent-glow: color-mix(in srgb, var(--th-accent) 35%, transparent);
 
-  /* Composer send action: the measured primary-action fill (#dfdfdf) with
-     the glyph inverted to this theme's measured canvas (#181818); hover is
-     uncaptured in the reference, so it steps 10% toward the canvas. Tokens
-     only: component CSS never hardcodes the fill. */
-  --th-send: #dfdfdf;
-  --th-send-hover: #cbcbcb;
-  --th-send-fg: #181818;
+  /* Composer send action: the accent-solid filled control with an inverted
+     white glyph; tokens only, component CSS never hardcodes the fill. */
+  --th-send: var(--th-accent-solid);
+  --th-send-hover: var(--th-accent-solid-hover);
+  --th-send-fg: #ffffff;
 
-  /* Status hues as text must clear 4.5:1 on the measured elevated fills,
-     which are far brighter than the previous dark ladder; the hues are
-     brightened accordingly and their tints re-derived (DESIGN.md). */
+  /* Focus treatment: a 3px accent-alpha ring (box-shadow, never an accent
+     border colour change), per the primitive rules. */
+  --th-ring: color-mix(in srgb, var(--th-accent) 55%, transparent);
+
+  /* Status hues: identity kept from the previous system, lightness held to
+     the 4.5:1 matrix on every v2 fill; tints re-derived at 12%. */
   --th-error: #f98085;
   --th-error-fg: #0a0a0a;
   --th-error-bg: rgba(249, 128, 133, 0.12);
@@ -97,45 +127,51 @@
   --th-warning: #f5a623;
   --th-warning-bg: rgba(245, 166, 35, 0.12);
 
-  /* Focus treatment: a visible 3px halo (~3.2:1 over Surface), not a lift. */
-  --th-ring: rgba(255, 255, 255, 0.35);
-  /* Decorative only; carries no elevation job. */
-  --th-glow: rgba(255, 255, 255, 0.06);
-
-  /* The measured shadow tint is black in both captured themes, and the
-     captured runtime carries the composer shadow in dark too - the earlier
-     "dark shadows are none" rule contradicted the measurement. */
-  --th-shadow-color: #000000;
-  --th-shadow-surface: 0 3px 7.5px color-mix(in srgb, var(--th-shadow-color) 4%, transparent),
-    0 0 20px color-mix(in srgb, var(--th-shadow-color) 5%, transparent);
-  --th-shadow-raised: none;
-  --th-shadow-overlay: none;
+  /* Elevation: dark shadows are deep and cool, tinting black. */
+  --th-shadow-surface: 0 1px 2px rgba(0, 0, 0, 0.28),
+    0 4px 12px rgba(0, 0, 0, 0.16);
+  --th-shadow-raised: 0 2px 6px rgba(0, 0, 0, 0.24),
+    0 10px 28px -8px rgba(0, 0, 0, 0.45);
+  --th-shadow-overlay: 0 8px 20px rgba(0, 0, 0, 0.30),
+    0 28px 64px -16px rgba(0, 0, 0, 0.60);
   /* Migration aliases: the size-named shadows resolve to their level's role. */
   --th-shadow-sm: var(--th-shadow-surface);
   --th-shadow: var(--th-shadow-raised);
   --th-shadow-lg: var(--th-shadow-overlay);
-  /* Canvas-derived 60% scrim separating Overlay from every pane. */
-  --th-backdrop: rgba(24, 24, 24, 0.60);
+  /* Top-edge light on raised/overlay surfaces. */
+  --th-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  /* Near-black scrim separating overlays from every pane. */
+  --th-backdrop: rgba(10, 10, 12, 0.55);
+  /* Decorative only; carries no elevation job. Kept for legacy login art. */
+  --th-glow: rgba(255, 255, 255, 0.06);
 
-  --th-radius-sm: 6px;
-  --th-radius: 8px;
-  --th-radius-lg: 12px;
+  /* Concentric radii: inner radius = outer radius - padding (min 6px). */
+  --th-radius-xs: 6px;
+  --th-radius-sm: 8px;
+  --th-radius: 12px;
+  --th-radius-lg: 16px;
+  --th-radius-xl: 24px;
   --th-radius-pill: 999px;
 
+  /* Pretendard Variable is vendored under src/fonts/pretendard and imported
+     by main.tsx; the stack degrades through system faces. Mono is reserved
+     for code, paths, tool I/O, and identifiers ONLY. */
   --th-font-mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono",
     Menlo, Consolas, "Liberation Mono", monospace;
-  --th-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR",
-    "Helvetica Neue", Arial, sans-serif;
+  --th-font-sans: "Pretendard Variable", Pretendard, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR",
+    sans-serif;
 
   /* User-controlled base of the type scale; app-config.ts overrides it inline
-     on <html> from the font-size setting. The default keeps the scale valid
-     before hydration. */
+   * on <html> from the font-size setting. The default keeps the scale valid
+   * before hydration. */
   --th-font-size: 14px;
 
-  /* Type scale (DESIGN.md "Type scale"). Every text font-size consumes one
-     tier as a complete style - size, line-height, and tracking together - so
-     a change to --th-font-size moves the full hierarchy. Tracking tightens as
-     text gets larger; uppercase does not create an additional tier. */
+  /* Type scale. Every text font-size consumes one tier as a complete style -
+   * size, line-height, and tracking together - so a change to
+   * --th-font-size moves the full hierarchy. Tracking tightens as text gets
+   * larger. Body runs slightly airier (1.65) for the redesigned prose
+   * rhythm; tiers and weights are unchanged from the previous system. */
   --th-type-display-size: calc(var(--th-font-size) * 1.7143);
   --th-type-display-line: 1.15;
   --th-type-display-tracking: -0.025em;
@@ -146,7 +182,7 @@
   --th-type-input-line: 1.4;
   --th-type-input-tracking: -0.008em;
   --th-type-body-size: var(--th-font-size);
-  --th-type-body-line: 1.6;
+  --th-type-body-line: 1.65;
   --th-type-body-tracking: -0.005em;
   --th-type-secondary-size: calc(var(--th-font-size) * 0.9286);
   --th-type-secondary-line: 1.45;
@@ -159,14 +195,14 @@
   --th-type-micro-tracking: 0.02em;
 
   /* The only three text weights. Fonts without an exact intermediate weight
-     use the browser's nearest available face; components never substitute ad
-     hoc 500/600/700 values. */
+   * use the browser's nearest available face; components never substitute ad
+   * hoc 500/600/700 values. Pretendard Variable covers 45-920 continuously. */
   --th-weight-read: 400;
   --th-weight-emphasize: 510;
   --th-weight-announce: 590;
 
-  /* Spacing scale (DESIGN.md). Layout spacing and indentation consume only
-     these 4px-base steps; structural dimensions remain independent. */
+  /* Spacing scale. Layout spacing and indentation consume only these 4px-
+   * base steps; structural dimensions remain independent. */
   --th-space-0: 0;
   --th-space-0-5: 2px;
   --th-space-1: 4px;
@@ -184,73 +220,87 @@
   --th-header-h: 44px;
   --th-node-h: 34px;
 
-  --th-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  /* Motion scale (v2 contract): animate only transform, opacity, filter,
+   * clip-path, stroke-dashoffset, and background-position; hover may
+   * transition colour properties; disclosure may transition
+   * grid-template-rows (documented exception). --th-dur-emph is one-time
+   * choreography only, never a running or hover state. */
   --th-dur-fast: 120ms;
-  --th-dur: 180ms;
-  --th-dur-slow: 180ms;
+  --th-dur: 200ms;
+  --th-dur-slow: 320ms;
+  --th-dur-emph: 480ms;
+  --th-ease: cubic-bezier(0.2, 0, 0, 1);
+  --th-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --th-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --th-ease-spring: linear(0, 0.006, 0.025 2.8%, 0.101 6.1%, 0.539 18.9%,
+    0.721 25.3%, 0.849 31.5%, 0.937 38.1%, 0.968 41.8%, 0.991 45.7%,
+    1.006 50.1%, 1.015 55%, 1.017 63.9%, 1.001);
 
   color-scheme: dark;
 }
 
 [data-theme="light"] {
-  /* Both themes hold the measured white surfaces; separation comes from
-     foreground-alpha borders and the measured black shadow, not from grey
-     luminance steps. */
-  /* Canvas / elevated chrome / composer / menus - all measured #ffffff. */
+  /* Light separates the same layers by luminance in cool greys; the
+     composer, cards, and overlays hold pure white and separate by shadow
+     plus the hairline borders instead. */
   --th-bg: #ffffff;
-  --th-surface: #ffffff;
+  /* Sidebar, top bar, tool timeline body, shelf: a whisper below Canvas. */
+  --th-surface: #f7f7f8;
+  /* Composer capsule: pure white, separated by its shadow (Orbita idiom). */
   --th-surface-composer: #ffffff;
+  /* Cards and menus' solid fallback. */
   --th-surface-raised: #ffffff;
-  /* User - white like every measured light surface; the strong border plus
-     the Raised shadow separate it exactly as the measured composer is
-     separated on white. */
-  --th-surface-user: #ffffff;
+  /* User pill bubble: one grey step below the white canvas. */
+  --th-surface-user: #f1f1f3;
+  /* Solid fallback for overlays. */
   --th-surface-overlay: #ffffff;
-  /* Tool block - scoped material for executed tool records in both
-     disclosure states. Light value is an app-specific distinction requested
-     for P4 (a lightly gray step off the measured white Canvas), not a
-     measured native output-card value; behind the default foreground-alpha
-     hairline. Every text and status tier keeps the 4.5:1 matrix on this
-     fill (faint is the binding pair, measured by contrast.test.ts). */
-  --th-tool-surface: #f5f6f7;
-  --th-tool-border: rgba(26, 28, 31, 0.078);
-  /* State treatments darken: the measured highlighted row, then one alpha
-     tier further. */
-  --th-hover: #f2f3f3;
-  --th-active: #ededed;
+  /* Floating layers only; warm-white glass over content. */
+  --th-glass: rgba(255, 255, 255, 0.72);
+  --th-glass-filter: blur(20px) saturate(1.8);
+  /* Tool block - scoped material for executed tool records. */
+  --th-tool-surface: #f7f7f8;
+  --th-tool-border: rgba(24, 24, 27, 0.06);
+  /* State treatments darken toward ink. */
+  --th-hover: #f1f1f3;
+  --th-active: #e9e9ec;
 
-  /* Per-level borders at the measured alpha tiers: default 7.8%, strong
-     11.7%, over the measured foreground tint. */
-  --th-border-surface: rgba(26, 28, 31, 0.078);
-  --th-border-raised: rgba(26, 28, 31, 0.078);
-  --th-border-user: rgba(26, 28, 31, 0.117);
-  --th-border-overlay: rgba(26, 28, 31, 0.117);
+  /* One hairline idiom per level: default 7% ink, strong 12% ink. */
+  --th-border-surface: rgba(24, 24, 27, 0.07);
+  --th-border-raised: rgba(24, 24, 27, 0.07);
+  --th-border-user: rgba(24, 24, 27, 0.12);
+  --th-border-overlay: rgba(24, 24, 27, 0.12);
   --th-border: var(--th-border-surface);
   --th-border-strong: var(--th-border-overlay);
 
-  /* The measured foreground, then the text ladder, darkened past the native
-     65%/50% mixes to hold the 4.5:1 matrix on every fill (DESIGN.md). */
-  --th-text: #1a1c1f;
-  --th-text-dim: #5d5f62;
-  --th-muted: #66676b;
-  /* Dimmest text tier; >=4.5:1 on every elevation and state fill while
-     staying below --th-muted in the hierarchy. */
-  --th-faint: #6a6a6a;
-  --th-disabled-fg: #6a6a6a;
-  --th-disabled-bg: #f2f3f3;
+  /* Three-tier hierarchy, darkened to hold the 4.5:1 matrix on white fills;
+     --th-faint stays metadata-only at >=3.0:1. */
+  --th-text: #18181b;
+  --th-text-dim: #3f3f46;
+  --th-muted: #5f5f68;
+  /* METADATA ONLY; see the dark scope for the rule and its allowlist. */
+  --th-faint: #8b8b94;
+  --th-disabled-fg: var(--th-muted);
+  --th-disabled-bg: var(--th-hover);
 
-  /* The dark theme's white primary action inverts: near-black fill, white
-     label; as link or emphasis text it keeps >=4.5:1 on every fill. */
-  --th-accent: #1b1a19;
+  /* The violet accent stays identifiable on white; --th-accent and --th-bg
+     are QA-pinned (S1). */
+  --th-accent: #6d5bd0;
+  /* Link/emphasis hover: a deeper family step. */
+  --th-accent-hover: #5b49c2;
+  /* Filled controls keep the same solid violet in both themes so white
+     labels hold >=4.5:1. */
+  --th-accent-solid: #6d5bd0;
+  --th-accent-solid-hover: #5b49c2;
   --th-accent-fg: #ffffff;
-  --th-accent-hover: #35322f;
+  --th-accent-soft: color-mix(in srgb, var(--th-accent) 14%, transparent);
+  --th-accent-glow: color-mix(in srgb, var(--th-accent) 35%, transparent);
 
-  /* The measured primary-action fill (#1a1c1f) with the glyph inverted to
-     this theme's measured canvas (#ffffff); hover is uncaptured in the
-     reference, so it steps 10% toward the canvas. */
-  --th-send: #1a1c1f;
-  --th-send-hover: #313335;
+  /* Composer send action: same filled violet control as dark. */
+  --th-send: var(--th-accent-solid);
+  --th-send-hover: var(--th-accent-solid-hover);
   --th-send-fg: #ffffff;
+
+  --th-ring: color-mix(in srgb, var(--th-accent) 55%, transparent);
 
   /* Status hues deepened for light fills; semantic identity unchanged. */
   --th-error: #b3252e;
@@ -261,27 +311,23 @@
   --th-warning: #8a5200;
   --th-warning-bg: rgba(138, 82, 0, 0.12);
 
-  /* Focus treatment: a visible 3px halo (~3.1:1 over Surface). */
-  --th-ring: rgba(0, 0, 0, 0.50);
-  /* Decorative only; carries no elevation job. */
-  --th-glow: rgba(0, 0, 0, 0.05);
-
-  /* Light elevation uses the measured black low-alpha shadow idiom: the
-     composer geometry at the Surface level. The measured menu carries no
-     shadow, so Raised is none in both themes and borders do the separating;
-     Overlay keeps a conservative extension of the idiom for blocking
-     dialogs. */
-  --th-shadow-color: #000000;
-  --th-shadow-surface: 0 3px 7.5px color-mix(in srgb, var(--th-shadow-color) 4%, transparent),
-    0 0 20px color-mix(in srgb, var(--th-shadow-color) 5%, transparent);
-  --th-shadow-raised: none;
-  --th-shadow-overlay: 0 18px 48px -12px color-mix(in srgb, var(--th-shadow-color) 16%, transparent);
+  /* Elevation: light shadows are the measured low-alpha ink idiom. */
+  --th-shadow-surface: 0 1px 2px rgba(24, 24, 27, 0.04),
+    0 4px 12px rgba(24, 24, 27, 0.05);
+  --th-shadow-raised: 0 1px 3px rgba(24, 24, 27, 0.06),
+    0 10px 28px -10px rgba(24, 24, 27, 0.14);
+  --th-shadow-overlay: 0 8px 20px rgba(24, 24, 27, 0.08),
+    0 28px 64px -16px rgba(24, 24, 27, 0.22);
   /* Migration aliases: the size-named shadows resolve to their level's role. */
   --th-shadow-sm: var(--th-shadow-surface);
   --th-shadow: var(--th-shadow-raised);
   --th-shadow-lg: var(--th-shadow-overlay);
-  /* Shadow-tint scrim; never assumes the Canvas is black. */
-  --th-backdrop: rgba(0, 0, 0, 0.28);
+  /* Top-edge light on raised/overlay surfaces. */
+  --th-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  /* Light scrim; never assumes the Canvas is black. */
+  --th-backdrop: rgba(24, 24, 27, 0.24);
+  /* Decorative only; carries no elevation job. Kept for legacy login art. */
+  --th-glow: rgba(0, 0, 0, 0.05);
 
   color-scheme: light;
 }
