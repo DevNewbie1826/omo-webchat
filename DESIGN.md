@@ -20,80 +20,131 @@ interchangeable gray cards.
 
 ## Design source
 
-The chat surface adapts the layout grammar and neutral token roles from
-`zvzuola/acp-components`:
+Three references govern this redesign:
 
-- layered graphite backgrounds rather than tinted gradients;
-- transparent assistant prose and a quiet user bubble;
-- compact, bordered tool and thought disclosures;
-- a centered reading column inside full-width structural regions;
-- a composer that owns command discovery, attachments, and send/stop state;
-- small radii, restrained shadows, and no glassmorphism.
+- **Golo dark** (`/tmp/refshots/golo0.jpg`, `/tmp/refshots/golo1.jpg`): the
+target dark chat material. Layered cool-tinted graphite fills, transparent
+assistant prose, a quiet user pill, tonal separation through hairline borders
+rather than stacked 1px frames, and a single violet accent reserved for live
+agent states.
+- **Orbita light** (`/tmp/refshots/orbita_mid.jpg`): the target light theme
+and the choreography reference. Light surfaces separate by shadow and a
+top-edge highlight instead of fill jumps, and floating layers read as glass
+above the canvas.
+- **StyleGallery** (link only: https://github.com/changeroa/StyleGallery):
+not a visual source. Its scroll-ownership discipline informs the Spatial
+structure section below: every scrollable region has exactly one owner and
+scroll chaining is deliberate, never incidental. Its motion decision method
+is how we decide what may move: a motion earns its place only when it answers
+a concrete purpose, uses the shortest duration that still reads, and ships an
+authored reduced-motion equivalent. These ideas are restated here in our own
+words; no prose or assets are copied.
 
-The workspace shell remains omo-webchat's own interface. No reference branding,
-logos, text, or proprietary assets are copied.
+Earlier calibration against a captured native desktop chat app is
+superseded: the palette in this document now comes from the token contract v2
+(`.omo/plans/visual-redesign-tokens.md`) and the visual references above.
 
 ## Colour reference
 
-Surface, text, and border colours are calibrated against an authenticated
-capture of the installed Codex desktop app (com.openai.codex 26.810.52044;
-real Settings dark→light toggles; CDP pixel samples and runtime computed
-styles; see `.omo/evidence/ui-polish-20260907/theme/implementation.md`). The
-measured roles and this app's tokens map as follows:
+Surface, text, and border colours come from the token contract v2
+(`.omo/plans/visual-redesign-tokens.md`, binding). Dark is `:root`, light is
+`[data-theme="light"]`. All values below are the contract; only text-tier,
+status, and border hex values may be adjusted, and only to satisfy the
+contrast rules in the theme contract. `--th-bg` and `--th-accent` are pinned.
 
-| Measured reference role | Light | Dark | omo-webchat tokens |
+| Token | Dark | Light | Role |
 | --- | --- | --- | --- |
-| Canvas | `#ffffff` | `#181818` | `--th-bg` |
-| Sidebar / elevated chrome | `#ffffff` | `#282828` | `--th-surface` |
-| Composer fill | `#ffffff` | `#2a2a2a` | `--th-surface-composer` |
-| Menu / chooser surface | `#ffffff` | `#2d2d2d` | `--th-surface-raised` (and `--th-surface-overlay`) |
-| Highlighted menu row | `#f2f3f3` | `#3d3d3d` | `--th-hover` |
-| Foreground | `#1a1c1f` | `#dfdfdf` | `--th-text` |
-| Composer primary action | `#1a1c1f` | `#dfdfdf` | `--th-send` |
-| Default border | fg at 7.8% | white at 8.4% | `--th-border-surface` |
-| Strong border | fg at 11.7% | white at 15.6% | `--th-border-strong`, `--th-border-user`, `--th-border-overlay` |
+| `--th-bg` | `#17181b` | `#ffffff` | App canvas |
+| `--th-surface` | `#1d1e22` | `#f7f7f8` | Sidebar, top bar, tool timeline body, shelf |
+| `--th-surface-composer` | `#232429` | `#ffffff` | Composer capsule; light separates by shadow |
+| `--th-surface-raised` | `#25262b` | `#ffffff` | Cards, menus solid fallback |
+| `--th-surface-user` | `#2a2b31` | `#f1f1f3` | User pill bubble |
+| `--th-surface-overlay` | `#25262b` | `#ffffff` | Solid fallback for overlays |
+| `--th-glass` | `rgba(38,39,44,0.72)` | `rgba(255,255,255,0.72)` | Floating layers only: popovers, palettes, menus, modal panel |
+| `--th-glass-filter` | `blur(20px) saturate(1.5)` | `blur(20px) saturate(1.8)` | With `@supports (backdrop-filter: blur(1px))`; fallback is solid `--th-surface-overlay` |
+| `--th-tool-surface` | `#1d1e22` | `#f7f7f8` | Executed tool record material |
+| `--th-tool-border` | `rgba(255,255,255,0.06)` | `rgba(24,24,27,0.06)` | Tool record hairline |
+| `--th-hover` | `#2c2d33` | `#f1f1f3` | Hover fill |
+| `--th-active` | `#34353c` | `#e9e9ec` | Active and selected fill |
+| `--th-border-surface`, `--th-border-raised` | `rgba(255,255,255,0.06)` | `rgba(24,24,27,0.07)` | Default hairline |
+| `--th-border-user`, `--th-border-overlay`, `--th-border-strong` | `rgba(255,255,255,0.10)` | `rgba(24,24,27,0.12)` | Strong hairline |
+| `--th-text` | `#ededf0` | `#18181b` | Primary text |
+| `--th-text-dim` | `#c4c4cc` | `#3f3f46` | Secondary text |
+| `--th-muted` | `#a1a1aa` | `#5f5f68` | Muted text; 4.5:1 on every fill including hover and active |
+| `--th-faint` | `#71717a` | `#8b8b94` | Metadata only; 3.0:1, allowlist enforced by test |
+| `--th-disabled-fg`, `--th-disabled-bg` | derived | derived | Disabled text and fill, derived from tested pairs |
+| `--th-accent` | `#8b7cf6` | `#6d5bd0` | Agent-alive text, glyph, ring, indicator |
+| `--th-accent-hover` | `#9d90f8` | `#5b49c2` | Accent hover |
+| `--th-accent-solid` | `#6d5bd0` | `#6d5bd0` | Filled controls: send, primary button, toggles |
+| `--th-accent-solid-hover` | `#5b49c2` | `#5b49c2` | Filled control hover |
+| `--th-accent-fg` | `#ffffff` | `#ffffff` | Text on `--th-accent-solid`, 4.5:1 |
+| `--th-accent-soft` | `color-mix(in srgb, var(--th-accent) 14%, transparent)` | same | Selection wash |
+| `--th-accent-glow` | `color-mix(in srgb, var(--th-accent) 35%, transparent)` | same | Halo (running node) |
+| `--th-send` | `var(--th-accent-solid)` | same | Send/stop slot fill |
+| `--th-send-hover` | `var(--th-accent-solid-hover)` | same | Send hover |
+| `--th-send-fg` | `#ffffff` | `#ffffff` | Send glyph |
+| `--th-ring` | `color-mix(in srgb, var(--th-accent) 55%, transparent)` | same | Focus ring |
+| `--th-error`, `--th-success`, `--th-warning` (+ `-bg`, `-fg`) | theme-scoped, hue identity kept | same names | Status hues, lightness adjusted to the contrast matrix |
+| `--th-shadow-surface` | `0 1px 2px rgba(0,0,0,.28), 0 4px 12px rgba(0,0,0,.16)` | `0 1px 2px rgba(24,24,27,.04), 0 4px 12px rgba(24,24,27,.05)` | Persistent chrome |
+| `--th-shadow-raised` | `0 2px 6px rgba(0,0,0,.24), 0 10px 28px -8px rgba(0,0,0,.45)` | `0 1px 3px rgba(24,24,27,.06), 0 10px 28px -10px rgba(24,24,27,.14)` | Cards, composer, user bubble |
+| `--th-shadow-overlay` | `0 8px 20px rgba(0,0,0,.30), 0 28px 64px -16px rgba(0,0,0,.60)` | `0 8px 20px rgba(24,24,27,.08), 0 28px 64px -16px rgba(24,24,27,.22)` | Floating layers, modals |
+| `--th-highlight` | `inset 0 1px 0 rgba(255,255,255,.05)` | `inset 0 1px 0 rgba(255,255,255,.7)` | Top edge light on raised and overlay surfaces |
+| `--th-backdrop` | `rgba(10,10,12,.55)` | `rgba(24,24,27,.24)` | Overlay scrim |
 
-Three documented deviations exist, each forced by an existing contract or a
-web-rendering constraint, never by taste:
+Accent usage is narrow and binding: violet appears only for agent-alive
+states. Those are a running or streaming session (running glyphs, the DAG
+running halo and comet), focus rings and selection, and the send/primary
+filled controls. Everything else, including status hues, stays inside the
+cool monochrome ladder.
 
-- The native composer fill is a translucent material over an unknown underlay.
-  The web composer uses an opaque approximation (`#2a2a2a` dark, `#ffffff`
-  light) labelled as such; the measured alpha treatment is reproduced only when
-  an underlay is actually known.
-- The native secondary/tertiary text tiers (65%/50% foreground) fall below the
-  app's 4.5:1 matrix on the brighter elevated fills, so `--th-text-dim`,
-  `--th-muted`, and `--th-faint` are brightened above the native alpha mixes.
-  Likewise the dark status hues are brightened because the measured elevated
-  surfaces are far brighter than the previous dark ladder. Contrast wins over
-  native transparency; the deviation is deliberate and tested.
-- Roles the capture could not exercise (executed tool cards, user bubble,
-  modals, the send glyph and its hover) inherit the measured role hierarchy
-  conservatively: uncaptured
-  surfaces reuse the nearest measured fill, and derived values (the user
-  surface one step above the menu fill, the active state one step above the
-  measured highlight, the send glyph inverted to the canvas role and its
-  hover stepped toward it) stay inside the app's white/foreground-alpha
-  idiom.
+Text tiers are binding: `--th-text`, `--th-text-dim`, and `--th-muted` meet
+4.5:1 on every fill in both themes, hover and active included.
+`--th-faint` is metadata-only at 3.0:1 on bg, surface, composer, raised, and
+tool fills; the contract test enumerates its allowed selectors and fails any
+faint text outside the allowlist. Status hues used as text keep their hue
+identity but are lightened or darkened as needed to pass the same matrix.
+Contrast wins over reference fidelity everywhere these two disagree; the
+deviation is deliberate and tested, not a taste call.
 
 ## Tokens
 
-Use the existing `--th-*` application tokens as the canonical source. Chat
-styles must not create a second competing global palette.
+The `--th-*` application tokens are the canonical source; the values live in
+the colour reference above and in `frontend/src/styles/tokens.css`, which is
+the only file that may declare palette values. Chat and shell styles must not
+create a second competing global palette.
 
 | Role | Token |
 | --- | --- |
 | App canvas | `--th-bg` |
-| Sidebar / top bar | `--th-surface` |
+| Sidebar / top bar / shelf | `--th-surface` |
 | Tool block material | `--th-tool-surface`, `--th-tool-border` |
 | Composer capsule | `--th-surface-composer` |
-| Raised modal / selected surface | `--th-surface-raised` |
+| Raised card / menu solid fallback | `--th-surface-raised` |
+| User bubble | `--th-surface-user` |
+| Overlay solid fallback | `--th-surface-overlay` |
+| Floating glass fill and filter | `--th-glass`, `--th-glass-filter` |
 | Hover / active | `--th-hover`, `--th-active` |
-| Primary / secondary / muted text | `--th-text`, `--th-text-dim`, `--th-muted` |
-| Borders | `--th-border`, `--th-border-strong` |
-| Primary action | `--th-accent`, `--th-accent-fg` |
+| Default hairline | `--th-border-surface`, `--th-border-raised` |
+| Strong hairline | `--th-border-user`, `--th-border-overlay`, `--th-border-strong` |
+| Text tiers | `--th-text`, `--th-text-dim`, `--th-muted`, `--th-faint` |
+| Disabled | `--th-disabled-fg`, `--th-disabled-bg` |
+| Accent (agent-alive only) | `--th-accent`, `--th-accent-hover` |
+| Accent filled controls | `--th-accent-solid`, `--th-accent-solid-hover`, `--th-accent-fg` |
+| Accent wash, halo, ring | `--th-accent-soft`, `--th-accent-glow`, `--th-ring` |
 | Composer send action | `--th-send`, `--th-send-hover`, `--th-send-fg` |
-| Status | `--th-success`, `--th-warning`, `--th-error` |
-| Radius | `--th-radius-sm`, `--th-radius`, `--th-radius-lg`, `--th-radius-pill` |
+| Status | `--th-error`, `--th-success`, `--th-warning` (+ `-bg`, `-fg`) |
+| Elevation shadows | `--th-shadow-surface`, `--th-shadow-raised`, `--th-shadow-overlay` |
+| Top-edge highlight | `--th-highlight` |
+| Overlay scrim | `--th-backdrop` |
+| Radius | `--th-radius-xs`, `--th-radius-sm`, `--th-radius`, `--th-radius-lg`, `--th-radius-xl`, `--th-radius-pill` |
+| Type stacks | `--th-font-sans`, `--th-font-mono` |
+| Motion | `--th-dur-fast`, `--th-dur`, `--th-dur-slow`, `--th-dur-emph`, `--th-ease`, `--th-ease-out`, `--th-ease-in-out`, `--th-ease-spring` |
+
+Radius follows a scale, not a single small value: 6, 8, 12, 16, 24, and pill.
+The concentric rule binds nested rounded surfaces: an inner radius equals the
+outer radius minus the padding between them, with 6px as the floor. A 16px
+user bubble padded 12px therefore carries a 4px-plus-floor treatment on inner
+attachments, and a 24px modal panel inset by 12px gets 12px inner radii.
 
 ## Type scale
 
@@ -111,7 +162,7 @@ must not substitute ad hoc `500`, `600`, or `700` values.
 | Display | `calc(var(--th-font-size) * 1.7143)` | 590 | 1.15 | `-0.025em` | Empty-state or page-level statement; never routine chrome |
 | Title | `calc(var(--th-font-size) * 1.2857)` | 590 | 1.25 | `-0.018em` | Modal and content-section titles |
 | Input | `calc(var(--th-font-size) * 1.1429)` | 400 | 1.4 | `-0.008em` | Composer text and editable primary input |
-| Body | `var(--th-font-size)` | 400 | 1.6 | `-0.005em` | Conversation prose and explanatory copy |
+| Body | `var(--th-font-size)` | 400 | 1.65 | `-0.005em` | Conversation prose and explanatory copy |
 | Secondary | `calc(var(--th-font-size) * 0.9286)` | 400 | 1.45 | `0` | Dense navigation and execution output |
 | Label | `calc(var(--th-font-size) * 0.8571)` | 510 | 1.35 | `0.01em` | Control, field, and compact block labels |
 | Micro | `calc(var(--th-font-size) * 0.7857)` | 510 | 1.3 | `0.02em` | Status and terse metadata only |
@@ -125,10 +176,16 @@ default would resize every chrome surface at once and fight the user's own
 scaling. A 15px user setting must move the entire hierarchy, which the
 scaling evidence scenario pins.
 
-Tracking tightens as text gets larger; uppercase does not create an additional
-tier. All user-readable text uses the existing `--th-font-sans` stack, except
-commands, code, paths, identifiers, and tool output, which use
-`--th-font-mono`. Component CSS must use a named tier for every text
+The sans stack is Pretendard Variable, vendored as the dynamic-subset woff2
+build with `font-display: swap`. Pretendard carries Korean and Latin in one
+family with exact intermediate weights, so the 510 and 590 tiers resolve to
+real faces instead of browser-synthesized approximations and Korean text no
+longer falls back to an OS-dependent rendering. All user-readable text uses
+`--th-font-sans`; the body tier line-height is 1.65. The mono
+stack is restricted to code, paths, tool input and output, and identifiers. It
+never sets UI labels, counts, badges, buttons, or chrome. No UI label uses
+`text-transform: uppercase`; hierarchy comes from weight, size, and colour,
+never from case. Component CSS must use a named tier for every text
 `font-size`, never a raw `px`, `rem`, or `em` font size. This rule makes a change
 to `--th-font-size` move the full hierarchy rather than only inherited body
 text.
@@ -176,64 +233,59 @@ Tool-execution disclosure headers are 48px minimum height with 8px block and
 adjacent blocks. Expanded tool regions use 12px padding and a 12px gap between
 input and output sections; density does not change between themes.
 
+## State encoding
+
+State is never encoded with a coloured border or stroke. The only coloured
+edge in the app is the focus ring (`box-shadow: 0 0 0 3px var(--th-ring)`):
+no component changes border-color or SVG stroke to a status or accent hue to
+say running, selected, failed, or active. Selection and active states use a
+wash (`--th-accent-soft` where the accent rule allows it, otherwise
+`--th-active`) plus a glyph. Two selection idioms exist and are not
+interchangeable: an item chosen from a list or option set (palette row,
+approval option, provider card, file row) takes the `--th-accent-soft` wash
+plus a check or active glyph; a segmented control (theme, language,
+List/Graph, shelf tabs) marks its current segment with one neutral raised
+thumb (`--th-surface-raised` or `--th-active` with `--th-shadow-surface` and
+`--th-highlight`) because every segment is always a valid value, not an
+agent-alive state. Status uses a glyph plus a localized word, with
+color as a redundant third cue. Error alerts and `:focus-visible` rings are
+the contract's only coloured outlines, and both are exceptions, not patterns
+to copy.
+
 ## Elevation ladder
 
-Elevation is a semantic relationship, not a reusable white overlay or black
-shadow. Components request one of the levels below and use its fill, border,
-and shadow tokens together; they never invent a lighter fill or attach an
-unscoped shadow. Hover, selection, focus, and status are state treatments on a
-level, not extra elevation levels. The earlier token table records current
-names, not elevation placement: selected rows use `--th-active` on their
-current level, modals migrate to Overlay, and neither uses Raised merely because
-`--th-surface-raised` was previously shared by both.
+Elevation is a semantic relationship. Components request one of the levels
+below and use its fill, border, shadow, and highlight tokens together; they
+never invent a lighter fill or attach an unscoped shadow. Hover, selection,
+focus, and status are state treatments on a level, not extra elevation
+levels.
 
-| Level and tokens | Job | Dark-theme technique | Light-theme technique |
-| --- | --- | --- | --- |
-| Canvas / `--th-bg` | Base application and transcript; also an inset output well inside a tool block | Measured canvas `#181818`; no border or shadow | Measured canvas `#ffffff`; no border or shadow |
-| Surface / `--th-surface`, `--th-shadow-surface` | Persistent elevated chrome: sidebar, top bar | Measured sidebar fill `#282828` with the measured default white-alpha border; carries the measured composer shadow geometry | White with the measured default foreground-alpha border and the measured composer shadow geometry |
-| Tool block / `--th-tool-surface`, `--th-tool-border` | Executed tool records in both disclosure states; the expanded body insets Canvas | The measured elevated-chrome fill `#282828` with the default white-alpha hairline; no shadow | An app-specific requested light gray (`#f5f6f7`, not a measured native output-card value) with the default foreground-alpha hairline; no shadow |
-| Composer / `--th-surface-composer` | The composer capsule only: an opaque approximation of the native composer material (`#2a2a2a` dark, white light) | The Surface border and shadow treatment on its own fill | The Surface border and shadow treatment on its own fill |
-| Raised / `--th-surface-raised`, `--th-shadow-raised` | Menus, palettes, file panels, and floating controls — surfaces that must read as sitting above the canvas | Measured menu/chooser fill `#2d2d2d` with the default border; no box shadow (the measured chooser carries none) | White with the default border; no box shadow, matching the measured chooser |
-| User / `--th-surface-user`, `--th-border-user`, `--th-shadow-raised` | The user chat bubble only: an authorship surface one visible step above Raised so the bubble separates at a glance without accent decoration | One step above the menu fill inside the measured white-alpha idiom with the strong border | White, separated exactly like dark: the strong border alone, because the Raised shadow is none in both themes (the measured menu carries none) |
-| Overlay / `--th-surface-overlay`, `--th-shadow-overlay`, `--th-backdrop` | Modal dialogs and blocking drawers that must separate from every pane | Reuses the measured menu fill (the highest captured surface) with the strong border, separated by the Canvas-derived scrim | White with the strong border, a downward black low-alpha shadow, and the scrim |
+| Level and tokens | Job | Technique in both themes |
+| --- | --- | --- |
+| Canvas / `--th-bg` | Base application and transcript; also an inset output well inside a tool block | No border or shadow |
+| Surface / `--th-surface`, `--th-shadow-surface` | Persistent elevated chrome: sidebar, top bar, activity shelf | One luminance step above canvas, `--th-shadow-surface` |
+| Tool block / `--th-tool-surface`, `--th-tool-border` | Executed tool records in both disclosure states; the expanded body insets Canvas | Scoped fill behind a hairline, no shadow; the output well inside reads as a canvas inset |
+| Composer / `--th-surface-composer`, `--th-shadow-raised`, `--th-highlight` | The composer capsule only | Separates from the canvas by shadow and top-edge highlight; the light fill is white so the shadow and highlight carry the separation alone |
+| Raised / `--th-surface-raised`, `--th-shadow-raised`, `--th-highlight` | Cards, file panels, and floating controls that sit above the canvas | Solid fill with the raised shadow and top-edge highlight |
+| Floating glass / `--th-glass`, `--th-glass-filter`, `--th-border-overlay`, `--th-shadow-overlay`, `--th-highlight` | Popovers, palettes, menus, and the modal panel: surfaces that read as material floating above whatever is behind them | Glass fill plus backdrop filter under `@supports (backdrop-filter: blur(1px))`, with `--th-surface-overlay` as the solid fallback; the overlay shadow and highlight sell the lift. Glass is confined to floating layers; nothing structural is ever glass. Radius is `--th-radius-lg` for menus and palettes and `--th-radius-xl` for the modal panel |
+| User / `--th-surface-user`, `--th-border-user`, `--th-shadow-raised` | The user chat bubble only: an authorship surface one visible step above Raised | Strong hairline plus the raised shadow, so the bubble separates at a glance without accent decoration |
+| Overlay / `--th-surface-overlay` (or glass), `--th-shadow-overlay`, `--th-highlight`, `--th-backdrop` | Modal dialogs and blocking drawers that must separate from every pane | Solid or glass panel with the overlay shadow, top-edge highlight, and the theme-scoped scrim |
 
-Hover, selection, focus, and status are state treatments on a level, not extra
-elevation levels. `--th-hover` is the measured highlighted-row treatment
-(`#f2f3f3` light, `#3d3d3d` dark); `--th-active` steps one alpha tier beyond it
-in each theme's own direction (light darkens toward the foreground mix, dark
-lifts toward white).
+Hover, selection, focus, and status stay state treatments on a level.
+`--th-hover` is one luminance step from the surface in each theme's own
+direction; `--th-active` steps further, toward the foreground mix in light and
+toward white in dark.
 
-Elevation in both themes now follows the measured app: every opaque fill sits
-in one narrow luminance band, separation comes from hairline foreground-alpha
-borders plus the measured composer shadow (`0 3px 7.5px` black at 4% and
-`0 0 20px` at 5%, present in both captured themes), menus carry borders
-without shadows, and the Raised shadow token is `none` in both themes. Dark
-is not shadowless: the captured runtime uses these exact
-shadows. Percentages are resolved inside theme token declarations; component
-CSS sees only semantic tokens resolved from `--th-shadow-color` (`#000000`, as
-measured).
+Raised and floating surfaces also carry `--th-highlight`, an inset 1px top
+edge light: subtle in dark, strong in light. It replaces the old habit of
+stacking extra borders to show elevation. Dark is not shadowless: the dark
+shadow values above are the contract, resolved per theme.
 
-All existing chromatic and effect tokens must move from an unqualified `:root`
-into both theme scopes: `--th-bg`, `--th-surface`, `--th-surface-composer`,
-`--th-surface-raised`, `--th-hover`, `--th-active`, `--th-border`,
-`--th-border-strong`, `--th-text`, `--th-text-dim`, `--th-muted`,
-`--th-faint`, `--th-accent`, `--th-accent-fg`, `--th-accent-hover`,
-`--th-send`, `--th-send-hover`, `--th-send-fg`, `--th-error`,
-`--th-error-bg`, `--th-success`, `--th-warning`, `--th-warning-bg`,
-`--th-ring`, `--th-glow`, `--th-shadow-sm`, `--th-shadow`,
-`--th-shadow-lg`, and `--th-backdrop`. Add `--th-surface-overlay`,
-`--th-shadow-color`, `--th-error-fg`, and a background token for every status,
-including `--th-success-bg`, to both scopes. Geometry, type, radius, and motion
-tokens remain shared.
-
-`--th-ring` is a theme-specific focus treatment, not a white lift.
-`--th-glow` has no elevation job and should be removed from decorative use; if
-it remains during migration, each theme must define it independently. Replace
-component use of size-named shadows with `--th-shadow-surface`,
-`--th-shadow-raised`, and `--th-shadow-overlay`; during migration,
-`--th-shadow-sm`, `--th-shadow`, and `--th-shadow-lg` may exist only as
-same-scope aliases to those semantic roles. `--th-backdrop` is also
-independently resolved per theme and must never assume that the Canvas is black.
+All chromatic and effect tokens live in both theme scopes (dark on `:root`,
+light on `[data-theme="light"]`), both scopes declare exactly the same token
+names with their matching `color-scheme`, and switching themes changes values,
+never which tokens a component requests. `--th-ring` is a theme-resolved
+accent-alpha focus treatment, never a white lift.
 
 ## Theme contract
 
@@ -249,28 +301,28 @@ dark resolves the layered-graphite direction through the captured dark values,
 and the light theme uses the measured white surfaces with foreground-alpha
 borders and shadows rather than a warm luminance ladder.
 
-An automated token test must parse both theme scopes, assert that their token
-name sets are identical, resolve alpha and `color-mix()` values against the
-intended background, and enforce a minimum WCAG contrast ratio of 4.5:1 for
-all text pairs below in both themes. There is no 3:1 large-text exception
-because the same semantic tokens can appear at Label or Micro size.
+An automated token test parses both theme scopes, asserts that their token
+name sets are identical, resolves alpha and `color-mix()` values against the
+intended background, and enforces contrast in both themes:
 
-One narrow icon-only exception applies to `--th-send-fg` on `--th-send` and
-`--th-send-hover`: while the send/stop control's only visible content is its
-SVG glyph and its text label remains screen-reader-only, the pair is held to
-the WCAG 2.1 1.4.11 non-text contrast minimum of 3:1, not 4.5:1. This
-exception exists only under that condition. If `--th-send-fg` is ever used for
-visible text, on any background, the full 4.5:1 text requirement binds again
-and the token pair must be re-valued or the usage changed.
-
-| Foreground text token | Intended background tokens that must be tested |
-| --- | --- |
-| `--th-text`, `--th-text-dim`, `--th-muted`, `--th-faint` | `--th-bg`, `--th-surface`, `--th-surface-composer`, `--th-surface-raised`, `--th-surface-user`, `--th-surface-overlay`, `--th-hover`, `--th-active` |
-| `--th-accent` when used for link or emphasis text | Canvas, Surface, Raised, and Overlay fills |
-| `--th-accent-fg` | `--th-accent`, `--th-accent-hover` |
-| `--th-send-fg` | `--th-send`, `--th-send-hover` at 3:1 under the icon-only exception above; 4.5:1 if ever used as visible text |
-| `--th-error-fg` | Solid `--th-error` action fills, including Stop |
-| `--th-error`, `--th-success`, `--th-warning` when used as text | Their matching status background and every elevation fill on which the status may appear |
+- `--th-text`, `--th-text-dim`, and `--th-muted` hold a minimum WCAG contrast
+  ratio of 4.5:1 on every fill they may appear on: `--th-bg`, `--th-surface`,
+  `--th-surface-composer`, `--th-surface-raised`, `--th-surface-user`,
+  `--th-surface-overlay`, `--th-hover`, `--th-active`, the tool material, and
+  every status background. There is no 3:1 large-text exception because the
+  same semantic tokens can appear at Label or Micro size.
+- `--th-faint` is metadata-only and held to 3.0:1 on the bg, surface,
+  composer, raised, and tool fills. The contract test enumerates the allowed
+  faint selectors; faint text anywhere outside that allowlist fails the build.
+- `--th-accent-fg` holds 4.5:1 on `--th-accent-solid` and
+  `--th-accent-solid-hover`.
+- `--th-error`, `--th-success`, and `--th-warning` used as text hold 4.5:1 on
+  their own status backgrounds and on every elevation fill on which the status
+  may appear; `--th-error-fg` holds 4.5:1 on solid `--th-error` fills,
+  including Stop.
+- `--th-send-fg` holds 4.5:1 on `--th-send` and `--th-send-hover`. An earlier
+  icon-only 3:1 exception for the send glyph is retired: the slot fill is now
+  `--th-accent-solid`, so the pair is held to the full text requirement.
 
 Opacity on a parent is not an acceptable way to create secondary or disabled
 text, because it makes the effective contrast depend on whatever is behind it.
@@ -410,8 +462,8 @@ Choose a tested foreground/background token pair instead.
   `100dvh` height policy. While the keyboard is open the slot is absent and
   only the base padding remains, because the keyboard covers the gesture
   zone.
-- The composer is one unified capsule: a single `--th-surface` pill
-  (`--th-radius-pill`, one `--th-border` outline) that owns the plus
+- The composer is one unified capsule: a single `--th-surface-composer` pill
+  (`--th-radius-pill`, one `--th-border-surface` outline) that owns the plus
   attachment action, the multiline input, and the send/stop slot. The capsule
   is the only focus surface — its border strengthens and a ring appears on
   `:focus-within`; the textarea itself is bare and borderless.
@@ -424,8 +476,8 @@ Choose a tested foreground/background token pair instead.
   narrow screens. Opening it must not change the chat pane flex axis.
 - Split panes: each pane independently obeys this geometry down to 420px. Below
   that width, low-priority header metadata collapses before controls overflow.
-- Pane dividers are 4px structural separators (`--th-border` fill) between
-  split children: `col-resize` on horizontal splits, `row-resize` on vertical
+- Pane dividers are 4px structural separators (`--th-border-surface` fill)
+  between split children: `col-resize` on horizontal splits, `row-resize` on vertical
   splits. A divider is a real focusable control (`separator` semantics with
   `aria-orientation`, `aria-valuemin/max/now`), never a decorative hit strip.
   Hover, active drag, and keyboard focus all strengthen the divider fill to
@@ -448,6 +500,23 @@ Choose a tested foreground/background token pair instead.
   three/four-pane horizontal, vertical, and mixed-nesting layouts all report
   true clamped geometry on both axes. Overlays persist for the entire drag
   or focus interval and disappear only after both have ended.
+
+## Spatial structure
+
+Scroll ownership follows the StyleGallery discipline restated in our own
+words: every scrollable region has exactly one owner, scroll chaining between
+regions is deliberate rather than incidental, and no region scrolls
+implicitly because an ancestor does.
+
+| Region | Shell pattern | Scroll owner |
+| --- | --- | --- |
+| App shell | fixed-sidenav shell | the sidebar owns its own vertical scroll; the pane work area beside it is a shrinkable track and never inherits horizontal overflow |
+| Chat pane | scroll-body shell | the transcript is the sole vertical scroller; header, status row, and composer are fixed bands; banners, queue, and shelves scroll in the content shell between header and composer only when fixed bands exceed the column |
+| Reading column | content limiter | a `min(760px, 100%)` constraint on message content, never a scroller itself |
+| Split panes | independent panes | each pane owns its transcript scroll independently; no cross-pane scroll sharing |
+| Activity shelf | supporting pane | each tabpanel keeps its own scroll state and stays mounted; hidden panels scroll nothing |
+| DAG graph | graph reel | the graph container owns horizontal scroll and auto-scrolls the running node into view on first paint; vertical page scroll never moves the graph |
+| Palettes, menus, modals, docks | imposter | overlay surfaces render above the region that summoned them, trap their own internal scroll, and never propagate wheel events into the transcript beneath |
 
 ## Pane focus and session routing
 
@@ -693,13 +762,11 @@ invocation.
   through Cmd/Ctrl+Enter, which a soft keyboard cannot produce; without it a
   touch device can only stop a run it wants to redirect. An empty draft leaves
   it disabled, and it is absent whenever no run is in flight.
-- Send's default fill is the measured primary action (`#dfdfdf` dark,
-  `#1a1c1f` light) through `--th-send`, with the glyph inverted to the
-  theme's canvas role through `--th-send-fg` (`#181818` dark, `#ffffff`
-  light); the reference does not capture hover, so `--th-send-hover` is a
-  documented 10% step toward the canvas. Stop keeps `--th-error`, and
-  disabled semantics are unchanged. Composer CSS never hardcodes the fill —
-  it exists only as tokens.
+- Send's fill is the accent family through `--th-send` (resolved to
+  `--th-accent-solid`), with the glyph in `--th-send-fg` (white on the solid
+  fill, 4.5:1); `--th-send-hover` resolves to `--th-accent-solid-hover`.
+  Stop keeps `--th-error`, and disabled semantics are unchanged. Composer CSS
+  never hardcodes the fill, it exists only as tokens.
 - Attachments open through the icon-only plus action at the capsule's leading
   edge. A pending image renders as a thumbnail chip in its own row above the
   input row, inside the capsule; drag-and-drop and queued drafts keep working
@@ -779,14 +846,105 @@ At 390x844 and comparable narrow sizes:
   though the visible separator stays 4px;
 - no element creates horizontal document overflow.
 
-## Motion and accessibility
+## Motion
 
-- Honor `prefers-reduced-motion`.
-- Transitions are 120-180ms and communicate hover, focus, disclosure, or
-  entrance only. Activity DAG motion is state-purposeful (running ring
-  rotation, one brief completion/failure settle, one restrained new-node
-  entry); nothing animates per elapsed-time tick, in hidden panels, or on
-  tab changes.
+Motion tokens, shared and theme-independent:
+
+| Token | Value | Use |
+| --- | --- | --- |
+| `--th-dur-fast` | 120ms | hover and press colour |
+| `--th-dur` | 200ms | state change, popover open and close |
+| `--th-dur-slow` | 320ms | enter, disclosure |
+| `--th-dur-emph` | 480ms | one-time choreography only, such as the empty-state entrance |
+
+Easings: `--th-ease` `cubic-bezier(.2,0,0,1)` is the standard; `--th-ease-out`
+`cubic-bezier(.16,1,.3,1)` carries entrances; `--th-ease-in-out`
+`cubic-bezier(.65,0,.35,1)` carries movement between states; `--th-ease-spring`
+`linear(0, 0.006, 0.025 2.8%, 0.101 6.1%, 0.539 18.9%, 0.721 25.3%, 0.849 31.5%, 0.937 38.1%, 0.968 41.8%, 0.991 45.7%, 1.006 50.1%, 1.015 55%, 1.017 63.9%, 1.001)`
+is a small pop reserved for selection thumbs and check draw-in. A spring never
+carries opacity alone and never runs longer than `--th-dur`.
+
+Only these properties animate: transform, opacity, filter, clip-path,
+stroke-dashoffset, and background-position. Hover may additionally
+transition color, background-color, border-color, and box-shadow. Disclosure
+may transition grid-template-rows as a documented exception. `visibility` may
+appear in a transition list only as the discrete hide/show flip paired with an
+opacity or transform fade (it never interpolates). Nothing animates width,
+height, top, left, margin, or padding.
+
+Every animation declares one purpose before it ships:
+
+- Acknowledgement: press, hover, selection. `--th-dur-fast`, `--th-ease`.
+- Continuity: session switch, pane focus change, selection indicator travel.
+  `--th-dur`, `--th-ease-in-out`.
+- Progress: running and streaming indicators, the DAG comet and halo.
+  `--th-dur` or `--th-dur-slow`. Progress motion is honest: it reflects real,
+  observable state and never loops to suggest work that is not happening. An
+  indeterminate indicator is a clearly indeterminate glyph, and under reduced
+  motion it is a static glyph plus a visible word.
+- Guidance: the entrance of an element the user must notice, such as a new DAG
+  node or the one-time empty-state choreography. `--th-dur-slow` or
+  `--th-dur-emph`, `--th-ease-out`.
+
+Frequency-scaled intensity: the more often a motion can fire, the smaller and
+faster it must be. Hover fires constantly and spends 120ms with no
+translation. Selection moves often and slides over 200ms. A one-time entrance
+may spend 480ms. No motion fires per elapsed-time tick, in hidden panels, or
+on tab switches; DAG completion, cancellation, and leaving the graph consume
+their one-shot motion rather than replaying it.
+
+Interruption policy: in-flight motion is never left dead.
+
+- Retarget: a re-aimed transition restarts from its current value toward the
+  new target; reversing a disclosure mid-flight lands closed, not at a stale
+  midpoint.
+- Reverse: toggling back undoes the outgoing motion with the same duration.
+- Settle: one-shot choreography (a completion check, a node settle) plays once
+  and holds its end state; replaying it requires a genuinely new state.
+- Coalesce: rapid repeated triggers, such as three session clicks within
+  100ms, collapse into one final state; the last write wins and no stale
+  intermediate frame renders.
+
+Reduced motion: under `prefers-reduced-motion: reduce`, the global policy in
+global.css collapses every animation and transition duration to about zero
+with iteration-count 1. Each motion above ships an authored static equivalent
+that conveys the same state: running becomes a static glyph plus a localized
+word, entrances render in their final state, and the selection indicator still
+moves, instantly, keeping its wash. State is never conveyed by motion alone.
+
+Shared view transitions go through `runViewTransition(update, options?)` in
+`frontend/src/lib/viewTransition.ts`. Pass the DOM state update that should
+crossfade. The helper calls `document.startViewTransition(update)` when that
+API exists and `prefers-reduced-motion: reduce` does not match. When the API
+is missing or reduced motion matches, it runs `update` directly.
+`::view-transition-old(root)` and `::view-transition-new(root)` in global.css
+use `--th-dur` and `--th-ease-out`.
+
+The update runs exactly once. If `startViewTransition` throws, or if `ready`,
+`finished`, or `updateCallbackDone` rejects before the callback runs, the
+update still runs. A rejection after the callback has run does not apply it
+again. Visual failure never blocks the state update and never repeats it.
+
+Latest-wins is an opt-in mode, `{ latestWins: true }`, on one shared lane. A
+newer latest-wins call drops an older latest-wins update that has not yet run,
+so rapid repeats (three session clicks within 100ms) apply only the last
+update and no stale intermediate write lands. An update that has already run
+is not rolled back. Calls that omit the flag always apply exactly once; they
+do not drop lane updates and are not dropped by them. Reduced motion and a
+missing API apply immediately, in call order; each call is already current
+when it runs, and the last write is the final state.
+
+Under reduced motion the helper does not call the API. The global policy
+(`animation: none` and `transition: none` on the universal selector) stays as
+it is. View-transition pseudos sit outside that selector, so the same media
+query sets their animation duration to zero and keeps the fade's end state.
+
+T2 owns session-switch choreography: which elements move, and how the
+transcript, composer, and session tree take part. This helper is the shared
+foundation only.
+
+## Accessibility
+
 - Every icon button has an accessible name.
 - Dialogs trap and restore focus.
 - Command list semantics follow combobox/listbox behavior.
@@ -796,6 +954,27 @@ At 390x844 and comparable narrow sizes:
 - Keyboard-only operation covers session creation, availability recovery, command
   selection, prompt submission, abort, pane focus movement, divider resize, and
   closing overlays.
+
+## Accepted debt
+
+This document is the contract for the T1 foundation: palette, tokens,
+typography, radius, elevation, glass, motion, state encoding, spatial
+structure, and the global and secondary surfaces listed in the governing
+plan. Surfaces not yet redesigned, tracked as follow-up PRs:
+
+- T2 chat surface: pane header, transcript rows (user bubble, tool timeline,
+  thinking, subagent records), composer and palettes, queue, status row,
+  question and approval surfaces, session-switch continuity.
+- T3 shell: sidebar nav and brand, session tree (selection indicator,
+  running dot, counts), add-workspace action, empty-state orb and
+  choreography, home-live, mobile drawer.
+- T4 activity and DAG: shelf segmented tabs, todo and agents lists, goal
+  bar, DAG graph visuals (cards, left status glyph, bezier edges, comet,
+  halo, progress bar, fade masks), DAG list timeline, chips.
+
+Until those nodes land, their legacy styling may deviate from this contract
+in accent usage, borders, and motion durations. Those deviations are debt
+with a closing PR, not precedent.
 
 ## Release checks
 
