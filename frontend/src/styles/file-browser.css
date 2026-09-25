@@ -11,11 +11,10 @@
   border-left: 1px solid var(--th-border-raised);
   background: var(--th-surface-raised);
   box-shadow: var(--th-shadow-raised);
-  transition: border-color var(--th-dur-fast) var(--th-ease);
 }
 
 .th-files--drag {
-  border-color: var(--th-accent);
+  box-shadow: var(--th-shadow-raised), 0 0 0 2px var(--th-ring);
 }
 
 .th-files-resize {
@@ -62,8 +61,7 @@
   align-items: center;
   gap: var(--th-space-2);
   height: var(--th-header-h);
-  padding: 0 0 0 var(--th-space-3);
-  border-bottom: 1px solid var(--th-border);
+  padding: 0 var(--th-space-1) 0 var(--th-space-3);
 }
 
 .th-files-head .th-btn-icon {
@@ -72,13 +70,12 @@
 }
 
 .th-files-title {
-  font-size: var(--th-type-micro-size);
-  font-weight: var(--th-weight-emphasize);
-  line-height: var(--th-type-micro-line);
-  letter-spacing: var(--th-type-micro-tracking);
-  text-transform: uppercase;
-  color: var(--th-faint);
   flex: none;
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  color: var(--th-text-dim);
 }
 
 .th-files-path {
@@ -86,7 +83,7 @@
   min-width: 0;
   font-family: var(--th-font-mono);
   font-size: var(--th-type-label-size);
-  font-weight: var(--th-weight-emphasize);
+  font-weight: var(--th-weight-read);
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
   color: var(--th-muted);
@@ -105,22 +102,36 @@
   gap: var(--th-space-2);
   margin: var(--th-space-2);
   padding: var(--th-space-3);
-  border: 1px dashed var(--th-border-strong);
   border-radius: var(--th-radius-sm);
+  background: var(--th-surface);
   color: var(--th-muted);
   font-size: var(--th-type-body-size);
   line-height: var(--th-type-body-line);
   letter-spacing: var(--th-type-body-tracking);
   text-align: center;
-  transition: border-color var(--th-dur-fast) var(--th-ease),
+  transition: background var(--th-dur-fast) var(--th-ease),
     color var(--th-dur-fast) var(--th-ease),
-    background var(--th-dur-fast) var(--th-ease);
+    box-shadow var(--th-dur-fast) var(--th-ease);
+}
+
+.th-files-drop > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .th-files--drag .th-files-drop,
 .th-files-drop--busy {
-  border-color: var(--th-accent);
   color: var(--th-text);
+}
+
+.th-files--drag .th-files-drop {
+  background: var(--th-accent-soft);
+  box-shadow: inset 0 0 0 2px var(--th-ring);
+}
+
+.th-files-drop--busy {
   background: var(--th-hover);
 }
 
@@ -153,7 +164,7 @@
   align-items: center;
   gap: var(--th-space-2);
   padding: var(--th-space-1) var(--th-space-2);
-  border-radius: 4px;
+  border-radius: var(--th-radius-xs);
   font-size: var(--th-type-secondary-size);
   line-height: var(--th-type-secondary-line);
   letter-spacing: var(--th-type-secondary-tracking);
@@ -194,21 +205,9 @@
   transform: rotate(90deg);
 }
 
-.th-files-name--dir {
-  text-align: left;
-  color: var(--th-muted);
-  cursor: pointer;
-  transition: color var(--th-dur-fast) var(--th-ease);
-}
-
-.th-files-name--dir:hover {
-  color: var(--th-text);
-}
-
 .th-files-childstatus {
   padding: var(--th-space-1) var(--th-space-2);
   font-size: var(--th-type-micro-size);
-  font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
   color: var(--th-faint);
@@ -221,6 +220,10 @@
 .th-files-name {
   flex: 1;
   min-width: 0;
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -230,7 +233,6 @@
   flex: none;
   font-family: var(--th-font-mono);
   font-size: var(--th-type-micro-size);
-  font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
   color: var(--th-muted);
@@ -248,7 +250,7 @@
   justify-content: center;
   width: 24px;
   height: 24px;
-  border-radius: 4px;
+  border-radius: var(--th-radius-xs);
   color: var(--th-muted);
   opacity: 0;
   transition: opacity var(--th-dur-fast) var(--th-ease),
@@ -284,9 +286,20 @@
   text-align: center;
 }
 
+.th-files-name--dir {
+  text-align: left;
+  color: var(--th-muted);
+  cursor: pointer;
+  transition: color var(--th-dur-fast) var(--th-ease);
+}
+
+.th-files-name--dir:hover {
+  color: var(--th-text);
+}
+
 .th-files-name--link {
   text-align: left;
-  color: var(--th-text);
+  color: var(--th-text-dim);
   cursor: pointer;
   transition: color var(--th-dur-fast) var(--th-ease);
 }
