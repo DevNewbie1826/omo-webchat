@@ -335,7 +335,7 @@ Choose a tested foreground/background token pair instead.
   this width). The shell follows the fixed-sidenav-shell pattern: the sidebar
   column stays stable while the pane work area scrolls independently, and the
   work area is a shrinkable `minmax(0, 1fr)`-style track beside the fixed
-  sidebar column so panes never inherit horizontal overflow. The expanded
+  sidebar column so panes never inherit horizontal overflow. The expanded column is Surface (`--th-surface` plus `--th-shadow-surface`) and does not draw a structural line against the work area. The expanded
   sidebar has no separate navigation
   rail: collapse lives inside the sidebar toolbar (`.th-sidebar-nav`) as one
   of its trailing actions, so the expanded shell allocates zero width outside
@@ -476,22 +476,33 @@ Choose a tested foreground/background token pair instead.
   narrow screens. Opening it must not change the chat pane flex axis.
 - Split panes: each pane independently obeys this geometry down to 420px. Below
   that width, low-priority header metadata collapses before controls overflow.
-- Pane dividers are 4px structural separators (`--th-border-surface` fill)
-  between split children: `col-resize` on horizontal splits, `row-resize` on vertical
-  splits. A divider is a real focusable control (`separator` semantics with
-  `aria-orientation`, `aria-valuemin/max/now`), never a decorative hit strip.
-  Hover, active drag, and keyboard focus all strengthen the divider fill to
-  `--th-accent` and reveal a centered handle grip so the target reads as one
-  control; the focus treatment is the divider's own, distinct from the pane
-  active outline and from composer focus. The divider advertises an
-  axis-appropriate keyboard hint (its accessible description names the arrows
-  that move it: Left/Right on a horizontal split, Up/Down on a vertical one).
-  Keyboard geometry: Arrow keys move
-  5 percentage points along the split axis (Left/Up decrease, Right/Down
-  increase), Home and End jump to the clamped bounds, and Escape returns
-  focus to the pane control that opened divider adjustment. Keyboard-only
-  users reach the divider through the pane's resize action, never by walking
-  the transcript. There is no snapping and no numeric percentage input.
+- Pane dividers (`.th-divider`) are the 4px track `PANE_DIVIDER_SIZE` requires
+  between split children (`col-resize` on horizontal splits, `row-resize` on
+  vertical splits). The track stays that size because pointer and keyboard
+  geometry depend on it, but it is not a painted separator: its background is
+  transparent and its border is `0`. Once a split is mounted, the session work
+  area is Surface and each leaf is a rounded Canvas card (`--th-radius-lg`,
+  `--th-bg`); panes separate by that tonal gap. A divider is a real focusable
+  control (`separator` semantics with `aria-orientation`,
+  `aria-valuemin/max/now`), never a decorative hit strip. The visible handle
+  is a centred pill (`::after`, `--th-radius-pill`, `--th-space-1` by
+  `--th-space-9`) in `--th-border-strong`. It rests hidden (opacity 0, scaled
+  to half on its long axis) and reveals on hover through opacity and
+  transform. Drag (`.th-divider--dragging`) and keyboard focus turn the grip
+  fill to `--th-accent`; the track itself never fills with accent or with
+  `--th-border-surface`. `:focus-visible` clears the global full-length ring
+  on the track and draws `0 0 0 3px var(--th-ring)` on the grip, distinct from
+  the pane active outline and from composer focus. On coarse pointers the grip
+  rests visible (there is no hover) and a `::before` hit strip grows 20px past
+  the track on each side, so the target is 44px while the seam stays 4px.
+  The divider advertises an axis-appropriate keyboard hint (its accessible
+  description names the arrows that move it: Left/Right on a horizontal split,
+  Up/Down on a vertical one). Keyboard geometry: Arrow keys move 5 percentage
+  points along the split axis (Left/Up decrease, Right/Down increase), Home
+  and End jump to the clamped bounds, and Escape returns focus to the pane
+  control that opened divider adjustment. Keyboard-only users reach the divider
+  through the pane's resize action, never by walking the transcript. There is
+  no snapping and no numeric percentage input.
 - Resize overlays: while a divider is dragged OR holds keyboard focus, every
   visible leaf pane — occupied and empty alike — shows a non-interactive
   (`pointer-events: none`) overlay with its current size as a rounded integer
@@ -522,11 +533,12 @@ implicitly because an ancestor does.
 
 - Exactly one pane is the active destination at a time. Pointer down anywhere
   on a pane — occupied or empty — and keyboard focus within it both make it
-  active. The active pane carries exactly one subtle, geometry-neutral
-  visible outline (`.th-pane--focused`): an outline treatment, never an inset
-  box-shadow ring, never a border that shifts layout, and never a change to
-  pane geometry. Divider focus and portal/menu focus are separate states and
-  must not steal or imitate the pane active outline.
+  active. The active pane carries exactly one subtle outline
+  (`.th-pane--focused`): `1px solid var(--th-border-strong)` with
+  `outline-offset: -1px`. It is an outline, not a border that shifts layout,
+  not a box-shadow ring, and not an accent stroke. Divider focus is the grip's
+  accent fill and its own ring; portal and menu focus must not imitate the
+  pane outline.
 - The active-pane outline is width-bound: at viewport widths up to 768px it
   is suppressed entirely (`.th-pane--focused` paints `outline-style: none`)
   because the single full-screen pane has no sibling pane to disambiguate.
@@ -554,6 +566,18 @@ implicitly because an ancestor does.
   pane. MRU ordering, sidebar highlight, and normal session-active handling
   are preserved without extra import steps.
 
+## Sidebar
+
+The column is the fixed Surface shell in Geometry. Its chrome:
+
+- The brand (`.th-sidebar-logo`) is Body at announce weight on the sans stack. It is never mono.
+- Section captions (`.th-sidebar-section-label` and the live-session captions) are sentence-case Micro in `--th-muted`. No shell label uses `text-transform: uppercase`.
+- The add-workspace control (`.th-btn-add`) is a borderless ghost pill at row height. Hover and press are washes (`--th-hover`, `--th-active`), not a dashed outline.
+- Session rows are Secondary. Selection is one `.th-tree-indicator` that slides with `transform` only and fills `--th-active`; the selected label changes to emphasize weight and nothing else. The row does not grow a coloured border.
+- A running session is a 6px `--th-accent` dot (an opacity breathe) plus, when agents are running, a neutral `--th-active` wash and `--th-muted` tabular numerals on the sans stack. Counts (`.th-tree-count` and the live counts) are Micro pills. They are not mono and they are not status-coloured borders.
+- Pinned live cards and the home-live cards are raised surfaces. State is a fill change. The running pill is an accent wash with a transparent 1px border, so the row height stays stable, and the same accent dot. The last-output preview is the one mono line, because it is output.
+- Below 768px the same column is the dismissible drawer: Overlay fill, a hairline `--th-border-overlay`, the overlay shadow, entering and leaving on transform.
+
 ## Empty panes and session opening
 
 - An empty pane shows the same session inventory as the sidebar — stored
@@ -566,13 +590,29 @@ implicitly because an ancestor does.
   loading, error, and retry states; a load-more action pages in further
   discovered entries. Selecting a row opens that session in the pane the row
   belongs to, exactly once, leaving every other pane unchanged.
-- The narrow/single-pane layout exposes the same empty state and open flow
-  at 390px-class widths, and the New Chat creation action is preserved in
-  every empty pane.
-- Session rows in picker and sidebar follow the badge-list pattern: label
-  and trailing metadata (badge, time, count) align on one row with
-  `justify-content: space-between`, the label truncates first, and the row
-  never wraps into a second line of chrome.
+- Presence is one shared hero (`.th-empty-hero`): a circular orb
+  (`.th-empty-orb`, diameter twice the Display size, `border-radius: 50%`,
+  an accent radial, decorative and `aria-hidden`), a greeting in the Display
+  tier (`.th-empty-title`: `--th-type-display-size`, announce weight, Display
+  line height and tracking, `--th-text`), and a Body hint in `--th-muted`.
+  The orb settles once from scale 0.9; greeting, hint, and action then rise
+  on a stagger whose last step ends with `--th-dur-emph`. It is guidance
+  motion, once per mount, and it does not loop. Under reduced motion every
+  piece is already in its final state.
+- Below 1024px that hero is the single-pane empty state (`.th-empty`), with
+  the New chat or New workspace primary action inside the hero and the
+  home-live block plus picker column beneath it. The mobile menu button stays
+  a 44px target.
+- At 1024px and above, SplitView does not mount `.th-empty`. The empty leaf
+  is a Canvas card that stacks the home-live block over `.th-picker-pane`,
+  and the picker mounts the same hero — orb and Display greeting — above its
+  Micro caption, workspace select, and session list. The hero omits the
+  inline call to action; the create action stays the primary button at the
+  foot of the list. Session rows are calm surface cards: one line, the name
+  ellipsizes, a neutral `--th-border` hairline rather than a state colour.
+  The list column is at most 280px. Label and trailing status stay on that
+  one line; the name truncates first.
+- The New chat creation action is preserved in every empty pane.
 
 ## Model control placement
 
@@ -842,8 +882,9 @@ At 390x844 and comparable narrow sizes:
 - the slash palette fits within the visible viewport and does not sit behind the
   software keyboard;
 - an empty pane shows the same session open flow as a desktop empty pane, and
-  pane dividers keep their 44px-effective touch target on coarse pointers even
-  though the visible separator stays 4px;
+  pane dividers keep a 44px hit target on coarse pointers: the visible seam
+  stays a transparent 4px track, the grip rests visible, and the hit strip
+  extends 20px to either side;
 - no element creates horizontal document overflow.
 
 ## Motion
@@ -948,9 +989,11 @@ foundation only.
 - Every icon button has an accessible name.
 - Dialogs trap and restore focus.
 - Command list semantics follow combobox/listbox behavior.
-- Pane dividers expose `separator` semantics with value attributes; focus
-  visible on a divider is its own accent treatment, and Escape from a focused
-  divider restores focus to the originating pane control.
+- Pane dividers expose `separator` semantics with value attributes. Focus
+  visible is the accent grip plus a 3px `--th-ring` on that grip, not an
+  accent fill of the 4px track and not the pane's `--th-border-strong`
+  outline. Escape from a focused divider restores focus to the originating
+  pane control.
 - Keyboard-only operation covers session creation, availability recovery, command
   selection, prompt submission, abort, pane focus movement, divider resize, and
   closing overlays.
@@ -965,9 +1008,6 @@ plan. Surfaces not yet redesigned, tracked as follow-up PRs:
 - T2 chat surface: pane header, transcript rows (user bubble, tool timeline,
   thinking, subagent records), composer and palettes, queue, status row,
   question and approval surfaces, session-switch continuity.
-- T3 shell: sidebar nav and brand, session tree (selection indicator,
-  running dot, counts), add-workspace action, empty-state orb and
-  choreography, home-live, mobile drawer.
 - T4 activity and DAG: shelf segmented tabs, todo and agents lists, goal
   bar, DAG graph visuals (cards, left status glyph, bezier edges, comet,
   halo, progress bar, fade masks), DAG list timeline, chips.

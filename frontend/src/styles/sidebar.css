@@ -8,8 +8,9 @@
   flex: none;
   display: flex;
   flex-direction: row;
+  /* Surface level: one luminance step above the canvas plus the surface
+     shadow separate the shell from the panes; no divider line. */
   background: var(--th-surface);
-  border-right: 1px solid var(--th-border-surface);
   box-shadow: var(--th-shadow-surface);
   transition: width var(--th-dur-slow) var(--th-ease),
     transform var(--th-dur-slow) var(--th-ease);
@@ -40,7 +41,6 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
 
 .th-sidebar--collapsed {
   width: var(--th-space-11);
-  border-right-color: transparent;
 }
 
 .th-sidebar-inner {
@@ -52,25 +52,27 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
   overflow: hidden;
 }
 
+/* Toolbar: brand leading, icon actions trailing. The brand starts on the
+   same 16px column as the tree's leading glyphs (body inset + row inset);
+   the actions keep the footer's 12px trailing inset. */
 .th-sidebar-nav {
   flex: none;
   display: flex;
   align-items: center;
   gap: var(--th-space-2);
   height: var(--th-header-h);
-  padding: 0 var(--th-space-3);
-  border-bottom: 1px solid var(--th-border);
+  padding: 0 var(--th-space-3) 0 var(--th-space-4);
 }
 
 .th-sidebar-logo {
   display: flex;
   align-items: center;
   gap: var(--th-space-2);
-  font-family: var(--th-font-mono);
-  font-size: var(--th-type-micro-size);
-  font-weight: var(--th-weight-emphasize);
-  line-height: var(--th-type-micro-line);
-  letter-spacing: var(--th-type-micro-tracking);
+  min-width: 0;
+  font-size: var(--th-type-body-size);
+  font-weight: var(--th-weight-announce);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
   color: var(--th-text);
   white-space: nowrap;
 }
@@ -79,11 +81,19 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
   width: var(--th-space-5);
   height: var(--th-space-5);
   flex: none;
+  border-radius: var(--th-radius-xs);
+}
+
+.th-sidebar-brand {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .th-sidebar-nav-actions {
   margin-left: auto;
   display: flex;
+  flex: none;
   gap: var(--th-space-0-5);
 }
 
@@ -96,13 +106,12 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
 }
 
 .th-sidebar-section-label {
-  padding: var(--th-space-1) var(--th-space-2) var(--th-space-2);
+  padding: var(--th-space-2) var(--th-space-2) var(--th-space-2);
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
-  text-transform: uppercase;
-  color: var(--th-faint);
+  color: var(--th-muted);
   white-space: nowrap;
 }
 
@@ -110,22 +119,22 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
   padding: var(--th-space-4) var(--th-space-2);
   display: flex;
   flex-direction: column;
-  gap: var(--th-space-2);
+  gap: var(--th-space-1);
 }
 
 .th-sidebar-empty-title {
-  font-size: var(--th-type-label-size);
+  font-size: var(--th-type-secondary-size);
   font-weight: var(--th-weight-emphasize);
-  line-height: var(--th-type-label-line);
-  letter-spacing: var(--th-type-label-tracking);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
   color: var(--th-text-dim);
 }
 
 .th-sidebar-empty-hint {
-  font-size: var(--th-type-body-size);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
   color: var(--th-muted);
-  line-height: var(--th-type-body-line);
-  letter-spacing: var(--th-type-body-tracking);
 }
 
 .th-sidebar-footer {
@@ -134,7 +143,6 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
   align-items: center;
   gap: var(--th-space-1);
   padding: var(--th-space-2) var(--th-space-3) 0;
-  border-top: 1px solid var(--th-border);
 }
 
 /* Do not let the inherited text line box add space below the icon at large
@@ -147,7 +155,7 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
    of clear space on every side of the 32px buttons. The nav cluster's 2px
    gap would make the two 44px rings overlap, so it widens to 14px (12px
    ring-to-ring tiling plus a 2px dead band); the header's own 44px height
-   and the 12px inline padding already clear the rings vertically and
+   and its 12px trailing padding already clear the rings vertically and
    outward. The footer buttons previously sat on the inner column's bottom
    edge with zero reserve, so the ring's 6px downward growth was clipped by
    .th-sidebar-inner's overflow — an 8px bottom reserve absorbs it. The
@@ -173,6 +181,8 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
 }
 
 @media (max-width: 768px) {
+  /* Overlay level: the drawer floats over the backdrop scrim, so it takes
+     the overlay fill, its hairline edge, and the overlay shadow. */
   .th-sidebar {
     position: fixed;
     left: var(--th-vv-left, 0px);
@@ -182,8 +192,11 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
     width: var(--th-sidebar-w);
     transform: translateX(0);
     background: var(--th-surface-overlay);
-    border-right-color: var(--th-border-overlay);
+    border-right: 1px solid var(--th-border-overlay);
     box-shadow: var(--th-shadow-overlay);
+    /* Entrances decelerate; the collapsed rule below keeps the standard
+       curve for the exit. */
+    transition: transform var(--th-dur-slow) var(--th-ease-out);
     /* Fixed positioning bypasses #root's safe padding, including when the
        standalone/keyboard transform makes #root the containing block. */
     padding-top: env(safe-area-inset-top);
@@ -196,7 +209,6 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
   .th-sidebar--collapsed {
     width: var(--th-sidebar-w);
     transform: translateX(-100%);
-    border-right-color: transparent;
     box-shadow: none;
     pointer-events: none;
     transition: transform var(--th-dur-slow) var(--th-ease),

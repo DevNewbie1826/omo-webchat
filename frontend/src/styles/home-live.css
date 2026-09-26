@@ -17,41 +17,49 @@
   overflow-x: hidden;
 }
 
-/* Header row: the same uppercase Micro treatment as the empty state's
-   .th-picker-pane-title, laid out as a flex row with the live count pinned
-   to its far edge. */
+/* Header row: the sidebar live section's sentence-case Micro caption, with the
+   live count pinned to its far edge; the inline inset aligns it with the card
+   edges below. */
 .th-home-live-label {
   display: flex;
   align-items: center;
   gap: var(--th-space-1);
+  padding: 0 var(--th-space-2);
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
-  text-transform: uppercase;
-  color: var(--th-faint);
+  color: var(--th-muted);
   white-space: nowrap;
 }
 
+/* Same soft count pill as the sidebar's .th-sidebar-live-count. */
 .th-home-live-count {
   margin-left: auto;
+  min-width: calc(var(--th-type-micro-size) * var(--th-type-micro-line) + 2 * var(--th-space-0-5));
+  padding: var(--th-space-0-5) var(--th-space-1);
+  border-radius: var(--th-radius-pill);
+  background: var(--th-active);
   color: var(--th-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
 }
 
+/* Soft raised cards (overview.css) spaced one step apart. The block's
+   scrollport clips, so the inset leaves room for the raised shadow's falloff
+   (as the sidebar section's padding does); a tighter inset shows a hard
+   shadow edge in light. */
 .th-home-live-list {
   display: flex;
   flex-direction: column;
-  gap: var(--th-space-1);
+  gap: var(--th-space-2);
   min-height: 0;
+  padding: var(--th-space-1) var(--th-space-2) var(--th-space-4);
 }
 
-/* Picker-column density for the overview card markup: tighter activation
-   padding, the name at Label held to one ellipsized line - and the
-   last-output line the sidebar variant does not show clamped the same way. */
-.th-home-live-list .th-overview-card-open {
-  padding: var(--th-space-1) var(--th-space-2);
-}
-
+/* Picker-column density for the overview card markup: the name at Label held
+   to one ellipsized line - and the last-output line the sidebar variant does
+   not show clamped the same way. */
 .th-home-live-list .th-overview-card-name {
   font-size: var(--th-type-label-size);
   line-height: var(--th-type-label-line);

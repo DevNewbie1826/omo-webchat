@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useT } from "../../i18n";
+import { PresenceHero } from "../../components/PresenceHero";
 import type { Workspace, WorkspaceSession } from "../workspace/workspace";
 import type { WorkspaceSessionPaging } from "../workspace/useWorkspaces";
 import { sessionOpenAttemptKey, useSessionOpenAttempts } from "../workspace/useSessionOpenAttempts";
@@ -29,6 +30,7 @@ export function SessionPicker({ workspaces, sessionLists, sessionPages, onEnsure
 
   return (
     <div className="th-picker-pane">
+      <PresenceHero greeting={t("empty.greeting")} hint={t(workspaces.length > 0 ? "empty.hintResume" : "empty.hintStart")} />
       <div className="th-picker-pane-title">{t("split.pickTitle")}</div>
       <select aria-label={t("split.pickWorkspace")} value={workspaceID} disabled={!workspace}
         onChange={event => setSelectedWorkspace(event.target.value)}>

@@ -956,7 +956,7 @@ describe("main-screen running-sessions contracts", () => {
     expect(declarationValue(block, "overflow-x")).toBe("hidden");
   });
 
-  it("styles the header as an uppercase micro label with the count at the far edge", () => {
+  it("styles the header as a sentence-case micro label with the count at the far edge", () => {
     const label = ruleBody(homeLive, ".th-home-live-label");
     expect(declarationValue(label, "display")).toBe("flex");
     expect(declarationValue(label, "align-items")).toBe("center");
@@ -964,8 +964,8 @@ describe("main-screen running-sessions contracts", () => {
     expect(declarationValue(label, "font-weight")).toBe("var(--th-weight-emphasize)");
     expect(declarationValue(label, "line-height")).toBe("var(--th-type-micro-line)");
     expect(declarationValue(label, "letter-spacing")).toBe("var(--th-type-micro-tracking)");
-    expect(declarationValue(label, "text-transform")).toBe("uppercase");
-    expect(declarationValue(label, "color")).toBe("var(--th-faint)");
+    expect(declarationValue(label, "text-transform")).not.toBe("uppercase");
+    expect(declarationValue(label, "color")).toBe("var(--th-muted)");
     const count = ruleBody(homeLive, ".th-home-live-count");
     expect(declarationValue(count, "margin-left")).toBe("auto");
     expect(declarationValue(count, "color")).toBe("var(--th-muted)");

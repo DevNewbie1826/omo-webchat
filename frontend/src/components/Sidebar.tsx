@@ -315,7 +315,7 @@ export function Sidebar({
           <div className="th-sidebar-nav">
             <span className="th-sidebar-logo">
               <img className="th-sidebar-logo-icon" src="./icon-192.png" alt="" />
-              {t("sidebar.nav.brand")}
+              <span className="th-sidebar-brand">{t("sidebar.nav.brand")}</span>
             </span>
             <div className="th-sidebar-nav-actions">
               <button

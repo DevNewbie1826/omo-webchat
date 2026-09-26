@@ -17,7 +17,7 @@
     width: 100%;
     background: var(--th-backdrop);
     z-index: 35;
-    animation: th-fade-in var(--th-dur) var(--th-ease);
+    animation: th-fade-in var(--th-dur) var(--th-ease-out);
   }
 
   .th-mobile-menu {

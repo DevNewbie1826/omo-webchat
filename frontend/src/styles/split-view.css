@@ -61,16 +61,38 @@
   min-height: 0;
 }
 
+/* Split chrome. SplitView mounts only on wide layouts, so the phone keeps
+   its full-bleed single pane. Once the work area holds a split it turns
+   Surface and every leaf becomes a rounded Canvas card: panes separate by a
+   tonal gap - the transparent divider track - instead of a painted line. */
+.th-session-workarea:has(> .th-split) {
+  background: var(--th-surface);
+}
+
+.th-split .th-pane-wrap {
+  border-radius: var(--th-radius-lg);
+  background: var(--th-bg);
+}
+
+/* Fill children paint Canvas edge to edge, so they take the card radius too;
+   it also keeps the chat pane's inset active outline on the rounded edge. */
+.th-split .th-pane-wrap > .th-pane,
+.th-split .th-pane-wrap > .th-picker-pane {
+  border-radius: inherit;
+}
+
+/* The track stays exactly PANE_DIVIDER_SIZE (paneTree.ts) along the split
+   axis: pointer and keyboard geometry depend on it. Overflow is visible so
+   the grip and the coarse-pointer hit strip escape the UA hr clip. */
 .th-divider {
   position: relative;
   z-index: 3;
-  outline: none;
   flex: none;
   margin: 0;
   padding: 0;
   border: 0;
-  background: var(--th-border);
-  transition: background var(--th-dur-fast) var(--th-ease);
+  overflow: visible;
+  background: transparent;
   touch-action: none;
 }
 
@@ -84,11 +106,55 @@
   cursor: row-resize;
 }
 
-.th-divider:hover,
-.th-divider:active,
-.th-divider:focus,
-.th-divider--dragging {
+/* The grip: a pill centred in the track. Hover reveals it in the strong
+   hairline tone; drag and focus (keyboard adjustment, or the focus a pointer
+   drag takes) turn it accent. Opacity and transform carry the reveal; the
+   colour swaps instantly, so reduced motion loses nothing but the fade. */
+.th-divider::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  border-radius: var(--th-radius-pill);
+  background: var(--th-border-strong);
+  opacity: 0;
+  transition: opacity var(--th-dur-fast) var(--th-ease),
+    transform var(--th-dur-fast) var(--th-ease);
+}
+
+.th-split--h > .th-divider::after {
+  width: var(--th-space-1);
+  height: var(--th-space-9);
+  transform: scaleY(0.5);
+}
+
+.th-split--v > .th-divider::after {
+  width: var(--th-space-9);
+  height: var(--th-space-1);
+  transform: scaleX(0.5);
+}
+
+.th-divider:focus::after,
+.th-divider--dragging::after {
   background: var(--th-accent);
+}
+
+.th-split > .th-divider:hover::after,
+.th-split > .th-divider:focus::after,
+.th-split > .th-divider--dragging::after {
+  opacity: 1;
+  transform: none;
+}
+
+/* The divider's own focus treatment replaces the global full-length ring
+   (a bright line along the whole seam): the accent grip carries the ring. The
+   transparent outline from the global rule stays for forced-colours mode. */
+.th-divider:focus-visible {
+  box-shadow: none;
+}
+
+.th-divider:focus-visible::after {
+  box-shadow: 0 0 0 3px var(--th-ring);
 }
 
 /* Safe centering: when the list overflows the scrollport, alignment falls
@@ -114,7 +180,6 @@
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
-  text-transform: uppercase;
   color: var(--th-faint);
 }
 
@@ -140,21 +205,24 @@
   width: 100%;
   min-width: 0;
   padding: var(--th-space-2) var(--th-space-2);
-  border-radius: var(--th-radius-sm);
-  border: 1px solid var(--th-border);
-  background: var(--th-surface);
+  /* Raised-level calm card, the .th-overview-card idiom: fill, hairline,
+     radius, shadow and highlight tokens together; state is a fill change
+     only, never a border colour. */
+  border-radius: var(--th-radius);
+  border: 1px solid var(--th-border-raised);
+  background: var(--th-surface-raised);
+  box-shadow: var(--th-shadow-raised), var(--th-highlight);
   color: var(--th-text-dim);
   font-size: var(--th-type-secondary-size);
   line-height: var(--th-type-secondary-line);
   letter-spacing: var(--th-type-secondary-tracking);
   text-align: left;
-  transition: background var(--th-dur-fast) var(--th-ease),
-    border-color var(--th-dur-fast) var(--th-ease);
+  transition: background-color var(--th-dur-fast) var(--th-ease),
+    color var(--th-dur-fast) var(--th-ease);
 }
 
 .th-picker-pane-item:hover {
   background: var(--th-hover);
-  border-color: var(--th-border-strong);
   color: var(--th-text);
 }
 
@@ -189,6 +257,16 @@
   display: flex;
   align-items: center;
   gap: var(--th-space-2);
+}
+
+/* Desktop empty-leaf entrance (G32): the shared presence hero settles first
+   (app-empty.css, --th-dur-emph total), then the pane's own content — title,
+   filter, session cards, create action — rises over the second half, so the
+   choreography totals exactly --th-dur-emph and plays once per mount. The
+   single-pane shell does not match this selector: there the whole picker
+   rides .th-empty's own entrance and the hero copy is display:none. */
+.th-pane-wrap > .th-picker-pane > .th-empty-hero ~ * {
+  animation: th-empty-rise calc(var(--th-dur-emph) / 2) var(--th-ease-out) calc(var(--th-dur-emph) / 2) backwards;
 }
 
 /* Active destination is independent of input, menu and divider focus. */
@@ -250,6 +328,9 @@
   height: 28px;
 }
 
+/* Floating layer: the menu primitive (glass over a solid Overlay fallback,
+   hairline, overlay shadow plus top-edge light) and the shared overlay
+   enter. Focus lands on the first item immediately; exit is instant. */
 .th-pane-resize-menu {
   position: absolute;
   z-index: 12;
@@ -259,47 +340,98 @@
   flex-direction: column;
   width: 220px;
   max-width: calc(100cqw - var(--th-space-4));
+  margin-top: var(--th-space-1);
   padding: var(--th-space-1);
-  border: 1px solid var(--th-border-raised);
-  border-radius: var(--th-radius-sm);
-  background: var(--th-surface-raised);
-  box-shadow: var(--th-shadow-raised);
+  border: 1px solid var(--th-border-overlay);
+  border-radius: var(--th-radius-lg);
+  background: var(--th-surface-overlay);
+  box-shadow: var(--th-shadow-overlay), var(--th-highlight);
+  animation: th-pane-resize-menu-in var(--th-dur) var(--th-ease-out);
 }
 
+@supports (backdrop-filter: blur(1px)) {
+  .th-pane-resize-menu {
+    background: var(--th-glass);
+    backdrop-filter: var(--th-glass-filter);
+  }
+}
+
+@keyframes th-pane-resize-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Items sit concentric inside the menu: 16px outer radius - 4px padding. */
 .th-pane-resize-menu button {
-  padding: var(--th-space-2);
+  padding: var(--th-space-2) var(--th-space-3);
   text-align: left;
   border: 0;
+  border-radius: var(--th-radius);
   background: transparent;
-  color: var(--th-text);
+  color: var(--th-text-dim);
   font-size: var(--th-type-label-size);
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
+  transition: background-color var(--th-dur-fast) var(--th-ease),
+    color var(--th-dur-fast) var(--th-ease);
 }
 
-.th-pane-resize-menu button:hover,
+.th-pane-resize-menu button:hover {
+  background: var(--th-hover);
+  color: var(--th-text);
+}
+
 .th-pane-resize-menu button:focus {
   background: var(--th-hover);
+  color: var(--th-text);
   outline: 1px solid var(--th-border-strong);
   outline-offset: -1px;
 }
 
+/* Transient resize read-outs float over pane content as glass chips. The
+   max-content width keeps a centred (left: 50%) chip on one line whenever
+   it fits, instead of wrapping at half the container; the radius reads as a
+   pill on one line and stays a calm rounded box if the hint must wrap. */
 .th-pane-size,
 .th-divider-hint {
   position: absolute;
   z-index: 5;
   pointer-events: none;
+  width: max-content;
   max-width: calc(100% - var(--th-space-4));
-  padding: var(--th-space-2) var(--th-space-3);
-  border: 1px solid var(--th-border-raised);
-  border-radius: var(--th-radius-sm);
-  background: var(--th-surface-raised);
+  padding: var(--th-space-1) var(--th-space-3);
+  border: 1px solid var(--th-border-overlay);
+  border-radius: var(--th-radius-lg);
+  background: var(--th-surface-overlay);
+  box-shadow: var(--th-shadow-overlay), var(--th-highlight);
   color: var(--th-text);
   font-size: var(--th-type-label-size);
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
   font-variant-numeric: tabular-nums;
   text-align: center;
+  animation: th-split-readout-in var(--th-dur-fast) var(--th-ease-out);
+}
+
+@supports (backdrop-filter: blur(1px)) {
+  .th-pane-size,
+  .th-divider-hint {
+    background: var(--th-glass);
+    backdrop-filter: var(--th-glass-filter);
+  }
+}
+
+/* Opacity only: both read-outs centre themselves with transform. */
+@keyframes th-split-readout-in {
+  from {
+    opacity: 0;
+  }
 }
 
 .th-pane-size {
@@ -319,33 +451,6 @@
   display: block;
 }
 
-.th-divider::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  border-radius: var(--th-radius-sm);
-  background: var(--th-accent);
-  opacity: 0;
-}
-
-.th-split--h > .th-divider::after {
-  width: 8px;
-  height: 32px;
-}
-
-.th-split--v > .th-divider::after {
-  width: 32px;
-  height: 8px;
-}
-
-.th-divider:hover::after,
-.th-divider:focus::after,
-.th-divider--dragging::after {
-  opacity: 1;
-}
-
 @media (pointer: coarse) {
   .th-pane-resize {
     width: 44px;
@@ -363,5 +468,11 @@
   .th-split--v > .th-divider::before {
     top: -20px;
     bottom: -20px;
+  }
+  /* Touch has no hover: the grip rests visible so the seam reads as a
+     handle; drag and focus still turn it accent. */
+  .th-split > .th-divider::after {
+    opacity: 1;
+    transform: none;
   }
 }
