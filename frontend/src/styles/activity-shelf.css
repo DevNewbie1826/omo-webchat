@@ -1243,6 +1243,54 @@ button.th-activity-bar:hover {
     currentColor calc(100% - var(--th-space-6)), transparent);
 }
 
+/* Dense waves hide below the fold (overflow-y hidden), so the partially
+   visible bottom row would slice mid-glyph: dissolve it into the shelf
+   instead. The mask stops ride on --th-bg; a mask reads only alpha, and the
+   fade resolves to the canvas behind the reel. Content never clips at the
+   top, so only the bottom edge fades. */
+.th-activity-graph[data-fade-bottom="true"] {
+  -webkit-mask-image: linear-gradient(to top, transparent, var(--th-bg) var(--th-space-6));
+  mask-image: linear-gradient(to top, transparent, var(--th-bg) var(--th-space-6));
+}
+
+/* When the bottom clips while a side fade is also up, both masks apply at
+   once; the layers compose by intersection (source-in / intersect) so each
+   fade keeps its own edge. */
+.th-activity-graph[data-fade-bottom="true"][data-fade="start"] {
+  -webkit-mask-image:
+    linear-gradient(to right, transparent, var(--th-bg) var(--th-space-6)),
+    linear-gradient(to top, transparent, var(--th-bg) var(--th-space-6));
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to right, transparent, var(--th-bg) var(--th-space-6)),
+    linear-gradient(to top, transparent, var(--th-bg) var(--th-space-6));
+  mask-composite: intersect;
+}
+
+.th-activity-graph[data-fade-bottom="true"][data-fade="end"] {
+  -webkit-mask-image:
+    linear-gradient(to left, transparent, var(--th-bg) var(--th-space-6)),
+    linear-gradient(to top, transparent, var(--th-bg) var(--th-space-6));
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to left, transparent, var(--th-bg) var(--th-space-6)),
+    linear-gradient(to top, transparent, var(--th-bg) var(--th-space-6));
+  mask-composite: intersect;
+}
+
+.th-activity-graph[data-fade-bottom="true"][data-fade="both"] {
+  -webkit-mask-image:
+    linear-gradient(to right, transparent, var(--th-bg) var(--th-space-6),
+      var(--th-bg) calc(100% - var(--th-space-6)), transparent),
+    linear-gradient(to top, transparent, var(--th-bg) var(--th-space-6));
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to right, transparent, var(--th-bg) var(--th-space-6),
+      var(--th-bg) calc(100% - var(--th-space-6)), transparent),
+    linear-gradient(to top, transparent, var(--th-bg) var(--th-space-6));
+  mask-composite: intersect;
+}
+
 .th-activity-gbody {
   transform-box: fill-box;
   transform-origin: center;

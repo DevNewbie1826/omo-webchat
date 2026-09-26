@@ -194,10 +194,14 @@ describe("ActivityShelf", () => {
     expect(fill.parentElement?.hasAttribute("data-live")).toBe(false);
   });
 
-  it("fills run progress for succeeded, failed and skipped nodes as states change", () => {
+  it("counts only completed nodes toward run progress and the header count", () => {
     const translation = vi.spyOn(i18n, "t").mockImplementation((key, vars) =>
       key === "activity.dagCounts" ? `${vars?.["done"]}/${vars?.["total"]}` : key);
     try {
+      // The regression payload deliberately mixes failed, skipped and
+      // cancelled nodes into the run: the contracted numerator is the run
+      // document's completed count alone, so none of them may move the bar
+      // or the header count (a summed implementation reads 3/6 and 4/6).
       const nodes = [
         { id: "ok", prompt: "Succeeded", dependsOn: [], state: "completed" },
         { id: "error", prompt: "Failed", dependsOn: [], state: "failed" },
@@ -213,18 +217,68 @@ describe("ActivityShelf", () => {
       renderShelf(harness, activityState({ dags: [makeDag({ nodes, counts, edges: [] })] }));
       openShelf(harness.container);
       const fill = requireElement(harness.container.querySelector<HTMLElement>(".th-activity-dag-progress-fill"), "progress fill");
-      expect(fill.style.transform).toBe(`scaleX(${3 / 6})`);
-      expect(harness.container.querySelector(".th-activity-dag-counts")?.textContent).toBe("3/6");
+      expect(fill.style.transform).toBe(`scaleX(${1 / 6})`);
+      expect(harness.container.querySelector(".th-activity-dag-counts")?.textContent).toBe("1/6");
 
       renderShelf(harness, activityState({ dags: [makeDag({
         nodes: nodes.map(node => node.id === "wait" ? { ...node, state: "completed" } : node),
         counts: { ...counts, pending: 0, completed: 2 },
         edges: [],
       })] }));
-      expect(fill.style.transform).toBe(`scaleX(${4 / 6})`);
-      expect(harness.container.querySelector(".th-activity-dag-counts")?.textContent).toBe("4/6");
+      expect(fill.style.transform).toBe(`scaleX(${2 / 6})`);
+      expect(harness.container.querySelector(".th-activity-dag-counts")?.textContent).toBe("2/6");
     } finally {
       translation.mockRestore();
+    }
+  });
+
+  it("derives card radius and spacing from the resolved design tokens", () => {
+    const root = document.documentElement;
+    const previousRadius = root.style.getPropertyValue("--th-radius");
+    const previousSpace2 = root.style.getPropertyValue("--th-space-2");
+    try {
+      renderShelf(harness, activityState({ dags: [makeDag()] }));
+      openShelf(harness.container);
+      click(requireElement(harness.container.querySelector('[data-activity-tab="dag"]'), "DAG tab"));
+      const card = (): SVGRectElement => requireElement(
+        harness.container.querySelector<SVGRectElement>(".th-activity-gnode-card"), "node card");
+      const firstLabel = (): SVGTextElement => requireElement(
+        harness.container.querySelector<SVGTextElement>(".th-activity-gnode .th-activity-glabel"), "node label");
+      const runningGlyph = (): SVGCircleElement => requireElement(
+        harness.container.querySelector<SVGCircleElement>('.th-activity-gnode[data-node="c"] .th-activity-gstatus'),
+        "running glyph");
+      const clipX = (): number => {
+        const id = firstLabel().getAttribute("clip-path")?.replace(/^url\(#(.*)\)$/, "$1") ?? "";
+        const rect = requireElement(document.getElementById(id), "label clip").querySelector("rect");
+        return Number(requireElement(rect, "label clip rect").getAttribute("x"));
+      };
+      // No stylesheet in the renderer: the token defaults paint via fallback.
+      expect(Number(card().getAttribute("rx"))).toBe(12);
+      const before = {
+        labelX: Number(firstLabel().getAttribute("x")),
+        glyphCx: Number(runningGlyph().getAttribute("cx")),
+        height: Number(card().getAttribute("height")),
+        clip: clipX(),
+      };
+
+      act(() => {
+        root.style.setProperty("--th-radius", "20px");
+        root.style.setProperty("--th-space-2", "16px");
+      });
+      renderShelf(harness, activityState({ dags: [makeDag()] }));
+
+      // One token edit moves paint and layout together: --th-radius -> the
+      // card rx; --th-space-2 (+ space-0-5) -> padX, so the glyph lane and
+      // the label clips shift by the same delta; --th-space-2 -> padY, so
+      // the card height grows by twice the delta. No second numeric scale.
+      expect(Number(card().getAttribute("rx"))).toBe(20);
+      expect(Number(firstLabel().getAttribute("x"))).toBe(before.labelX + 8);
+      expect(Number(runningGlyph().getAttribute("cx"))).toBe(before.glyphCx + 8);
+      expect(clipX()).toBe(before.clip + 8);
+      expect(Number(card().getAttribute("height"))).toBe(before.height + 16);
+    } finally {
+      root.style.setProperty("--th-radius", previousRadius);
+      root.style.setProperty("--th-space-2", previousSpace2);
     }
   });
 

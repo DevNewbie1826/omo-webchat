@@ -13,16 +13,14 @@ import type { ActivityDagNode, ActivityDagRun } from "./activityTypes";
  * GAP_Y keeps stacked cards clear of a running neighbour's halo (HALO_SPREAD
  * plus the blur's visible falloff), GAP_X leaves room for the bezier
  * curvature and the arrowhead, and PADDING keeps an edge node's halo inside
- * the SVG viewport.
+ * the SVG viewport. The card's radius/padding/gap are NOT constants: they
+ * resolve from the --th-* radius/spacing tokens below, so a token change
+ * moves the painted card, the glyph lane and the label clips together.
  */
 const NODE_WIDTH = 176;
 const GAP_X = 48;
 const GAP_Y = 16;
 const PADDING = 12;
-const CARD_RADIUS = 12;
-const CARD_PAD_X = 10;
-const CARD_PAD_Y = 8;
-const GLYPH_GAP = 6;
 const HALO_SPREAD = 2;
 const HALO_BLUR = 4;
 const COMET_BLUR = 1.5;
@@ -30,6 +28,39 @@ const LABEL_TIER = 0.8571;
 const MICRO_TIER = 0.7857;
 /** The measured title font determines card size, row pitch and glyph lane. */
 const DEFAULT_TYPE_PX = 13 * LABEL_TIER;
+
+/** Card radius/padding/gap, resolved from the token contract. The 10px
+ *  padX and 6px glyph gap sit between single spacing steps, so they compose
+ *  two steps (space-2 + space-0-5, space-1 + space-0-5) and every input
+ *  stays a --th-* token. Each metric falls back independently to the token
+ *  default so a renderer without a resolved stylesheet (tests, SSR) still
+ *  paints, and a partially overridden token still moves its own metric. */
+interface CardSpacing {
+  readonly radius: number;
+  readonly padX: number;
+  readonly padY: number;
+  readonly glyphGap: number;
+}
+
+function resolveCardSpacing(): CardSpacing {
+  if (typeof document === "undefined" || typeof getComputedStyle !== "function") {
+    return { radius: 12, padX: 10, padY: 8, glyphGap: 6 };
+  }
+  const styles = getComputedStyle(document.documentElement);
+  const px = (token: string, fallback: number): number => {
+    const value = Number.parseFloat(styles.getPropertyValue(token));
+    return Number.isFinite(value) ? value : fallback;
+  };
+  const space1 = px("--th-space-1", 4);
+  const space2 = px("--th-space-2", 8);
+  const spaceHalf = px("--th-space-0-5", 2);
+  return {
+    radius: px("--th-radius", 12),
+    padX: space2 + spaceHalf,
+    padY: space2,
+    glyphGap: space1 + spaceHalf,
+  };
+}
 
 // Run and node ids are free-form (observed with parens and slashes) and a
 // url(#…) reference built from them computes to clip-path: none in real
@@ -99,25 +130,26 @@ interface CardGeometry {
  * Label-tier title rows hanging from the glyph lane, and the Micro state word
  * on a fixed bottom row, so a status change never moves anything.
  */
-function cardGeometry(fontPx: number): CardGeometry {
+function cardGeometry(fontPx: number, spacing: Pick<CardSpacing, "padX" | "padY" | "glyphGap">): CardGeometry {
+  const { padX, padY, glyphGap } = spacing;
   // Round, not ceil: at the default size the ratio is 1 +/- float noise.
   const width = Math.round(NODE_WIDTH * fontPx / DEFAULT_TYPE_PX);
   const row = Math.ceil(fontPx * 1.4);
   const stateRow = Math.ceil(fontPx * (MICRO_TIER / LABEL_TIER) * 1.4);
-  const height = CARD_PAD_Y * 2 + row * 2 + stateRow;
-  const firstBaseline = CARD_PAD_Y + Math.round(row * 0.75);
-  const stateBaseline = CARD_PAD_Y + row * 2 + Math.round(stateRow * 0.75);
+  const height = padY * 2 + row * 2 + stateRow;
+  const firstBaseline = padY + Math.round(row * 0.75);
+  const stateBaseline = padY + row * 2 + Math.round(stateRow * 0.75);
   const r = round(fontPx * 0.4);
-  const labelX = Math.ceil(CARD_PAD_X + r * 2 + GLYPH_GAP);
+  const labelX = Math.ceil(padX + r * 2 + glyphGap);
   return {
     width,
     height,
     row,
     firstBaseline,
     stateBaseline,
-    glyph: { cx: round(CARD_PAD_X + r), cy: round(firstBaseline - fontPx * 0.34), r },
+    glyph: { cx: round(padX + r), cy: round(firstBaseline - fontPx * 0.34), r },
     labelX,
-    labelWidth: width - labelX - CARD_PAD_X,
+    labelWidth: width - labelX - padX,
   };
 }
 
@@ -327,6 +359,9 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
   const firstPaintDone = useRef(false);
   const [type, setType] = useState<GraphType>({ fontPx: DEFAULT_TYPE_PX, labels: new Map() });
   const labelKey = JSON.stringify(run.nodes.map(node => [node.id, node.label ?? node.prompt]));
+  // The card metrics resolve once per render, so a token change lands on the
+  // next paint together with the re-measured labels.
+  const { radius, padX, padY, glyphGap } = resolveCardSpacing();
   useLayoutEffect(() => {
     const probe = measureRef.current;
     if (!probe) return;
@@ -334,7 +369,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
     const measure = (): void => {
       if (disposed) return;
       const fontPx = Number.parseFloat(getComputedStyle(probe).fontSize) || fontSize * LABEL_TIER;
-      const { labelWidth } = cardGeometry(fontPx);
+      const { labelWidth } = cardGeometry(fontPx, { padX, padY, glyphGap });
       const textWidth = (text: string): number => {
         probe.textContent = text;
         // SVG measurement includes actual fallback glyphs and letter spacing.
@@ -354,7 +389,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
     measure();
     void document.fonts?.ready.then(measure);
     return () => { disposed = true; };
-  }, [font, fontSize, lang, labelKey, active]);
+  }, [font, fontSize, lang, labelKey, active, padX, padY, glyphGap]);
   useLayoutEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
@@ -384,12 +419,17 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
     if (!graph) return;
     // Edge fades appear only on the sides that actually hide content; the
     // attribute is written directly so scrolling never re-renders the graph.
+    // Vertical overflow hides instead of scrolling, so only the bottom edge
+    // can clip (dense waves): dissolve that row instead of slicing it.
     const update = (): void => {
       const hiddenStart = graph.scrollLeft > 1;
       const hiddenEnd = graph.scrollWidth - graph.clientWidth - graph.scrollLeft > 1;
       const fade = hiddenStart && hiddenEnd ? "both" : hiddenStart ? "start" : hiddenEnd ? "end" : null;
       if (fade === null) graph.removeAttribute("data-fade");
       else if (graph.getAttribute("data-fade") !== fade) graph.setAttribute("data-fade", fade);
+      const clippedBottom = graph.scrollHeight - graph.clientHeight > 1;
+      if (clippedBottom) graph.setAttribute("data-fade-bottom", "true");
+      else graph.removeAttribute("data-fade-bottom");
     };
     update();
     graph.addEventListener("scroll", update, { passive: true });
@@ -402,7 +442,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
       observer?.disconnect();
     };
   }, []);
-  const geometry = cardGeometry(type.fontPx);
+  const geometry = cardGeometry(type.fontPx, { padX, padY, glyphGap });
   const { width: nodeWidth, height: nodeHeight, row, glyph } = geometry;
   const layers = dagLayers(run);
   const positions = new Map<
@@ -577,11 +617,11 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
                     y={-HALO_SPREAD}
                     width={nodeWidth + HALO_SPREAD * 2}
                     height={nodeHeight + HALO_SPREAD * 2}
-                    rx={CARD_RADIUS + HALO_SPREAD}
+                    rx={radius + HALO_SPREAD}
                     filter={`url(#${haloFilterId(clipIdPrefix, runIndex)})`}
                   />
                 )}
-                <rect className="th-activity-gnode-card" width={nodeWidth} height={nodeHeight} rx={CARD_RADIUS} />
+                <rect className="th-activity-gnode-card" width={nodeWidth} height={nodeHeight} rx={radius} />
                 {lines.map((line, lineIndex) => (
                   <text
                     key={lineIndex}
@@ -670,9 +710,10 @@ export function DagSection({ dags, t, view, onViewChange, clipIdPrefix, nodeHist
       {!inlineToolbar && toolbar}
       {dags.map((run, runIndex) => {
         const total = run.counts.total;
-        // The run document counts succeeded, failed and skipped nodes separately.
-        // All three are finished work; cancellation is not completed work.
-        const completed = run.counts.completed + run.counts.failed + run.counts.skipped;
+        // The contracted numerator is the run document's completed count:
+        // failed, skipped and cancelled nodes are finished work, never
+        // completed work, so neither the bar nor the header may add them.
+        const completed = run.counts.completed;
         const progress = total > 0 ? Math.min(1, Math.max(0, completed / total)) : 0;
         return (
           <div key={run.runId} className="th-activity-dag">
