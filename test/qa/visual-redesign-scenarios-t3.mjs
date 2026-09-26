@@ -389,7 +389,66 @@ export function probeSidebarMotion() {
       counterpart: active?.matches('.th-sidebar-rail .th-sidebar-toggle') ? 'rail'
         : active?.matches('.th-sidebar-nav .th-sidebar-toggle') ? 'toolbar' : null,
     },
+    reversingEvent: window.__thT3SidebarReversal?.event ?? null,
   };
+}
+
+/** Arm before the native reopening Enter. The transitionstart handler holds
+ * the actual opacity transition at its midpoint until the reversing Enter
+ * reaches the document capture listener; host round trips cannot settle it. */
+export function armSidebarReversal() {
+  const sidebar = document.querySelector('.th-sidebar');
+  if (!sidebar) throw new Error('sidebar missing before keyboard reversal');
+  let animation = null;
+  let resolveReady;
+  let rejectReady;
+  const ready = new Promise((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+  ready.catch(() => {});
+  const record = { event: null, ready };
+  window.__thT3SidebarReversal = record;
+  const onKeydown = event => {
+    if (event.key !== 'Enter' || !event.target.matches('.th-sidebar-nav .th-sidebar-toggle')) return;
+    const timing = animation?.effect?.getComputedTiming();
+    record.event = {
+      key: event.key, trusted: event.isTrusted,
+      started: !!animation, playState: animation?.playState ?? null,
+      currentTime: animation?.currentTime ?? null,
+      duration: timing?.duration ?? null, progress: timing?.progress ?? null,
+      collapsedBefore: sidebar.classList.contains('th-sidebar--collapsed'),
+    };
+    document.removeEventListener('keydown', onKeydown, true);
+    if (animation?.playState === 'paused') animation.play();
+  };
+  const onStart = event => {
+    if (event.target !== sidebar.querySelector('.th-sidebar-inner') || event.propertyName !== 'opacity') return;
+    const captured = event.target.getAnimations().find(item =>
+      item instanceof CSSTransition && item.transitionProperty === 'opacity');
+    const duration = captured?.effect?.getComputedTiming().duration;
+    if (!captured || !Number.isFinite(duration) || duration <= 0) {
+      rejectReady(new Error('sidebar opacity transition missing at start'));
+    } else {
+      animation = captured;
+      animation.pause();
+      animation.currentTime = duration / 2;
+      document.addEventListener('keydown', onKeydown, true);
+      resolveReady(true);
+    }
+    sidebar.removeEventListener('transitionstart', onStart, true);
+  };
+  sidebar.addEventListener('transitionstart', onStart, true);
+  return true;
+}
+
+export function sidebarReversalVerdict(event) {
+  return event?.key === 'Enter' && event.trusted === true && event.started === true
+    && event.collapsedBefore === false && event.playState === 'paused'
+    && Number.isFinite(event.duration) && event.duration > 0
+    && Number.isFinite(event.currentTime) && event.currentTime > 0 && event.currentTime < event.duration
+    && Number.isFinite(event.progress) && event.progress > 0 && event.progress < 1
+    ? [] : ['sidebar reversing Enter did not interrupt an intermediate paused opacity transition'];
 }
 
 export function sidebarFocusVerdict(snapshot, paneIdentity, collapsed) {
@@ -1063,14 +1122,24 @@ export async function runSidebarSelection(ctx) {
         const states = [];
         await env.page.locator('.th-sidebar-nav .th-sidebar-toggle').focus();
         for (const [index, collapsed] of [true, false, true, false].entries()) {
+          if (index === 1 && !reduced) await env.page.evaluate(armSidebarReversal);
           await env.page.keyboard.press('Enter');
           await env.page.waitForFunction(want => document.querySelector('.th-sidebar')
             ?.classList.contains('th-sidebar--collapsed') === want, collapsed, { timeout: 4000 });
           if (index === 1 && !reduced) {
-            const inFlight = await env.page.waitForFunction(() => document.querySelector('.th-sidebar-inner')
-              ?.getAnimations().some(animation => animation.playState === 'running'), undefined, { timeout: 700 })
-              .then(() => true).catch(() => false);
-            if (!inFlight) failures.push('sidebar reopen had no in-flight motion to reverse');
+            await env.page.evaluate(async () => {
+              let deadline;
+              try {
+                await Promise.race([
+                  window.__thT3SidebarReversal.ready,
+                  new Promise((_, reject) => {
+                    deadline = setTimeout(() => reject(new Error('sidebar reopen transition did not start')), 2500);
+                  }),
+                ]);
+              } finally {
+                clearTimeout(deadline);
+              }
+            });
           } else {
             await settleSidebarToggle(env.page);
           }
@@ -1095,6 +1164,7 @@ export async function runSidebarSelection(ctx) {
           if (reduced && snapshot.inventory.length) {
             failures.push(`sidebar under reduced motion retains ${snapshot.inventory.length} Animation objects`);
           }
+          if (index === 2 && !reduced) failures.push(...sidebarReversalVerdict(snapshot.reversingEvent));
         }
         const events = await env.page.evaluate(() => window.__thT3SidebarTransitions);
         for (const bad of motionViolations(events)) {

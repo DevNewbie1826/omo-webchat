@@ -14,9 +14,9 @@ import { tmpdir } from 'node:os';
 import { buildScenarioRegistry } from './visual-redesign.mjs';
 import { pageKit, probeStateColors } from './visual-redesign-probes.mjs';
 import {
-  ENTRANCE_RECORDER_SOURCE, emptyStateVerdict, entranceVerdict, firstFamily, probeEmptyState,
+  ENTRANCE_RECORDER_SOURCE, armSidebarReversal, emptyStateVerdict, entranceVerdict, firstFamily, probeEmptyState,
   probeSelectionFacts, probeShellStateColors, probeSidebarMotion, probeSidebarStatic, scenarios, selectionVerdict, shellLiveFrame,
-  sidebarFocusVerdict, sidebarStaticVerdict, runStateColorsShell,
+  sidebarFocusVerdict, sidebarReversalVerdict, sidebarStaticVerdict, runStateColorsShell,
 } from './visual-redesign-scenarios-t3.mjs';
 
 // ---------------------------------------------------------------------------
@@ -607,19 +607,22 @@ async function runScript(view, statements) {
 }
 
 /** Subscribe before the mutation, then require the actual start event. */
-async function awaitViewStarts(view, eventType, selectors, trigger) {
+async function awaitViewStarts(view, eventType, selectors, trigger, action = null) {
   return view.evaluate(`(() => new Promise((resolve, reject) => {
     const pending = new Set(${JSON.stringify(selectors)});
     const finished = [];
+    const action = ${JSON.stringify(action)};
     window.__thT3Finished = null;
     const timer = setTimeout(() => {
       document.removeEventListener(${JSON.stringify(eventType)}, onStart, true);
       reject(new Error('missing ${eventType}: ' + [...pending].join(', ')));
     }, 2500);
     function onStart(event) {
+      const target = event.target;
+      let capturedAnimation;
       for (const selector of pending) {
-        if (!event.target.matches(selector)) continue;
-        const animation = event.target.getAnimations().find(item =>
+        if (!target.matches(selector)) continue;
+        const animation = target.getAnimations().find(item =>
           ${JSON.stringify(eventType)} === 'animationstart'
             ? item instanceof CSSAnimation && item.animationName === event.animationName
             : item instanceof CSSTransition && item.transitionProperty === event.propertyName);
@@ -630,6 +633,9 @@ async function awaitViewStarts(view, eventType, selectors, trigger) {
           return;
         }
         finished.push(animation.finished);
+        capturedAnimation = animation;
+        if (action === 'finish') animation.finish();
+        if (action === 'cancel') animation.cancel();
         pending.delete(selector);
       }
       if (pending.size === 0) {
@@ -637,7 +643,18 @@ async function awaitViewStarts(view, eventType, selectors, trigger) {
         document.removeEventListener(${JSON.stringify(eventType)}, onStart, true);
         window.__thT3Finished = Promise.all(finished);
         window.__thT3Finished.catch(() => {});
-        resolve(true);
+        if (!action) {
+          resolve(true);
+          return;
+        }
+        const deadline = setTimeout(() => reject(new Error('animation completion after start deadline')), 2500);
+        Promise.allSettled(finished).then(results => {
+          clearTimeout(deadline);
+          resolve({
+            status: results.every(result => result.status === 'fulfilled') ? 'fulfilled' : 'rejected',
+            absent: !target.getAnimations().includes(capturedAnimation),
+          });
+        }, reject);
       }
     }
     document.addEventListener(${JSON.stringify(eventType)}, onStart, true);
@@ -761,6 +778,34 @@ document.querySelector('.th-sidebar-nav').style.visibility = 'hidden';`);
       const hidden = await runSerialized(view, probeSidebarMotion);
       expect(sidebarFocusVerdict(hidden, 's10-active', false).join(' ')).toContain('sidebar focus');
     });
+  });
+});
+
+describe('serialized S10 keyboard reversal probe', () => {
+  test('a fully settled ordinary collapse cannot satisfy the interruption verdict', async () => {
+    await withView(page(`
+<aside class="th-sidebar th-sidebar--collapsed" style="width:44px">
+  <div class="th-sidebar-inner" style="opacity:0"></div>
+  <div class="th-sidebar-nav"><button class="th-sidebar-toggle">Collapse</button></div>
+</aside>`), async view => {
+      await runScript(view, `document.querySelector('.th-sidebar-nav button').dispatchEvent(
+  new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));`);
+      const settled = await runSerialized(view, probeSidebarMotion);
+      expect(sidebarReversalVerdict(settled.reversingEvent)).toContain(
+        'sidebar reversing Enter did not interrupt an intermediate paused opacity transition');
+      await runScript(view, `window.__thT3SidebarReversal = { event: {
+  key: 'Enter', trusted: true, started: true, collapsedBefore: false,
+  playState: 'finished', currentTime: 200, duration: 200, progress: 1,
+} };`);
+      const completed = await runSerialized(view, probeSidebarMotion);
+      expect(sidebarReversalVerdict(completed.reversingEvent)).not.toEqual([]);
+      expect(sidebarReversalVerdict({
+        ...completed.reversingEvent, playState: 'paused', currentTime: 100, progress: 0.5,
+      })).toEqual([]);
+    });
+  });
+  test('the in-page arming function serializes without module dependencies', () => {
+    expect(() => new Function(`return (${armSidebarReversal.toString()});`)).not.toThrow();
   });
 });
 
@@ -970,12 +1015,11 @@ host.appendChild(Object.assign(document.createElement('div'), { className: 'ente
   });
   test('retains completion when the started animation ends before the host awaits it', async () => {
     await withView(ENTRANCE_HTML, async view => {
-      await awaitViewStarts(view, 'animationstart', ['#target'],
-        `document.getElementById('host').innerHTML = '<div id="target" class="enter">hello</div>';`);
-      // Finish the real animation before consuming the retained signal. Its
-      // backwards fill no longer requires it to appear in getAnimations().
-      await view.evaluate("document.getElementById('target').getAnimations()[0].finish()");
-      expect(await view.evaluate("document.getElementById('target').getAnimations().length")).toBe(0);
+      const beforeHost = await awaitViewStarts(view, 'animationstart', ['#target'],
+        `document.getElementById('host').innerHTML = '<div id="target" class="enter">hello</div>';`, 'finish');
+      // The start handler finishes its captured Animation and observes its
+      // retained completion before acknowledging this host evaluation.
+      expect(beforeHost).toEqual({ status: 'fulfilled', absent: true });
       expect(await awaitViewFinished(view)).toBe(true);
     });
   });
@@ -987,9 +1031,9 @@ document.getElementById('host').innerHTML = '<div id="target">hello</div>';`)).r
   });
   test('a cancelled animation rejects its retained completion', async () => {
     await withView(ENTRANCE_HTML, async view => {
-      await awaitViewStarts(view, 'animationstart', ['#target'],
-        `document.getElementById('host').innerHTML = '<div id="target" class="enter">hello</div>';`);
-      await view.evaluate("document.getElementById('target').getAnimations()[0].cancel()");
+      const beforeHost = await awaitViewStarts(view, 'animationstart', ['#target'],
+        `document.getElementById('host').innerHTML = '<div id="target" class="enter">hello</div>';`, 'cancel');
+      expect(beforeHost).toEqual({ status: 'rejected', absent: true });
       await expect(awaitViewFinished(view)).rejects.toThrow();
     });
   });
