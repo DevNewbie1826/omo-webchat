@@ -9,6 +9,8 @@
  * chat-tasks response shape (parent_session_id/truncated_tasks/tasks) — the
  * seeded shelf digest rows when shelves is on, else the absent-store empty
  * roster; unknown chats 404 like the real handler.
+ * DAG catalog/document: setDagRuns(id, completeRuns) publishes the full
+ * runs behind /api/workspaces/ws/chats/{id}/dag-runs and /{runId}.
  * holdHistory(id), releaseHistory(token, page), disconnect(id), traffic and subscription events support canonical QA.
  * Deferred creation: seed { deferredCreate: true }; wait("create"), resolveCreate(index).
  * Per-session seeds: runs: { [id]: { entries, queue, stats, running, model, thinkingLevel } }.
@@ -173,6 +175,22 @@ export function startFixture(options = {}) {
         return Response.json(shelves ? activity.history.task : { parent_session_id: "qa-durable", truncated_tasks: false, tasks: [] },
           { headers: { "Cache-Control": "no-store" } });
       }
+      const dagRuns = /^\/api\/workspaces\/ws\/chats\/([^/]+)\/dag-runs(?:\/([^/]+))?$/.exec(path);
+      if (dagRuns && req.method === "GET") {
+        const id = decodeURIComponent(dagRuns[1]);
+        if (id !== "union" && !workspace.chats.some(chat => chat.id === id)) return Response.json({ error: "not found" }, { status: 404 });
+        const completeRuns = runFor(id).dagRuns ?? [];
+        if (dagRuns[2]) {
+          const selected = completeRuns.find(run => run.run_id === decodeURIComponent(dagRuns[2]));
+          return selected
+            ? Response.json({ complete: true, content_token: `qa-${selected.updated_at}`, run: selected })
+            : Response.json({ error: "not found" }, { status: 404 });
+        }
+        return Response.json({ runs: completeRuns.map(run => ({
+          run_id: run.run_id, run_key: run.run_key, name: run.name,
+          status: run.status, total: run.counts.total, content_token: `qa-${run.updated_at}`,
+        })), next_cursor: null });
+      }
       if (path === "/api/fs/list") return Response.json({ path: "/fixture", entries: [...files].map(([path, content]) => ({
         name: path.slice('/fixture/'.length), isDir: false, size: Buffer.byteLength(content), modTime: '2026-09-06T00:00:00Z',
       })) });
@@ -307,6 +325,7 @@ export function startFixture(options = {}) {
   });
   return {
     url: `http://127.0.0.1:${server.port}`, requests, frames, unexpected, opens, creates, traffic, reset, deliver,
+    setDagRuns(id, completeRuns) { runFor(id).dagRuns = structuredClone(completeRuns); },
     fileContent(path) { return files.get(path); },
     holdReplay(id, hold = true) { if (hold) heldReplaySessions.add(id); else heldReplaySessions.delete(id); },
     releaseReplay(token, { stateFirst = true } = {}) {

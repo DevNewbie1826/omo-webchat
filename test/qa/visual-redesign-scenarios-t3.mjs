@@ -1562,7 +1562,7 @@ export async function runShellCoarseTargets(ctx) {
 
 /** Plugin export merged over the built-in registry by visual-redesign.mjs. */
 export const scenarios = Object.freeze({
-  S5: runStateColorsShell,
+  'S5:shell': runStateColorsShell,
   S10: runSidebarSelection,
   S11: runEmptyState,
   S21: runShellCoarseTargets,

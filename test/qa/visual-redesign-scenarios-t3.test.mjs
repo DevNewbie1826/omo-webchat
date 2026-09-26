@@ -54,14 +54,15 @@ const REDESIGNED_SIDEBAR = {
 // ---------------------------------------------------------------------------
 
 describe('T3 plugin contract with the shared harness', () => {
-  test('registers S5/S10/S11 and extends the S21 binary stub with G40', () => {
-    expect(Object.keys(scenarios).sort()).toEqual(['S10', 'S11', 'S21', 'S5']);
+  test('registers scoped S5 alongside the built-in, de-stubs S10/S11 and extends the S21 stub with G40', () => {
+    expect(Object.keys(scenarios).sort()).toEqual(['S10', 'S11', 'S21', 'S5:shell']);
     for (const probe of Object.values(scenarios)) expect(typeof probe).toBe('function');
     const registry = buildScenarioRegistry([{ file: 'visual-redesign-scenarios-t3.mjs', scenarios }]);
-    const s5 = registry.find(entry => entry.id === 'S5');
+    const s5 = registry.find(entry => entry.id === 'S5:shell');
     expect(s5.origin).toBe('plugin:visual-redesign-scenarios-t3.mjs');
     expect(s5.stub).toBe(false);
-    expect(s5.run).toBe(scenarios.S5);
+    expect(s5.run).toBe(scenarios['S5:shell']);
+    expect(registry.find(entry => entry.id === 'S5').origin).toBe('builtin');
     for (const id of ['S10', 'S11', 'S21']) {
       const entry = registry.find(candidate => candidate.id === id);
       expect(entry.stub).toBe(false);

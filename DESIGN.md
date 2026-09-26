@@ -427,9 +427,12 @@ Choose a tested foreground/background token pair instead.
   type setting. Actual SVG glyph widths determine two-line title wrapping;
   separate line clips protect the status lane, and the full prompt stays in
   the `<title>`. Nodes expose their state as visible text plus a
-  non-colour glyph. Edges are directional (arrowhead markers). Edges and
-  arrowheads from a completed source are green; every other edge stays gray.
-  Green means dependency satisfaction, never destination success. Edge flow
+  non-colour glyph. Edges are directional (arrowhead markers). An edge
+  leaving a completed source is fulfilled: the edge and its arrowhead lift
+  from the default hairline to a brightened neutral (text-dim at 40%), never
+  a state hue — dependency satisfaction is not destination success. Every
+  other edge stays at the default neutral hairline; no DAG stroke ever takes
+  a status colour. Edge flow
   animates only from a completed source to a running destination, only in
   the active Graph view while a run is running; flow stops under reduced
   motion, in hidden or closed panels, in List mode, and once the run reaches

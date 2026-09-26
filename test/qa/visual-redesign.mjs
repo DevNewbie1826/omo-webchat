@@ -23,10 +23,9 @@
  * ---------------------------------------------------------------------------
  * At startup this CLI globs `test/qa/visual-redesign-scenarios-*.mjs` (sorted
  * by filename, later files win), imports each, and merges its exported
- * `scenarios` object over the built-in registry: keys are scenario ids
- * ("S7", ...; unknown/extra ids are allowed), values are async probe
- * functions. A plugin entry overrides the built-in stub for that id (and may
- * override a built-in implementation; the recorded origin shows which).
+ * `scenarios` object into the built-in registry: bare ids may fill stubs
+ * ("S7") or register extra scenarios; scoped ids ("S5:shell") add a
+ * variant without replacing the built-in app-wide driver.
  *
  * Plugin module contract:
  *   export const scenarios = {
@@ -42,6 +41,7 @@
  * ctx passed to every probe function (built-in drivers receive the same
  * object plus the browser as their first argument):
  *   scenario: id, theme: "dark"|"light", viewport: {width, height, label},
+ *   browser: the shared browser (S15's built-in driver keeps page ownership),
  *   evidenceDir, shotsDir, baseline: per-combo counts from --baseline-file or
  *     <evidence>/baseline-counts.json (null when absent),
  *   setupDesign(options?) -> {page, context, fixture, errors, close()} - the
@@ -343,6 +343,8 @@ async function setupOverlays(browser, options = {}) {
  * the chat socket (activity shelf) and the all_live push socket (tree). */
 async function deliverRunningDag(env, notes) {
   const frame = summaryFrame('complete2');
+  const dag = frame.snapshots.find(snapshot => snapshot.name === 'omo.dag.updated').data;
+  env.fixture.base.setDagRuns(CHAT, dag.runs);
   await env.fixture.deliver(CHAT, frame);
   const peers = env.fixture.overview(frame);
   notes.push(`overview frame reached ${peers.length} all_live subscriber(s)`);
@@ -350,6 +352,7 @@ async function deliverRunningDag(env, notes) {
     await env.page.waitForSelector('[data-activity-tab="dag"]', { timeout: 4000 });
     await env.page.click('[data-activity-tab="dag"]');
     await env.page.waitForSelector('.th-activity-gnode--running', { timeout: 4000 });
+    notes.push('DAG graph reached');
   } catch (error) {
     notes.push(`DAG graph not reached: ${error instanceof Error ? error.message.split('\n')[0] : error}`);
   }
@@ -400,8 +403,13 @@ async function driveStateColors(browser, ctx) {
   await deliverRunningDag(env, notes);
   await deliverApproval(env, notes);
   try {
+    if (await env.page.locator('.th-modal-overlay').isVisible()) {
+      await env.page.keyboard.press('Escape');
+      await env.page.waitForSelector('.th-modal-overlay', { state: 'detached', timeout: 4000 });
+    }
     await env.page.click('.th-model-picker-btn');
     await env.page.waitForSelector('.th-model-picker-popover', { timeout: 4000 });
+    notes.push('model picker reached');
   } catch (error) {
     notes.push(`model picker not reached: ${error instanceof Error ? error.message.split('\n')[0] : error}`);
   }
@@ -788,7 +796,7 @@ export function requiredInteractionVerdict(records) {
  * state, not only after closing it), and every open/close/interaction is
  * driven through the surface's real entry point (hover-revealed tree
  * actions, mobile drawer for sidebar-dwelling triggers). */
-async function driveMotion(browser, ctx) {
+async function driveMotion(browser, ctx, afterInteractions) {
   const env = await setupOverlays(browser, ctx);
   const page = env.page;
   const failures = [];
@@ -876,6 +884,14 @@ async function driveMotion(browser, ctx) {
   result.measurements.interactions = interactions;
   const shot = await screenshot(page, ctx, '');
   await closeMobileDrawer(page);
+  let extension = null;
+  if (afterInteractions) {
+    try {
+      extension = await afterInteractions(page);
+    } catch (error) {
+      failures.push(`S15 same-page capture failed: ${errLine(error)}`);
+    }
+  }
   // Merge, never overwrite: probeMotion's own failures-only spread used to
   // drop the interaction failures accumulated above (the round-2 false pass
   // where a timed-out file-palette interaction left the cell green).
@@ -883,8 +899,9 @@ async function driveMotion(browser, ctx) {
     ...result,
     pass: result.pass && failures.length === 0,
     failures: [...result.failures, ...failures],
-    measurements: withPageErrors(env, result.measurements),
-    screenshots: [shot], teardown: await env.close(),
+    measurements: withPageErrors(env, { ...result.measurements, ...extension?.measurements }),
+    screenshots: [shot, ...(extension?.screenshots ?? [])],
+    teardown: await env.close(),
   };
 }
 
@@ -1351,10 +1368,13 @@ const DRIVERS = {
 const PLUGIN_GLOB = 'visual-redesign-scenarios-*.mjs';
 
 /** Import every plugin module in `dir` (sorted; later files override earlier
- * ones and everything overrides built-in stubs). Returns one entry per file
+ * ones and built-in stubs). Returns one entry per file
  * that exports a `scenarios` object. Exported for unit tests. */
 export async function loadScenarioPlugins(dir) {
-  const files = Array.from(new Bun.Glob(PLUGIN_GLOB).scanSync({ cwd: dir })).sort();
+  // Colocated unit-test modules (`*.test.mjs`) match the glob too; importing
+  // them registers bun:test suites, so they are never plugins.
+  const files = Array.from(new Bun.Glob(PLUGIN_GLOB).scanSync({ cwd: dir }))
+    .filter(file => !file.endsWith('.test.mjs')).sort();
   const plugins = [];
   for (const file of files) {
     try {
@@ -1371,9 +1391,9 @@ export async function loadScenarioPlugins(dir) {
   return plugins;
 }
 
-/** Merge plugin probes over the built-in registry. Returns an ordered array
- * of { id, title, run, origin, stub, reason }. Built-in stubs and unknown ids
- * both get run=null. Exported for unit tests. */
+/** Merge plugin probes into the built-in registry. Returns an ordered array
+ * of { id, title, run, origin, stub, reason }. Built-in stubs start with
+ * run=null. Exported for unit tests. */
 export function buildScenarioRegistry(plugins) {
   const registry = new Map();
   for (const [id, meta] of Object.entries(SCENARIOS)) {
@@ -1386,15 +1406,35 @@ export function buildScenarioRegistry(plugins) {
   for (const plugin of plugins) {
     for (const [id, run] of Object.entries(plugin.scenarios ?? {})) {
       if (typeof run !== 'function') continue;
+      const scoped = id.includes(':');
+      const [canonical, scope] = id.split(':');
+      if (scoped && (!SCENARIOS[canonical] || !/^[a-z][a-z0-9-]*$/.test(scope ?? '') || id !== `${canonical}:${scope}`)) {
+        throw new Error(`invalid scoped scenario "${id}" in ${plugin.file} (want <canonical>:<scope>)`);
+      }
+      if (!scoped && DRIVERS[id]) {
+        throw new Error(`plugin ${plugin.file} cannot replace built-in scenario "${id}"; register "${id}:<scope>" instead`);
+      }
       const previous = registry.get(id);
       registry.set(id, {
         id,
-        title: previous?.title ?? `plugin scenario ${id}`,
+        title: scoped ? `${SCENARIOS[canonical].title} (${scope} scope)` : previous?.title ?? `plugin scenario ${id}`,
         run, origin: `plugin:${plugin.file}`, stub: false, reason: null,
       });
     }
   }
   return [...registry.values()];
+}
+
+/** A canonical CLI selection runs its app-wide driver and every registered
+ * scoped variant; an explicit scoped id runs only that variant. */
+export function selectScenarioIds(registry, requested = null) {
+  if (!requested) return registry.filter(entry => !entry.stub && entry.run).map(entry => entry.id);
+  const ids = registry.map(entry => entry.id);
+  for (const id of requested) {
+    if (!ids.includes(id)) throw new Error(`unknown scenario ${id} (known: ${ids.join(',')})`);
+  }
+  return [...new Set(requested.flatMap(id => id.includes(':')
+    ? [id] : ids.filter(candidate => candidate === id || candidate.startsWith(`${id}:`))))];
 }
 
 // ---------------------------------------------------------------------------
@@ -1438,14 +1478,8 @@ async function main() {
   try {
     const plugins = await loadScenarioPlugins(import.meta.dir);
     const registry = buildScenarioRegistry(plugins);
-    const registryIds = registry.map(entry => entry.id);
     const baselineMode = options.baseline;
-    let scenarioIds = options.scenarios;
-    if (baselineMode) scenarioIds = ['S4', 'S5'];
-    else if (!options.scenarios) scenarioIds = registry.filter(entry => !entry.stub && entry.run).map(entry => entry.id);
-    if (options.scenarios) {
-      for (const id of options.scenarios) if (!registryIds.includes(id)) throw new Error(`unknown scenario ${id} (known: ${registryIds.join(',')})`);
-    }
+    const scenarioIds = baselineMode ? ['S4', 'S5'] : selectScenarioIds(registry, options.scenarios);
     const baselineData = baselineMode ? null : await loadBaseline(options);
     const baselineCounts = {};
 
@@ -1463,7 +1497,7 @@ async function main() {
         for (const viewport of options.viewports) {
           const comboKey = `${theme}/${viewport.label}`;
           const ctx = {
-            scenario: id, theme, viewport, shotsDir,
+            scenario: id, theme, viewport, shotsDir, browser,
             evidenceDir: options.evidence,
             baseline: !baselineMode && baselineData?.counts?.[comboKey] ? baselineData.counts[comboKey] : null,
             setupDesign: (extra = {}) => setupDesign(browser, { theme, viewport: { width: viewport.width, height: viewport.height }, ...extra }),

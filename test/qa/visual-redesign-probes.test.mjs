@@ -7,7 +7,8 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildScenarioRegistry, loadScenarioPlugins, NEW_CHAT_DIALOG_SURFACE, openNewChatDialogNative, overlayCycle, requiredInteractionVerdict } from './visual-redesign.mjs';
+import { buildScenarioRegistry, loadScenarioPlugins, selectScenarioIds, NEW_CHAT_DIALOG_SURFACE, openNewChatDialogNative, overlayCycle, requiredInteractionVerdict } from './visual-redesign.mjs';
+import { probeShellStateColors } from './visual-redesign-scenarios-t3.mjs';
 import {
   CONTRAST_BODY_MIN, CONTRAST_FAINT_MIN, HIERARCHY_MIN_RATIO, OLD_PALETTE_HEXES, classifyBorderFacts,
   collectAnimations, colorEquals, compositeOver, contrastRatio, defaultMotionAllowed, describeElement,
@@ -65,6 +66,32 @@ describe('per-task scenario plugins (T2/T3/T4 extension contract)', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+  test('actual T3 and T4 discovery keeps app-wide drivers and selects scoped variants', async () => {
+    const plugins = await loadScenarioPlugins(import.meta.dir);
+    expect(plugins.map(plugin => plugin.file)).toEqual([
+      'visual-redesign-scenarios-t3.mjs', 'visual-redesign-scenarios-t4.mjs',
+    ]);
+    const registry = buildScenarioRegistry(plugins);
+    for (const id of ['S5', 'S8', 'S15']) {
+      expect(registry.find(entry => entry.id === id).origin).toBe('builtin');
+    }
+    expect(selectScenarioIds(registry, ['S5'])).toEqual(['S5', 'S5:shell']);
+    expect(selectScenarioIds(registry, ['S8', 'S15'])).toEqual(['S8', 'S8:shelf', 'S15', 'S15:shelf']);
+    expect(selectScenarioIds(registry, ['S5:shell'])).toEqual(['S5:shell']);
+    expect(selectScenarioIds(registry, ['S5', 'S5:shell'])).toEqual(['S5', 'S5:shell']);
+    expect(() => selectScenarioIds(registry, ['S5:missing'])).toThrow('unknown scenario S5:missing');
+    expect(registry.find(entry => entry.id === 'S5:shell').title).toMatch(/\(shell scope\)$/);
+    expect(registry.find(entry => entry.id === 'S8:shelf').title).toMatch(/\(shelf scope\)$/);
+    for (const id of ['S10', 'S11', 'S13', 'S14']) {
+      expect(registry.find(entry => entry.id === id).origin.startsWith('plugin:')).toBe(true);
+    }
+  });
+  test('a plugin cannot silently replace a built-in driver', () => {
+    expect(() => buildScenarioRegistry([{ file: 'rogue.mjs', scenarios: { S5: async () => ({ pass: true }) } }]))
+      .toThrow('plugin rogue.mjs cannot replace built-in scenario "S5"');
+    expect(() => buildScenarioRegistry([{ file: 'rogue.mjs', scenarios: { 'S5:': async () => ({ pass: true }) } }]))
+      .toThrow('invalid scoped scenario "S5:"');
   });
 });
 
@@ -651,7 +678,7 @@ describe('modalFocusRestoreDecision (G25 / S12 / S23)', () => {
 import { JSDOM } from '../../frontend/node_modules/jsdom/lib/api.js';
 
 /** Evaluate the real serialized probe inside a controlled jsdom document. */
-function serializedProbeInDom(probeFn, arg, { html = '<body></body>', tokens = {}, animations = null } = {}) {
+function serializedProbeInDom(probeFn, arg, { html = '<body></body>', tokens = {}, animations = null, prepare = null } = {}) {
   const dom = new JSDOM(html, { runScripts: 'dangerously', pretendToBeVisual: true, url: 'http://qa.local/' });
   const { window } = dom;
   window.Element.prototype.getClientRects = function () { return [{ width: 10, height: 10 }]; };
@@ -659,6 +686,7 @@ function serializedProbeInDom(probeFn, arg, { html = '<body></body>', tokens = {
     window.document.documentElement.style.setProperty(name, value);
   }
   if (animations) window.document.getAnimations = () => animations;
+  if (prepare) prepare(window);
   // The real driver wraps the kit + probe in new Function(...) so a top-level
   // `return` is legal; window.eval evaluates a Program, so wrap the identical
   // source in an IIFE - same code, same realm.
@@ -892,6 +920,112 @@ describe('lead fix: S5 painted-border and S15 background-position longhands', ()
   });
 });
 
+describe('serialized S5 SVG stroke coverage in production element order', () => {
+  const tokens = {
+    '--th-success': '#16a34a', '--th-warning': '#d97706',
+    '--th-error': '#dc2626', '--th-accent': '#8b7cf6',
+  };
+  const run = svg => serializedProbeInDom(probeStateColors, {}, {
+    html: `<body><div class="th-activity-graph"><svg xmlns="http://www.w3.org/2000/svg">${svg}</svg></div></body>`,
+    tokens,
+  });
+  const runningCard = stroke => `<g class="th-activity-gnode th-activity-gnode--running">
+    <rect class="th-activity-gnode-halo" stroke="none" />
+    <rect class="th-activity-gnode-card" style="stroke:${stroke};stroke-width:1px" />
+    <circle class="th-activity-gstatus th-activity-gstatus--running" style="stroke:#8b7cf6;stroke-width:2px" />
+  </g>`;
+
+  test('running card behind its normal halo fails for accent and warning outlines', () => {
+    for (const stroke of ['#8b7cf6', '#d97706']) {
+      const result = run(runningCard(stroke));
+      expect(result.pass).toBe(false);
+      expect(result.measurements.stateColorViolationCount).toBe(1);
+      expect(result.measurements.stateColorViolationSamples[0].colour).toBe(stroke);
+    }
+  });
+  test('fulfilled dependency path and path enclosure cannot become state coloured', () => {
+    for (const markup of [
+      '<path class="th-activity-gedge th-activity-gedge--fulfilled" style="stroke:#16a34a;stroke-width:1px" />',
+      '<path class="th-activity-enclosure" style="stroke:#dc2626;stroke-width:2px" />',
+    ]) expect(run(markup).pass).toBe(false);
+  });
+  test('every SVG shape kind is checked, but unpainted strokes are not', () => {
+    for (const shape of ['line', 'polyline', 'polygon', 'circle', 'ellipse', 'rect']) {
+      expect(run(`<${shape} style="stroke:#16a34a;stroke-width:1px" />`).pass).toBe(false);
+    }
+    expect(run('<path style="stroke:#16a34a;stroke-width:0" />').pass).toBe(true);
+    expect(run('<path style="stroke:#16a34a;stroke-width:2px;stroke-opacity:0" />').pass).toBe(true);
+  });
+  test('normal status glyph, halo, comet, glow and focus or alert outlines remain allowed', () => {
+    const svg = `${runningCard('rgba(255,255,255,0.06)')}
+      <g class="th-activity-gstatus th-activity-gstatus--error">
+        <path style="stroke:#dc2626;stroke-width:2px" />
+      </g>
+      <path class="th-activity-gedge-comet" style="stroke:#8b7cf6;stroke-width:2px" />
+      <path class="th-activity-gedge-glow" style="stroke:#8b7cf6;stroke-width:6px" />
+      <rect class="th-activity-gnode-halo" stroke="none" />`;
+    expect(run(svg).pass).toBe(true);
+    expect(serializedProbeInDom(probeStateColors, {}, {
+      html: '<body><span class="th-tool-glyph th-tool-glyph--ok"><svg xmlns="http://www.w3.org/2000/svg"><path style="stroke:#16a34a;stroke-width:2px" /></svg></span></body>',
+      tokens,
+    }).pass).toBe(true);
+    const alert = serializedProbeInDom(probeStateColors, {}, {
+      html: '<body><div class="th-alert" style="border:1px solid #dc2626"><svg xmlns="http://www.w3.org/2000/svg"><path style="stroke:#dc2626;stroke-width:2px" /></svg></div></body>',
+      tokens,
+    });
+    expect(alert.pass).toBe(true);
+    const focus = serializedProbeInDom(probeStateColors, {}, {
+      html: '<body><input class="th-input" style="border:1px solid #8b7cf6" /></body>',
+      tokens, prepare: window => window.document.querySelector('input').focus(),
+    });
+    expect(focus.pass).toBe(true);
+    expect(serializedProbeInDom(probeStateColors, {}, {
+      html: '<body><div class="th-alert" style="border:1px solid #8b7cf6"></div></body>', tokens,
+    }).pass).toBe(true);
+  });
+});
+
+test('normal S5 after both plugins still drives the app-wide DAG stroke census', async () => {
+  const registry = buildScenarioRegistry(await loadScenarioPlugins(import.meta.dir));
+  const [canonicalId, shellId] = selectScenarioIds(registry, ['S5']);
+  const canonical = registry.find(entry => entry.id === canonicalId);
+  const shell = registry.find(entry => entry.id === shellId);
+  expect(canonical.origin).toBe('builtin');
+  expect(canonical.run).toBe(buildScenarioRegistry([]).find(entry => entry.id === 'S5').run);
+  expect(shell.origin).toBe('plugin:visual-redesign-scenarios-t3.mjs');
+  expect(shell.run).toBe((await import('./visual-redesign-scenarios-t3.mjs')).scenarios['S5:shell']);
+
+  const tokens = {
+    '--th-success': '#16a34a', '--th-warning': '#d97706',
+    '--th-error': '#dc2626', '--th-accent': '#8b7cf6',
+  };
+  const check = (svg, shellMarkup = '') => {
+    const dom = { tokens, html: `<body><aside class="th-sidebar">${shellMarkup}</aside>
+      <div class="th-chat-pane"><div class="th-activity-shelf"><div class="th-activity-graph">
+        <svg xmlns="http://www.w3.org/2000/svg">${svg}</svg>
+      </div></div></div></body>` };
+    return [serializedProbeInDom(probeStateColors, {}, dom),
+      serializedProbeInDom(probeShellStateColors, {}, dom)];
+  };
+  for (const shape of [
+    '<path class="th-activity-gedge th-activity-gedge--fulfilled" style="stroke:#16a34a;stroke-width:2px" />',
+    '<rect class="th-activity-gnode-card" style="stroke:#8b7cf6;stroke-width:2px" />',
+  ]) {
+    const [appWide, scoped] = check(shape);
+    expect(appWide.pass).toBe(false);
+    expect(appWide.measurements.stateColorViolationCount).toBe(1);
+    expect(scoped.pass).toBe(true);
+  }
+  for (const shape of [
+    '<path class="th-activity-gedge th-activity-gedge--fulfilled" style="stroke:#c4c4cc;stroke-width:2px" />',
+    '<g class="th-activity-gstatus th-activity-gstatus--error"><path style="stroke:#dc2626;stroke-width:2px" /></g>',
+  ]) expect(check(shape)[0].pass).toBe(true);
+  const [appWide, scoped] = check('',
+    '<svg xmlns="http://www.w3.org/2000/svg"><rect style="stroke:#8b7cf6;stroke-width:2px" /></svg>');
+  expect(appWide.pass).toBe(false);
+  expect(scoped.pass).toBe(false);
+});
+
 describe('T3 serialized shell probes (S5 scope and S11 picker)', () => {
   const tokens = {
     '--th-success': '#34d399', '--th-warning': '#f5a623', '--th-error': '#f87171', '--th-accent': '#8b7cf6',
@@ -972,6 +1106,90 @@ describe('lead fix: camelCase and hyphen-stripped motion property names', () => 
     expect(normalizeMotionProperty('backgroundPositionX')).toBe('background-position');
     expect(motionViolations(['strokedashoffset', 'backgroundPositionY'])).toEqual([]);
     expect(motionViolations(['marginLeft'])).toEqual(['margin-left']);
+  });
+});
+
+describe('T4 S8 scope leaves the shared running-glyph census for T5', () => {
+  test('built-in S8 still censuses the transcript tool glyph', () => {
+    expect(runningGlyphSelectors()).toEqual([
+      '.th-tool-glyph--running',
+      '.th-tree-running-dot',
+      '.th-overview-card-running-dot',
+      '.th-activity-gnode--running',
+      '.th-activity-gstatus--running',
+    ]);
+  });
+
+  test('serialized T4 probe: dim DAG node fails, accent passes, transcript tool glyph is ignored', async () => {
+    const { JSDOM } = await import('../../frontend/node_modules/jsdom/lib/api.js');
+    const { probeT4RunningIndicators } = await import('./visual-redesign-scenarios-t4.mjs');
+    const accent = '#8b7cf6';
+    const dim = '#c4c4cc';
+    const html = ({ stroke, transcript }) => `<!doctype html><html><body>
+      ${transcript ? `<section class="th-chat-transcript"><span class="th-tool-glyph th-tool-glyph--running" style="color:${dim};background-color:#000000;border-top-color:#000000;fill:#000000"></span><svg><circle class="th-activity-gstatus th-activity-gstatus--running" style="stroke:${dim};color:${dim}"></circle></svg></section><span class="th-tree-running-dot" style="background-color:${dim}"></span>` : ''}
+      <div class="th-activity-shelf">
+        <div class="th-activity-dag-head">
+          <span class="th-activity-chip th-activity-chip--running" style="background-color:#3f3f46;color:#ededf0">Running</span>
+          <div class="th-activity-dag-progress" data-live="true"><span class="th-activity-dag-progress-fill" style="background-color:${stroke}"></span></div>
+        </div>
+        <div class="th-activity-graph"><svg><g class="th-activity-gnode th-activity-gnode--running" style="stroke:${stroke};color:${dim}"><circle class="th-activity-gstatus th-activity-gstatus--running" style="stroke:${stroke};color:${dim}"></circle></g></svg></div>
+        <ul class="th-activity-dagnodes"><li class="th-activity-dnode th-activity-dnode--running"><svg><circle class="th-activity-gstatus th-activity-gstatus--running" style="stroke:${stroke};color:${dim}"></circle></svg></li></ul>
+        <span class="th-activity-glyph th-activity-glyph--running" style="background-color:${stroke}"></span>
+      </div>
+    </body></html>`;
+    const run = (markup) => {
+      const dom = new JSDOM(markup);
+      const { window } = dom;
+      window.document.documentElement.style.setProperty('--th-accent', accent);
+      const proto = window.Element.prototype;
+      proto.getClientRects = function clientRects() {
+        const style = window.getComputedStyle(this);
+        if (style.display === 'none' || style.visibility === 'hidden') return [];
+        return [{ width: 8, height: 8, top: 0, left: 0, right: 8, bottom: 8 }];
+      };
+      proto.getAnimations = function animations() { return []; };
+      const source = `${pageKit()}\nreturn (${probeT4RunningIndicators.toString()})(${JSON.stringify({ phase: 'accent' })});`;
+      const saved = {
+        document: globalThis.document,
+        getComputedStyle: globalThis.getComputedStyle,
+        Element: globalThis.Element,
+      };
+      try {
+        globalThis.document = window.document;
+        globalThis.getComputedStyle = window.getComputedStyle.bind(window);
+        globalThis.Element = window.Element;
+        return new Function(source)();
+      } finally {
+        globalThis.document = saved.document;
+        globalThis.getComputedStyle = saved.getComputedStyle;
+        globalThis.Element = saved.Element;
+        if (saved.document === undefined) delete globalThis.document;
+        if (saved.getComputedStyle === undefined) delete globalThis.getComputedStyle;
+        if (saved.Element === undefined) delete globalThis.Element;
+      }
+    };
+
+    const dimNode = run(html({ stroke: dim, transcript: false }));
+    expect(dimNode.pass).toBe(false);
+    expect(dimNode.measurements.inScopeCount).toBeGreaterThan(0);
+    expect(dimNode.failures.every(failure => failure.includes('not accent-coloured'))).toBe(true);
+    expect(dimNode.failures.join('\n')).not.toContain('th-tool-glyph');
+
+    const accentNode = run(html({ stroke: accent, transcript: false }));
+    expect(accentNode.pass).toBe(true);
+    expect(accentNode.failures).toEqual([]);
+    expect(accentNode.measurements.glyphs.every(glyph => glyph.matchesAccent)).toBe(true);
+    expect(accentNode.measurements.glyphs.map(glyph => glyph.selector)).toContain('.th-activity-gnode--running');
+    expect(accentNode.measurements.glyphs.map(glyph => glyph.selector)).toContain('.th-activity-dag-progress[data-live="true"] .th-activity-dag-progress-fill');
+
+    const ignored = run(html({ stroke: accent, transcript: true }));
+    expect(ignored.pass).toBe(true);
+    expect(ignored.failures).toEqual([]);
+    expect(ignored.measurements.excludedSelectors).toContain('.th-tool-glyph');
+    expect(ignored.measurements.excludedSelectors).toContain('.th-chat-transcript');
+    expect(ignored.measurements.excludedCounts['.th-tool-glyph--running']).toBe(1);
+    expect(ignored.measurements.excludedCounts['.th-chat-transcript']).toBeGreaterThan(0);
+    expect(ignored.measurements.glyphs.some(glyph => String(glyph.selector).includes('tool-glyph'))).toBe(false);
   });
 });
 

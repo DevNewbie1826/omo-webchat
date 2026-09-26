@@ -244,6 +244,29 @@ describe("ActivityShelf tabs", () => {
     expect(selectedTab(harness.container)).toBe("dag");
   });
 
+  it("slides one decorative thumb to the selected tab, open or closed", () => {
+    renderShelf(harness, activityState({ todo: todoPhases, tasks: [makeTask()], dags: [makeDag()] }));
+    const tablist = requireElement(harness.container.querySelector("[role='tablist']"), "tablist");
+    expect(tablist.querySelectorAll(".th-activity-tab-thumb").length).toBe(1);
+    const thumb = requireElement(tablist.querySelector(".th-activity-tab-thumb"), "segmented thumb");
+    expect(thumb.getAttribute("aria-hidden")).toBe("true");
+    expect(thumb.hasAttribute("data-activity-tab")).toBe(false);
+    // The collapsed strip already marks the selection.
+    expect(thumb.getAttribute("data-index")).toBe("0");
+
+    openPanel(harness.container);
+    selectTab(harness.container, "dag");
+    expect(thumb.getAttribute("data-index")).toBe("2");
+    pressKey(tabOf(harness.container, "dag"), "ArrowLeft");
+    expect(thumb.getAttribute("data-index")).toBe("1");
+
+    // A selected-tab click closes; the same thumb stays on the retained tab.
+    selectTab(harness.container, "agents");
+    expect(harness.container.querySelector(".th-activity-panel")).toBeNull();
+    expect(tablist.querySelector(".th-activity-tab-thumb")).toBe(thumb);
+    expect(thumb.getAttribute("data-index")).toBe("1");
+  });
+
   it("navigates tabs from the keyboard with a roving tabindex", () => {
     renderShelf(harness, activityState({ todo: todoPhases, tasks: [makeTask()], dags: [makeDag()] }));
     openPanel(harness.container);
