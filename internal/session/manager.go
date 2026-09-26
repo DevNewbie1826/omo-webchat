@@ -184,35 +184,36 @@ type retiredDurableRecord struct {
 type Manager struct {
 	cfg Config
 
-	chats              keyedFlight
-	mu                 sync.Mutex
-	byChat             map[string]*Session
-	byRoute            map[string]*Session
-	routeCleanup       map[string]chan struct{}
-	operationOwners    map[string]*sendOperationOwner
-	byDurableEpoch     map[omorpc.EpochToken]map[string]*durableEpochBinding
-	durableTombstones  []durableTombstoneRecord
-	durableToChat      map[string]string
-	retiredDurable     map[string]uint64
-	retiredDurableFIFO []retiredDurableRecord
-	identityGeneration uint64
-	invalidatedEpochs  map[omorpc.EpochToken]struct{}
-	epochIngestions    map[omorpc.EpochToken]int
-	retiringByChat     map[string]map[retiringRoute]struct{}
-	retiringFIFO       []retiringRecord
-	slotGeneration     map[string]uint64
-	slotGenerationFIFO []generationRecord
-	generation         uint64
-	closed             bool
-	done               chan struct{}
-	shutdownCtx        context.Context
-	shutdownCancel     context.CancelFunc
-	closeOnce          sync.Once
-	acquireWG          sync.WaitGroup
-	cleanupWG          sync.WaitGroup
-	eventWG            sync.WaitGroup
-	sessionReconciler  func(chatID string, stale *Session)
-	openCleanupExpired chan struct{}
+	durableChatResolver DurableChatResolver
+	chats               keyedFlight
+	mu                  sync.Mutex
+	byChat              map[string]*Session
+	byRoute             map[string]*Session
+	routeCleanup        map[string]chan struct{}
+	operationOwners     map[string]*sendOperationOwner
+	byDurableEpoch      map[omorpc.EpochToken]map[string]*durableEpochBinding
+	durableTombstones   []durableTombstoneRecord
+	durableToChat       map[string]string
+	retiredDurable      map[string]uint64
+	retiredDurableFIFO  []retiredDurableRecord
+	identityGeneration  uint64
+	invalidatedEpochs   map[omorpc.EpochToken]struct{}
+	epochIngestions     map[omorpc.EpochToken]int
+	retiringByChat      map[string]map[retiringRoute]struct{}
+	retiringFIFO        []retiringRecord
+	slotGeneration      map[string]uint64
+	slotGenerationFIFO  []generationRecord
+	generation          uint64
+	closed              bool
+	done                chan struct{}
+	shutdownCtx         context.Context
+	shutdownCancel      context.CancelFunc
+	closeOnce           sync.Once
+	acquireWG           sync.WaitGroup
+	cleanupWG           sync.WaitGroup
+	eventWG             sync.WaitGroup
+	sessionReconciler   func(chatID string, stale *Session)
+	openCleanupExpired  chan struct{}
 	// retiredRoutes records provider route handles retired by open
 	// recovery, scoped to the connection epoch that minted them.
 	// Publication of a retired handle is refused even after its
@@ -280,6 +281,7 @@ func NewManager(cfg Config) *Manager {
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	m := &Manager{cfg: cfg, nidGeneration: time.Now().UnixNano(), byChat: make(map[string]*Session), byRoute: make(map[string]*Session), routeCleanup: make(map[string]chan struct{}), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), retiredDurable: make(map[string]uint64), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[retiringRoute]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), retiredRoutes: make(map[retiringRoute]struct{}), noticeJournals: make(map[string]*noticeJournal), pendingOpen: make(map[string]chan struct{}), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), openSettled: make(chan struct{}), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
+	m.durableChatResolver, _ = cfg.Store.(DurableChatResolver)
 	if cfg.Client != nil {
 		m.eventWG.Add(1)
 		go m.eventLoop()
@@ -2035,7 +2037,12 @@ func (m *Manager) LiveSummaries() []Summary {
 	}
 	cached := make([]Summary, 0, len(m.overviewCache))
 	for id, entry := range m.overviewCache {
-		cached = append(cached, entry.summary(entry.chatID, id))
+		if m.byChat[entry.chatID] != nil {
+			continue
+		}
+		snapshot := entry.summary(entry.chatID, id)
+		snapshot.Title = entry.title
+		cached = append(cached, snapshot)
 	}
 	m.mu.Unlock()
 	out := make([]Summary, 0, len(all)+len(cached))

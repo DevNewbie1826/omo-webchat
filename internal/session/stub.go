@@ -103,6 +103,13 @@ type CursorStore interface {
 	UpdateName(ctx context.Context, chatID, name, source string) error
 }
 
+// DurableChatResolver optionally resolves a stored chat without opening it.
+// Manager calls it under Manager.mu; implementations may take store.mu but
+// must not call back into Manager or acquire Manager.mu while holding store.mu.
+type DurableChatResolver interface {
+	ChatForDurable(durableID string) (chatID, name string, ok bool)
+}
+
 type ChatRef interface {
 	ChatID() string
 	CWD() string

@@ -17,6 +17,7 @@ type overviewCacheEntry struct {
 	liveRevision  liveRevision
 	epoch         omorpc.EpochToken
 	chatID        string
+	title         string
 	snapshots     map[string]json.RawMessage
 	oversized     map[string]bool
 	task          *TaskDigest
@@ -281,20 +282,47 @@ func (m *Manager) ingestUnboundOverviewLocked(epoch omorpc.EpochToken, ev *omorp
 		return Summary{}, nil
 	}
 	chatID := durableID
-	if mapped := m.durableToChat[durableID]; mapped != "" {
+	title := ""
+	mapped := m.durableToChat[durableID]
+	if mapped != "" {
 		chatID = mapped
 	}
+	if m.durableChatResolver != nil {
+		if resolvedID, name, found := m.durableChatResolver.ChatForDurable(durableID); found && resolvedID != "" {
+			if mapped == "" {
+				chatID = resolvedID
+			}
+			if chatID == resolvedID {
+				title = name
+			}
+		}
+	}
+	if s := m.byChat[chatID]; s != nil && s.durableID != durableID {
+		// After a rebind, late events from the old durable retain their own
+		// provisional row rather than replacing the live chat's row.
+		chatID, title = durableID, ""
+	}
 	entry := m.overviewCache[durableID]
+	replaces := ""
 	if entry == nil || entry.epoch != epoch {
 		if entry != nil {
-			delete(m.overviewCurrent, entry.chatID)
+			if m.byChat[entry.chatID] == nil {
+				delete(m.overviewCurrent, entry.chatID)
+			}
+			if entry.chatID != chatID {
+				replaces = entry.chatID
+			}
 		}
 		entry = &overviewCacheEntry{epoch: epoch, chatID: chatID, snapshots: make(map[string]json.RawMessage), oversized: make(map[string]bool)}
 		m.overviewCache[durableID] = entry
 	} else if entry.chatID != chatID {
-		delete(m.overviewCurrent, entry.chatID)
+		if m.byChat[entry.chatID] == nil {
+			delete(m.overviewCurrent, entry.chatID)
+		}
+		replaces = entry.chatID
 		entry.chatID = chatID
 	}
+	entry.title = title
 	m.overviewClock++
 	entry.used = m.overviewClock
 	switch name {
@@ -317,6 +345,8 @@ func (m *Manager) ingestUnboundOverviewLocked(epoch omorpc.EpochToken, ev *omorp
 	refreshOverviewExactCounts(entry)
 	m.evictOverviewLRULocked()
 	snapshot := entry.summary(entry.chatID, durableID)
+	snapshot.Title = entry.title
+	snapshot.ReplacesSessionID = replaces
 	return snapshot, m.updateOverviewLocked(snapshot)
 }
 
@@ -361,9 +391,20 @@ func (m *Manager) evictOverviewLRULocked() {
 func (m *Manager) mergeOverviewIntoSessionLocked(s *Session) (Summary, []*overviewSubscriber) {
 	m.activateIdentityLocked(s)
 
+	removed := false
+	for durableID, cached := range m.overviewCache {
+		if durableID == s.durableID || cached.chatID != s.chatID {
+			continue
+		}
+		delete(m.overviewCache, durableID)
+		if current := m.overviewCurrent[s.chatID]; current.DurableSessionID == durableID {
+			delete(m.overviewCurrent, s.chatID)
+		}
+		removed = true
+	}
 	entry := m.overviewCache[s.durableID]
 	if entry == nil {
-		if s.activeLocked() {
+		if removed || s.activeLocked() {
 			snapshot := cloneSummary(s.summaryLocked())
 			return snapshot, m.updateOverviewLocked(snapshot)
 		}
