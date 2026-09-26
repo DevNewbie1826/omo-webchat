@@ -42,10 +42,10 @@ describe('T2 plugin registration', () => {
       expect(entry?.run, `${id} run`).not.toBe(scenarios[`${id}:chat`]);
     }
     for (const [id, title] of [
-      ['S4:chat', 'Tonal separation vs stacked borders (chat scope)'],
-      ['S5:chat', 'No state encoded by coloured border/stroke (chat scope)'],
+      ['S4:chat', 'Neutral tool-card hairlines and tonal separation (chat scope)'],
+      ['S5:chat', 'Neutral borders with matching state ink and tints (chat scope)'],
       ['S6:chat', 'Pane header label discipline (chat scope)'],
-      ['S8:chat', 'Running indicator accent + reduced motion (chat scope)'],
+      ['S8:chat', 'Running accent, chip cadence + reduced motion (chat scope)'],
     ]) {
       const entry = registry.find(candidate => candidate.id === id);
       expect(entry, id).toMatchObject({
@@ -97,10 +97,10 @@ function serializedProbeInDom(probeFn, arg, { html = '<body></body>', tokens = {
 describe('serialized probeToolRail', () => {
   const geometry = ({ offset = 0 } = {}) => (window, document) => {
     const boxes = {
-      record: { left: 24, right: 224, top: 100, bottom: 148, width: 200, height: 48 },
+      record: { left: 80, right: 280, top: 100, bottom: 148, width: 200, height: 48 },
       rail: { left: 65.5 + offset, right: 66.5 + offset, top: 100, bottom: 148, width: 1, height: 48 },
       glyph: { left: 60, right: 72, top: 114, bottom: 126, width: 12, height: 12 },
-      title: { left: 80, right: 130, top: 110, bottom: 130, width: 50, height: 20 },
+      title: { left: 100, right: 150, top: 110, bottom: 130, width: 50, height: 20 },
     };
     for (const [selector, box] of [
       ['.th-tool', boxes.record],
@@ -109,27 +109,75 @@ describe('serialized probeToolRail', () => {
       ['.th-tool-name', boxes.title],
     ]) document.querySelector(selector).getBoundingClientRect = () => box;
   };
-  test('records a glyph-centered rail spanning its record and passes', () => {
+  test('records a gutter-column rail outside the card and its text', () => {
     const result = serializedProbeInDom(probeToolRail, {}, {
       html: `<body><div class="th-chat-pane"><div class="th-tool th-chat-record" data-tool-call-id="t1">
         <span class="th-chat-record-rail"></span>
         <button class="th-tool-head" aria-expanded="false"><span class="th-tool-glyph"></span><span class="th-tool-name">bash</span></button>
       </div></div></body>`,
+      tokens: { '--th-space-12': '48px' },
       patch: geometry(),
     });
     const verdict = railFactsDecision(result);
     expect(verdict.pass).toBe(true);
     expect(verdict.measurements.visibleToolCount).toBe(1);
   });
-  test('a rail shifted onto the chevron fails despite staying left of the title', () => {
+  test('a rail shifted into the card fails despite staying left of the title', () => {
     const result = serializedProbeInDom(probeToolRail, {}, {
       html: `<body><div class="th-tool th-chat-record" data-tool-call-id="t1">
         <span class="th-chat-record-rail"></span>
         <button class="th-tool-head"><span class="th-tool-chevron"></span><span class="th-tool-glyph"></span><span class="th-tool-name">bash</span></button>
       </div></body>`,
-      patch: geometry({ offset: -24 }),
+      tokens: { '--th-space-12': '48px' },
+      patch: geometry({ offset: 24 }),
     });
-    expect(railFactsDecision(result).pass).toBe(false);
+    const verdict = railFactsDecision(result);
+    expect(verdict.pass).toBe(false);
+    expect(verdict.measurements.records[0].cardIntersection).toBe(true);
+  });
+  test('a rail painted through the invocation summary fails the serialized probe', () => {
+    const result = serializedProbeInDom(probeToolRail, {}, {
+      html: `<body><div class="th-tool th-chat-record" data-tool-call-id="t1">
+        <span class="th-chat-record-rail"></span>
+        <button class="th-tool-head"><span class="th-tool-invocation">bash command</span></button>
+      </div></body>`,
+      tokens: { '--th-space-12': '48px' },
+      patch: (window, document) => {
+        document.querySelector('.th-tool').getBoundingClientRect = () =>
+          ({ left: 80, right: 280, top: 100, bottom: 148 });
+        document.querySelector('.th-chat-record-rail').getBoundingClientRect = () =>
+          ({ left: 105.5, right: 106.5, width: 1, top: 100, bottom: 148 });
+        document.querySelector('.th-tool-invocation').getBoundingClientRect = () =>
+          ({ left: 100, right: 180, top: 110, bottom: 130 });
+      },
+    });
+    const verdict = railFactsDecision(result);
+    expect(verdict.pass).toBe(false);
+    expect(verdict.measurements.records[0]).toMatchObject({ cardIntersection: true, textIntersection: true });
+  });
+  test('a thinking rail crossing visible thinking text fails even without a card', () => {
+    const result = serializedProbeInDom(probeToolRail, {}, {
+      html: `<body><section class="th-chat-pane">
+        <div class="th-tool th-chat-record" data-tool-call-id="t1"><span class="th-chat-record-rail"></span>
+          <button class="th-tool-head"><span class="th-tool-name">bash</span></button></div>
+        <div class="th-chat-thinking th-chat-record th-chat-record--continue"><span class="th-chat-record-rail"></span>
+          <button class="th-chat-thinking-head"><span class="th-chat-thinking-label">Thinking</span></button></div>
+      </section></body>`,
+      tokens: { '--th-space-12': '48px' },
+      patch: (window, document) => {
+        for (const [selector, rect] of [
+          ['.th-tool', { left: 80, right: 280, top: 100, bottom: 148 }],
+          ['.th-tool .th-chat-record-rail', { left: 65.5, right: 66.5, top: 100, bottom: 148, width: 1 }],
+          ['.th-tool-name', { left: 100, right: 150, top: 110, bottom: 130 }],
+          ['.th-chat-thinking', { left: 80, right: 280, top: 164, bottom: 200 }],
+          ['.th-chat-thinking .th-chat-record-rail', { left: 105.5, right: 106.5, top: 148, bottom: 200, width: 1 }],
+          ['.th-chat-thinking-label', { left: 100, right: 160, top: 172, bottom: 190 }],
+        ]) document.querySelector(selector).getBoundingClientRect = () => rect;
+      },
+    });
+    const verdict = railFactsDecision(result);
+    expect(verdict.pass).toBe(false);
+    expect(verdict.measurements.records[1].textIntersection).toBe(true);
   });
   test('the pre-redesign transcript (no rail element at all) fails every record', () => {
     const result = serializedProbeInDom(probeToolRail, {}, {
@@ -141,7 +189,7 @@ describe('serialized probeToolRail', () => {
     });
     const verdict = railFactsDecision(result);
     expect(verdict.pass).toBe(false);
-    expect(verdict.failures[0]).toContain('t1 has no qualifying timeline rail');
+    expect(verdict.failures[0]).toContain('t1 has no qualifying gutter rail');
   });
   test('a consecutive thinking record joins its previous tool without jumping', () => {
     const result = serializedProbeInDom(probeToolRail, {}, {
@@ -149,16 +197,18 @@ describe('serialized probeToolRail', () => {
         <div class="th-tool th-chat-record" data-tool-call-id="t1"><span class="th-chat-record-rail"></span>
           <button class="th-tool-head"><span class="th-tool-glyph"></span></button></div>
         <div class="th-chat-thinking th-chat-record th-chat-record--continue"><span class="th-chat-record-rail"></span>
-          <button class="th-chat-thinking-head"><span class="th-chat-thinking-dot"></span></button></div>
+          <button class="th-chat-thinking-head"><span class="th-chat-thinking-dot"></span><span class="th-chat-thinking-label">Thinking</span></button></div>
       </section></body>`,
+      tokens: { '--th-space-12': '48px' },
       patch: (window, document) => {
         const rects = [
-          [document.querySelectorAll('.th-chat-record')[0], { top: 100, bottom: 148 }],
+          [document.querySelectorAll('.th-chat-record')[0], { left: 80, right: 280, top: 100, bottom: 148 }],
           [document.querySelectorAll('.th-chat-record-rail')[0], { top: 100, bottom: 148, left: 65.5, right: 66.5, width: 1 }],
           [document.querySelector('.th-tool-glyph'), { top: 114, bottom: 126, left: 60, right: 72 }],
-          [document.querySelectorAll('.th-chat-record')[1], { top: 164, bottom: 200 }],
+          [document.querySelectorAll('.th-chat-record')[1], { left: 80, right: 280, top: 164, bottom: 200 }],
           [document.querySelectorAll('.th-chat-record-rail')[1], { top: 148, bottom: 200, left: 65.5, right: 66.5, width: 1 }],
           [document.querySelector('.th-chat-thinking-dot'), { top: 172, bottom: 184, left: 60, right: 72 }],
+          [document.querySelector('.th-chat-thinking-label'), { top: 172, bottom: 190, left: 100, right: 160 }],
         ];
         for (const [element, rect] of rects) element.getBoundingClientRect = () => rect;
       },
@@ -171,13 +221,44 @@ describe('serialized probeToolRail', () => {
   test('a lateral jump or a vertical gap breaks a continued mixed rail', () => {
     const good = {
       id: 'thinking:1', kind: 'thinking', recordVisible: true,
-      railFound: true, railVisible: true, glyphFound: true, railSpansRecord: true,
-      railWidth: 1, railCenter: 66, glyphCenter: 66, continues: true,
+      railFound: true, railVisible: true, railInGutter: true, cardIntersection: false,
+      textIntersection: false, railSpansRecord: true, gutter: { left: 32, right: 80 },
+      railWidth: 1, railCenter: 66, continues: true,
       previousVisible: true, previousRailCenter: 66, railTop: 148, previousRailBottom: 148,
     };
     expect(railFactsDecision({ toolCount: 1, facts: [good, { ...good, id: 't1', kind: 'tool', continues: false }] }).pass).toBe(true);
     expect(railFactsDecision({ toolCount: 1, facts: [{ ...good, previousRailCenter: 42 }] }).pass).toBe(false);
     expect(railFactsDecision({ toolCount: 1, facts: [{ ...good, railTop: 156 }] }).pass).toBe(false);
+  });
+  test('a two-pixel gap between consecutive tool rails fails the serialized browser probe', () => {
+    const check = gap => {
+      const result = serializedProbeInDom(probeToolRail, {}, {
+        html: `<body><section class="th-chat-pane">
+          <div class="th-tool th-chat-record" data-tool-call-id="first">
+            <span class="th-chat-record-rail"></span><span class="th-tool-name">read</span>
+          </div>
+          <div class="th-tool th-chat-record th-chat-record--continue" data-tool-call-id="second">
+            <span class="th-chat-record-rail"></span><span class="th-tool-name">bash</span>
+          </div>
+        </section></body>`,
+        tokens: { '--th-space-12': '48px' },
+        patch: (window, document) => {
+          document.querySelectorAll('.th-tool').forEach((card, index) => {
+            const top = index ? 108 : 50;
+            card.getBoundingClientRect = () => ({ left: 80, right: 280, top, bottom: top + 48 });
+            card.querySelector('.th-chat-record-rail').getBoundingClientRect = () =>
+              ({ left: 65.5, right: 66.5, top: index ? 98 + gap : 50, bottom: index ? 156 : 98, width: 1 });
+            card.querySelector('.th-tool-name').getBoundingClientRect = () =>
+              ({ left: 100, right: 150, top: top + 10, bottom: top + 30 });
+          });
+        },
+      });
+      return railFactsDecision(result);
+    };
+    expect(check(0).pass).toBe(true);
+    const drained = check(2);
+    expect(drained.pass).toBe(false);
+    expect(drained.measurements.records[1].joined).toBe(false);
   });
 });
 
@@ -336,25 +417,27 @@ describe('serialized thinking disclosure rendering (S7)', () => {
 });
 
 describe('serialized probePaletteFacts and probeComposerFacts', () => {
-  test('palette facts collect non-option texts and glass state', () => {
+  test('palette facts collect non-option texts and opaque overlay colours', () => {
     const result = serializedProbeInDom(probePaletteFacts, {}, {
       html: `<body><div class="th-chat-input-inner">
-        <div class="th-chat-slash" role="listbox">
+        <div class="th-chat-slash" role="listbox" style="background-color: #25262b">
           <button role="option"><strong>/compact</strong> — Compact the session</button>
           <div class="th-chat-slash-hints">↑↓ navigate · Enter select · Esc close</div>
         </div>
       </div></body>`,
+      tokens: { '--th-surface-overlay': '#25262b' },
     });
     expect(result.paletteFound).toBe(true);
     expect(result.optionCount).toBe(1);
     expect(result.nonOptionTexts).toContain('↑↓ navigate · Enter select · Esc close');
-    expect(paletteDecision(result).pass).toBe(false); // jsdom: no backdrop-filter -> glass gate fails
-    expect(paletteDecision(result).failures[0]).toContain('backdrop-filter');
+    expect(result.backgroundColor).toBe('rgb(37, 38, 43)');
+    expect(result.overlaySurfaceRaw).toBe('#25262b');
+    expect(paletteDecision(result).pass).toBe(true);
   });
   test('palette facts collect the shipped hint row (kbd chips + label spans)', () => {
     const result = serializedProbeInDom(probePaletteFacts, {}, {
       html: `<body><div class="th-chat-input-inner">
-        <div class="th-chat-slash" role="listbox">
+        <div class="th-chat-slash" role="listbox" style="background-color: #25262b">
           <button role="option"><strong>/compact</strong> — Compact the session</button>
           <div class="th-chat-slash-hints">
             <span class="th-chat-slash-hint"><kbd aria-hidden="true">↑</kbd><kbd aria-hidden="true">↓</kbd><span>to navigate</span></span>
@@ -363,13 +446,24 @@ describe('serialized probePaletteFacts and probeComposerFacts', () => {
           </div>
         </div>
       </div></body>`,
+      tokens: { '--th-surface-overlay': '#25262b' },
     });
     const verdict = paletteDecision(result);
+    expect(verdict.pass).toBe(true);
     expect(verdict.measurements.hintRowCount).toBeGreaterThanOrEqual(1);
-    // jsdom cannot compute backdrop-filter; only the hint gate is provable
-    // here - the glass gate is measured by the real-browser run.
-    expect(verdict.failures.join(' ')).not.toContain('keyboard hint row');
-    expect(verdict.failures.join(' ')).toContain('backdrop-filter');
+  });
+  test('adversarial: a translucent glass palette FAILS the opaque token gate through the real probe', () => {
+    const result = serializedProbeInDom(probePaletteFacts, {}, {
+      html: `<body><div class="th-chat-slash" role="listbox" style="background-color: rgba(37, 38, 43, 0.72); backdrop-filter: blur(20px)">
+        <button role="option"><strong>/compact</strong> — Compact the session</button>
+        <div class="th-chat-slash-hints">↑↓ navigate · Enter select · Esc close</div>
+      </div></body>`,
+      tokens: { '--th-surface-overlay': '#25262b' },
+    });
+    const verdict = paletteDecision(result);
+    expect(result.backgroundColor).toContain('0.72');
+    expect(verdict.pass).toBe(false);
+    expect(verdict.failures.join(' ')).toContain('opaque --th-surface-overlay');
   });
   test('adversarial: palette without a hint row FAILS the hint gate through the real probe', () => {
     const result = serializedProbeInDom(probePaletteFacts, {}, {
@@ -431,32 +525,40 @@ describe('serialized probeHeaderTexts and probeToolMaterial', () => {
     expect(verdict.measurements.monoRuns).toHaveLength(1);
     expect(verdict.measurements.monoRuns[0].text).toBe('omo');
   });
-  test('tool material facts parse against the scoped tokens (expanded body)', () => {
+  test('whole-card material resolves for open and collapsed records', () => {
     const result = serializedProbeInDom(probeToolMaterial, {}, {
-      html: `<body><div class="th-tool" data-tool-call-id="t1">
-        <div class="th-tool-body" style="border-top: 1px solid rgba(255, 255, 255, 0.06); background-color: rgb(29, 30, 34)">body</div>
-      </div></body>`,
-      tokens: { '--th-tool-border': 'rgba(255, 255, 255, 0.06)', '--th-tool-surface': '#1d1e22' },
+      html: `<body><section class="th-chat-pane" style="background: #17181b">
+        <div class="th-tool" data-tool-call-id="t1" style="border: 1px solid rgba(255,255,255,.16); background: #1d1e22">
+          <div class="th-tool-body">body</div>
+        </div>
+        <div class="th-tool" data-tool-call-id="t2" style="border: 1px solid rgba(255,255,255,.16); background: #1d1e22">collapsed</div>
+      </section></body>`,
+      tokens: { '--th-tool-record-border': 'rgba(255,255,255,.16)', '--th-tool-record-surface': '#1d1e22' },
     });
     const verdict = toolMaterialDecision(result);
     expect(verdict.pass).toBe(true);
-    expect(verdict.measurements.records[0]).toMatchObject({ id: 't1', borderOk: true, surfaceOk: true });
+    expect(verdict.measurements.records).toHaveLength(2);
+    expect(verdict.measurements.records[0]).toMatchObject({ id: 't1', borderOk: true, surfaceOk: true, bodyBorderOk: true });
   });
-  test('adversarial: a pre-redesign bordered card body FAILS through the real probe', () => {
+  test('adversarial: transparent collapsed card and bordered body FAIL through the real probe', () => {
     const result = serializedProbeInDom(probeToolMaterial, {}, {
-      html: `<body><div class="th-tool" data-tool-call-id="t1">
-        <div class="th-tool-body" style="border-top: 1px solid rgb(64, 64, 64); background-color: rgb(38, 38, 38)">body</div>
-      </div></body>`,
-      tokens: { '--th-tool-border': 'rgba(255, 255, 255, 0.06)', '--th-tool-surface': '#1d1e22' },
+      html: `<body><section class="th-chat-pane" style="background: #17181b">
+        <div class="th-tool" data-tool-call-id="t1" style="background: transparent">
+          <div class="th-tool-body" style="border-top: 1px solid rgba(255,255,255,.06); background: #1d1e22">body</div>
+        </div>
+        <div class="th-tool" data-tool-call-id="t2" style="background: transparent">collapsed</div>
+      </section></body>`,
+      tokens: { '--th-tool-record-border': 'rgba(255,255,255,.16)', '--th-tool-record-surface': '#1d1e22' },
     });
     const verdict = toolMaterialDecision(result);
     expect(verdict.pass).toBe(false);
-    expect(verdict.failures.length).toBe(2);
+    expect(verdict.failures.join(' ')).toContain('nested border');
+    expect(verdict.failures.join(' ')).toContain('t2 fill');
   });
-  test('no expanded body at all fails (the material gate never silently passes)', () => {
+  test('no expanded body or missing collapsed state fails closed', () => {
     const result = serializedProbeInDom(probeToolMaterial, {}, {
       html: `<body><div class="th-tool" data-tool-call-id="t1"></div></body>`,
-      tokens: { '--th-tool-border': 'rgba(255, 255, 255, 0.06)', '--th-tool-surface': '#1d1e22' },
+      tokens: { '--th-tool-record-border': 'rgba(255,255,255,.16)', '--th-tool-record-surface': '#1d1e22' },
     });
     expect(toolMaterialDecision(result).failures[0]).toContain('no expanded tool body');
   });
@@ -556,21 +658,29 @@ describe('composerDecision (S9, baseline: white send, neutral ring)', () => {
   });
 });
 
-describe('paletteDecision (S9, baseline: plain raised box without glass or hints)', () => {
-  const glassy = {
-    paletteFound: true, backdropFilter: 'blur(20px) saturate(1.5)', optionCount: 4,
+describe('paletteDecision (S9, opaque overlay token and keyboard hints)', () => {
+  const opaque = {
+    paletteFound: true, backgroundColor: 'rgb(37, 38, 43)', overlaySurfaceRaw: '#25262b',
+    backdropFilter: 'none', optionCount: 4,
     nonOptionTexts: ['↑↓ navigate · Enter select · Esc close'],
   };
-  test('glass + hint row passes', () => {
-    const verdict = paletteDecision(glassy);
+  test('opaque overlay token + hint row passes without backdrop blur', () => {
+    const verdict = paletteDecision(opaque);
     expect(verdict.pass).toBe(true);
     expect(verdict.measurements.hintRowCount).toBe(1);
   });
   test('the pre-redesign palette fails both gates', () => {
-    const verdict = paletteDecision({ paletteFound: true, backdropFilter: 'none', optionCount: 4, nonOptionTexts: [] });
+    const verdict = paletteDecision({ ...opaque, backgroundColor: 'rgb(255, 255, 255)', nonOptionTexts: [] });
     expect(verdict.pass).toBe(false);
-    expect(verdict.failures.join(' ')).toContain('backdrop-filter');
+    expect(verdict.failures.join(' ')).toContain('opaque --th-surface-overlay');
     expect(verdict.failures.join(' ')).toContain('keyboard hint row');
+  });
+  test('a see-through glass fill and a wrong opaque fill each fail even with hints', () => {
+    for (const backgroundColor of ['rgba(37, 38, 43, 0.72)', 'rgb(48, 48, 48)']) {
+      const verdict = paletteDecision({ ...opaque, backgroundColor, backdropFilter: 'blur(20px)' });
+      expect(verdict.pass).toBe(false);
+      expect(verdict.failures.join(' ')).toContain('opaque --th-surface-overlay');
+    }
   });
   test('a missing palette reports itself', () => {
     expect(paletteDecision({ paletteFound: false }).failures[0]).toContain('did not render');
@@ -594,23 +704,26 @@ describe('commandInsertDecision (S9)', () => {
 describe('railFactsDecision (S7, baseline: no rail)', () => {
   const record = overrides => ({
     id: 'design-read', kind: 'tool', recordVisible: true, railFound: true, railVisible: true,
-    glyphFound: true, railSpansRecord: true, railWidth: 1, railCenter: 300, glyphCenter: 300,
+    railInGutter: true, cardIntersection: false, textIntersection: false,
+    railSpansRecord: true, railWidth: 1, railCenter: 300, gutter: { left: 280, right: 320 },
     continues: false, previousVisible: false,
     ...overrides,
   });
-  test('a thin, full-height glyph-centered rail passes', () => {
+  test('a thin, full-height gutter rail passes', () => {
     expect(railFactsDecision({ toolCount: 1, facts: [record()] }).pass).toBe(true);
   });
   test('the pre-redesign transcript (no rail anywhere) fails', () => {
     const verdict = railFactsDecision({ toolCount: 3, facts: [record({ railFound: false, railVisible: false, railWidth: null, railCenter: null })] });
     expect(verdict.pass).toBe(false);
-    expect(verdict.failures[0]).toContain('no qualifying timeline rail');
+    expect(verdict.failures[0]).toContain('no qualifying gutter rail');
   });
   test('an invisible, wide, offset or short rail each fail', () => {
     expect(railFactsDecision({ toolCount: 1, facts: [record({ railVisible: false })] }).pass).toBe(false);
     expect(railFactsDecision({ toolCount: 1, facts: [record({ railWidth: 14 })] }).pass).toBe(false);
     expect(railFactsDecision({ toolCount: 1, facts: [record({ railCenter: 276 })] }).pass).toBe(false);
     expect(railFactsDecision({ toolCount: 1, facts: [record({ railSpansRecord: false })] }).pass).toBe(false);
+    expect(railFactsDecision({ toolCount: 1, facts: [record({ railInGutter: false, cardIntersection: true })] }).pass).toBe(false);
+    expect(railFactsDecision({ toolCount: 1, facts: [record({ textIntersection: true })] }).pass).toBe(false);
   });
   test('no visible tool records at all is a failure, not a pass', () => {
     const verdict = railFactsDecision({ toolCount: 0, facts: [] });
@@ -681,17 +794,39 @@ describe('headerTextDecision (S6, baseline: mono badge and raw path)', () => {
 
 describe('toolMaterialDecision (S4)', () => {
   const material = {
-    toolBorderRaw: 'rgba(255, 255, 255, 0.06)', toolSurfaceRaw: '#1d1e22',
-    facts: [{ id: 'design-read', expanded: true, borderTopColor: 'rgba(255, 255, 255, 0.06)', backgroundColor: 'rgb(29, 30, 34)' }],
+    toolBorderRaw: 'rgba(255, 255, 255, 0.16)', toolSurfaceRaw: '#1d1e22', paneBackground: '#17181b',
+    facts: [{ id: 'design-read', expanded: true, borderSides: Array.from({ length: 4 }, () => ({ width: 1, color: 'rgba(255, 255, 255, 0.16)' })), bodyBorderSides: [], backgroundColor: 'rgb(29, 30, 34)' },
+      { id: 'design-collapsed', expanded: false, borderSides: Array.from({ length: 4 }, () => ({ width: 1, color: 'rgba(255, 255, 255, 0.16)' })), bodyBorderSides: [], backgroundColor: 'rgb(29, 30, 34)' }],
   };
   test('records on the scoped material pass', () => {
     expect(toolMaterialDecision(material).pass).toBe(true);
   });
   test('a foreign border or fill fails, and no expanded bodies at all fails', () => {
-    expect(toolMaterialDecision({ ...material, facts: [{ ...material.facts[0], borderTopColor: 'rgb(64, 64, 64)' }] }).pass).toBe(false);
-    expect(toolMaterialDecision({ ...material, facts: [{ ...material.facts[0], backgroundColor: 'rgb(38, 38, 38)' }] }).pass).toBe(false);
+    expect(toolMaterialDecision({ ...material, facts: [{ ...material.facts[0], borderSides: [{ width: 1, color: 'rgb(64, 64, 64)' }] }, material.facts[1]] }).pass).toBe(false);
+    expect(toolMaterialDecision({ ...material, facts: [{ ...material.facts[0], backgroundColor: 'rgb(38, 38, 38)' }, material.facts[1]] }).pass).toBe(false);
     expect(toolMaterialDecision({ ...material, facts: [] }).pass).toBe(false);
     expect(toolMaterialDecision({ ...material, facts: [{ ...material.facts[0], expanded: false }] }).pass).toBe(false);
+  });
+});
+
+describe('serialized T2 sidebar chip cadence (S8 chat scope)', () => {
+  const run = (ink, duration) => serializedProbeInDom(probeChatRunningGlyphs, {}, {
+    html: `<body><section class="th-chat-pane"><span class="th-tree-running th-tree-running--count" style="color:${ink}">
+      2<span class="th-tree-running-dot" style="background:#8b7cf6;animation-duration:${duration};animation-direction:normal"></span>
+    </span></section></body>`,
+    tokens: { '--th-accent': '#8b7cf6', '--th-accent-ink': '#9d90f8' },
+    patch: window => {
+      window.Element.prototype.getAnimations = function () {
+        return this.matches('.th-tree-running-dot') ? [{ playState: 'running' }] : [];
+      };
+    },
+  });
+  test('accent count and 700ms dot pass; grey and 1280ms fail', () => {
+    expect(run('#9d90f8', '700ms').pass).toBe(true);
+    const old = run('#a1a1aa', '1280ms');
+    expect(old.pass).toBe(false);
+    expect(old.failures.join(' ')).toContain('running count');
+    expect(old.failures.join(' ')).toContain('exceeds 800ms');
   });
 });
 

@@ -48,7 +48,7 @@
  * Run: QA_PLAYWRIGHT=... bun test/qa/visual-redesign.mjs --evidence DIR
  * Unit tests: bun test test/qa/visual-redesign-scenarios-t3.test.mjs
  */
-import { motionViolations, parseColor } from './visual-redesign-probes.mjs';
+import { motionViolations, parseColor, probeStateColors } from './visual-redesign-probes.mjs';
 import { installSignals } from './design-workbench-fixture.mjs';
 
 // ---------------------------------------------------------------------------
@@ -985,14 +985,23 @@ async function settleSidebarToggle(page) {
 async function stateSweep(ctx, env, stage, stages, failures) {
   await settleFiniteMotion(env.page);
   const result = await ctx.probe(env.page, probeShellStateColors);
+  const ink = await ctx.probe(env.page, probeStateColors, {
+    statusOnly: true, scope: 'shell',
+    // The mobile chat-surfaces capture precedes opening the drawer; its
+    // running sidebar chips cannot be visible until drawer-shell is reached.
+    requireStates: stage === 'chat-surfaces' && !isSplitViewport(ctx) ? []
+      : stage.includes('toast') ? ['accent', 'success'] : ['accent'],
+  });
   stages.push({
     stage,
     stateColorViolations: result.measurements.stateColorViolationCount ?? null,
     uppercaseCount: result.measurements.uppercaseCount ?? null,
     violationSamples: (result.measurements.stateColorViolationSamples ?? []).slice(0, 6),
     uppercaseSamples: result.measurements.uppercaseSamples ?? [],
+    statusInk: ink.measurements,
   });
   for (const failure of result.failures) failures.push(`[${stage}] ${failure}`);
+  for (const failure of ink.failures) failures.push(`[${stage}] status ink: ${failure}`);
   return ctx.save(env.page, `-${stage}`);
 }
 

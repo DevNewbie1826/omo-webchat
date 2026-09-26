@@ -17,11 +17,40 @@ function sample({ viewportWidth = 1280, columnWidth = 506, gutter = 24, userTop 
     edges: Object.fromEntries(['controls', 'composer', 'live'].map(key => [key, { left, right }])),
     status: { left, right: right - 108, top: 800, bottom: 830 },
     historyAxis: left, liveAxis: left, roles: [],
+    tokens: { '--th-tool-record-surface': 'rgb(30, 31, 35)',
+      '--th-tool-record-border': 'rgba(255, 255, 255, 0.16)' },
     panes: [{ active: true, outline: viewportWidth <= 768 ? 'none' : '1px solid rgb(1, 1, 1)' }],
     composer: { bottom: 900 }, trigger: { left: right - 100, right, top: 800, bottom: 830 }, coarse: false,
   };
 }
 const assertion = (value, id) => designAssertions(value).find(result => result.id === id);
+const enclosed = () => {
+  const value = sample();
+  value.tokens = { '--th-tool-record-surface': 'rgb(30, 31, 35)',
+    '--th-tool-record-border': 'rgba(255, 255, 255, 0.16)' };
+  value.tools = value.tools.map(tool => ({ ...tool, background: 'rgb(30, 31, 35)',
+    radius: 12, borders: Array.from({ length: 4 }, () => ({
+      width: 1, style: 'solid', color: 'rgba(255, 255, 255, 0.16)',
+    })) }));
+  return value;
+};
+
+test('every collapsed tool has the resolved tinted fill and neutral hairline', () => {
+  expect(assertion(enclosed(), 'collapsed-enclosure').pass).toBe(true);
+});
+
+test('old transparent collapsed records fail the updated card contract', () => {
+  expect(assertion(sample(), 'collapsed-enclosure').pass).toBe(false);
+});
+
+test('a status-coloured border or a squared-off card fails enclosure', () => {
+  const coloured = enclosed();
+  coloured.tools[0].borders[0].color = 'rgb(63, 192, 132)';
+  expect(assertion(coloured, 'collapsed-enclosure').pass).toBe(false);
+  const square = enclosed();
+  square.tools[0].radius = 0;
+  expect(assertion(square, 'collapsed-enclosure').pass).toBe(false);
+});
 
 test('active outline is suppressed at the mobile viewport boundary and visible above it', () => {
   expect(() => preservedGeometry(sample({ viewportWidth: 768 }))).not.toThrow();
