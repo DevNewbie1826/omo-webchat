@@ -180,11 +180,11 @@ export function ToolCard(props: ToolCardProps) {
             <IconChevron size={12} />
           </span>
           {status === "running" ? (
-            <span className="th-tool-glyph th-tool-glyph--running" aria-hidden="true" />
+            <span className="th-chat-record-glyph th-tool-glyph th-tool-glyph--running" aria-hidden="true" />
           ) : status === "error" ? (
-            <span className="th-tool-glyph th-tool-glyph--error" aria-hidden="true">!</span>
+            <span className="th-chat-record-glyph th-tool-glyph th-tool-glyph--error" aria-hidden="true">!</span>
           ) : (
-            <span className="th-tool-glyph th-tool-glyph--ok" aria-hidden="true">
+            <span className="th-chat-record-glyph th-tool-glyph th-tool-glyph--ok" aria-hidden="true">
               <IconCheck size={12} />
             </span>
           )}
