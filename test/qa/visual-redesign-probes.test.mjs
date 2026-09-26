@@ -1211,3 +1211,18 @@ describe('T3 desktop sidebar motion inventory', () => {
     expect(invoke().inventory).toEqual([]);
   });
 });
+
+describe('S21 and S24 registration', () => {
+  test('the binary/font check remains a stub and S24 runs the coarse shell probe', async () => {
+    const { scenarios, runShellCoarseTargets } = await import('./visual-redesign-scenarios-t3.mjs');
+    const registry = buildScenarioRegistry([{ file: 'visual-redesign-scenarios-t3.mjs', scenarios }]);
+    const binary = registry.find(row => row.id === 'S21');
+    expect(binary.stub).toBe(true);
+    expect(binary.origin).toBe('stub');
+    expect(binary.title).toBe('Embedded binary + font asset');
+    const entry = registry.find(row => row.id === 'S24');
+    expect(entry.stub).toBe(false);
+    expect(entry.origin).toBe('plugin:visual-redesign-scenarios-t3.mjs');
+    expect(entry.run).toBe(runShellCoarseTargets);
+  });
+});

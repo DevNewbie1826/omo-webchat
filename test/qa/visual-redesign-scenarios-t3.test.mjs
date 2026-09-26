@@ -15,7 +15,7 @@ import { buildScenarioRegistry } from './visual-redesign.mjs';
 import { pageKit, probeStateColors } from './visual-redesign-probes.mjs';
 import {
   ENTRANCE_RECORDER_SOURCE, armSidebarReversal, emptyStateVerdict, entranceVerdict, firstFamily, probeEmptyState,
-  probeSelectionFacts, probeShellStateColors, probeSidebarMotion, probeSidebarStatic, scenarios, selectionVerdict, shellLiveFrame,
+  probeCancellationFocus, probeSelectionFacts, probeShellCoarseTargets, probeShellStateColors, probeSidebarMotion, probeSidebarStatic, scenarios, selectionVerdict, shellLiveFrame,
   sidebarFocusVerdict, sidebarReversalVerdict, sidebarStaticVerdict, runStateColorsShell,
 } from './visual-redesign-scenarios-t3.mjs';
 
@@ -54,8 +54,8 @@ const REDESIGNED_SIDEBAR = {
 // ---------------------------------------------------------------------------
 
 describe('T3 plugin contract with the shared harness', () => {
-  test('registers scoped S5 alongside the built-in and de-stubs S10/S11', () => {
-    expect(Object.keys(scenarios).sort()).toEqual(['S10', 'S11', 'S5:shell']);
+  test('registers scoped S5 alongside the built-in, de-stubs S10/S11/S24 without replacing S21', () => {
+    expect(Object.keys(scenarios).sort()).toEqual(['S10', 'S11', 'S24', 'S5:shell']);
     for (const probe of Object.values(scenarios)) expect(typeof probe).toBe('function');
     const registry = buildScenarioRegistry([{ file: 'visual-redesign-scenarios-t3.mjs', scenarios }]);
     const s5 = registry.find(entry => entry.id === 'S5:shell');
@@ -63,13 +63,14 @@ describe('T3 plugin contract with the shared harness', () => {
     expect(s5.stub).toBe(false);
     expect(s5.run).toBe(scenarios['S5:shell']);
     expect(registry.find(entry => entry.id === 'S5').origin).toBe('builtin');
-    for (const id of ['S10', 'S11']) {
+    for (const id of ['S10', 'S11', 'S24']) {
       const entry = registry.find(candidate => candidate.id === id);
       expect(entry.stub).toBe(false);
       expect(entry.origin).toBe('plugin:visual-redesign-scenarios-t3.mjs');
     }
     // Untouched ids keep their built-in registration.
     expect(registry.find(entry => entry.id === 'S1').origin).toBe('builtin');
+    expect(registry.find(entry => entry.id === 'S21').stub).toBe(true);
     expect(registry.find(entry => entry.id === 'S13').stub).toBe(true);
   });
 
@@ -89,6 +90,18 @@ describe('T3 plugin contract with the shared harness', () => {
     expect(source).toContain("root: '.th-picker-pane'");
     expect(source).toContain('requireDisplayTier: true');
     expect(source).toContain('picker pane absent');
+  });
+
+  test('S24 drives the persisted maximum font through coarse shell and empty picker', async () => {
+    const source = await Bun.file(new URL('./visual-redesign-scenarios-t3.mjs', import.meta.url)).text();
+    expect(source).toContain('for (const fontSize of [14, 15, 24])');
+    expect(source).toContain('for (const fontSize of [24, 15, 14])');
+    expect(source).toContain("localStorage.setItem('th-font-size', String(size))");
+    expect(source).toContain("localStorage.getItem('th-font-size')");
+    expect(source).toContain("getPropertyValue('--th-font-size').trim()");
+    expect(source).toContain('appliedFont.computed !== `${fontSize}px`');
+    expect(source).toContain('fontSize === 14 || fontSize === 24');
+    expect(source).toContain("], '.th-empty');");
   });
 });
 
@@ -305,7 +318,7 @@ describe('entranceVerdict (S11 choreography)', () => {
 // ---------------------------------------------------------------------------
 
 describe('in-page probes serialize cleanly with the shared kit', () => {
-  const probes = [probeSidebarStatic, probeSidebarMotion, probeSelectionFacts, probeEmptyState, probeShellStateColors];
+  const probes = [probeSidebarStatic, probeSidebarMotion, probeSelectionFacts, probeEmptyState, probeShellStateColors, probeShellCoarseTargets, probeCancellationFocus];
   test('kit-augmented sources parse', () => {
     for (const probe of probes) {
       expect(() => new Function(`${pageKit()}\nreturn (${probe.toString()})();`)).not.toThrow();
@@ -330,7 +343,7 @@ describe('in-page probes serialize cleanly with the shared kit', () => {
     'Error', 'TypeError', 'RangeError', 'Promise', 'Symbol', 'Map', 'Set', 'WeakMap',
     'WeakSet', 'Proxy', 'Reflect', 'Intl', 'BigInt', 'parseInt', 'parseFloat', 'isNaN',
     'isFinite', 'encodeURIComponent', 'decodeURIComponent', 'structuredClone', 'globalThis',
-    'URL', 'URLSearchParams', 'Event', 'CustomEvent',
+    'URL', 'URLSearchParams', 'Event', 'CustomEvent', 'innerWidth', 'innerHeight', 'matchMedia',
   ]);
   const JS_NON_REFERENCES = new Set(['break', 'case', 'catch', 'class', 'const', 'continue', 'debugger',
     'default', 'delete', 'do', 'else', 'export', 'extends', 'finally', 'for', 'function', 'if',
@@ -601,6 +614,181 @@ async function withView(html, run) {
 async function runSerialized(view, probeFunction, argJson = '{}') {
   return await view.evaluate(`(() => { ${pageKit()}\nreturn (${probeFunction.toString()})(${argJson}); })()`);
 }
+
+describe('serialized S24 coarse shell hit areas', () => {
+  test('a 32px button fails the 44px minimum', async () => {
+    await withView(page('<aside class="th-sidebar"><button aria-label="Settings" style="width:32px;height:32px"></button></aside>'), async view => {
+      const result = await runSerialized(view, probeShellCoarseTargets, '{"root":".th-sidebar","requireCoarse":false}');
+      expect(result.elements).toHaveLength(1);
+      expect(result.elements[0]).toMatchObject({ name: 'Settings', size: { width: 32, height: 32 } });
+      expect(result.failures.some(failure => failure.includes('<44px'))).toBe(true);
+      expect(result.pass).toBe(false);
+    });
+  });
+
+  test('a 44px button passes and records its selector and name', async () => {
+    await withView(page('<aside class="th-sidebar"><button aria-label="Settings" style="width:44px;height:44px"></button></aside>'), async view => {
+      const result = await runSerialized(view, probeShellCoarseTargets, '{"root":".th-sidebar","requireCoarse":false}');
+      expect(result.elements).toHaveLength(1);
+      expect(result.elements[0].selector).toContain('.th-sidebar > button');
+      expect(result.elements[0].name).toBe('Settings');
+      expect(result.elements[0].size).toEqual({ width: 44, height: 44 });
+      expect(result.failures).toEqual([]);
+      expect(result.pass).toBe(true);
+    });
+  });
+
+  test('five inset points belong to a rounded 44px button', async () => {
+    await withView(page(`<aside class="th-sidebar">
+      <button aria-label="Round" style="width:44px;height:44px;border-radius:50%"></button>
+    </aside>`), async view => {
+      const result = await runSerialized(view, probeShellCoarseTargets, '{"root":".th-sidebar","requireCoarse":false}');
+      expect(result.elements[0].blocked).toEqual([]);
+      expect(result.pass).toBe(true);
+    });
+  });
+
+  test('two overlapping 44px hit areas fail even though sizes pass', async () => {
+    await withView(page(`<aside class="th-sidebar" style="position:relative">
+      <button aria-label="First" style="position:absolute;left:0;top:0;width:44px;height:44px"></button>
+      <button aria-label="Second" style="position:absolute;left:22px;top:0;width:44px;height:44px"></button>
+    </aside>`), async view => {
+      const result = await runSerialized(view, probeShellCoarseTargets, '{"root":".th-sidebar","requireCoarse":false}');
+      expect(result.elements).toHaveLength(2);
+      expect(result.overlaps).toHaveLength(1);
+      expect(result.failures.some(failure => failure.includes('hit areas overlap'))).toBe(true);
+      expect(result.pass).toBe(false);
+    });
+  });
+
+  test('a 44px box clipped to a 20px strip fails on its visible region', async () => {
+    await withView(page(`<aside class="th-sidebar" style="height:20px;overflow:hidden">
+      <button aria-label="Clipped" style="width:44px;height:44px"></button>
+    </aside>`), async view => {
+      const result = await runSerialized(view, probeShellCoarseTargets, '{"root":".th-sidebar","requireCoarse":false}');
+      expect(result.elements[0].size).toEqual({ width: 44, height: 44 });
+      expect(result.elements[0].visible.height).toBe(20);
+      expect(result.failures.join(' ')).toContain('visible region');
+      expect(result.pass).toBe(false);
+    });
+  });
+
+  test('pointer-events suppression fails even for a nominally unobstructed 44px box', async () => {
+    await withView(page(`<aside class="th-sidebar">
+      <button aria-label="Disabled hit" style="width:44px;height:44px;pointer-events:none"></button>
+    </aside>`), async view => {
+      const result = await runSerialized(view, probeShellCoarseTargets, '{"root":".th-sidebar","requireCoarse":false}');
+      expect(result.elements[0].size).toEqual({ width: 44, height: 44 });
+      expect(result.failures.join(' ')).toContain('pointer-events: none');
+      expect(result.pass).toBe(false);
+    });
+  });
+
+  test('a covering non-interactive layer fails hit ownership at the center and corners', async () => {
+    await withView(page(`<aside class="th-sidebar" style="position:relative">
+      <button aria-label="Covered" style="width:44px;height:44px"></button>
+      <span style="position:absolute;inset:0;width:44px;height:44px;background:gray"></span>
+    </aside>`), async view => {
+      const result = await runSerialized(view, probeShellCoarseTargets, '{"root":".th-sidebar","requireCoarse":false}');
+      expect(result.elements[0].visible.width).toBe(44);
+      expect(result.elements[0].blocked).toHaveLength(5);
+      expect(result.failures.join(' ')).toContain('occluded');
+      expect(result.pass).toBe(false);
+    });
+  });
+
+  test('the owning scrollport reveals an offscreen target without moving the page', async () => {
+    await withView(page(`<aside class="th-sidebar">
+      <div class="th-sidebar-body" style="height:100px;overflow-y:auto">
+        <div style="height:160px"></div>
+        <button aria-label="Last" style="width:44px;height:44px"></button>
+      </div>
+    </aside>`), async view => {
+      const result = await runSerialized(view, probeShellCoarseTargets,
+        '{"root":".th-sidebar","requireCoarse":false,"scrollOwner":".th-sidebar-body"}');
+      expect(result.scrolls).toHaveLength(1);
+      expect(result.scrolls[0].to).toBeGreaterThan(0);
+      expect(result.elements[0].visible.height).toBe(44);
+      expect(result.pass).toBe(true);
+      expect(await view.evaluate('window.scrollY')).toBe(0);
+    });
+  });
+
+  test('an unreachable target fails when its nominal scroller cannot reveal it', async () => {
+    await withView(page(`<aside class="th-sidebar">
+      <div class="th-sidebar-body" style="height:20px;overflow:hidden">
+        <button aria-label="Trapped" style="width:44px;height:44px"></button>
+      </div>
+    </aside>`), async view => {
+      const result = await runSerialized(view, probeShellCoarseTargets,
+        '{"root":".th-sidebar","requireCoarse":false,"scrollOwner":".th-sidebar-body"}');
+      expect(result.elements[0].visible.height).toBeLessThan(44);
+      expect(result.failures.join(' ')).toContain('visible region');
+      expect(result.pass).toBe(false);
+    });
+  });
+});
+
+describe('serialized S24 cancellation focus destination', () => {
+  const fixture = page(`
+<aside class="th-sidebar"><button aria-controls="th-tree-overflow-ws-2">More actions</button></aside>
+<main class="th-main"><section class="th-pane--focused">
+  <div class="th-chat-input"><textarea></textarea></div>
+</section></main>`);
+  const args = JSON.stringify({ triggerSelector: 'button[aria-controls="th-tree-overflow-ws-2"]' });
+
+  test('the surviving workspace trigger is connected, visible, and focusable', async () => {
+    await withView(fixture, async view => {
+      await runScript(view, `document.querySelector('[aria-controls]').focus();`);
+      const result = await runSerialized(view, probeCancellationFocus, args);
+      expect(result).toMatchObject({
+        selector: 'button[aria-controls="th-tree-overflow-ws-2"]',
+        connected: true, visible: true, focusable: true, failures: [], pass: true,
+      });
+    });
+  });
+
+  test('body focus fails even when the trigger survives', async () => {
+    await withView(fixture, async view => {
+      const result = await runSerialized(view, probeCancellationFocus, args);
+      expect(result.selector).toBe('body');
+      expect(result.failures.join(' ')).toContain('focus fell to body');
+      expect(result.pass).toBe(false);
+    });
+  });
+
+  test('hidden drawer requires the documented composer fallback, never its trigger', async () => {
+    await withView(fixture, async view => {
+      await runScript(view, `document.querySelector('.th-sidebar').setAttribute('inert', '');
+document.querySelector('.th-chat-input textarea').focus();`);
+      const result = await runSerialized(view, probeCancellationFocus, args);
+      expect(result).toMatchObject({
+        selector: '.th-pane--focused .th-chat-input textarea',
+        connected: true, visible: true, focusable: true, failures: [], pass: true,
+      });
+    });
+  });
+
+  test('a hidden focused destination fails and falls through to main when composer is disabled', async () => {
+    await withView(fixture, async view => {
+      await runScript(view, `const sidebar = document.querySelector('.th-sidebar');
+sidebar.style.display = 'none';
+document.querySelector('.th-chat-input textarea').disabled = true;
+document.querySelector('main.th-main').tabIndex = -1;
+document.querySelector('main.th-main').focus();`);
+      const result = await runSerialized(view, probeCancellationFocus, args);
+      expect(result).toMatchObject({
+        selector: 'main.th-main', connected: true, visible: true, focusable: true, failures: [], pass: true,
+      });
+      await runScript(view, `document.querySelector('.th-sidebar').style.display = '';
+document.querySelector('[aria-controls]').focus();
+document.querySelector('.th-sidebar').style.display = 'none';`);
+      const hidden = await runSerialized(view, probeCancellationFocus, args);
+      expect(hidden.pass).toBe(false);
+      expect(hidden.failures.join(' ')).toContain('hidden');
+    });
+  });
+});
 
 /** Evaluate a statement script (expression-wrapped evaluate, IIFE-wrapped call). */
 async function runScript(view, statements) {

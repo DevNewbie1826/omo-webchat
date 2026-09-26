@@ -30,31 +30,29 @@
   background: var(--th-error-bg);
 }
 
-/* Coarse pointers: the 32px visual is unchanged; an invisible ::before ring
-   grows the hitbox to 44x44px (token contract: "Icon buttons: 32px (44px
-   coarse)"). The ring consumes 6px of clear space on every side, which the
-   sidebar containers supply on coarse pointers only (sidebar.css widens the
-   nav cluster gap and adds the footer's bottom reserve; the footer's top
-   padding and both inline paddings already clear the ring).
+/* Coarse pointers (G40): the sidebar nav-actions and footer buttons grow
+   to real 44x44px boxes (--th-space-11). The box itself is the hit area, so
+   element-geometry measurements see the full target — an invisible ::before
+   overflow ring would hit-test but never measure. The visual wash grows
+   with the box, the coarse adaptation the token contract describes
+   ("Icon buttons: 32px (44px coarse)").
 
-   The ring is scoped to the sidebar nav-actions and footer buttons — the
-   surfaces this task verifies through native hit testing. Other icon
-   buttons keep their own existing coarse geometry: the pane header buttons
-   are full 44px boxes via chat-pane.css, the file panel/editor heads pin
-   44px boxes in their own stylesheets, the session-tree rows own their
-   44px coarse layout in session-tree.css (T3), and the empty-state menu is
-   a 44px absolute box in app-empty.css whose absolutely positioned popup a
-   re-anchored position:relative would capture. */
+   Adjacency needs no container compensation: the nav cluster's default 2px
+   gap leaves a 2px dead band between two 44px boxes, and the header's own
+   44px height matches the buttons exactly; the footer's 8px top padding and
+   the coarse 8px bottom reserve (sidebar.css) hold the 44px buttons clear
+   of the tree and the safe-area band.
+
+   The growth stays scoped to these two clusters: other icon buttons keep
+   their own existing coarse geometry — pane header buttons are full 44px
+   boxes via chat-pane.css, the file panel/editor heads pin 44px boxes in
+   their own stylesheets, session-tree row actions own their 44px coarse
+   layout in session-tree.css, and the empty-state menu is a 44px absolute
+   box in app-empty.css. */
 @media (pointer: coarse) {
   .th-sidebar-nav-actions .th-btn-icon,
   .th-sidebar-footer .th-btn-icon {
-    position: relative;
-  }
-
-  .th-sidebar-nav-actions .th-btn-icon::before,
-  .th-sidebar-footer .th-btn-icon::before {
-    content: "";
-    position: absolute;
-    inset: -6px;
+    min-width: var(--th-space-11);
+    min-height: var(--th-space-11);
   }
 }

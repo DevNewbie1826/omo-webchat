@@ -253,6 +253,14 @@
   letter-spacing: var(--th-type-label-tracking);
 }
 
+/* Coarse pointers (G40): the workspace filter grows to the 44px touch
+   target; its 100% width already clears the 44px minimum. */
+@media (pointer: coarse) {
+  .th-picker-pane > select {
+    min-height: var(--th-space-11);
+  }
+}
+
 .th-picker-pane-create {
   display: flex;
   align-items: center;
