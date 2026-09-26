@@ -362,6 +362,14 @@ export function probeSidebarMotion() {
   const sidebar = document.querySelector('.th-sidebar');
   if (!sidebar) return { found: false, inventory: [] };
   const style = getComputedStyle(sidebar);
+  const focused = document.querySelectorAll('.th-pane--focused');
+  const active = document.activeElement;
+  const box = active?.getBoundingClientRect();
+  let visible = !!active && active.isConnected && !!box && box.width > 0 && box.height > 0;
+  for (let node = active; visible && node instanceof Element; node = node.parentElement) {
+    const computed = getComputedStyle(node);
+    if (computed.display === 'none' || computed.visibility === 'hidden' || node.hasAttribute('inert')) visible = false;
+  }
   return {
     found: true,
     collapsed: sidebar.classList.contains('th-sidebar--collapsed'),
@@ -370,9 +378,30 @@ export function probeSidebarMotion() {
     transitionProperties: style.transitionProperty.split(',').map(value => value.trim()),
     transitionDurations: style.transitionDuration.split(',').map(value => value.trim()),
     inventory: collectAnimations(sidebar),
-    focusedPaneCount: document.querySelectorAll('.th-pane--focused').length,
-    activeElement: describeElement(document.activeElement),
+    focusedPaneCount: focused.length,
+    focusedPaneIdentity: focused[0]?.getAttribute('data-th-t3-focus-pane') ?? null,
+    activeElement: describeElement(active),
+    focus: {
+      connected: !!active?.isConnected,
+      visible,
+      focusable: active instanceof HTMLElement && active.tabIndex >= 0
+        && !active.matches(':disabled') && active !== document.body,
+      counterpart: active?.matches('.th-sidebar-rail .th-sidebar-toggle') ? 'rail'
+        : active?.matches('.th-sidebar-nav .th-sidebar-toggle') ? 'toolbar' : null,
+    },
   };
+}
+
+export function sidebarFocusVerdict(snapshot, paneIdentity, collapsed) {
+  const failures = [];
+  if (snapshot.focusedPaneCount !== 1 || snapshot.focusedPaneIdentity !== paneIdentity) {
+    failures.push(`sidebar changed active pane identity from ${paneIdentity} to ${snapshot.focusedPaneIdentity}`);
+  }
+  if (!snapshot.focus?.connected || !snapshot.focus.visible || !snapshot.focus.focusable
+    || snapshot.focus.counterpart !== (collapsed ? 'rail' : 'toolbar')) {
+    failures.push(`sidebar focus is not on the visible ${collapsed ? 'rail' : 'toolbar'} toggle (${snapshot.activeElement})`);
+  }
+  return failures;
 }
 
 /** S11: presence facts for one root (.th-empty below 1024px, .th-picker-pane
@@ -875,6 +904,18 @@ async function settleFiniteMotion(page, timeoutMs = 2000) {
   }, timeoutMs).catch(() => {});
 }
 
+async function settleSidebarToggle(page) {
+  await page.evaluate(async () => {
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const animations = document.querySelector('.th-sidebar').getAnimations({ subtree: true })
+      .filter(animation => animation.effect?.getComputedTiming()?.iterations !== Infinity);
+    await Promise.race([
+      Promise.all(animations.map(animation => animation.finished)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('sidebar motion did not settle')), 2500)),
+    ]);
+  });
+}
+
 /** One whole-app state-colour sweep plus its evidence screenshot, taken
  * only after the stage's finite animations settled. */
 async function stateSweep(ctx, env, stage, stages, failures) {
@@ -1003,8 +1044,13 @@ export async function runSidebarSelection(ctx) {
     screenshots = [await ctx.save(env.page, '')];
     if (narrow) await closeDrawerSettled(env.page);
     if (isSplitViewport(ctx)) {
-      const initialFocus = (await ctx.probe(env.page, probeSidebarMotion)).focusedPaneCount;
-      if (initialFocus !== 1) failures.push(`expected one focused pane before sidebar interactions, found ${initialFocus}`);
+      const paneIdentity = await env.page.evaluate(() => {
+        const focused = document.querySelectorAll('.th-pane--focused');
+        if (focused.length !== 1) return null;
+        focused[0].setAttribute('data-th-t3-focus-pane', 's10-active');
+        return 's10-active';
+      });
+      if (!paneIdentity) failures.push('expected one focused pane before sidebar interactions');
       for (const reduced of [false, true]) {
         if (reduced) await env.page.emulateMedia({ reducedMotion: 'reduce' });
         await env.page.evaluate(() => {
@@ -1015,19 +1061,27 @@ export async function runSidebarSelection(ctx) {
           });
         });
         const states = [];
-        for (const collapsed of [true, false, true, false]) {
-          await env.page.locator('.th-sidebar-toggle:visible').click({ timeout: 4000 });
+        await env.page.locator('.th-sidebar-nav .th-sidebar-toggle').focus();
+        for (const [index, collapsed] of [true, false, true, false].entries()) {
+          await env.page.keyboard.press('Enter');
           await env.page.waitForFunction(want => document.querySelector('.th-sidebar')
             ?.classList.contains('th-sidebar--collapsed') === want, collapsed, { timeout: 4000 });
+          if (index === 1 && !reduced) {
+            const inFlight = await env.page.waitForFunction(() => document.querySelector('.th-sidebar-inner')
+              ?.getAnimations().some(animation => animation.playState === 'running'), undefined, { timeout: 700 })
+              .then(() => true).catch(() => false);
+            if (!inFlight) failures.push('sidebar reopen had no in-flight motion to reverse');
+          } else {
+            await settleSidebarToggle(env.page);
+          }
           const snapshot = await ctx.probe(env.page, probeSidebarMotion);
           states.push(snapshot);
           if (!snapshot.found || snapshot.collapsed !== collapsed
             || Math.abs(snapshot.width - (collapsed ? 44 : snapshot.expandedWidth)) > 1) {
             failures.push(`sidebar ${reduced ? 'reduced ' : ''}${collapsed ? 'collapse' : 'reopen'} did not settle at its target width`);
           }
-          if (snapshot.focusedPaneCount !== initialFocus) {
-            failures.push(`sidebar ${collapsed ? 'collapse' : 'reopen'} changed focused pane count from ${initialFocus} to ${snapshot.focusedPaneCount}`);
-          }
+          failures.push(...sidebarFocusVerdict(snapshot, paneIdentity, collapsed)
+            .map(failure => `sidebar ${reduced ? 'reduced ' : ''}${collapsed ? 'collapse' : 'reopen'}: ${failure}`));
           const declared = snapshot.transitionProperties.flatMap((property, index) =>
             (parseFloat(snapshot.transitionDurations[index % snapshot.transitionDurations.length]) > 0 ? [property] : []));
           const animated = snapshot.inventory.flatMap(animation => animation.properties);

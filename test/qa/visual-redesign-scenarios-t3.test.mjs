@@ -15,8 +15,8 @@ import { buildScenarioRegistry } from './visual-redesign.mjs';
 import { pageKit, probeStateColors } from './visual-redesign-probes.mjs';
 import {
   ENTRANCE_RECORDER_SOURCE, emptyStateVerdict, entranceVerdict, firstFamily, probeEmptyState,
-  probeSelectionFacts, probeShellStateColors, probeSidebarStatic, scenarios, selectionVerdict, shellLiveFrame,
-  sidebarStaticVerdict, runStateColorsShell,
+  probeSelectionFacts, probeShellStateColors, probeSidebarMotion, probeSidebarStatic, scenarios, selectionVerdict, shellLiveFrame,
+  sidebarFocusVerdict, sidebarStaticVerdict, runStateColorsShell,
 } from './visual-redesign-scenarios-t3.mjs';
 
 // ---------------------------------------------------------------------------
@@ -304,7 +304,7 @@ describe('entranceVerdict (S11 choreography)', () => {
 // ---------------------------------------------------------------------------
 
 describe('in-page probes serialize cleanly with the shared kit', () => {
-  const probes = [probeSidebarStatic, probeSelectionFacts, probeEmptyState, probeShellStateColors];
+  const probes = [probeSidebarStatic, probeSidebarMotion, probeSelectionFacts, probeEmptyState, probeShellStateColors];
   test('kit-augmented sources parse', () => {
     for (const probe of probes) {
       expect(() => new Function(`${pageKit()}\nreturn (${probe.toString()})();`)).not.toThrow();
@@ -610,17 +610,33 @@ async function runScript(view, statements) {
 async function awaitViewStarts(view, eventType, selectors, trigger) {
   return view.evaluate(`(() => new Promise((resolve, reject) => {
     const pending = new Set(${JSON.stringify(selectors)});
+    const finished = [];
+    window.__thT3Finished = null;
     const timer = setTimeout(() => {
       document.removeEventListener(${JSON.stringify(eventType)}, onStart, true);
       reject(new Error('missing ${eventType}: ' + [...pending].join(', ')));
     }, 2500);
     function onStart(event) {
       for (const selector of pending) {
-        if (event.target.matches(selector)) pending.delete(selector);
+        if (!event.target.matches(selector)) continue;
+        const animation = event.target.getAnimations().find(item =>
+          ${JSON.stringify(eventType)} === 'animationstart'
+            ? item instanceof CSSAnimation && item.animationName === event.animationName
+            : item instanceof CSSTransition && item.transitionProperty === event.propertyName);
+        if (!animation) {
+          clearTimeout(timer);
+          document.removeEventListener(${JSON.stringify(eventType)}, onStart, true);
+          reject(new Error('missing animation at start: ' + selector));
+          return;
+        }
+        finished.push(animation.finished);
+        pending.delete(selector);
       }
       if (pending.size === 0) {
         clearTimeout(timer);
         document.removeEventListener(${JSON.stringify(eventType)}, onStart, true);
+        window.__thT3Finished = Promise.all(finished);
+        window.__thT3Finished.catch(() => {});
         resolve(true);
       }
     }
@@ -633,14 +649,15 @@ async function awaitViewStarts(view, eventType, selectors, trigger) {
   }))()`);
 }
 
-/** Await the exact finite animation, not an elapsed-time guess. */
-async function awaitViewFinished(view, selector) {
+/** Await the completion captured by the in-page start listener, even if it
+ * finished before this host evaluation is scheduled. */
+async function awaitViewFinished(view) {
   return view.evaluate(`(() => {
-    const animations = document.querySelector(${JSON.stringify(selector)}).getAnimations();
-    if (!animations.length) throw new Error('expected running animation on ${selector}');
+    const finished = window.__thT3Finished;
+    if (!finished) throw new Error('missing retained animation completion');
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('animation.finished deadline: ${selector}')), 2500);
-      Promise.all(animations.map(animation => animation.finished)).then(
+      const timer = setTimeout(() => reject(new Error('animation.finished deadline')), 2500);
+      finished.then(
         () => { clearTimeout(timer); resolve(true); },
         error => { clearTimeout(timer); reject(error); },
       );
@@ -704,6 +721,45 @@ describe('adversarial real-DOM proof: probeSidebarStatic + sidebarStaticVerdict 
       const result = await runSerialized(view, probeSidebarStatic);
       expect(sidebarStaticVerdict(result.measurements)).toEqual([]);
       expect(result.measurements.dots[0].matchesAccent).toBe(true);
+    });
+  });
+});
+
+describe('serialized S10 focus probe', () => {
+  const fixture = page(`
+<aside class="th-sidebar" style="width:44px">
+  <div class="th-sidebar-nav" style="display:none"><button class="th-sidebar-toggle">Collapse</button></div>
+  <div class="th-sidebar-rail"><button class="th-sidebar-toggle">Expand</button></div>
+</aside>
+<main class="th-pane--focused" data-th-t3-focus-pane="s10-active">Pane</main>`);
+
+  test('body focus fails despite a stable focused pane; the rail button passes', async () => {
+    await withView(fixture, async view => {
+      const button = await runSerialized(view, probeSidebarMotion);
+      expect(sidebarFocusVerdict(button, 's10-active', true).join(' ')).toContain('sidebar focus');
+      await runScript(view, `document.querySelector('.th-sidebar').classList.add('th-sidebar--collapsed');
+document.querySelector('.th-sidebar-rail button').focus();`);
+      const focused = await runSerialized(view, probeSidebarMotion);
+      expect(focused.focusedPaneIdentity).toBe('s10-active');
+      expect(sidebarFocusVerdict(focused, 's10-active', true)).toEqual([]);
+      await runScript(view, `document.activeElement.blur();`);
+      const lost = await runSerialized(view, probeSidebarMotion);
+      expect(lost.activeElement).toBe('body');
+      expect(lost.focusedPaneCount).toBe(1);
+      expect(sidebarFocusVerdict(lost, 's10-active', true).join(' ')).toContain('sidebar focus');
+    });
+  });
+
+  test('a hidden toolbar or changed pane identity fails', async () => {
+    await withView(fixture, async view => {
+      await runScript(view, `document.querySelector('.th-sidebar-rail button').focus();`);
+      const focused = await runSerialized(view, probeSidebarMotion);
+      expect(sidebarFocusVerdict(focused, 'different-pane', true).join(' ')).toContain('pane identity');
+      await runScript(view, `document.querySelector('.th-sidebar-nav').style.display = 'block';
+document.querySelector('.th-sidebar-nav button').focus();
+document.querySelector('.th-sidebar-nav').style.visibility = 'hidden';`);
+      const hidden = await runSerialized(view, probeSidebarMotion);
+      expect(sidebarFocusVerdict(hidden, 's10-active', false).join(' ')).toContain('sidebar focus');
     });
   });
 });
@@ -900,7 +956,7 @@ describe('adversarial real-DOM proof: entrance recorder + entranceVerdict (S11)'
       await runScript(view, ENTRANCE_RECORDER_SOURCE);
       await awaitViewStarts(view, 'animationstart', ['.enter'],
         `document.getElementById('host').innerHTML = '<div id="target" class="enter">hello</div>';`);
-      await awaitViewFinished(view, '#target');
+      await awaitViewFinished(view);
       // Remount the animated node: a genuine second start.
       await awaitViewStarts(view, 'animationstart', ['.enter'], `
 const host = document.getElementById('host');
@@ -910,6 +966,31 @@ host.appendChild(Object.assign(document.createElement('div'), { className: 'ente
       const parsed = JSON.parse(await view.evaluate('JSON.stringify(window.__thT3Entrance)'));
       const failures = entranceVerdict(parsed);
       expect(failures.some(f => f.includes('restarted 2 times'))).toBe(true);
+    });
+  });
+  test('retains completion when the started animation ends before the host awaits it', async () => {
+    await withView(ENTRANCE_HTML, async view => {
+      await awaitViewStarts(view, 'animationstart', ['#target'],
+        `document.getElementById('host').innerHTML = '<div id="target" class="enter">hello</div>';`);
+      // Finish the real animation before consuming the retained signal. Its
+      // backwards fill no longer requires it to appear in getAnimations().
+      await view.evaluate("document.getElementById('target').getAnimations()[0].finish()");
+      expect(await view.evaluate("document.getElementById('target').getAnimations().length")).toBe(0);
+      expect(await awaitViewFinished(view)).toBe(true);
+    });
+  });
+  test('a missing start rejects instead of accepting an empty completion', async () => {
+    await withView(ENTRANCE_HTML, async view => {
+      await expect(awaitViewStarts(view, 'animationstart', ['#target'], `
+document.getElementById('host').innerHTML = '<div id="target">hello</div>';`)).rejects.toThrow('missing animationstart');
+    });
+  });
+  test('a cancelled animation rejects its retained completion', async () => {
+    await withView(ENTRANCE_HTML, async view => {
+      await awaitViewStarts(view, 'animationstart', ['#target'],
+        `document.getElementById('host').innerHTML = '<div id="target" class="enter">hello</div>';`);
+      await view.evaluate("document.getElementById('target').getAnimations()[0].cancel()");
+      await expect(awaitViewFinished(view)).rejects.toThrow();
     });
   });
   test('a hover-colour-only transition is not an entrance, so alone it fails', async () => {
