@@ -47,7 +47,13 @@ describe("rendered lean recency on Sidebar and home", () => {
     });
     vi.mocked(apiJson).mockImplementation(async path => {
       if (path === "/api/sessions/live") return { sessions: rows };
-      if (path === "/api/workspaces") return [{ id: "ws", name: "Workspace", path: "/work", chats: [] }];
+      // Every feed row doubles as a stored chat so each one has an open
+      // target: the surfaces under test list only resolvable summaries.
+      if (path === "/api/workspaces") return [{
+        id: "ws", name: "Workspace", path: "/work",
+        chats: (rows as readonly { readonly id: string; readonly title: string }[])
+          .map((row) => ({ id: row.id, name: row.title, provider: "omo" as const })),
+      }];
       if (path.startsWith("/api/workspaces/ws/sessions")) return { items: catalog, nextCursor: "" };
       return [];
     });
