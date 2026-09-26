@@ -143,8 +143,9 @@
    pane-header controls or the composer. Being fixed, it
    reserves no layout height, so showing or dismissing it never shifts the
    panes; pointer-events: none keeps everything beneath it clickable. Status
-   is carried by the leading glyph plus the text colour, never a coloured
-   border. Long messages wrap inside the viewport-bounded chip. */
+   is carried by the leading glyph, the text colour and the matching status
+   tint on success; never a coloured border. Long messages wrap inside the
+   viewport-bounded chip. */
 .th-toast {
   position: fixed;
   top: calc(env(safe-area-inset-top) + var(--th-header-h) + var(--th-space-2));
@@ -205,9 +206,17 @@
 
 .th-toast--success {
   color: var(--th-success);
+  /* Declared after the @supports glass block, so the success tint wins by
+     source order and the fill reads as the status surface in both themes;
+     the glass blur stays beneath the translucent tint. */
+  background: var(--th-success-bg);
 }
 
 .th-toast--success::before {
+  /* One step above the base glyph: success feedback must read at a glance,
+     not as a footnote-sized check. */
+  width: var(--th-space-5);
+  height: var(--th-space-5);
   mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='m8.5 12.5 2.5 2.5 4.5-5'/%3E%3C/svg%3E");
 }
 
@@ -255,8 +264,9 @@
 
 /* The single-pane shell already leads with its own hero, so the picker's
    presence copy stays hidden there; the desktop split leaf (picker straight
-   inside .th-pane-wrap) is where it shows. display:none also removes it from
-   the accessibility tree. */
+   inside .th-pane-wrap) is where it shows, tiered by the pane's block size
+   (split-view.css container queries). display:none also removes it from the
+   accessibility tree. */
 .th-empty > .th-picker-pane > .th-empty-hero {
   display: none;
 }
