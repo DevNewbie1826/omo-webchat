@@ -350,15 +350,27 @@ describe("spacing and elevation contracts", () => {
 });
 
 describe("visual accessibility contracts", () => {
-  it("keeps every design duration token between 120ms and 480ms with the full easing set", () => {
+  it("keeps every state duration token between 120ms and 480ms with the full easing set", () => {
     // v2 motion contract: 120 (hover/press) - 200 (state/popover) - 320
-    // (enter/disclosure) - 480ms (one-time choreography only), plus the four
-    // easings (standard, enter, move, small-pop spring).
-    const durations = Array.from(tokens.matchAll(/--th-dur(?:-[\w-]+)?:\s*(\d+)ms/g), (match) => Number(match[1]));
+    // (enter/disclosure) - 480ms (one-time choreography only), plus the
+    // easings (standard, enter, move, small-pop spring, linear). The
+    // progress clocks (--th-dur-spin/--th-dur-shimmer) run continuous
+    // agent-alive loops rather than state transitions, so they sit outside
+    // the 120-480ms census by design and are pinned to their own values.
+    const durations = Array.from(tokens.matchAll(/--th-dur(?:-[\w-]+)?:\s*(\d+)ms/g), (match) => ({
+      name: match[0].slice(0, match[0].indexOf(":")),
+      ms: Number(match[1]),
+    }));
     expect(durations.length).toBeGreaterThan(0);
-    expect(durations.every((duration) => duration >= 120 && duration <= 480)).toBe(true);
+    for (const duration of durations) {
+      if (duration.name === "--th-dur-spin" || duration.name === "--th-dur-shimmer") continue;
+      expect(duration.ms >= 120 && duration.ms <= 480, `${duration.name} must stay on the state-transition scale`).toBe(true);
+    }
     expect(tokenValue("--th-dur-emph")).toBe("480ms");
-    for (const name of ["--th-ease", "--th-ease-out", "--th-ease-in-out", "--th-ease-spring"]) {
+    expect(tokenValue("--th-dur-spin")).toBe("700ms");
+    expect(tokenValue("--th-dur-shimmer")).toBe("1600ms");
+    expect(tokenValue("--th-ease-linear")).toBe("linear");
+    for (const name of ["--th-ease", "--th-ease-out", "--th-ease-in-out", "--th-ease-spring", "--th-ease-linear"]) {
       expect(tokenValue(name), `${name} must exist`).not.toBe("");
     }
   });
@@ -1326,5 +1338,61 @@ describe("pinned live-session section contracts", () => {
     expect(minHeight).toContain("2px");
     const pillHeight = numericToken("--th-type-micro-size") * numericToken("--th-type-micro-line") + 2;
     expect(evaluateCalc(minHeight)).toBe(pillHeight);
+  });
+});
+
+describe("scroll-to-bottom narrow placement contracts", () => {
+  // D1 (s17 critique, QA S22 at 390): at narrow panes the reading column
+  // fills the pane, and the inline-end anchored circle covered a collapsed
+  // record's status word. Inside the chat pane's 600px container breakpoint
+  // the button centres in a reserved strip below the scroll body; the wide
+  // inline-end placement must stay unchanged.
+  const narrowBlock =
+    chatTranscript.match(/@container chat-pane \(max-width: 600px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+
+  // Resolve any --th-* token to a number: plain px values parse directly,
+  // calc() expressions are substituted recursively and evaluated (same
+  // pattern as the pinned live-session contracts above).
+  const numericToken = (name: string): number => {
+    const raw = tokenValue(name);
+    const expression = raw
+      .replace(/var\(\s*(--[\w-]+)\s*\)/g, (_match, ref: string) => String(numericToken(ref)))
+      .replace(/calc|px/g, "");
+    return Function(`"use strict"; return (${expression});`)() as number;
+  };
+  const evaluateCalc = (value: string): number =>
+    Function(
+      `"use strict"; return (${value
+        .replace(/var\(\s*(--[\w-]+)\s*\)/g, (_match, ref: string) => String(numericToken(ref)))
+        .replace(/calc|px/g, "")});`,
+    )() as number;
+
+  it("keeps the 44px hit area and the wide inline-end placement", () => {
+    const base = ruleBody(chatTranscript, ".th-chat-scroll-bottom");
+    expect(declarationValue(base, "width")).toBe("var(--th-space-11)");
+    expect(declarationValue(base, "height")).toBe("var(--th-space-11)");
+    expect(containsVarToken(declarationValue(base, "right"), "--th-chat-gutter")).toBe(true);
+    expect(declarationValue(base, "bottom")).toBe("var(--th-space-4)");
+    expect(declarationValue(base, "left"), "wide placement must not centre").toBe("");
+  });
+
+  it("reserves a bottom strip that fits the button whenever it is mounted", () => {
+    expect(narrowBlock, "narrow container block").not.toBe("");
+    const strip = ruleBody(narrowBlock, ".th-chat-scrollport:has(> .th-chat-scroll-bottom)");
+    expect(strip, "reserved strip rule").not.toBe("");
+    const paddingBottom = declarationValue(strip, "padding-bottom");
+    expect(containsVarToken(paddingBottom, "--th-space-11")).toBe(true);
+    const button = ruleBody(narrowBlock, ".th-chat-pane .th-chat-scroll-bottom");
+    const bottomOffset = evaluateCalc(declarationValue(button, "bottom"));
+    expect(evaluateCalc(paddingBottom)).toBeGreaterThanOrEqual(
+      numericToken("--th-space-11") + bottomOffset,
+    );
+  });
+
+  it("centres the button in the strip at narrow panes", () => {
+    const button = ruleBody(narrowBlock, ".th-chat-pane .th-chat-scroll-bottom");
+    expect(declarationValue(button, "left")).toBe("50%");
+    expect(declarationValue(button, "right")).toBe("auto");
+    expect(declarationValue(button, "translate")).toMatch(/^-50%/);
   });
 });

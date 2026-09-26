@@ -216,7 +216,6 @@
   min-width: 0;
   max-width: 80%;
   padding: var(--th-space-2) var(--th-space-3);
-  overflow-wrap: anywhere;
   color: var(--th-text);
   font-size: var(--th-type-body-size);
   line-height: var(--th-type-body-line);
@@ -225,12 +224,14 @@
      user bubble's emphasize weight below is a real contrast, not a default. */
   font-weight: var(--th-weight-read);
   white-space: pre-wrap;
-  word-break: break-word;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .th-chat-msg > span {
   max-width: min(68ch, 100%);
   overflow-wrap: anywhere;
+  word-break: keep-all;
 }
 
 /* Authorship rides the dedicated user surface (pinned by styleContracts):
@@ -352,7 +353,7 @@
   background-color: var(--th-accent);
   -webkit-mask-image: repeating-conic-gradient(var(--th-accent) 0deg 22deg, transparent 22deg 45deg);
   mask-image: repeating-conic-gradient(var(--th-accent) 0deg 22deg, transparent 22deg 45deg);
-  animation: th-tool-spin 700ms linear infinite;
+  animation: th-tool-spin var(--th-dur-spin) var(--th-ease-linear) infinite;
 }
 
 /* Running label: violet with the same background-position shimmer as the
@@ -364,7 +365,7 @@
   background-clip: text;
   color: var(--th-accent);
   -webkit-text-fill-color: transparent;
-  animation: th-tool-shimmer 1.6s linear infinite;
+  animation: th-tool-shimmer var(--th-dur-shimmer) var(--th-ease-linear) infinite;
 }
 
 /* Round collapse chevron, trailing. */
@@ -465,14 +466,14 @@
 
 .th-chat-scroll-bottom {
   position: absolute;
-  right: max(var(--th-chat-gutter), calc((100% - var(--th-chat-max)) / 2 + 8px));
-  bottom: 16px;
+  right: max(var(--th-chat-gutter), calc((100% - var(--th-chat-max)) / 2 + var(--th-space-2)));
+  bottom: var(--th-space-4);
   z-index: 12;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
+  width: var(--th-space-11);
+  height: var(--th-space-11);
   border: 1px solid var(--th-border-raised);
   border-radius: 50%;
   background: var(--th-surface-raised);
@@ -482,6 +483,28 @@
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
+}
+
+/* Narrow panes (s17 critique D1, QA S22 at 390): the reading column fills
+   nearly the whole pane, so the inline-end anchored circle lands inside the
+   record text lane and covers a collapsed record's status word. Inside the
+   chat pane's 600px container breakpoint the button moves into a reserved
+   strip below the scroll body: the scrollport grows matching bottom padding
+   only while the button is mounted (:has), and the circle centres as a
+   floating pill in that strip, so no transcript row can ever render beneath
+   it. The 44px hit area and the wide inline-end placement above stay
+   untouched. */
+@container chat-pane (max-width: 600px) {
+  .th-chat-scrollport:has(> .th-chat-scroll-bottom) {
+    padding-bottom: calc(var(--th-space-11) + var(--th-space-4));
+  }
+
+  .th-chat-pane .th-chat-scroll-bottom {
+    right: auto;
+    bottom: var(--th-space-2);
+    left: 50%;
+    translate: -50% 0;
+  }
 }
 
 .th-chat-markdown {

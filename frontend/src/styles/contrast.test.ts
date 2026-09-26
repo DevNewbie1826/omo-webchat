@@ -441,7 +441,9 @@ describe("token contrast contracts (WCAG 2.1)", () => {
       reason: "Motion timing and easing are shared by every theme.",
       names: [
         "--th-ease", "--th-ease-out", "--th-ease-in-out", "--th-ease-spring",
+        "--th-ease-linear",
         "--th-dur-fast", "--th-dur", "--th-dur-slow", "--th-dur-emph",
+        "--th-dur-spin", "--th-dur-shimmer",
       ],
     },
   ] as const;

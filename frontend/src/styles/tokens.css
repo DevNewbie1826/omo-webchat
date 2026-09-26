@@ -236,6 +236,14 @@
     0.721 25.3%, 0.849 31.5%, 0.937 38.1%, 0.968 41.8%, 0.991 45.7%,
     1.006 50.1%, 1.015 55%, 1.017 63.9%, 1.001);
 
+  /* Progress clocks: the two continuous agent-alive loops (thinking spinner,
+   * running-label shimmer) keep a steady beat outside the 120-480ms state
+   * transition scale, so styleContracts.test.ts exempts them from that
+   * census. Both consume the shared linear easing. */
+  --th-dur-spin: 700ms;
+  --th-dur-shimmer: 1600ms;
+  --th-ease-linear: linear;
+
   color-scheme: dark;
 }
 

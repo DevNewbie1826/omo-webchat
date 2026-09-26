@@ -35,8 +35,9 @@
   position: absolute;
   top: 0;
   bottom: 0;
-  /* 12px inline head padding + half of the 12px glyph box. */
-  left: calc(var(--th-space-3) + 5.5px);
+  /* 12px head inset - 4px chevron pull + 20px chip + 8px gap
+     + half the 12px status glyph, minus half the 1px stroke. */
+  left: calc(var(--th-space-3) - var(--th-space-1) + var(--th-space-5) + var(--th-space-2) + 5.5px);
   width: 1px;
   background: var(--th-border-surface);
   pointer-events: none;
@@ -44,6 +45,19 @@
 
 .th-chat-record--continue .th-chat-record-rail {
   top: calc(-1 * var(--th-space-2));
+}
+
+/* Separate virtual rows contribute 8px of padding on each side of their
+   boundary; within one message the existing 8px block gap applies. */
+.th-chat-row .th-chat-msg > :first-child.th-chat-record--continue .th-chat-record-rail,
+.th-chat-row .th-chat-msg > :first-child.th-chat-tool-media > .th-chat-record--continue .th-chat-record-rail {
+  top: calc(-2 * var(--th-space-2));
+}
+
+/* Thinking's dot is its first header child; reserve the same leading lane
+   as the tool's chevron without changing thinking's accessible markup. */
+.th-chat-thinking-head {
+  padding-left: var(--th-space-9);
 }
 
 /* The entire header is the disclosure button: 48px minimum, 8px block /
@@ -142,7 +156,7 @@
   background-color: var(--th-accent);
   -webkit-mask-image: repeating-conic-gradient(var(--th-accent) 0deg 22deg, transparent 22deg 45deg);
   mask-image: repeating-conic-gradient(var(--th-accent) 0deg 22deg, transparent 22deg 45deg);
-  animation: th-tool-spin 700ms linear infinite;
+  animation: th-tool-spin var(--th-dur-spin) var(--th-ease-linear) infinite;
 }
 
 .th-tool-glyph--ok {
@@ -196,7 +210,7 @@
   background-clip: text;
   color: var(--th-accent);
   -webkit-text-fill-color: transparent;
-  animation: th-tool-shimmer 1.6s linear infinite;
+  animation: th-tool-shimmer var(--th-dur-shimmer) var(--th-ease-linear) infinite;
 }
 
 .th-tool-status--ok {
