@@ -167,16 +167,29 @@ func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
 		err = s.queue.Delete(id)
 	}
 	if err == nil {
-		err = s.cursors.DeleteChat(id)
+		// Stop may have waited for an acquisition that persisted a replacement
+		// cursor. Capture that durable before deleting its only stored owner.
+		if current, lookupErr := s.cursors.GetChat(id); lookupErr == nil {
+			c = current
+		}
+		remove := func() error {
+			err := s.cursors.DeleteChat(id)
+			if errors.Is(err, cursorstore.ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+		if s.manager != nil {
+			err = s.manager.DeleteChatIdentity(id, c.DurableSessionID, remove)
+		} else {
+			err = remove()
+		}
 	}
 	delete(s.chatDeleting, id)
 	s.chatLifecycleMu.Unlock()
 	if err != nil && !errors.Is(err, cursorstore.ErrNotFound) {
 		s.writeStoreError(w, err)
 		return
-	}
-	if s.manager != nil {
-		s.manager.RetireIdentity(id)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

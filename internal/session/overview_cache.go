@@ -247,6 +247,9 @@ func (m *Manager) ingestEpochEvent(epoch omorpc.EpochToken, ev *omorpc.Event) (*
 	if _, dead := m.invalidatedEpochs[epoch]; dead {
 		return nil, Summary{}, nil
 	}
+	if durableID, _, _, ok := decodeOverviewEvent(ev); ok && m.deletingDurable[durableID] != 0 {
+		return nil, Summary{}, nil
+	}
 	if s := m.byRoute[ev.SessionID]; s != nil && s.epoch == epoch {
 		return s, Summary{}, nil
 	}
@@ -281,9 +284,20 @@ func (m *Manager) ingestUnboundOverviewLocked(epoch omorpc.EpochToken, ev *omorp
 	if _, retired := m.retiredDurable[durableID]; retired {
 		return Summary{}, nil
 	}
+	if m.deletingDurable[durableID] != 0 {
+		return Summary{}, nil
+	}
 	chatID := durableID
 	title := ""
+	entry := m.overviewCache[durableID]
+	// Losing a reverse lookup is not a new identity. Keep the last owner
+	// until a stored replacement or deletion retires it, rather than letting
+	// a late event remap the chat back to an untitled durable row.
+	if entry != nil {
+		chatID, title = entry.chatID, entry.title
+	}
 	mapped := m.durableToChat[durableID]
+	claimed := mapped != ""
 	if mapped != "" {
 		chatID = mapped
 	}
@@ -294,18 +308,21 @@ func (m *Manager) ingestUnboundOverviewLocked(epoch omorpc.EpochToken, ev *omorp
 			}
 			if chatID == resolvedID {
 				title = name
+				claimed = true
 			}
 		}
 	}
-	if s := m.byChat[chatID]; s != nil && s.durableID != durableID {
-		m.retireDurableLocked(durableID, chatID)
-		return Summary{}, nil
+	incumbent := m.byChat[chatID]
+	pending := incumbent != nil && incumbent.durableID != durableID
+	if pending && entry != nil {
+		// Preserve a previously published provisional row's remap source
+		// until the replacement is actually allowed to publish.
+		chatID = entry.chatID
 	}
-	entry := m.overviewCache[durableID]
 	replaces := ""
 	if entry == nil || entry.epoch != epoch {
 		if entry != nil {
-			if m.byChat[entry.chatID] == nil {
+			if m.overviewCurrent[entry.chatID].DurableSessionID == durableID {
 				delete(m.overviewCurrent, entry.chatID)
 			}
 			if entry.chatID != chatID {
@@ -315,7 +332,7 @@ func (m *Manager) ingestUnboundOverviewLocked(epoch omorpc.EpochToken, ev *omorp
 		entry = &overviewCacheEntry{epoch: epoch, chatID: chatID, snapshots: make(map[string]json.RawMessage), oversized: make(map[string]bool)}
 		m.overviewCache[durableID] = entry
 	} else if entry.chatID != chatID {
-		if m.byChat[entry.chatID] == nil {
+		if m.overviewCurrent[entry.chatID].DurableSessionID == durableID {
 			delete(m.overviewCurrent, entry.chatID)
 		}
 		replaces = entry.chatID
@@ -342,6 +359,22 @@ func (m *Manager) ingestUnboundOverviewLocked(epoch omorpc.EpochToken, ev *omorp
 		reconcileOverviewEntry(entry)
 	}
 	refreshOverviewExactCounts(entry)
+	// Persistence precedes route publication during acquisition. Keep the
+	// replacement's snapshots, but let validated publication replace the
+	// incumbent chat identity; activity cannot retire its own durable.
+	if pending {
+		m.evictOverviewLRULocked()
+		return Summary{}, nil
+	}
+	// A stored cursor can change without an acquisition. Its resolved owner
+	// is authoritative for a cold chat, and has exactly one current durable.
+	if claimed {
+		for previous, cached := range m.overviewCache {
+			if previous != durableID && cached.chatID == chatID {
+				m.retireDurableLocked(previous, chatID)
+			}
+		}
+	}
 	m.evictOverviewLRULocked()
 	snapshot := entry.summary(entry.chatID, durableID, entry.title)
 	snapshot.ReplacesSessionID = replaces
@@ -360,7 +393,8 @@ func (m *Manager) ApplyChatTitle(chatID, name string) {
 	if m.closed {
 		return
 	}
-	if m.byChat[chatID] != nil {
+	owner := m.byChat[chatID]
+	if owner != nil && m.byRoute[owner.routingID] == owner {
 		return
 	}
 	for durableID, entry := range m.overviewCache {
@@ -370,6 +404,9 @@ func (m *Manager) ApplyChatTitle(chatID, name string) {
 		entry.title = name
 		m.overviewClock++
 		entry.used = m.overviewClock
+		if owner != nil && owner.durableID != durableID {
+			continue
+		}
 		snapshot := entry.summary(chatID, durableID, name)
 		deliverOverview(m.updateOverviewLocked(snapshot), snapshot)
 	}
@@ -401,7 +438,9 @@ func (m *Manager) evictOverviewLRULocked() {
 		}
 		entry := m.overviewCache[oldestID]
 		delete(m.overviewCache, oldestID)
-		delete(m.overviewCurrent, entry.chatID)
+		if m.overviewCurrent[entry.chatID].DurableSessionID == oldestID {
+			delete(m.overviewCurrent, entry.chatID)
+		}
 	}
 }
 

@@ -196,6 +196,7 @@ type Manager struct {
 	durableToChat       map[string]string
 	retiredDurable      map[string]uint64
 	retiredDurableFIFO  []retiredDurableRecord
+	deletingDurable     map[string]int
 	identityGeneration  uint64
 	invalidatedEpochs   map[omorpc.EpochToken]struct{}
 	epochIngestions     map[omorpc.EpochToken]int
@@ -715,7 +716,9 @@ func (m *Manager) pruneDurableTombstonesLocked(epoch omorpc.EpochToken) {
 func (m *Manager) retireDurableLocked(durable, chatID string) {
 	delete(m.durableToChat, durable)
 	if entry := m.overviewCache[durable]; entry != nil {
-		delete(m.overviewCurrent, entry.chatID)
+		if m.overviewCurrent[entry.chatID].DurableSessionID == durable {
+			delete(m.overviewCurrent, entry.chatID)
+		}
 		delete(m.overviewCache, durable)
 	}
 	for epoch, entries := range m.byDurableEpoch {
@@ -773,9 +776,14 @@ func (m *Manager) retireSessionIdentityLocked(s *Session, bumpGeneration bool) {
 // later lookup - from a publisher racing this retirement or holding the old
 // pointer - lands on the dead journal and is refused, and no second journal
 // can ever be created for the same pathname within this manager instance.
-func (m *Manager) RetireIdentity(chatID string) {
+func (m *Manager) RetireIdentity(chatID string, durableIDs ...string) {
 	m.mu.Lock()
 	m.retireChatIdentityLocked(chatID)
+	for _, durable := range durableIDs {
+		if _, retired := m.retiredDurable[durable]; !retired {
+			m.retireDurableLocked(durable, chatID)
+		}
+	}
 	delete(m.operationOwners, chatID)
 	journal := m.noticeJournals[chatID]
 	if journal == nil {
@@ -2042,6 +2050,9 @@ func (m *Manager) LiveSummaries() []Summary {
 	}
 	cached := make([]Summary, 0, len(m.overviewCache))
 	for id, entry := range m.overviewCache {
+		if s := m.byChat[entry.chatID]; s != nil && s.durableID != id {
+			continue
+		}
 		snapshot := entry.summary(entry.chatID, id, entry.title)
 		cached = append(cached, snapshot)
 	}
