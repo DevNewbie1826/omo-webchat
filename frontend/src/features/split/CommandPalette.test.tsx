@@ -6,6 +6,7 @@ import type { I18nValue, Lang } from "../../i18n";
 import type { CommandEntry } from "../../lib/chatWs";
 import { COMPACT_COMMAND } from "./curatedCommands";
 import { CommandPalette } from "./CommandPalette";
+import { requireElement } from "./chatPaneTestHarness";
 
 const PROVIDER_COMMAND: CommandEntry = {
 	name: "fix-tests",
@@ -61,7 +62,10 @@ describe("CommandPalette curated description localization", () => {
 						commands={[PROVIDER_COMMAND, COMPACT_COMMAND]}
 						activeIndex={-1}
 						onActiveIndex={() => undefined}
-						onSelect={() => undefined}
+					onSelect={() => undefined}
+						hintNavigate={translate(lang, "chat.composer.paletteHintNavigate")}
+						hintSelect={translate(lang, "chat.composer.paletteHintSelect")}
+						hintClose={translate(lang, "chat.composer.paletteHintClose")}
 					/>
 				</I18nContext.Provider>,
 			);
@@ -81,5 +85,35 @@ describe("CommandPalette curated description localization", () => {
 	it("never translates provider-advertised descriptions", () => {
 		render("ko");
 		expect(optionText(container, "/fix-tests")).toContain("Fix failing tests");
+	});
+
+	it("renders the keyboard hint row with styled key chips before the options", () => {
+		render("en");
+		const listbox = requireElement(
+			container.querySelector<HTMLElement>('[role="listbox"]'),
+			"missing listbox",
+		);
+		const hints = requireElement(
+			listbox.querySelector<HTMLElement>(":scope > .th-chat-slash-hints"),
+			"missing palette hint row",
+		);
+		// The hint row leads the panel, ahead of every option.
+		expect(hints.nextElementSibling?.getAttribute("role")).toBe("option");
+		const keys = Array.from(hints.querySelectorAll("kbd"), (kbd: HTMLElement) => kbd.textContent);
+		expect(keys).toEqual(["↑", "↓", "↵", "esc"]);
+		expect(hints.textContent).toContain(translate("en", "chat.composer.paletteHintNavigate"));
+		expect(hints.textContent).toContain(translate("en", "chat.composer.paletteHintSelect"));
+		expect(hints.textContent).toContain(translate("en", "chat.composer.paletteHintClose"));
+	});
+
+	it("localizes the keyboard hint row copy", () => {
+		render("ko");
+		const hints = requireElement(
+			container.querySelector<HTMLElement>(".th-chat-slash-hints"),
+			"missing palette hint row",
+		);
+		expect(hints.textContent).toContain(translate("ko", "chat.composer.paletteHintNavigate"));
+		expect(hints.textContent).toContain(translate("ko", "chat.composer.paletteHintSelect"));
+		expect(hints.textContent).toContain(translate("ko", "chat.composer.paletteHintClose"));
 	});
 });

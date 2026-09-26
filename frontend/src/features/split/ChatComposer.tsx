@@ -196,12 +196,16 @@ export function ChatComposer({ session, commands, running, disabled = false, ret
         submit();
       }}
     >
-      <ChatComposerAttachmentPreview
-        pendingImage={pendingImage}
-        removeLabel={t("chat.removeAttach")}
-        onClear={clearImage}
-      />
       <div className="th-chat-input-inner">
+        {/* The pending-image chip lives in the capsule's top context strip:
+        its own row above the input row (the capsule wraps), per DESIGN.md
+        "Attachments open through the icon-only plus action … a thumbnail
+        chip in its own row above the input row, inside the capsule". */}
+        <ChatComposerAttachmentPreview
+          pendingImage={pendingImage}
+          removeLabel={t("chat.removeAttach")}
+          onClear={clearImage}
+        />
         {isDragOver && <div className="th-chat-drop-hint" role="status">{t("chat.dropImage")}</div>}
         <ChatComposerPalettes
           command={{
@@ -216,6 +220,9 @@ export function ChatComposer({ session, commands, running, disabled = false, ret
             pathOutsideRoot: t("chat.pathOutsideRoot"), pathNotFound: t("chat.pathNotFound"),
             noFiles: t("chat.noFiles"), folderEmpty: t("chat.folderEmpty"),
             searchingFiles: t("chat.searchingFiles"), browseCapped: t("chat.browseCapped"),
+            hintNavigate: t("chat.composer.paletteHintNavigate"),
+            hintSelect: t("chat.composer.paletteHintSelect"),
+            hintClose: t("chat.composer.paletteHintClose"),
           }}
         />
         <ChatComposerAttachment

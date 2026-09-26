@@ -3,6 +3,7 @@ import { useT } from "../../i18n";
 import type { CommandEntry } from "../../lib/chatWs";
 import { commandPrefix } from "./commandMatch";
 import { COMPACT_DESCRIPTION_I18N_KEY, isCuratedCompact, isCuratedReload, NEW_COMMAND, UPDATE_COMMAND } from "./curatedCommands";
+import { PaletteHints } from "./chatComposerPaletteHints";
 
 interface CommandPaletteProps {
   readonly id: string;
@@ -11,6 +12,9 @@ interface CommandPaletteProps {
   readonly activeIndex: number;
   readonly onActiveIndex: (index: number) => void;
   readonly onSelect: (command: CommandEntry) => void;
+  readonly hintNavigate: string;
+  readonly hintSelect: string;
+  readonly hintClose: string;
 }
 
 export function CommandPalette({
@@ -20,6 +24,9 @@ export function CommandPalette({
   activeIndex,
   onActiveIndex,
   onSelect,
+  hintNavigate,
+  hintSelect,
+  hintClose,
 }: CommandPaletteProps) {
   const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const { t } = useT();
@@ -30,6 +37,7 @@ export function CommandPalette({
 
   return (
     <div className="th-chat-slash" id={id} role="listbox">
+      <PaletteHints navigateLabel={hintNavigate} selectLabel={hintSelect} closeLabel={hintClose} />
       {commands.map((command, index) => {
         const active = index === activeIndex;
         // Only the client-owned curated entry is localized; provider

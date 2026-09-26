@@ -119,7 +119,7 @@ describe("ChatComposer attachment chip", () => {
 		vi.unstubAllGlobals();
 	});
 
-	it("places a picked attachment chip outside the input inner", async () => {
+	it("places a picked attachment chip in the capsule's top context strip", async () => {
 		act(() => {
 			root.render(
 				<I18nContext.Provider value={i18n}>
@@ -168,7 +168,9 @@ describe("ChatComposer attachment chip", () => {
 			container.querySelector<HTMLElement>(".th-chat-input-inner"),
 			"missing input inner",
 		);
-		expect(inner.contains(chip)).toBe(false);
+		// The chip is a context-strip row inside the capsule (DESIGN.md: a
+		// thumbnail chip in its own row above the input row, inside the capsule).
+		expect(inner.contains(chip)).toBe(true);
 	});
 
 	it("renders a thumbnail chip for a restored image and removes it", () => {

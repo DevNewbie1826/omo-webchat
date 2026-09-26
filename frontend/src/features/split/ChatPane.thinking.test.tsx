@@ -231,12 +231,18 @@ describe("ChatPane thinking disclosure", () => {
     vi.unstubAllGlobals();
   });
 
-  function liveThinking(): HTMLDetailsElement {
-    const details = container.querySelector<HTMLDetailsElement>(
+  function liveThinking(): HTMLElement {
+    const record = container.querySelector<HTMLElement>(
       ".th-chat-live .th-chat-thinking",
     );
-    if (!details) throw new Error("live thinking disclosure missing");
-    return details;
+    if (!record) throw new Error("live thinking disclosure missing");
+    return record;
+  }
+
+  function liveThinkingHead(record: HTMLElement): HTMLButtonElement {
+    const head = record.querySelector<HTMLButtonElement>(".th-chat-thinking-head");
+    if (!head) throw new Error("live thinking disclosure head missing");
+    return head;
   }
 
   it("keeps the live thinking disclosure collapsed while reasoning streams", () => {
@@ -249,10 +255,11 @@ describe("ChatPane thinking disclosure", () => {
       });
     });
 
-    const details = liveThinking();
-    expect(details.open).toBe(false);
-    expect(details.querySelector("summary")?.textContent).toBe("chat.thinking");
-    expect(details.querySelector("pre")?.textContent).toBe("Deep thought in progress");
+    const record = liveThinking();
+    const head = liveThinkingHead(record);
+    expect(head.getAttribute("aria-expanded")).toBe("false");
+    expect(record.querySelector(".th-chat-thinking-label")?.textContent).toBe("chat.thinking");
+    expect(record.querySelector("pre")?.textContent).toBe("Deep thought in progress");
   });
 
   it("reveals the streamed reasoning from the collapsed disclosure", () => {
@@ -265,14 +272,13 @@ describe("ChatPane thinking disclosure", () => {
       });
     });
 
-    const details = liveThinking();
-    const summary = details.querySelector("summary");
-    if (!summary) throw new Error("thinking summary missing");
+    const record = liveThinking();
+    const head = liveThinkingHead(record);
     act(() => {
-      summary.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      head.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(details.open).toBe(true);
-    expect(details.querySelector("pre")?.textContent).toBe("Deep thought in progress");
+    expect(head.getAttribute("aria-expanded")).toBe("true");
+    expect(record.querySelector("pre")?.textContent).toBe("Deep thought in progress");
   });
 });

@@ -20,6 +20,7 @@ import type { ToolEntry, ToolResultImage } from "./chatSessionTypes";
 import { HookCard } from "./HookCard";
 import { remarkBackslashMath } from "./mathDelimiters";
 import { ToolCard, type ToolCardProps } from "./ToolCard";
+import { ThinkingDisclosure } from "./ThinkingDisclosure";
 import { TranscriptNoticeRow } from "./TranscriptNoticeRow";
 import { SummaryNoticeBox } from "./SummaryNoticeBox";
 import { useChatScroll } from "./useChatScroll";
@@ -29,6 +30,26 @@ import type { TranscriptItem } from "./useChatFrameState";
 
 function blockKey(block: NonNullable<UiMessage["blocks"]>[number]): string {
   return block.id ?? `${block.kind}:${block.name ?? ""}:${block.text ?? block.thinking ?? ""}:${JSON.stringify(block.arguments ?? null)}`;
+}
+
+/** Block kinds that form the tool/thinking/subagent timeline. */
+const RECORD_BLOCK_KINDS = new Set(["thinking", "tool", "toolCall", "toolResult"]);
+
+/** True when the block renders as part of a record's media group rather than
+ * its own row: result images always belong to the preceding invocation. */
+function isRecordMedia(block: NonNullable<UiMessage["blocks"]>[number]): boolean {
+  return block.kind === "image" || block.kind === "image_ref";
+}
+
+/** The last block that carries its own transcript row, skipping media that
+ * renders inside a record's media wrapper; undefined for an empty message. */
+function lastRowBlock(message: UiMessage): NonNullable<UiMessage["blocks"]>[number] | undefined {
+  const blocks = message.blocks ?? [];
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index];
+    if (block !== undefined && !isRecordMedia(block)) return block;
+  }
+  return undefined;
 }
 
 /** Identity of one result image: shared media-ref coordinates or equal bytes. */
@@ -436,17 +457,30 @@ export function ChatTranscript({
   // tool's media wrapper as soon as the row mounts, whether the card is open
   // or collapsed. Laziness lives in RefImage's viewport gate, not in the
   // disclosure state, so a collapsed card still shows its result image.
-  const renderMessageBlocks = (message: UiMessage, rowKey: string): ReactNode[] => {
+  // `continuesFromPrevious` marks a record whose rail continues the record
+  // run from the previous transcript item (one turn spans multiple
+  // messages); within the message each record derives continuation from its
+  // previous row-carrying block.
+  const renderMessageBlocks = (message: UiMessage, rowKey: string, continuesFromPrevious: boolean): ReactNode[] => {
     const blocks = message.blocks ?? [];
     const groupedResultImages = new Set<number>();
+    const continuesRailAt = (blockIndex: number): boolean => {
+      for (let prev = blockIndex - 1; prev >= 0; prev -= 1) {
+        const block = blocks[prev];
+        if (block === undefined || isRecordMedia(block)) continue;
+        return RECORD_BLOCK_KINDS.has(block.kind);
+      }
+      return continuesFromPrevious;
+    };
     return blocks.map((block, blockIndex) => {
       if ((block.kind === "image" || block.kind === "image_ref") && groupedResultImages.has(blockIndex)) return null;
       if (block.kind === "thinking") {
         return (
-          <details key={blockKey(block)} className="th-chat-thinking">
-            <summary>{t("chat.thinking")}</summary>
-            <pre>{block.thinking ?? block.text}</pre>
-          </details>
+          <ThinkingDisclosure
+            key={blockKey(block)}
+            text={block.thinking ?? block.text ?? ""}
+            continuesRail={continuesRailAt(blockIndex)}
+          />
         );
       }
       if (block.kind === "image" && typeof block.data === "string") {
@@ -489,6 +523,7 @@ export function ChatTranscript({
           isError,
           details: live?.details,
           args: live?.args ?? block.arguments,
+          continuesRail: continuesRailAt(blockIndex),
         });
         // Every result image of this call — the one folded onto the tool
         // block plus the additional ones stored after it — renders inside
@@ -652,6 +687,29 @@ export function ChatTranscript({
     }
     return { rows, keys };
   }, [heldItems, heldKeys, rowMetrics, estimateCache]);
+
+  // New-row entrance (chat-transcript.css .th-chat-enter): applied once per
+  // new entry identity — appended live rows only, never history loads or
+  // virtualizer remounts. The first keys snapshot marks the loaded history
+  // as animation-free; a restoreVersion change (session switch/restore)
+  // resets the snapshot so a fresh history never animates. The class lands
+  // on the message content, not the positioned row wrapper: the wrapper's
+  // inline transform positions the virtual row and must stay untouched.
+  const restoreVersionForEnterRef = useRef(restoreVersion);
+  const initialEnterKeysRef = useRef<Set<string> | null>(null);
+  const enteredKeysRef = useRef<Set<string>>(new Set());
+  if (restoreVersionForEnterRef.current !== restoreVersion) {
+    restoreVersionForEnterRef.current = restoreVersion;
+    initialEnterKeysRef.current = null;
+    enteredKeysRef.current.clear();
+  }
+  if (initialEnterKeysRef.current === null) initialEnterKeysRef.current = new Set(keys);
+  const enterClassFor = (key: string): string => {
+    const initial = initialEnterKeysRef.current;
+    if (initial === null || initial.has(key) || enteredKeysRef.current.has(key)) return "";
+    enteredKeysRef.current.add(key);
+    return " th-chat-enter";
+  };
   // Include rowMetrics so a typography/width update rebuilds measurements
   // in the same render that installs the new estimates. Content-only
   // updates still hit the frozen per-key estimate cache; measured sizes
@@ -898,6 +956,11 @@ export function ChatTranscript({
                 );
               }
               const message = item.message;
+              const previousItem = rows[virtualItem.index - 1];
+              const continuesFromPrevious =
+                previousItem !== undefined && previousItem.kind === "message"
+                  ? RECORD_BLOCK_KINDS.has(lastRowBlock(previousItem.message)?.kind ?? "")
+                  : false;
               return (
                 <div
                   key={virtualItem.key}
@@ -907,7 +970,7 @@ export function ChatTranscript({
                   style={{ position: "absolute", top: 0, transform: `translateY(${virtualItem.start}px)` }}
                 >
                   <div
-                    className={`th-chat-msg th-chat-msg--${message.role}`}
+                    className={`th-chat-msg th-chat-msg--${message.role}${enterClassFor(String(virtualItem.key))}`}
                     role={message.role === "user" ? "group" : undefined}
                     aria-label={message.role === "user" ? t("chat.fromUser") : undefined}
                   >
@@ -938,7 +1001,7 @@ export function ChatTranscript({
                       <HookCard hookType={message.customType ?? "hook"} text={rowText(message)} />
                     ) : (
                       <>
-                        {renderMessageBlocks(message, String(virtualItem.key))}
+                        {renderMessageBlocks(message, String(virtualItem.key), continuesFromPrevious)}
                         {isFailedTurn(message) && failedTurnText(message) !== null && (
                           // Wire-only wording: the failure text exactly as it
                           // arrived; when the turn carries no text, the
@@ -957,49 +1020,69 @@ export function ChatTranscript({
           </div>
           <div className="th-chat-live" aria-live="polite">
             {thinking && (
-              <details className="th-chat-thinking">
-                <summary>{t("chat.thinking")}</summary>
-                <pre>{thinking}</pre>
-              </details>
+              <ThinkingDisclosure
+                text={thinking}
+                running
+                className={enterClassFor("live:thinking")}
+              />
             )}
             {Object.entries(toolCalls)
               .filter(([id]) => !historyToolIds.has(id))
-              .map(([id, entry]) => {
-                const card = rememberedToolCard({
-                  toolCallId: id,
-                  toolName: entry.toolName,
-                  phase: entry.phase,
-                  text: entry.text,
-                  isError: entry.isError,
-                  details: entry.details,
-                  args: entry.args,
-                });
+              .map(([id, entry], toolIndex) => {
                 // Live result media rides inside the invocation's disclosure
                 // like the finalized card's: it renders while the card is
                 // collapsed too, and an image_ref fetches only when its
-                // element enters the viewport.
+                // element enters the viewport. The one-shot entrance class
+                // lands on the card root (or the existing media wrapper),
+                // never in a conditional wrapper: a structural flip here
+                // would remount the card and orphan held head references.
                 const media = entry.media ?? [];
-                if (media.length === 0) return card;
+                const liveEnterClass = enterClassFor(`live:tool:${id}`);
+                if (media.length === 0) {
+                  return rememberedToolCard({
+                    toolCallId: id,
+                    toolName: entry.toolName,
+                    phase: entry.phase,
+                    text: entry.text,
+                    isError: entry.isError,
+                    details: entry.details,
+                    args: entry.args,
+                    // The live timeline runs thinking, then calls in order:
+                    // a call continues the rail when thinking is above it or
+                    // an earlier live call precedes it.
+                    continuesRail: thinking !== "" || toolIndex > 0,
+                    className: liveEnterClass,
+                  });
+                }
                 return (
-                  <div key={id} className="th-chat-tool-media">
-                    {card}
+                  <div key={id} className={`th-chat-tool-media${liveEnterClass}`}>
+                    {rememberedToolCard({
+                      toolCallId: id,
+                      toolName: entry.toolName,
+                      phase: entry.phase,
+                      text: entry.text,
+                      isError: entry.isError,
+                      details: entry.details,
+                      args: entry.args,
+                      continuesRail: thinking !== "" || toolIndex > 0,
+                    })}
                     {media.map((image, mediaIndex) => renderMedia(image, `live:${id}:${mediaIndex}`, `media:${id}:${mediaIndex}`))}
                   </div>
                 );
               })}
             {streaming && (
-              <div className="th-chat-msg th-chat-msg--streaming">
+              <div className={`th-chat-msg th-chat-msg--streaming${enterClassFor("live:streaming")}`}>
                 <div className="th-chat-markdown">
                   <Markdown text={streaming} />
                 </div>
               </div>
             )}
             {doneReason && (
-              <div className={isStopError(doneReason) ? "th-chat-error" : "th-chat-done"}>
+              <div className={`${isStopError(doneReason) ? "th-chat-error" : "th-chat-done"}${enterClassFor("live:done")}`}>
                 {t(isStopError(doneReason) ? "chat.stoppedError" : "chat.done")}
               </div>
             )}
-            {error && <div className="th-chat-error" role="alert">{error}</div>}
+            {error && <div className={`th-chat-error${enterClassFor("live:error")}`} role="alert">{error}</div>}
           </div>
         </div>
       </div>

@@ -65,6 +65,27 @@
   padding-top: var(--th-space-5);
 }
 
+/* New-row entrance: opacity + translateY(6px) over --th-dur, applied by
+   ChatTranscript once per new entry identity (appended live rows only -
+   never history loads or virtualizer remounts). Streaming text updates in
+   place and is never animated per token. Under reduced motion the global
+   policy drops the animation and the row renders in its final state. */
+@keyframes th-chat-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.th-chat-enter {
+  animation: th-chat-enter var(--th-dur) var(--th-ease-out) both;
+}
+
 .th-chat-row--user {
   justify-content: flex-end;
 }
@@ -90,8 +111,11 @@
   min-width: 0;
 }
 
+/* Receipt times are metadata: sans with tabular figures so the digits
+   align without the mono stack (mono stays reserved for code/paths/output). */
 .th-notice-time {
-  font-family: var(--th-font-mono);
+  font-family: var(--th-font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: var(--th-type-micro-size);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
@@ -209,14 +233,15 @@
   overflow-wrap: anywhere;
 }
 
-/* Authorship rides three redundant channels: the dedicated user surface
-   (pinned by styleContracts) lifts the bubble one step above Raised so it
-   reads at a glance without decoration - no accent bar, no emphasize weight,
-   prose keeps the declared read weight above - and a localized accessible
-   group label names the author for assistive tech. */
+/* Authorship rides the dedicated user surface (pinned by styleContracts):
+   the pill bubble lifts one step above Raised so it reads at a glance
+   without decoration - no border, no accent bar, prose keeps the declared
+   read weight above - and a localized accessible group label names the
+   author for assistive tech. Radius: --th-radius-lg on every corner
+   (QA S4: border-style none, min corner radius 16px). */
 .th-chat-msg--user {
-  border: 1px solid var(--th-border-user);
-  border-radius: var(--th-radius-lg) var(--th-radius-lg) 4px var(--th-radius-lg);
+  border: 0;
+  border-radius: var(--th-radius-lg);
   background: var(--th-surface-user);
   box-shadow: var(--th-shadow-raised);
 }
@@ -257,38 +282,146 @@
   color: var(--th-text-dim);
 }
 
+/* Thinking records share the tool-record timeline grammar instead of the
+   native left-border <details> look: a transparent row with a status dot
+   on the rail, the Thinking label, and a round collapse chevron, over a
+   body that opens with the documented grid-template-rows disclosure
+   transition. The header is a real button (aria-expanded/aria-controls),
+   so Enter/Space toggle natively. */
 .th-chat-thinking {
+  position: relative;
   max-width: 100%;
-  padding: var(--th-space-0-5) 0 var(--th-space-0-5) var(--th-space-3);
-  border: 0;
-  border-left: 1px solid var(--th-border);
   background: transparent;
-  color: var(--th-muted);
+}
+
+.th-chat-thinking-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  width: 100%;
+  min-width: 0;
+  min-height: var(--th-space-8);
+  padding: var(--th-space-1) var(--th-space-3);
+  border: 0;
+  border-radius: var(--th-radius-sm);
+  background: transparent;
+  color: var(--th-text-dim);
   font-size: var(--th-type-label-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
-}
-
-.th-chat-thinking summary {
-  color: var(--th-text-dim);
-  font-weight: var(--th-weight-emphasize);
+  text-align: left;
   cursor: pointer;
 }
 
-/* The collapsed summary is the only affordance for reasoning text; grow it
-   to a 24px tappable row without display:flex/grid — the default summary
-   display keeps the disclosure triangle marker. */
-@media (pointer: coarse) {
-  .th-chat-thinking summary {
-    min-height: var(--th-space-6);
-    padding-block: var(--th-space-1);
-  }
+.th-chat-thinking-head:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--th-ring);
 }
 
-.th-chat-thinking pre {
+/* Status dot: a canvas-backed disc knocking the rail, holding a muted core
+   at rest; the live (running) disclosure swaps the core for the violet
+   dotted spinner. */
+.th-chat-thinking-dot {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--th-bg);
+}
+
+.th-chat-thinking-dot::after {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--th-muted);
+}
+
+.th-chat-thinking--running .th-chat-thinking-dot::after {
+  display: none;
+}
+
+.th-chat-thinking--running .th-chat-thinking-dot {
+  background-color: var(--th-accent);
+  -webkit-mask-image: repeating-conic-gradient(var(--th-accent) 0deg 22deg, transparent 22deg 45deg);
+  mask-image: repeating-conic-gradient(var(--th-accent) 0deg 22deg, transparent 22deg 45deg);
+  animation: th-tool-spin 700ms linear infinite;
+}
+
+/* Running label: violet with the same background-position shimmer as the
+   tool status; the static frame still reads as the violet word. */
+.th-chat-thinking--running .th-chat-thinking-label {
+  background-image: linear-gradient(100deg, var(--th-accent) 42%, var(--th-accent-hover) 50%, var(--th-accent) 58%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: var(--th-accent);
+  -webkit-text-fill-color: transparent;
+  animation: th-tool-shimmer 1.6s linear infinite;
+}
+
+/* Round collapse chevron, trailing. */
+.th-chat-thinking-chevron {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  border-radius: 50%;
+  color: var(--th-muted);
+  transform: rotate(-90deg);
+  transition:
+    transform var(--th-dur) var(--th-ease),
+    background-color var(--th-dur-fast) var(--th-ease),
+    color var(--th-dur-fast) var(--th-ease);
+}
+
+.th-chat-thinking-head:hover .th-chat-thinking-chevron,
+.th-chat-thinking-head:focus-visible .th-chat-thinking-chevron {
+  background: var(--th-hover);
+  color: var(--th-text-dim);
+}
+
+.th-chat-thinking-chevron--open {
+  transform: rotate(90deg);
+}
+
+/* Disclosure body: the grid 0fr -> 1fr interpolation is the documented
+   disclosure exception in the motion contract. Content stays mounted so
+   the transition retargets safely mid-flight (no JS timers); the inner
+   overflow clip gives the track a measurable zero height when closed.
+   Reduced motion collapses the duration globally, rendering the body
+   open/close instant. The body indents under the label so the rail keeps
+   running beside the reasoning text. */
+.th-chat-thinking-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  padding-left: calc(var(--th-space-3) + var(--th-space-3) + var(--th-space-2));
+  transition: grid-template-rows var(--th-dur-slow) var(--th-ease-out);
+}
+
+.th-chat-thinking--open .th-chat-thinking-body {
+  grid-template-rows: 1fr;
+}
+
+.th-chat-thinking-body-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.th-chat-thinking-body pre {
   max-height: 200px;
-  margin-top: var(--th-space-1);
+  margin: 0;
+  padding: var(--th-space-1) 0 var(--th-space-2);
   overflow: auto;
   font-size: var(--th-type-secondary-size);
   line-height: var(--th-type-secondary-line);
@@ -296,6 +429,12 @@
   color: var(--th-muted);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+@media (pointer: coarse) {
+  .th-chat-thinking-head {
+    min-height: var(--th-space-11);
+  }
 }
 
 .th-chat-done {
@@ -396,9 +535,8 @@
   margin: 0 0 var(--th-space-3);
   padding: var(--th-space-2) var(--th-space-3);
   overflow-x: auto;
-  border: 1px solid var(--th-border);
   border-radius: var(--th-radius-sm);
-  background: var(--th-surface);
+  background: var(--th-hover);
 }
 
 .th-chat-markdown pre code {

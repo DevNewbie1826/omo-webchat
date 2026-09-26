@@ -21,10 +21,12 @@
   gap: var(--th-space-2);
 }
 
+/* Layout only: colour, hover, and disabled states come from the
+   .th-btn--primary / .th-btn--ghost primitives. Long labels (paths, URLs)
+   wrap instead of overflowing the window: the button may shrink below its
+   content width, breaks anywhere, and grows past the base 34px height as
+   lines wrap. */
 .th-approval-options .th-btn {
-  /* Long labels (paths, URLs) wrap instead of overflowing the window: the
-     button may shrink below its content width, breaks anywhere, and grows
-     past the base 34px height as lines wrap. */
   min-width: 0;
   max-width: 100%;
   height: auto;
@@ -32,14 +34,6 @@
   overflow-wrap: anywhere;
   text-align: left;
   padding: var(--th-space-2) var(--th-space-3);
-  background: var(--th-accent);
-  color: var(--th-accent-fg);
-}
-
-.th-approval-options .th-btn--ghost {
-  border: 1px solid var(--th-border);
-  background: transparent;
-  color: var(--th-text-dim);
 }
 
 .th-approval-form {
@@ -47,6 +41,21 @@
   gap: var(--th-space-2);
 }
 
+/* The fallback form is owned by ApprovalFallback.tsx (outside this node's
+   write scope): its non-ghost actions take the primary fill here so the
+   whole window answers with one primary idiom. */
+.th-approval-form .th-btn:not(.th-btn--ghost) {
+  background: var(--th-accent-solid);
+  color: var(--th-accent-fg);
+}
+
+.th-approval-form .th-btn:not(.th-btn--ghost):hover:not(:disabled) {
+  background: var(--th-accent-solid-hover);
+}
+
+/* Inputs follow the v2 field primitive: Raised fill behind the default
+   hairline, and focus is the accent-alpha ring — never an accent border
+   colour change. */
 .th-approval-input {
   flex: 1;
   min-width: 0;
@@ -54,11 +63,12 @@
   padding: var(--th-space-2) var(--th-space-3);
   border: 1px solid var(--th-border);
   border-radius: var(--th-radius-sm);
-  background: var(--th-bg);
+  background: var(--th-surface-raised);
   color: var(--th-text);
   font-size: var(--th-type-input-size);
   line-height: var(--th-type-input-line);
   letter-spacing: var(--th-type-input-tracking);
+  transition: box-shadow var(--th-dur-fast) var(--th-ease);
 }
 
 .th-approval-editor {
@@ -67,7 +77,7 @@
 }
 
 .th-approval-input:focus {
-  border-color: var(--th-border-strong);
+  box-shadow: 0 0 0 3px var(--th-ring);
 }
 
 @media (max-width: 420px) {
@@ -110,7 +120,9 @@
    top edge so a long question can never scroll the only way back to an
    earlier question out of view, and paint it with the window's own surface
    (the modal's Overlay fill) so scrolling content never shows through the
-   pinned strip. */
+   pinned strip. The strip's sticky positioning also anchors the active
+   indicator thumb, an absolutely positioned span that slides between tabs
+   on transform alone. */
 .th-approval-question-tabs {
   display: flex;
   gap: var(--th-space-1);
@@ -121,11 +133,25 @@
   background: var(--th-surface-overlay);
 }
 
+/* Active indicator: one thumb sliding under the active tab in --th-text
+   (never the accent — a tab choice is navigation, not an agent-alive
+   state). It is a 1px block stretched by scaleX so only transform moves. */
+.th-approval-question-tab-thumb {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  height: 2px;
+  background: var(--th-text);
+  transform-origin: left center;
+  transition: transform var(--th-dur) var(--th-ease-in-out);
+  pointer-events: none;
+}
+
 .th-approval-question-tab {
   flex: none;
   padding: var(--th-space-1) var(--th-space-2);
   border: 0;
-  border-bottom: 2px solid transparent;
   background: none;
   color: var(--th-muted);
   font: inherit;
@@ -137,7 +163,6 @@
 }
 
 .th-approval-question-tab[aria-selected="true"] {
-  border-bottom-color: var(--th-accent);
   color: var(--th-text);
   font-weight: var(--th-weight-emphasize);
 }
@@ -163,39 +188,71 @@
   gap: var(--th-space-1);
 }
 
+/* One option row: Raised fill behind the default hairline, a leading check
+   slot reserved in every row so selecting never shifts the label, and the
+   label stack in its own column. */
 .th-approval-question-option {
   display: flex;
-  flex-direction: column;
-  gap: var(--th-space-1);
+  align-items: flex-start;
+  gap: var(--th-space-2);
   min-width: 0;
   padding: var(--th-space-2) var(--th-space-3);
   border: 1px solid var(--th-border);
   border-radius: var(--th-radius-sm);
-  background: var(--th-bg);
+  background: var(--th-surface-raised);
   color: var(--th-text);
   font: inherit;
   text-align: left;
   overflow-wrap: anywhere;
   cursor: pointer;
+  transition: background var(--th-dur-fast) var(--th-ease);
 }
 
 .th-approval-question-option:hover {
   background: var(--th-hover);
 }
 
+/* Selected = the accent-soft wash + the check glyph; the hairline keeps its
+   default colour — state is never a coloured border. */
 .th-approval-question-option[aria-pressed="true"] {
-  border-color: var(--th-accent);
-  background: var(--th-surface);
+  background: var(--th-accent-soft);
+}
+
+.th-approval-question-option-check {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--th-accent);
+  opacity: 0;
+  transition: opacity var(--th-dur-fast) var(--th-ease);
+}
+
+.th-approval-question-option[aria-pressed="true"] .th-approval-question-option-check {
+  opacity: 1;
+}
+
+.th-approval-question-option-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-1);
+  min-width: 0;
 }
 
 .th-approval-question-option-label {
+  font-size: var(--th-type-label-size);
   font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
 }
 
 .th-approval-question-option-description {
   color: var(--th-text-dim);
   font-size: var(--th-type-micro-size);
   line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
 }
 
 .th-approval-question-text,
@@ -238,7 +295,8 @@
    caps at the viewport), so the submit row pins to the scrollport's bottom
    edge and a long option list scrolls under it. The row paints with the
    window's own surface (the modal's Overlay fill) so scrolled content never
-   shows through the pinned row. */
+   shows through the pinned row. Layout only for the buttons: the primary
+   fill and ghost behaviour are the .th-btn primitives. */
 .th-approval-question-actions {
   display: flex;
   gap: var(--th-space-2);
@@ -254,14 +312,6 @@
   height: auto;
   min-height: 34px;
   padding: var(--th-space-2) var(--th-space-3);
-  background: var(--th-accent);
-  color: var(--th-accent-fg);
-}
-
-.th-approval-question-actions .th-btn--ghost {
-  border: 1px solid var(--th-border);
-  background: transparent;
-  color: var(--th-text-dim);
 }
 
 /* Minimal fallback note for a request type this client cannot fully render:

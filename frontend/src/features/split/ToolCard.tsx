@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useT } from "../../i18n";
 import { IconCheck, IconChevron } from "../../components/icons";
 import type { JsonValue } from "../../lib/chatWs";
@@ -13,6 +13,10 @@ export interface ToolCardProps {
   readonly args?: unknown;
   readonly open?: boolean | undefined;
   readonly onOpenChange?: (open: boolean) => void;
+  /** The previous transcript record is also a record: extend the rail up. */
+  readonly continuesRail?: boolean | undefined;
+  /** Extra root classes (the transcript's one-shot row entrance). */
+  readonly className?: string | undefined;
 }
 
 interface SubagentMetadata {
@@ -109,6 +113,35 @@ export function ToolCard(props: ToolCardProps) {
   // precedence over both.
   const [userChoice, setUserChoice] = useState<boolean | null>(null);
   const open = props.open ?? (userChoice ?? status === "error");
+  // The output well reports a real overflow state so the bottom fade only
+  // paints when content genuinely exceeds the cap (and clears once the
+  // reader scrolls to the bottom). ResizeObserver and the scroll event are
+  // layout signals, never timers.
+  const outputRef = useRef<HTMLPreElement | null>(null);
+  const [outputClipped, setOutputClipped] = useState(false);
+  useLayoutEffect(() => {
+    const element = outputRef.current;
+    if (element === null) {
+      setOutputClipped(false);
+      return;
+    }
+    const measure = (): void => {
+      const clipped = element.scrollHeight > element.clientHeight + 1;
+      const atBottom = element.scrollTop + element.clientHeight >= element.scrollHeight - 2;
+      setOutputClipped(clipped && !atBottom);
+    };
+    measure();
+    element.addEventListener("scroll", measure, { passive: true });
+    let observer: ResizeObserver | undefined;
+    if (typeof ResizeObserver === "function") {
+      observer = new ResizeObserver(measure);
+      observer.observe(element);
+    }
+    return () => {
+      element.removeEventListener("scroll", measure);
+      observer?.disconnect();
+    };
+  }, [open, text]);
 
   const record = argsRecord(props.args);
   const command = record ? nonEmptyString(record["command"]) : undefined;
@@ -123,7 +156,15 @@ export function ToolCard(props: ToolCardProps) {
     : subagent?.title ?? toolName;
   const label = status === "running" ? t("tool.running") : status === "error" ? t("tool.error") : t("tool.done");
   return (
-    <div className={`th-tool th-tool--${status}`} data-tool-call-id={toolCallId}>
+    <div
+      className={
+        `th-tool th-chat-record th-tool--${status}` +
+        (props.continuesRail ? " th-chat-record--continue" : "") +
+        (props.className ?? "")
+      }
+      data-tool-call-id={toolCallId}
+    >
+      <span className="th-chat-record-rail" aria-hidden="true" />
       <button
         type="button"
         className="th-tool-head"
@@ -177,7 +218,11 @@ export function ToolCard(props: ToolCardProps) {
           {text.length > 0 && (
             <section className="th-tool-section">
               <span className="th-tool-caption">{t("tool.output")}</span>
-              <pre className="th-tool-io th-tool-output">{text}</pre>
+              <pre
+                ref={outputRef}
+                className="th-tool-io th-tool-output"
+                data-clipped={outputClipped ? "true" : undefined}
+              >{text}</pre>
             </section>
           )}
         </div>

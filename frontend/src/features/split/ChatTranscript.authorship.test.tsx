@@ -77,7 +77,12 @@ describe("ChatTranscript authorship distinction", () => {
 		expect(body).not.toContain("border-inline-start");
 		expect(body).not.toContain("font-weight");
 		expect(body).toContain("background: var(--th-surface-user)");
-		expect(body).toContain("var(--th-border-user)");
+		// The v2 Golo grammar makes the bubble a borderless pill: the shadow and
+		// the surface step separate it from the canvas (QA S4 probe: border-style
+		// none on every side, every corner at --th-radius-lg).
+		expect(body).toContain("border: 0");
+		expect(body).toContain("border-radius: var(--th-radius-lg)");
+		expect(body).not.toMatch(/border-(top|right|bottom|left|style|width)\s*:/);
 		// Message prose is declared at the read weight so the user and assistant
 	// rows share one reading rhythm.
 		const base = css.match(/\.th-chat-msg\s*\{([^}]*)\}/)?.[1] ?? "";

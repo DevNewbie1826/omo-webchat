@@ -146,11 +146,17 @@ describe("ChatComposer capsule geometry contracts", () => {
 	const css = stripComments(readFileSync("src/styles/chat-composer.css", "utf8"));
 	const tokens = stripComments(readFileSync("src/styles/tokens.css", "utf8"));
 
-	it("builds the composer as a bounded 26px-radius capsule", () => {
+	it("builds the composer as a token-radius capsule with a light-only hairline", () => {
 		const capsule = css.match(/(?:^|\})\s*\.th-chat-input-inner\s*\{([^}]*)\}/)?.[1] ?? "";
-		expect(capsule).toMatch(/border:\s*1px solid var\(--th-border\)/);
-		expect(capsule).toMatch(/border-radius:\s*26px/);
+		// Dark separates the capsule by fill + shadow + top-edge highlight, so
+		// the border stays transparent; the light theme adds the single
+		// hairline that separates the white capsule from the white canvas.
+		expect(capsule).toMatch(/border:\s*1px solid transparent/);
+		expect(capsule).toMatch(/border-radius:\s*var\(--th-radius-xl\)/);
 		expect(capsule).toMatch(/background:\s*var\(--th-surface-composer\)/);
+		expect(capsule).toMatch(/box-shadow:\s*var\(--th-shadow-surface\), var\(--th-highlight\)/);
+		const light = css.match(/\[data-theme="light"\] \.th-chat-input-inner\s*\{([^}]*)\}/)?.[1] ?? "";
+		expect(light).toMatch(/border-color:\s*var\(--th-border-surface\)/);
 	});
 
 	it("keeps send/stop one fixed circular slot driven by send tokens", () => {

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { IconMenu, IconPower, IconSplitH, IconSplitV, IconX } from "../../components/icons";
+import { IconFolder, IconFolderOpen, IconMenu, IconPower, IconSplitH, IconSplitV, IconX } from "../../components/icons";
 import { ModalDialog } from "../../components/ModalDialog";
 import type { ToastKind } from "../../components/SessionTree";
 import { useT } from "../../i18n";
@@ -206,6 +206,7 @@ export function ChatPane({
       onThinkingChange={chat.changeThinkingLevel}
     />
   );
+  const resyncLabel = chat.resyncBusy ? t("chat.header.resyncBusy") : t("chat.header.resync");
 
   return (
     <section
@@ -225,63 +226,64 @@ export function ChatPane({
         >
           <IconMenu size={16} />
         </button>
-        <span className="th-termhead-name">{chatSession.name}</span>
+        <span className="th-termhead-name" title={chatSession.cwd}>{chatSession.name}</span>
         <span className="th-provider-badge" data-provider={chatSession.provider}>{chatSession.provider}</span>
-        <span className="th-termhead-path" title={chatSession.cwd}>{chatSession.cwd}</span>
-        <button
-          type="button"
-          className={`th-btn-icon th-files-toggle${showFiles ? " th-files-toggle--on" : ""}`}
-          title={t("chat.files")}
-          aria-label={t("chat.files")}
-          aria-pressed={showFiles}
-          onClick={() => setShowFiles((visible) => !visible)}
-        >
-          {t("chat.files")}
-        </button>
-        <button
-          type="button"
-          className="th-btn th-btn--ghost th-btn-icon th-chat-resync-btn"
-          title={t("chat.resync")}
-          aria-label={t("chat.resync")}
-          aria-busy={chat.resyncBusy}
-          disabled={chat.resyncDisabled || chat.running || chat.isCompacting}
-          onClick={() => chat.resync()}
-        >
-          <svg
-            className="th-chat-resync-icon"
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-            focusable="false"
+        <div className="th-termhead-group">
+          <button
+            type="button"
+            className={`th-btn-icon th-files-toggle${showFiles ? " th-files-toggle--on" : ""}`}
+            title={t("chat.header.files")}
+            aria-label={t("chat.header.files")}
+            aria-pressed={showFiles}
+            onClick={() => setShowFiles((visible) => !visible)}
           >
-            <path d="M20 11a8 8 0 0 0-14.9-4M4 4v5h5M4 13a8 8 0 0 0 14.9 4M20 20v-5h-5" />
-          </svg>
-          <span className="th-chat-resync-label">
-            {chat.resyncBusy ? t("chat.resyncBusy") : t("chat.resync")}
-          </span>
-        </button>
-        <button
-          type="button"
-          className="th-btn-icon th-btn-icon--danger th-disconnect-btn"
-          title={t("chat.disconnect")}
-          aria-label={t("chat.disconnect")}
-          onClick={() => setShowDisconnect(true)}
-        >
-          <IconPower size={14} />
-        </button>
-        {splitEnabled && (
-          <div className="th-termhead-actions">
-            <button type="button" className="th-btn-icon" title={t("split.h")} onClick={() => onSplit("h")}><IconSplitH size={14} /></button>
-            <button type="button" className="th-btn-icon" title={t("split.v")} onClick={() => onSplit("v")}><IconSplitV size={14} /></button>
-            <button type="button" className="th-btn-icon th-btn-icon--danger" title={t("split.close")} aria-label={t("split.close")} onClick={onClose}><IconX size={14} /></button>
-          </div>
-        )}
+            {showFiles ? <IconFolderOpen size={16} /> : <IconFolder size={16} />}
+          </button>
+          <button
+            type="button"
+            className="th-btn th-btn--ghost th-btn-icon th-chat-resync-btn"
+            title={resyncLabel}
+            aria-label={resyncLabel}
+            aria-busy={chat.resyncBusy}
+            disabled={chat.resyncDisabled || chat.running || chat.isCompacting}
+            onClick={() => chat.resync()}
+          >
+            <svg
+              className="th-chat-resync-icon"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path d="M20 11a8 8 0 0 0-14.9-4M4 4v5h5M4 13a8 8 0 0 0 14.9 4M20 20v-5h-5" />
+            </svg>
+          </button>
+        </div>
+        <span className="th-termhead-divider" aria-hidden="true" />
+        <div className="th-termhead-actions">
+          <button
+            type="button"
+            className="th-btn-icon th-btn-icon--danger th-disconnect-btn"
+            title={t("chat.header.disconnect")}
+            aria-label={t("chat.header.disconnect")}
+            onClick={() => setShowDisconnect(true)}
+          >
+            <IconPower size={14} />
+          </button>
+          {splitEnabled && (
+            <>
+              <button type="button" className="th-btn-icon th-termhead-split-btn" title={t("chat.header.splitRight")} aria-label={t("chat.header.splitRight")} onClick={() => onSplit("h")}><IconSplitH size={14} /></button>
+              <button type="button" className="th-btn-icon th-termhead-split-btn" title={t("chat.header.splitDown")} aria-label={t("chat.header.splitDown")} onClick={() => onSplit("v")}><IconSplitV size={14} /></button>
+              <button type="button" className="th-btn-icon th-btn-icon--danger th-termhead-close-btn" title={t("chat.header.closePane")} aria-label={t("chat.header.closePane")} onClick={onClose}><IconX size={14} /></button>
+            </>
+          )}
+        </div>
       </header>
       <div className="th-chat-main">
         <div className="th-chat-main-content">

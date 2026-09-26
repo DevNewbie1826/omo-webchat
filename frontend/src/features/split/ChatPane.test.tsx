@@ -157,20 +157,27 @@ describe("ChatPane streaming", () => {
 
 		expect(container.textContent).toContain("Hello world");
 		const finalizedThinking = Array.from(
-			container.querySelectorAll<HTMLDetailsElement>(
+			container.querySelectorAll(
 				".th-chat-history .th-chat-thinking",
 			),
 		);
 		expect(finalizedThinking).toHaveLength(2);
-		expect(finalizedThinking.every((details) => !details.open)).toBe(true);
+		expect(
+			finalizedThinking.every(
+				(record) =>
+					record
+						.querySelector(".th-chat-thinking-head")
+						?.getAttribute("aria-expanded") === "false",
+			),
+		).toBe(true);
 		expect(
 			finalizedThinking.map(
-				(details) => details.querySelector("summary")?.textContent,
+				(record) => record.querySelector(".th-chat-thinking-label")?.textContent,
 			),
 		).toEqual(["chat.thinking", "chat.thinking"]);
 		expect(
 			finalizedThinking.map(
-				(details) => details.querySelector("pre")?.textContent,
+				(record) => record.querySelector("pre")?.textContent,
 			),
 		).toEqual(["First private thought", "Second private thought"]);
 		expect(container.textContent).toContain("chat.done");

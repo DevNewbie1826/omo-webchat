@@ -13,6 +13,7 @@ import {
 } from "./paneTree";
 import type { PaneNode, SplitDir } from "./paneTree";
 import { getLayout, putLayout } from "./layout";
+import { applyPaneSessionTransition } from "./paneSessionTransition";
 
 export interface LayoutApi {
   readonly root: PaneNode;
@@ -108,7 +109,11 @@ export function useLayout(authed: boolean): LayoutApi {
       if (!findLeaf(rootRef.current, paneId)) return;
       // A session lives in exactly one pane; unplace it elsewhere first.
       const cleared = removeSession(rootRef.current, tmId);
-      commit(setLeafSession(cleared, paneId, tmId));
+      // Session-switch continuity (G15/S22): crossfade this pane's transcript;
+      // the commit still runs exactly once on every path.
+      applyPaneSessionTransition(paneId, () => {
+        commit(setLeafSession(cleared, paneId, tmId));
+      });
       if (focus) setFocusedPaneId(paneId);
     },
     [commit],

@@ -1,0 +1,19 @@
+/* Session-switch continuity (G15/S22): only the switching pane's transcript
+   region crossfades. paneSessionTransition.ts assigns each switching region a
+   unique view-transition-name plus the th-pane-session class; these rules
+   clock the crossfade with the shared state-change motion tokens. */
+::view-transition-old(.th-pane-session),
+::view-transition-new(.th-pane-session) {
+  animation-duration: var(--th-dur);
+  animation-timing-function: var(--th-ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Duration 0s keeps the UA fade keyframes and jumps to their end state;
+     animation: none would leave old and new snapshots stacked for a frame. */
+  ::view-transition-old(.th-pane-session),
+  ::view-transition-new(.th-pane-session) {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+  }
+}
