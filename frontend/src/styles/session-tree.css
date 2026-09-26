@@ -111,8 +111,10 @@
   background: transparent;
 }
 
-/* The dot-only chip (main session running, no agents) keeps the count pill's
-   height so rows do not shift when a count appears. */
+/* Running chip: accent ink numerals on the matching 12% tint, whether the
+   pill carries an exact agent count or marks main-session work alone. The
+   tint separates the pill without a border (DESIGN.md State encoding:
+   state never paints a coloured border). */
 .th-tree-running {
   display: inline-flex;
   flex: none;
@@ -126,40 +128,48 @@
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
   font-variant-numeric: tabular-nums;
-  color: var(--th-muted);
+  color: var(--th-accent-ink);
+  background: var(--th-accent-bg);
 }
 
-.th-tree-running--count {
-  background: var(--th-active);
-}
-
+/* The running marker is a dotted spinner on the shared --th-dur-run beat,
+   the same idiom as the transcript tool glyph with a coarser wedge count so
+   the 8px sidebar dot still reads as motion. The conic mask only reshapes
+   the paint; the computed background stays --th-accent so state-colour
+   probes still read the agent-alive hue. Reduced motion collapses the spin
+   to the static dashed disc (global policy), where the chip's accessible
+   running name carries the state. */
 .th-tree-running-dot {
   flex: none;
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  background: var(--th-accent);
-  animation: th-tree-running-breathe calc(var(--th-dur-slow) * 4) var(--th-ease-in-out) infinite alternate;
+  background-color: var(--th-accent);
+  -webkit-mask-image: repeating-conic-gradient(var(--th-accent) 0deg 60deg, transparent 60deg 90deg);
+  mask-image: repeating-conic-gradient(var(--th-accent) 0deg 60deg, transparent 60deg 90deg);
+  animation: th-tree-running-spin var(--th-dur-run) var(--th-ease-linear) infinite;
 }
 
-@keyframes th-tree-running-breathe {
-  from {
-    opacity: 1;
-  }
+@keyframes th-tree-running-spin {
   to {
-    opacity: 0.4;
+    transform: rotate(1turn);
   }
 }
 
+/* Coarse pointers (G40) narrow the gaps only: rows keep the same 8px inline
+   padding as fine pointers so the heading, live-card and tree text columns
+   share one left edge and the count badges one right edge on both pointer
+   types (DESIGN.md Sidebar). */
 .th-tree--touch .th-tree-node {
   gap: var(--th-space-1);
-  padding-inline: var(--th-space-1);
 }
 
-/* The selected row changes only to emphasize weight; the --th-active fill is
-   the state treatment, never a different size or colour. */
+/* The selected row reads at a glance: the sliding indicator paints the
+   wash, and the label lifts to the text tier at emphasize weight (the
+   --th-active fill stays the state treatment, never a size or border). */
 .th-tree-node--active .th-tree-label {
   font-weight: var(--th-weight-emphasize);
+  color: var(--th-text);
 }
 
 .th-tree-chevron {
@@ -190,10 +200,16 @@
   position: absolute;
   top: calc(-1 * var(--th-space-0-5));
   right: calc(-1 * var(--th-space-0-5));
-  width: 4px;
-  height: 4px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   background: var(--th-text-dim);
+}
+
+/* A connected row's terminal glyph brightens one tier, so connected-but-idle
+   separates from idle rows by glyph strength alone - never state colour. */
+.th-tree-icon:has(.th-tree-live) {
+  color: var(--th-text-dim);
 }
 
 /* Placed in a pane: a neutral filled dot; unplaced rows keep the slot empty
@@ -268,6 +284,14 @@
   text-align: center;
 }
 
+/* A workspace with running work carries the state on its inventory count
+   too (DESIGN.md Sidebar: when agents are running, .th-tree-count takes
+   accent numerals on the matching tint). */
+.th-tree-count--running {
+  color: var(--th-accent-ink);
+  background: var(--th-accent-bg);
+}
+
 .th-tree-actions {
   display: none;
   flex: none;
@@ -275,8 +299,12 @@
   gap: var(--th-space-0-5);
 }
 
+/* Fine pointers reveal the inline actions on hover, keyboard focus and the
+   selected row (E16); coarse pointers keep the always-visible kebab
+   disclosure rendered by the touch variant instead. */
 .th-tree-node:hover .th-tree-actions,
 .th-tree-node:focus-within .th-tree-actions,
+.th-tree-node--active .th-tree-actions,
 .th-tree-actions[data-th-restore-focus] {
   display: inline-flex;
 }

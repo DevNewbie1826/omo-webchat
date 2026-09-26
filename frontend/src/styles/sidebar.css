@@ -128,7 +128,7 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
-  color: var(--th-muted);
+  color: var(--th-text-dim);
   white-space: nowrap;
 }
 
@@ -175,9 +175,21 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
    needed. The footer buttons previously sat on the inner column's bottom
    edge with zero reserve; the 8px bottom padding keeps the in-flow 44px
    buttons clear of the safe-area inset band the shell reserves below it.
-   The footer's 8px top padding already holds the buttons off the session
-   tree. Fine-pointer geometry is untouched. */
+   Fine-pointer geometry is untouched.
+   E33: the drawer's fixed 44px chevron and kebab squeeze the workspace label
+   column until the trailing number ellipsizes away, so on coarse pointers
+   the section insets tighten from 16px to 12px: the label column matches
+   the main baseline width while nav, headings, live cards and tree text
+   shift together and keep one shared left column (Q5). */
 @media (pointer: coarse) {
+  .th-sidebar-nav {
+    padding-left: var(--th-space-3);
+  }
+
+  .th-sidebar-body {
+    padding: var(--th-space-2) var(--th-space-1);
+  }
+
   .th-sidebar-footer {
     padding-bottom: var(--th-space-2);
   }

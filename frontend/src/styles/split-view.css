@@ -267,12 +267,52 @@
   gap: var(--th-space-2);
 }
 
+/* Empty-leaf pane queries: the leaf wrap is sized by the split layout, never
+   by its content, so it is a safe size container. The picker's hero tiers on
+   the pane's block size (content box, default font scale): chooser + one
+   running card + paddings need ~495px; the full hero block adds ~130-160px
+   (the narrow h4 column wraps the greeting to two lines), so full presence
+   holds at >=680px — the two/h4 workbench leaves measure 784px — while
+   compact presence (smaller orb, hidden hint, tighter gaps) holds down to
+   420px, below which even the ~60px compact block cannot share the fold
+   with the chooser list and the New chat action. Pure CSS: no measurement,
+   no timers; reduced motion lands every tier in its final state. */
+.th-pane-wrap:has(> .th-picker-pane) {
+  container: pane / size;
+}
+
+/* Compact presence. The greeting itself never leaves the Display tier: the
+   S11 picker contract pins orb + Display greeting to every pane where the
+   hero renders, so the block shrinks via the orb, the hint and the gaps. */
+@container pane (height < 680px) {
+  .th-pane-wrap > .th-picker-pane > .th-empty-hero {
+    gap: var(--th-space-2);
+    margin-bottom: 0;
+  }
+  .th-pane-wrap > .th-picker-pane > .th-empty-hero .th-empty-orb {
+    width: var(--th-space-6);
+    height: var(--th-space-6);
+    margin-bottom: 0;
+    box-shadow: var(--th-highlight);
+  }
+  .th-pane-wrap > .th-picker-pane > .th-empty-hero .th-empty-hint {
+    display: none;
+  }
+}
+
+@container pane (height < 420px) {
+  .th-pane-wrap > .th-picker-pane > .th-empty-hero {
+    display: none;
+  }
+}
+
 /* Desktop empty-leaf entrance (G32): the shared presence hero settles first
    (app-empty.css, --th-dur-emph total), then the pane's own content — title,
    filter, session cards, create action — rises over the second half, so the
-   choreography totals exactly --th-dur-emph and plays once per mount. The
-   single-pane shell does not match this selector: there the whole picker
-   rides .th-empty's own entrance and the hero copy is display:none. */
+   choreography totals exactly --th-dur-emph and plays once per mount, in
+   every tier the container queries pick. The single-pane shell does not
+   match this selector: there the whole picker rides .th-empty's own entrance
+   and the hero copy is display:none. */
 .th-pane-wrap > .th-picker-pane > .th-empty-hero ~ * {
   animation: th-empty-rise calc(var(--th-dur-emph) / 2) var(--th-ease-out) calc(var(--th-dur-emph) / 2) backwards;
 }

@@ -291,15 +291,11 @@ export function SessionTree({
                   <span className="th-tree-label-text">{ws.name}</span>
                 </button>
               )}
-              <span className="th-tree-count">{mergedSessionIds.size}</span>
-              {workspaceRunning > 0 || workspaceMainRunning ? (
-                <RunningChip
-                  className="th-tree-running th-tree-running--workspace"
-                  count={workspaceRunning}
-                  countLabelKey="sidebar.ws.runningAgents"
-                  mainRunning={workspaceMainRunning}
-                />
-              ) : null}
+              <span
+                className={`th-tree-count${workspaceRunning > 0 || workspaceMainRunning ? " th-tree-count--running" : ""}`}
+              >
+                {mergedSessionIds.size}
+              </span>
               {touchActions ? (
                 <span className="th-tree-actions th-tree-actions--overflow">
                   <button
@@ -392,6 +388,19 @@ export function SessionTree({
                   </button>
                 </span>
               )}
+              {/* The running chip owns the row's trailing edge on every
+                  pointer and hover state; the row actions (inline icons or the
+                  coarse kebab) sit immediately left of it, so revealing them
+                  never pushes the badge off the shared right-hand column
+                  (Q5 badge alignment). */}
+              {workspaceRunning > 0 || workspaceMainRunning ? (
+                <RunningChip
+                  className="th-tree-running th-tree-running--workspace"
+                  count={workspaceRunning}
+                  countLabelKey="sidebar.ws.runningAgents"
+                  mainRunning={workspaceMainRunning}
+                />
+              ) : null}
             </div>
 
             <fieldset className={`th-tree-children${isOpen ? "" : " th-tree-children--closed"}`}>
@@ -491,14 +500,6 @@ export function SessionTree({
                         </button>
                       </span>
                     )}
-                    {(running > 0 || mainRunning) && (
-                      <RunningChip
-                        className="th-tree-running"
-                        count={running}
-                        countLabelKey="sidebar.tm.runningAgents"
-                        mainRunning={mainRunning}
-                      />
-                    )}
                     {tm ? (
                       <span className="th-tree-actions">
                         <button
@@ -519,6 +520,16 @@ export function SessionTree({
                         </button>
                       </span>
                     ) : null}
+                    {/* Same trailing-edge rule as the workspace row: actions
+                        left of the running chip. */}
+                    {(running > 0 || mainRunning) && (
+                      <RunningChip
+                        className="th-tree-running"
+                        count={running}
+                        countLabelKey="sidebar.tm.runningAgents"
+                        mainRunning={mainRunning}
+                      />
+                    )}
                   </div>
                 );
               })}
