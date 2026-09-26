@@ -1,38 +1,34 @@
-
 .th-login {
   height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: var(--th-space-6);
-  background:
-    radial-gradient(ellipse 60% 45% at 50% -5%, var(--th-glow), transparent),
-    var(--th-bg);
+  background: var(--th-bg);
 }
 
 .th-login-card {
   width: 100%;
-  max-width: 380px;
+  max-width: 400px;
   padding: var(--th-space-8) var(--th-space-8) var(--th-space-6);
-  background: var(--th-surface);
-  border: 1px solid var(--th-border);
-  border-radius: var(--th-radius-lg);
-  box-shadow: var(--th-shadow-lg);
+  background: var(--th-surface-raised);
+  border: 1px solid var(--th-border-overlay);
+  border-radius: var(--th-radius-xl);
+  box-shadow: var(--th-shadow-raised), var(--th-highlight);
   display: flex;
   flex-direction: column;
   gap: var(--th-space-4);
-  animation: th-modal-in var(--th-dur-slow) var(--th-ease);
+  animation: th-modal-in var(--th-dur-slow) var(--th-ease-out);
 }
 
 .th-login-brand {
   display: flex;
   align-items: center;
   gap: var(--th-space-2);
-  font-family: var(--th-font-mono);
-  font-size: var(--th-type-micro-size);
+  font-size: var(--th-type-label-size);
   font-weight: var(--th-weight-emphasize);
-  line-height: var(--th-type-micro-line);
-  letter-spacing: var(--th-type-micro-tracking);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
   color: var(--th-muted);
 }
 
@@ -85,13 +81,13 @@
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
-  padding: var(--th-space-0-5) var(--th-space-1);
-  border-radius: 4px;
+  padding: var(--th-space-0-5) var(--th-space-2);
+  border-radius: var(--th-radius-pill);
   transition: color var(--th-dur-fast) var(--th-ease),
-    background var(--th-dur-fast) var(--th-ease);
+    background-color var(--th-dur-fast) var(--th-ease);
 }
 
 .th-login-lang:hover {
   color: var(--th-text);
-  background: var(--th-hover);
+  background-color: var(--th-hover);
 }

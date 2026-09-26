@@ -46,7 +46,10 @@ export async function exerciseControls(q, shot) {
   const open = await measure(page);
   assert(open.roles.filter(role => role.actual).every(role => role.actual === role.expected), 'model overlay follows semantic token');
   await shot('model-open');
-  const menuScroll = page.locator(await page.locator('.th-model-picker-popover--sheet').count() ? '.th-model-picker-list' : '.th-model-picker-popover');
+  // Only the model list owns wheel scrolling in every placement (anchored,
+  // fixed panel, sheet): outside sheet mode the popover is overflow:hidden,
+  // so a popover-targeted scrollend can never fire there.
+  const menuScroll = page.locator('.th-model-picker-list');
   await wheel(page, menuScroll, 10000);
   const bottomRows = await modelRows(page), last = bottomRows.at(-1);
   assert(last.complete && last.hit, 'complete last model row pointer reachable');

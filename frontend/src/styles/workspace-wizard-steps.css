@@ -1,12 +1,11 @@
-
 .th-picker-path {
   display: flex;
   align-items: center;
   gap: var(--th-space-2);
   padding: var(--th-space-2) var(--th-space-3);
   margin-bottom: var(--th-space-2);
-  background: var(--th-bg);
-  border: 1px solid var(--th-border);
+  background: var(--th-surface);
+  border: 1px solid var(--th-border-surface);
   border-radius: var(--th-radius-sm);
   font-family: var(--th-font-mono);
   font-size: var(--th-type-label-size);
@@ -34,9 +33,9 @@
   min-height: 180px;
   max-height: 260px;
   overflow-y: auto;
-  border: 1px solid var(--th-border);
-  border-radius: var(--th-radius-sm);
-  background: var(--th-bg);
+  border: 1px solid var(--th-border-surface);
+  border-radius: var(--th-radius);
+  background: var(--th-surface);
   padding: var(--th-space-1);
 }
 
@@ -46,20 +45,24 @@
   gap: var(--th-space-2);
   width: 100%;
   padding: var(--th-space-2) var(--th-space-2);
-  border-radius: 4px;
+  border-radius: var(--th-radius-sm);
   font-family: var(--th-font-mono);
   font-size: var(--th-type-secondary-size);
   line-height: var(--th-type-secondary-line);
   letter-spacing: var(--th-type-secondary-tracking);
   color: var(--th-text-dim);
   text-align: left;
-  transition: background var(--th-dur-fast) var(--th-ease),
+  transition: background-color var(--th-dur-fast) var(--th-ease),
     color var(--th-dur-fast) var(--th-ease);
 }
 
 .th-picker-row:hover {
-  background: var(--th-hover);
+  background-color: var(--th-hover);
   color: var(--th-text);
+}
+
+.th-picker-row:active {
+  background-color: var(--th-active);
 }
 
 .th-picker-row svg {
@@ -84,6 +87,32 @@
   letter-spacing: var(--th-type-body-tracking);
 }
 
+.th-picker-newfolder {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--th-space-2);
+  margin-top: var(--th-space-3);
+}
+
+.th-picker-newfolder-form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--th-space-2);
+}
+
+.th-picker-newfolder-input {
+  /* Basis wide enough to keep the row single-line on desktop, narrow
+     enough that the actions wrap below the input on small screens. */
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.th-picker-newfolder-form .th-btn {
+  flex: none;
+}
+
 .th-picker-select {
   display: flex;
   align-items: center;
@@ -91,9 +120,8 @@
   gap: var(--th-space-2);
   margin-top: var(--th-space-3);
   padding: var(--th-space-2) var(--th-space-3);
-  border: 1px solid var(--th-border-strong);
-  border-radius: var(--th-radius-sm);
-  background: var(--th-surface-raised);
+  border-radius: var(--th-radius);
+  background: var(--th-accent-soft);
 }
 
 .th-picker-select-path {
@@ -118,10 +146,9 @@
 .th-summary {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--th-border);
   border-radius: var(--th-radius);
   overflow: hidden;
-  background: var(--th-bg);
+  background: var(--th-surface);
 }
 
 .th-summary-row {
@@ -131,7 +158,7 @@
 }
 
 .th-summary-row + .th-summary-row {
-  border-top: 1px solid var(--th-border);
+  border-top: 1px solid var(--th-border-surface);
 }
 
 .th-summary-key {
@@ -141,8 +168,7 @@
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
-  text-transform: uppercase;
-  color: var(--th-faint);
+  color: var(--th-muted);
   padding-top: var(--th-space-0-5);
 }
 

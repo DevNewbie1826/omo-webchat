@@ -1,17 +1,14 @@
-
 .th-wizard-head {
   flex: none;
   padding: var(--th-space-5) var(--th-space-6) 0;
 }
 
 .th-wizard-kicker {
-  font-family: var(--th-font-mono);
-  font-size: var(--th-type-micro-size);
+  font-size: var(--th-type-label-size);
   font-weight: var(--th-weight-emphasize);
-  line-height: var(--th-type-micro-line);
-  letter-spacing: var(--th-type-micro-tracking);
-  text-transform: uppercase;
-  color: var(--th-faint);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  color: var(--th-muted);
   margin-bottom: var(--th-space-1);
 }
 
@@ -40,18 +37,18 @@
 
 .th-wizard-step {
   flex: 1;
-  height: 3px;
-  border-radius: 2px;
-  background: var(--th-border);
-  transition: background var(--th-dur-slow) var(--th-ease);
+  height: 4px;
+  border-radius: var(--th-radius-pill);
+  background-color: var(--th-active);
+  transition: background-color var(--th-dur-slow) var(--th-ease-in-out);
 }
 
 .th-wizard-step--done {
-  background: var(--th-muted);
+  background-color: var(--th-muted);
 }
 
 .th-wizard-step--current {
-  background: var(--th-accent);
+  background-color: var(--th-text);
 }
 
 .th-wizard-body {
@@ -67,7 +64,7 @@
   align-items: center;
   gap: var(--th-space-2);
   padding: var(--th-space-3) var(--th-space-6) var(--th-space-5);
-  border-top: 1px solid var(--th-border);
+  border-top: 1px solid var(--th-border-surface);
 }
 
 .th-wizard-foot-spacer {

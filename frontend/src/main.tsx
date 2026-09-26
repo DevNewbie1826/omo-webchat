@@ -1,5 +1,8 @@
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+/* Pretendard Variable (SIL OFL 1.1, vendored under src/fonts/pretendard):
+   the dynamic-subset @font-face blocks, fingerprinted into dist/assets. */
+import "./fonts/pretendard/pretendardvariable-dynamic-subset.css";
 import "./styles/tokens.css";
 import "./styles/global.css";
 import "./styles/terminal-header.css";

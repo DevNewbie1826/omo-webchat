@@ -293,7 +293,7 @@
   font-size: var(--th-type-secondary-size);
   line-height: var(--th-type-secondary-line);
   letter-spacing: var(--th-type-secondary-tracking);
-  color: var(--th-faint);
+  color: var(--th-muted);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }

@@ -46,7 +46,7 @@
 }
 
 .th-provider-card:hover:not(:has(input:disabled)) {
-  border-color: var(--th-muted);
+  background: var(--th-hover);
 }
 
 .th-provider-radio {
@@ -57,13 +57,27 @@
 }
 
 .th-provider-card:has(.th-provider-radio:focus-visible) {
-  outline: 2px solid var(--th-accent);
+  outline: 2px solid var(--th-ring);
   outline-offset: 2px;
 }
 
+/* Selection is an accent wash, never an accent border. The check glyph is
+   drawn in CSS so the state reads without a markup dependency. */
 .th-provider-card--selected {
-  border-color: var(--th-accent);
-  box-shadow: 0 0 0 1px var(--th-accent);
+  background: var(--th-accent-soft);
+  border-color: var(--th-border-strong);
+}
+
+.th-provider-card--selected::after {
+  content: "";
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  width: 6px;
+  height: 10px;
+  border-right: 2px solid var(--th-accent);
+  border-bottom: 2px solid var(--th-accent);
+  transform: rotate(45deg);
 }
 
 .th-provider-card:has(input:disabled) {

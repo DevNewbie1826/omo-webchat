@@ -5,11 +5,19 @@
  * Deferred opens: await fixture.wait("open"); fixture.resolveOpen(index, chat).
  * Running: seed { running: ["stored-a"] }; deliver(id, frame) reaches current subscribers.
  * Opt-in controlled: true holds sends; deliver(message) alone commits history.
+ * Task roster: GET /api/workspaces/ws/chats/{id}/tasks answers the real
+ * chat-tasks response shape (parent_session_id/truncated_tasks/tasks) — the
+ * seeded shelf digest rows when shelves is on, else the absent-store empty
+ * roster; unknown chats 404 like the real handler.
  * holdHistory(id), releaseHistory(token, page), disconnect(id), traffic and subscription events support canonical QA.
  * Deferred creation: seed { deferredCreate: true }; wait("create"), resolveCreate(index).
  * Per-session seeds: runs: { [id]: { entries, queue, stats, running, model, thinkingLevel } }.
  * controlResult(request, result) can replace or withhold (null) an isolated control response.
  * Entries use provider history shapes; queue/stats use server-frame payloads without type/sessionId.
+ * G26 optional seeds (visual-redesign S12/S19): dirs: { [path]: string[] | { dirs, parent? } }
+ * serves /api/fs/browse only for seeded paths (unseeded keeps the recorded 404);
+ * systemStats: object serves /api/system/stats when present; /api/fs/search always
+ * answers from the seeded files map so the composer file palette has a happy path.
  */
 import { EventEmitter } from "node:events";
 import { resolve } from "node:path";
@@ -38,9 +46,9 @@ const activity = { history: { task: { parent_session_id: "qa-durable", truncated
   tasks: Array.from({ length: 18 }, (_, i) => ({ task_id: `task-${i}`, name: `Verified task ${i}`, status: "completed" })) }, dag: null } };
 export function startFixture(options = {}) {
   const events = new EventEmitter(), requests = [], frames = [], unexpected = [], opens = [], creates = [], sockets = new Map();
-  const runs = new Map(), files = new Map(), useTimes = new Map(), socketIds = new Map(), heldSessions = new Set(), histories = [];
+  const runs = new Map(), files = new Map(), dirs = new Map(), useTimes = new Map(), socketIds = new Map(), heldSessions = new Set(), histories = [];
   const traffic = [], heldReplaySessions = new Set(), replays = [];
-  let sequence = 0, socketSequence = 0, entrySequence = 0;
+  let sequence = 0, socketSequence = 0, entrySequence = 0, systemStats = null;
   const record = (kind, detail) => {
     const value = { sequence: ++sequence, kind, ...structuredClone(detail) };
     traffic.push(value); events.emit(kind, value); return value;
@@ -91,6 +99,9 @@ export function startFixture(options = {}) {
     deferredCreate = seed.deferredCreate ?? false;
     files.clear();
     for (const [path, content] of Object.entries(seed.files ?? {})) files.set(path, content);
+    dirs.clear();
+    for (const [path, listing] of Object.entries(seed.dirs ?? {})) dirs.set(path, Array.isArray(listing) ? { dirs: listing } : listing);
+    systemStats = seed.systemStats ?? null;
     runs.clear(); useTimes.clear(); heldSessions.clear(); histories.length = 0; heldReplaySessions.clear(); replays.length = 0;
     for (const id of seed.holdReplay ?? []) heldReplaySessions.add(id);
     for (const [id, state] of Object.entries(seed.runs ?? {})) Object.assign(runFor(id), structuredClone(state));
@@ -155,9 +166,39 @@ export function startFixture(options = {}) {
       if (path.startsWith("/api/sessions/")) return Response.json({ sessions: [] });
       if (path.endsWith("/goal")) return Response.json({ goal: shelves ? goal : null });
       if (path.endsWith("/activity")) return Response.json(shelves ? activity : { history: {} });
+      const roster = /^\/api\/workspaces\/ws\/chats\/([^/]+)\/tasks$/.exec(path);
+      if (roster && req.method === "GET") {
+        const id = decodeURIComponent(roster[1]);
+        if (id !== "union" && !workspace.chats.some(chat => chat.id === id)) return Response.json({ error: "not found" }, { status: 404 });
+        return Response.json(shelves ? activity.history.task : { parent_session_id: "qa-durable", truncated_tasks: false, tasks: [] },
+          { headers: { "Cache-Control": "no-store" } });
+      }
       if (path === "/api/fs/list") return Response.json({ path: "/fixture", entries: [...files].map(([path, content]) => ({
         name: path.slice('/fixture/'.length), isDir: false, size: Buffer.byteLength(content), modTime: '2026-09-06T00:00:00Z',
       })) });
+      if (path === '/api/fs/browse') {
+        // G26: serve only seeded paths; an unseeded browse keeps the recorded
+        // unexpected/404 behavior exactly as before this hook existed.
+        const target = url.searchParams.get('path') ?? '';
+        const listing = dirs.get(target);
+        if (listing) {
+          const parent = listing.parent !== undefined ? listing.parent
+            : target === '' || target === '/' ? null
+            : target.slice(0, target.lastIndexOf('/')) || null;
+          return Response.json({ path: listing.path ?? target, parent, dirs: listing.dirs ?? [] });
+        }
+      }
+      if (path === '/api/fs/search') {
+        // Happy path for the composer file palette: fuzzy-filter the seeded
+        // files (G26). Unseeded fixtures answer an empty result list.
+        const q = (url.searchParams.get('q') ?? '').trim().toLowerCase();
+        const results = [...files.keys()]
+          .filter(filePath => !q || filePath.slice('/fixture/'.length).toLowerCase().includes(q))
+          .slice(0, 50)
+          .map(filePath => ({ path: filePath.slice('/fixture/'.length), name: filePath.slice(filePath.lastIndexOf('/') + 1) }));
+        return Response.json({ results });
+      }
+      if (path === '/api/system/stats' && systemStats) return Response.json(systemStats);
       if (files.has(url.searchParams.get('path'))) {
         const filePath = url.searchParams.get('path');
         if (path === '/api/fs/read' && req.method === 'GET') {

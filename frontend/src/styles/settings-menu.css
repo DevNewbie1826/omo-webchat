@@ -15,11 +15,20 @@
   max-height: calc(var(--th-vh-unit, 1vh) * 100 - env(safe-area-inset-top) - env(safe-area-inset-bottom) - var(--th-space-12) - var(--th-space-1));
   overflow-y: auto;
   padding: var(--th-space-2);
-  background: var(--th-surface-raised);
-  border: 1px solid var(--th-border-raised);
-  border-radius: var(--th-radius);
-  box-shadow: var(--th-shadow-raised);
-  animation: th-settings-in var(--th-dur-fast) var(--th-ease);
+  background: var(--th-surface-overlay);
+  border: 1px solid var(--th-border-overlay);
+  border-radius: var(--th-radius-lg);
+  box-shadow: var(--th-shadow-overlay), var(--th-highlight);
+  animation: th-settings-in var(--th-dur) var(--th-ease-out);
+}
+
+/* Floating layer: glass where backdrop-filter is available; the solid
+   Overlay fill above stands as the fallback. */
+@supports (backdrop-filter: blur(1px)) {
+  .th-settings-panel {
+    background: var(--th-glass);
+    backdrop-filter: var(--th-glass-filter);
+  }
 }
 
 /* Match the sidebar's released bottom inset, never its top protection. */
@@ -30,11 +39,11 @@ html[data-th-keyboard-open] .th-settings-panel {
 @keyframes th-settings-in {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translateY(4px) scale(0.98);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
   }
 }
 
@@ -50,20 +59,24 @@ html[data-th-keyboard-open] .th-settings-panel {
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
-  text-transform: uppercase;
   color: var(--th-faint);
 }
 
+/* Segmented control: a tonal pill track with no border and no inter-segment
+   dividers. The selected segment carries exactly one neutral raised thumb
+   (surface fill + surface shadow + top highlight, per the token contract's
+   segmented-control rule); markup keeps its role="radio" behaviour. */
 .th-settings-seg {
   display: flex;
-  border: 1px solid var(--th-border);
-  border-radius: var(--th-radius-sm);
-  overflow: hidden;
+  padding: var(--th-space-0-5);
+  background: var(--th-surface);
+  border-radius: var(--th-radius-pill);
 }
 
 .th-settings-seg-btn {
   flex: 1;
   padding: var(--th-space-1) 0;
+  border-radius: var(--th-radius-pill);
   font-size: var(--th-type-label-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-label-line);
@@ -71,11 +84,8 @@ html[data-th-keyboard-open] .th-settings-panel {
   color: var(--th-muted);
   background: transparent;
   transition: background var(--th-dur-fast) var(--th-ease),
-    color var(--th-dur-fast) var(--th-ease);
-}
-
-.th-settings-seg-btn + .th-settings-seg-btn {
-  border-left: 1px solid var(--th-border);
+    color var(--th-dur-fast) var(--th-ease),
+    box-shadow var(--th-dur-fast) var(--th-ease);
 }
 
 .th-settings-seg-btn:hover {
@@ -83,14 +93,30 @@ html[data-th-keyboard-open] .th-settings-panel {
   color: var(--th-text);
 }
 
-.th-settings-seg-btn--on {
-  background: var(--th-accent);
-  color: var(--th-accent-fg);
+.th-settings-seg-btn:focus-visible {
+  /* Restate the contract ring for plain segments; the selected segment
+     joins it with the thumb shadows below. */
+  box-shadow: 0 0 0 3px var(--th-ring);
 }
 
+.th-settings-seg-btn--on,
 .th-settings-seg-btn--on:hover {
-  background: var(--th-accent-hover);
-  color: var(--th-accent-fg);
+  background: var(--th-surface-raised);
+  color: var(--th-text);
+  box-shadow: var(--th-shadow-surface), var(--th-highlight);
+}
+
+[data-theme="light"] .th-settings-seg-btn--on,
+[data-theme="light"] .th-settings-seg-btn--on:hover {
+  /* White on the near-white glass panel would wash the thumb out; the
+     active tone stays visible while the shadow and highlight carry the
+     raised read. */
+  background: var(--th-active);
+}
+
+.th-settings-seg-btn--on:focus-visible {
+  box-shadow: 0 0 0 3px var(--th-ring), var(--th-shadow-surface),
+    var(--th-highlight);
 }
 
 .th-settings-select {
@@ -98,7 +124,7 @@ html[data-th-keyboard-open] .th-settings-panel {
   padding: var(--th-space-1) var(--th-space-2);
   border: 1px solid var(--th-border);
   border-radius: var(--th-radius-sm);
-  background: var(--th-surface);
+  background: var(--th-surface-raised);
   color: var(--th-text);
   font-size: var(--th-type-label-size);
   font-weight: var(--th-weight-emphasize);
@@ -144,7 +170,7 @@ html[data-th-keyboard-open] .th-settings-panel {
 .th-settings-size-value {
   flex: 1;
   text-align: center;
-  font-family: var(--th-font-mono);
+  font-variant-numeric: tabular-nums;
   font-size: var(--th-type-label-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-label-line);

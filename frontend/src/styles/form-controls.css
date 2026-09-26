@@ -6,7 +6,7 @@
   gap: var(--th-space-2);
   height: 34px;
   padding: 0 var(--th-space-3);
-  border-radius: var(--th-radius-sm);
+  border-radius: var(--th-radius-pill);
   font-size: var(--th-type-label-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-label-line);
@@ -23,23 +23,21 @@
 }
 
 .th-btn--primary {
-  background: var(--th-accent);
+  background: var(--th-accent-solid);
   color: var(--th-accent-fg);
 }
 
 .th-btn--primary:hover:not(:disabled) {
-  background: var(--th-accent-hover);
+  background: var(--th-accent-solid-hover);
 }
 
 .th-btn--ghost {
-  border: 1px solid var(--th-border);
   color: var(--th-text-dim);
   background: transparent;
 }
 
 .th-btn--ghost:hover:not(:disabled) {
   background: var(--th-hover);
-  border-color: var(--th-border-strong);
   color: var(--th-text);
 }
 
@@ -100,15 +98,14 @@
 .th-input {
   height: 38px;
   padding: 0 var(--th-space-3);
-  background: var(--th-bg);
+  background: var(--th-surface-raised);
   border: 1px solid var(--th-border);
   border-radius: var(--th-radius-sm);
   color: var(--th-text);
   font-size: var(--th-type-input-size);
   line-height: var(--th-type-input-line);
   letter-spacing: var(--th-type-input-tracking);
-  transition: border-color var(--th-dur-fast) var(--th-ease),
-    box-shadow var(--th-dur-fast) var(--th-ease);
+  transition: box-shadow var(--th-dur-fast) var(--th-ease);
 }
 
 .th-input::placeholder {
@@ -116,7 +113,6 @@
 }
 
 .th-input:focus {
-  border-color: var(--th-accent);
   box-shadow: 0 0 0 3px var(--th-ring);
 }
 

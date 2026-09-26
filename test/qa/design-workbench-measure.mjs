@@ -104,6 +104,17 @@ export function designAssertions(sample) {
   ];
 }
 
+/** Design predicates report instead of aborting: a RED is any predicate whose
+ * observed result misses this phase's expectation (before: the enumerated
+ * expectedBefore REDs; after: every predicate). REDs carry their measurements
+ * so behaviour always continues and the critique can gate them separately. */
+export function collectDesignReds(assertions, phase) {
+  const phaseExpectedPass = result => phase !== 'before' || !result.expectedBefore;
+  return assertions.filter(result => result.pass !== phaseExpectedPass(result))
+    .map(result => ({ id: result.id, phaseExpectedPass: phaseExpectedPass(result), observedPass: result.pass,
+      expectedBefore: result.expectedBefore, actual: result.actual }));
+}
+
 /** Complete model rows must lie inside every clipping ancestor and accept a real hit. */
 export async function modelRows(page) {
   return page.evaluate(() => {

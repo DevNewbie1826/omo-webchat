@@ -75,7 +75,7 @@ export function resolveTheme(id: ThemeId): ResolvedTheme {
  * pre-paint inline script in index.html carries the same values.
  */
 export const THEME_CHROME_COLORS: Readonly<Record<ResolvedTheme, string>> = {
-  dark: "#181818",
+  dark: "#17181b",
   light: "#ffffff",
 };
 
