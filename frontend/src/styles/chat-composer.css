@@ -270,12 +270,13 @@
   white-space: nowrap;
 }
 
-/* The slash and file palettes are one floating glass layer above the
-   capsule: Overlay shadow and top-edge highlight, a strong hairline, and
-   the translucent glass fill where backdrop-filter is supported (the solid
-   Overlay fill stands as the fallback). The panel enters per the overlay
-   motion rule: opacity + translateY + scale over --th-dur with the enter
-   easing, driven by @starting-style so an exit can stay instant. */
+/* The slash and file palettes are one floating opaque layer directly above
+   the capsule (E20): the solid Overlay fill keeps transcript text behind
+   from competing with rows (the previous translucent glass fill let content
+   bleed through), plus a strong hairline, the Overlay shadow and top-edge
+   highlight. The panel enters per the overlay motion rule: opacity +
+   translateY + scale over --th-dur with the enter easing, driven by
+   @starting-style so an exit can stay instant. */
 .th-chat-slash {
   position: absolute;
   right: 0;
@@ -295,13 +296,6 @@
   transform: translateY(0) scale(1);
   transition: opacity var(--th-dur) var(--th-ease-out),
     transform var(--th-dur) var(--th-ease-out);
-}
-
-@supports (backdrop-filter: blur(1px)) {
-  .th-chat-slash {
-    background: var(--th-glass);
-    backdrop-filter: var(--th-glass-filter);
-  }
 }
 
 @starting-style {
@@ -375,17 +369,25 @@
   background: var(--th-hover);
 }
 
-/* The active option takes the accent-soft selection wash (a list selection,
-   never bold accent text); the trailing chevron glyph is the check cue. */
-.th-chat-slash > button[aria-selected="true"] {
-  background: var(--th-accent-soft);
+/* One neutral hairline between option rows (never a box border) so
+   consecutive entries read as distinct rows instead of blending into a
+   single grey list (E20). */
+.th-chat-slash > button + button {
+  border-top: 1px solid var(--th-border-surface);
 }
 
-/* Command names are identifiers and keep the mono stack; descriptions stay
-   sans at the muted tier. */
+/* E20: active palette rows take the shared selection wash; the trailing
+   chevron stays the check cue. */
+.th-chat-slash > button[aria-selected="true"] {
+  background: var(--th-accent-select);
+}
+
+/* Command names are identifiers and keep the mono stack at the text tier
+   with emphasis weight; descriptions stay sans at the muted tier. */
 .th-chat-slash strong {
   color: var(--th-text);
   font-family: var(--th-font-mono);
+  font-weight: var(--th-weight-emphasize);
 }
 
 .th-chat-slash span {
@@ -394,6 +396,7 @@
 
 .th-chat-files strong {
   color: var(--th-text);
+  font-weight: var(--th-weight-emphasize);
 }
 
 .th-chat-files-path {

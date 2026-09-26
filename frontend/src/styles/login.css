@@ -12,13 +12,22 @@
   max-width: 400px;
   padding: var(--th-space-8) var(--th-space-8) var(--th-space-6);
   background: var(--th-surface-raised);
-  border: 1px solid var(--th-border-overlay);
+  /* E23: the shared neutral visible edge clears 1.3:1 in both themes. */
+  border: 1px solid var(--th-border-visible);
   border-radius: var(--th-radius-xl);
-  box-shadow: var(--th-shadow-raised), var(--th-highlight);
+  /* The card is the only surface on the auth canvas, so it takes the
+     overlay-grade elevation: in the light theme the raised shadow alone
+     washed the edges out (E23 login card edges). */
+  box-shadow: var(--th-shadow-overlay), var(--th-highlight);
   display: flex;
   flex-direction: column;
   gap: var(--th-space-4);
   animation: th-modal-in var(--th-dur-slow) var(--th-ease-out);
+}
+
+/* E23: the password input uses the same visible edge as its card. */
+.th-login-card .th-input {
+  border-color: var(--th-border-visible);
 }
 
 .th-login-brand {
