@@ -15,16 +15,17 @@ const (
 )
 
 type overviewCacheEntry struct {
-	liveRevision  liveRevision
-	epoch         omorpc.EpochToken
-	retired       bool
-	snapshots     map[string]json.RawMessage
-	oversized     map[string]bool
-	task          *TaskDigest
-	dag           *DagDigest
-	dagSnapshots  dagSnapshotCache
-	taskSnapshots taskSnapshotCache
-	used          uint64
+	liveRevision    liveRevision
+	epoch           omorpc.EpochToken
+	retired         bool
+	snapshots       map[string]json.RawMessage
+	activityContent activityContentCache
+	oversized       map[string]bool
+	task            *TaskDigest
+	dag             *DagDigest
+	dagSnapshots    dagSnapshotCache
+	taskSnapshots   taskSnapshotCache
+	used            uint64
 }
 
 type overviewUpdate struct {
@@ -354,6 +355,7 @@ func (m *Manager) ingestUnboundOverviewLocked(epoch omorpc.EpochToken, ev *omorp
 		reconcileOverviewEntry(entry)
 	}
 	refreshOverviewExactCounts(entry)
+	entry.activityContent.refresh(m, entry.snapshots, entry.oversized, &entry.taskSnapshots, &entry.dagSnapshots)
 	m.evictOverviewLRULocked()
 	snapshot := Summary{ChatID: durableID, DurableSessionID: durableID}
 	subscribers := m.updateOverviewLocked(&snapshot)
@@ -429,15 +431,13 @@ func (m *Manager) evictOverviewLRULocked() {
 // transfer has no destination incumbent to compare and moves the accepted state
 // together with its freshness; subsequent bound dispatch uses the shared policy.
 func (m *Manager) mergeOverviewIntoSessionLocked(s *Session) (Summary, []*overviewSubscriber) {
-	previous, replacing := m.overviewCurrent[s.chatID]
 	delete(m.overviewCurrent, s.chatID)
 	m.activateIdentityLocked(s)
 
 	entry := m.overviewCache[s.durableID]
 	if entry == nil {
-		if (!replacing || previous.DurableSessionID == s.durableID) && !s.activeLocked() {
-			return Summary{}, nil
-		}
+		// Establish incarnation authority even for an idle same-durable rebind.
+		// No task or run event is required to announce the replacement.
 		snapshot := cloneSummary(s.summaryLocked())
 		subscribers := m.updateOverviewLocked(&snapshot)
 		m.syncBoundOverviewRevisionLocked(s, snapshot)
@@ -452,12 +452,13 @@ func (m *Manager) mergeOverviewIntoSessionLocked(s *Session) (Summary, []*overvi
 		s.dagDigest = cloneDagDigest(entry.dag)
 		s.dagSnapshots = entry.dagSnapshots
 		s.taskSnapshots = entry.taskSnapshots
+		s.activityContent = entry.activityContent
 		for _, name := range activitySnapshotOrder {
+			s.activityOversized[name] = entry.oversized[name]
 			if data := entry.snapshots[name]; len(data) > 0 {
 				s.activitySnapshots[name] = append(json.RawMessage(nil), data...)
-				s.publishLocked(Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: s.exactActivityFrameDataLocked(name, data, entry.oversized[name])})
+				s.publishLocked(s.replayActivityFrameLocked(name, data))
 			}
-			s.activityOversized[name] = entry.oversized[name]
 		}
 		if entry.oversized[activitySnapshotOrder[1]] {
 			delete(s.activitySnapshots, activitySnapshotOrder[1])

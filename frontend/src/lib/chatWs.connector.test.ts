@@ -80,8 +80,69 @@ describe("connectChat v2 hello handshake", () => {
     // The session stream flows normally after the handshake.
     socket?.serverSend({ type: "ready", sessionId: "c1", piSessionId: null, resumed: false });
     expect(onFrame).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ type: "ready", sessionId: "c1" }),
+      expect.objectContaining({ type: "ready", sessionId: "c1" }), 1,
     );
+  });
+
+  it("delivers the optional instance id with each validated reconnect hello", () => {
+    const onHello = vi.fn();
+    const onFrame = vi.fn();
+    conn = connectChat({ onHello, onFrame });
+    const socket = FakeWebSocket.instances[0];
+    socket?.serverOpen();
+    socket?.serverSend({ type: "hello", version: CHAT_WIRE_VERSION, serverVersion: "v2", instanceId: "first" });
+
+    expect(onHello).toHaveBeenCalledExactlyOnceWith("first", 1);
+    expect(onFrame).not.toHaveBeenCalled();
+  });
+
+  it("tags hello and activity with the socket they arrived on after reconnect", async () => {
+    vi.useFakeTimers();
+    const onOpen = vi.fn();
+    const onHello = vi.fn();
+    const onFrame = vi.fn();
+    const onClose = vi.fn();
+    conn = connectChat({ onOpen, onHello, onFrame, onClose });
+    const first = FakeWebSocket.instances[0];
+    first?.serverOpen();
+    first?.serverSend({ type: "hello", version: CHAT_WIRE_VERSION, serverVersion: "v2", instanceId: "old" });
+    first?.serverClose(1006);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    const second = FakeWebSocket.instances[1];
+    second?.serverOpen();
+    second?.serverSend({ type: "hello", version: CHAT_WIRE_VERSION, serverVersion: "v2", instanceId: "fresh" });
+    second?.serverSend({
+      type: "sessions.activity", sessionId: "A", title: "A", active: false,
+      durableSessionId: "Y", last_activity_ms: 200, overflow: false,
+      running: { agents: 2, tasks: 2, dag: 0 },
+    });
+
+    expect(onOpen.mock.calls).toEqual([[1], [2]]);
+    expect(onHello.mock.calls).toEqual([["old", 1], ["fresh", 2]]);
+    expect(onClose.mock.calls).toEqual([[1006, 1]]);
+    expect(onFrame).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: "sessions.activity" }), 2);
+  });
+
+  it("allocates each socket token before its upgrade completes", async () => {
+    vi.useFakeTimers();
+    const onAttempt = vi.fn();
+    const onOpen = vi.fn();
+    conn = connectChat({ onAttempt, onOpen, onFrame: () => undefined });
+
+    expect(FakeWebSocket.instances[0]?.readyState).toBe(FakeWebSocket.CONNECTING);
+    expect(onAttempt.mock.calls).toEqual([[1]]);
+    expect(onOpen).not.toHaveBeenCalled();
+
+    FakeWebSocket.instances[0]?.serverOpen();
+    FakeWebSocket.instances[0]?.serverClose(1006);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(FakeWebSocket.instances[1]?.readyState).toBe(FakeWebSocket.CONNECTING);
+    expect(onAttempt.mock.calls).toEqual([[1], [2]]);
+    expect(onOpen.mock.calls).toEqual([[1]]);
+
+    FakeWebSocket.instances[1]?.serverOpen();
+    expect(onOpen.mock.calls).toEqual([[1], [2]]);
   });
 
   it("warns on a wire version mismatch but proceeds with the session stream", () => {
@@ -95,7 +156,7 @@ describe("connectChat v2 hello handshake", () => {
     socket?.serverSend({ type: "run.started", sessionId: "c1" });
 
     expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("version mismatch"));
-    expect(onFrame).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: "run.started" }));
+    expect(onFrame).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: "run.started" }), 1);
   });
 
   it("tolerates a server that never sends hello with a single warning", () => {
@@ -278,7 +339,7 @@ describe("connectChat server-side backpressure", () => {
     // (invariant 12). From the client this is indistinguishable from any close:
     // no client-side queue draining, just report and re-enter backoff.
     first?.serverClose(1011);
-    expect(onClose).toHaveBeenCalledExactlyOnceWith(1011);
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(1011, 1);
     expect(conn.send({ type: "ping" })).toBe(false);
     const firstSentCount = first?.sent.length ?? 0;
 

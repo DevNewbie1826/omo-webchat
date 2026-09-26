@@ -114,6 +114,7 @@ func TestActivitySubscribeEngineShapedEndToEnd(t *testing.T) {
 	if ack := overviewFrames.next(t, "ack"); ack["command"] != "sessions.subscribe" {
 		t.Fatalf("subscription ack = %v", ack)
 	}
+	requireBindingIncarnation(t, overviewFrames.next(t, "sessions.activity"), "")
 
 	taskPayload := map[string]any{
 		"parent_session_id":   chat.DurableSessionID,

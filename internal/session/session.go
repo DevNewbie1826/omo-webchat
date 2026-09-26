@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -104,10 +105,12 @@ type Session struct {
 	client                            *omorpc.Client
 	chatID, cwd                       string
 	durableID, routingID, sessionFile string
-	resumed                           bool
-	queueSize                         int
-	idleAfter                         time.Duration
-	epoch                             omorpc.EpochToken
+	// Immutable provider-binding incarnation, assigned before any replay queues.
+	bindingID string
+	resumed   bool
+	queueSize int
+	idleAfter time.Duration
+	epoch     omorpc.EpochToken
 
 	lifecycleMu                                                             sync.Mutex
 	nameMu                                                                  sync.Mutex
@@ -138,6 +141,8 @@ type Session struct {
 	closeTxn                                                                *closeTransaction
 	idleTimer                                                               *time.Timer
 	activitySnapshots                                                       map[string]json.RawMessage
+	activityContent                                                         activityContentCache
+	activityLast                                                            [3]activityContentStamp
 	activityOversized                                                       map[string]bool
 	title, nameSource                                                       string
 	inPlace, sessionFileObserved                                            bool
@@ -173,6 +178,7 @@ func newSession(m *Manager, chatID, cwd string, data omorpc.OpenSessionData, res
 	}
 	s := &Session{
 		manager: m, client: m.cfg.Client, chatID: chatID, cwd: cwd,
+		bindingID: rand.Text(),
 		durableID: data.State.SessionID, routingID: data.SessionID, sessionFile: data.State.SessionFile,
 		resumed: resumed, queueSize: m.cfg.QueueSize, idleAfter: m.cfg.IdleAfter, epoch: epoch,
 		title: name, nameSource: nameSource,
@@ -236,6 +242,7 @@ func (s *Session) ChatID() string      { return s.chatID }
 func (s *Session) ID() string          { return s.durableID }
 func (s *Session) RoutingID() string   { return s.routingID }
 func (s *Session) SessionFile() string { return s.sessionFile }
+func (s *Session) BindingID() string   { return s.bindingID }
 
 func (s *Session) prepareWrite(ctx context.Context) error {
 	// Cursor preparation may mutate durable state, so it is inside the route's
@@ -1523,7 +1530,7 @@ func (s *Session) ActivitySnapshot() []Frame {
 	out := make([]Frame, 0, len(activitySnapshotOrder))
 	for _, name := range activitySnapshotOrder {
 		if data := s.activitySnapshots[name]; len(data) > 0 {
-			out = append(out, Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: s.exactActivityFrameDataLocked(name, data, s.activityOversized[name])})
+			out = append(out, s.replayActivityFrameLocked(name, data))
 		}
 	}
 	return out
@@ -1565,11 +1572,11 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 	s.cancelIdleLocked()
 	initial := make([]Frame, 0, 3+len(owner.fifo))
 	if s.readyPublished {
-		initial = append(initial, Frame{Kind: FrameReady, SessionID: s.durableID, Resumed: s.resumed})
+		initial = append(initial, Frame{Kind: FrameReady, SessionID: s.durableID, BindingID: s.bindingID, Resumed: s.resumed})
 	}
 	for _, name := range activitySnapshotOrder {
 		if data := s.activitySnapshots[name]; len(data) > 0 {
-			initial = append(initial, Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: s.exactActivityFrameDataLocked(name, data, s.activityOversized[name])})
+			initial = append(initial, s.replayActivityFrameLocked(name, data))
 		}
 	}
 	for _, requestID := range owner.fifo {
@@ -1880,6 +1887,10 @@ func (s *Session) summary() (Summary, bool) {
 }
 
 func (s *Session) publishLocked(f Frame) {
+	// Freeze provenance before broadcaster, replay, or transport buffering.
+	if f.Kind == FrameReady || f.Kind == FrameExtensionEvent {
+		f.BindingID = s.bindingID
+	}
 	switch f.Kind {
 	case FrameRunStarted, FrameRunDone, FrameCompactionStart, FrameCompactionDone:
 		s.notifyActivityLocked()

@@ -48,11 +48,17 @@ func TestHelloReportsLiveServerVersion(t *testing.T) {
 	if got := first["serverVersion"]; got != "startup-version" {
 		t.Fatalf("first hello serverVersion = %v, want startup-version", got)
 	}
+	if got := first["instanceId"]; got == "" || got != manager.InstanceID() {
+		t.Fatalf("first hello instanceId = %v, manager = %q", got, manager.InstanceID())
+	}
 
 	version = "live-version"
 	second := connect().next(t, "hello")
 	if got := second["serverVersion"]; got != "live-version" {
 		t.Fatalf("second hello serverVersion = %v, want live-version", got)
+	}
+	if got := second["instanceId"]; got != first["instanceId"] {
+		t.Fatalf("hello instanceId changed across connections: %v, %v", first["instanceId"], got)
 	}
 }
 

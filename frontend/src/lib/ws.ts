@@ -27,6 +27,8 @@ import { frameTypeOf } from "./contract/types_gen";
 import type { PingFrame } from "./contract/types_gen";
 
 export interface WsHandlers {
+  /** Invoked immediately before each socket starts connecting, including retries. */
+  readonly onAttempt?: () => void;
   readonly onOpen?: () => void;
   /** Invoked for every parsed JSON message. */
   readonly onMessage: (msg: unknown) => void;
@@ -124,6 +126,7 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
       prev.close();
     }
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    handlers.onAttempt?.();
     const ws = new WebSocket(`${proto}//${window.location.host}${path}`);
     socket = ws;
     closeSignaled = false;

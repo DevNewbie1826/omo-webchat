@@ -107,6 +107,10 @@ func TestManagerReacquirePreservesReusedRoute(t *testing.T) {
 			if got := reopenedFrames.next(t); got.Kind != FrameReady || !got.Resumed {
 				t.Fatalf("reopened initial frame = %+v", got)
 			}
+			// Even an idle reacquisition now announces its new incarnation.
+			if got := awaitOverview(t, arrived); got.ChatID != reopened.ChatID() || got.BindingID != reopened.BindingID() || got.BindingID == old.BindingID() {
+				t.Fatalf("reopened overview = %+v", got)
+			}
 			// Join actual wire ingestion after publication; map/lifecycle checks
 			// alone would miss a session that remains available but loses events.
 			replacement.Emit(map[string]any{"type": "message_delta", "sessionId": current.routingID, "delta": "reacquire-route-proof"})

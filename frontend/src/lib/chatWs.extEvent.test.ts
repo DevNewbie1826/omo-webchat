@@ -2,6 +2,18 @@ import { describe, expect, it } from "vitest";
 import { parseChatServerFrame } from "./chatWs";
 
 describe("parseChatServerFrame extensionEvent", () => {
+  it.each([0, 42, Number.MAX_SAFE_INTEGER])("retains server content revision %s", revision => {
+    expect(parseChatServerFrame({
+      type: "extensionEvent", sessionId: "A", name: "omo.task.updated", revision,
+    })).toMatchObject({ revision });
+  });
+
+  it.each([null, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "42"])("rejects invalid content revision %s", revision => {
+    expect(parseChatServerFrame({
+      type: "extensionEvent", sessionId: "A", name: "omo.task.updated", revision,
+    })).toBeNull();
+  });
+
   it("accepts an extension event with JSON data", () => {
     expect(
       parseChatServerFrame({

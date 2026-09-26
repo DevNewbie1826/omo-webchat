@@ -6,6 +6,13 @@ import type { AcceptedAgentAggregate, LiveSessionSummary } from "./useLiveSessio
 import { applyTaskActivity, mergeTaskAuthorities, reconcileTaskSources, taskAuthorityPayload, applyCountAuthority, type CountAuthority, type TaskAuthority } from "../split/taskAuthority";
 import type { TaskDigest, DagDigest } from "./activityDigest";
 import type { LiveSessionInfo } from "./useLiveSessionsLean";
+import { admitCurrentLiveFrame, applyLiveIdentity, canonicalLiveSessionId, isResidentLiveSession, liveAcceptedBinding, liveAcceptedDurable, resetLiveIdentities, retireLiveIdentities } from "./liveSessionIdentity";
+import { admitsAttachedBinding, bindAttachedSource, resetAttachedSourcesForTests } from "./liveAttachedBindings";
+import type { AttachedBadgeProvenance } from "./liveAttachedBindings";
+import { acceptAttachedContentRevision } from "./liveContentRevision";
+export { releaseAttachedBadgeSource } from "./liveAttachedBindings";
+export type { AttachedBadgeProvenance } from "./liveAttachedBindings";
+export { canonicalLiveSessionId } from "./liveSessionIdentity";
 
 const TASK_FRAME = "omo.task.updated";
 const DAG_FRAME = "omo.dag.updated";
@@ -45,20 +52,33 @@ export interface LiveBadgeOverride {
 const listeners = new Set<() => void>();
 let overrides: ReadonlyMap<string, SessionOverride> = new Map();
 let activitySequence = 0;
-let sessionAliases: ReadonlyMap<string, string> = new Map();
+let adoptedInstanceId: string | undefined;
+/** Only the overview transport adopts an instance; attached sockets observe it. */
+export function adoptLiveBadgeInstance(instanceId: string | undefined): void {
+  adoptedInstanceId = instanceId;
+}
+
+/** Hold ready claims until the overview accepts their server incarnation. */
+export function bindAttachedBadgeSource(sessionId: string, provenance: AttachedBadgeProvenance): void {
+  const id = canonicalLiveSessionId(sessionId);
+  bindAttachedSource(id, provenance, liveAcceptedBinding(id));
+}
 
 interface SessionTasks extends TaskAuthority {
   readonly mutations: ReadonlyMap<string, number>;
 }
 let taskAuthorities: ReadonlyMap<string, SessionTasks> = new Map();
 
-export function canonicalLiveSessionId(id: string): string {
-  const visited = new Set<string>();
-  while (sessionAliases.has(id) && !visited.has(id)) {
-    visited.add(id);
-    id = sessionAliases.get(id)!;
+function pruneTaskAuthorities(all: Map<string, SessionTasks>): void {
+  while (all.size > 256) {
+    const oldest = [...all.keys()].find((id) => !isResidentLiveSession(id));
+    if (oldest === undefined) break;
+    all.delete(oldest);
   }
-  return id;
+}
+
+export function hasProvisionalLiveData(id: string): boolean {
+  return overrides.has(id) || taskAuthorities.has(id);
 }
 
 function getTaskAuthorities(): ReadonlyMap<string, SessionTasks> { return taskAuthorities; }
@@ -91,7 +111,7 @@ export function acceptLiveTaskInfo(
   for (const key of mutations.keys()) if (!next.tasks.has(key) && !next.taskFreshness?.has(key)) mutations.delete(key);
   const all = new Map(taskAuthorities);
   all.delete(id); all.set(id, { ...next, mutations });
-  while (all.size > 256) all.delete(all.keys().next().value!);
+  pruneTaskAuthorities(all);
   taskAuthorities = all;
   emit();
 }
@@ -112,7 +132,7 @@ export function acceptLiveDagCounts(
   if (next === previous) return;
   const all = new Map(taskAuthorities);
   all.set(id, { ...next, mutations: previous.mutations });
-  while (all.size > 256) all.delete(all.keys().next().value!);
+  pruneTaskAuthorities(all);
   taskAuthorities = all;
   emit();
 }
@@ -157,20 +177,18 @@ export function useLiveAgentAggregates(): ReadonlyMap<string, AcceptedAgentAggre
 }
 
 export function retireLiveTaskSessions(ids: readonly string[]): void {
-  const retired = new Set(ids.map(canonicalLiveSessionId));
   const all = new Map(taskAuthorities);
-  const aliases = new Map(sessionAliases);
   const remaining = new Map(overrides);
-  for (const id of retired) all.delete(id);
-  for (const id of aliases.keys()) if (retired.has(canonicalLiveSessionId(id))) aliases.delete(id);
-  for (const id of remaining.keys()) if (retired.has(canonicalLiveSessionId(id))) remaining.delete(id);
-  if (all.size === taskAuthorities.size && aliases.size === sessionAliases.size && remaining.size === overrides.size) return;
+  for (const id of ids) {
+    all.delete(id);
+    remaining.delete(id);
+  }
+  retireLiveIdentities(ids);
+  if (all.size === taskAuthorities.size && remaining.size === overrides.size) return;
   taskAuthorities = all;
-  sessionAliases = aliases;
   overrides = remaining;
   emit();
 }
-
 
 function emit(): void {
   for (const listener of listeners) listener();
@@ -280,25 +298,28 @@ function mergeOverrides(first: SessionOverride, second: SessionOverride): Sessio
   };
 }
 
-function remapOverride(next: Map<string, SessionOverride>, fromId: string, toId: string): void {
-  if (fromId === toId) return;
-  fromId = canonicalLiveSessionId(fromId);
-  toId = canonicalLiveSessionId(toId);
-  if (fromId === toId) return;
-  const sourceTasks = taskAuthorities.get(fromId), targetTasks = taskAuthorities.get(toId);
-  if (sourceTasks !== undefined) {
-    const all = new Map(taskAuthorities);
-    const merged = targetTasks === undefined ? sourceTasks : mergeTaskAuthorities(targetTasks, sourceTasks);
-    const mutations = new Map(sourceTasks.mutations);
-    for (const [id, at] of targetTasks?.mutations ?? []) mutations.set(id, Math.max(mutations.get(id) ?? 0, at));
-    all.set(toId, { ...merged, mutations }); all.delete(fromId); taskAuthorities = all;
-  }
-  sessionAliases = new Map(sessionAliases).set(fromId, toId);
+/** Move an admitted replacement's override and task authority together. */
+function migrateReplacementData(next: Map<string, SessionOverride>, fromId: string, target: string): void {
   const source = next.get(fromId);
-  if (source === undefined) return;
-  const target = next.get(toId);
-  next.set(toId, target === undefined ? source : mergeOverrides(source, target));
-  next.delete(fromId);
+  if (source !== undefined) {
+    const targetOverride = next.get(target);
+    next.set(target, targetOverride === undefined ? source : mergeOverrides(source, targetOverride));
+    next.delete(fromId);
+  }
+  const sourceTasks = taskAuthorities.get(fromId);
+  if (sourceTasks === undefined) return;
+  const all = new Map(taskAuthorities);
+  const targetTasks = taskAuthorities.get(target);
+  if (targetTasks === undefined) {
+    all.set(target, sourceTasks);
+  } else {
+    const merged = mergeTaskAuthorities(targetTasks, sourceTasks);
+    const mutations = new Map(targetTasks.mutations);
+    for (const [id, at] of sourceTasks.mutations) mutations.set(id, Math.max(mutations.get(id) ?? 0, at));
+    all.set(target, { ...merged, mutations });
+  }
+  all.delete(fromId);
+  taskAuthorities = all;
 }
 
 /** Settle attached-socket overrides against a successful REST response. Each
@@ -306,19 +327,21 @@ function remapOverride(next: Map<string, SessionOverride>, fromId: string, toId:
  * response's own scalars enter the shared count authority with that request
  * ordering on both the task and the DAG side. */
 export function settleLiveBadgePoll(
-  infos: readonly { readonly id: string; readonly task?: unknown; readonly dag?: unknown; readonly taskDigest?: TaskDigest; readonly taskOversized?: boolean; readonly dagDigest?: DagDigest }[],
+  infos: readonly { readonly id: string; readonly durableSessionId?: string; readonly bindingId?: string; readonly lean?: { readonly last_activity_ms?: number }; readonly task?: unknown; readonly dag?: unknown; readonly taskDigest?: TaskDigest; readonly taskOversized?: boolean; readonly dagDigest?: DagDigest }[],
   requestSequence: number,
 ): void {
   const next = new Map(overrides);
   let changed = false;
   for (const info of infos) {
-    const parentId = parentSessionIdOf(info);
-    if (parentId !== undefined && parentId !== info.id) {
-      const before = next.get(parentId);
-      remapOverride(next, parentId, info.id);
-      if (before !== undefined) changed = true;
-    }
-    acceptLiveTaskInfo(info, nextLiveActivitySequence(), requestSequence);
+    const admission = admitCurrentLiveFrame({ kind: "poll", chatId: info.id, requestSequence,
+      ...(info.durableSessionId === undefined ? {} : { durableId: info.durableSessionId }),
+      ...(info.bindingId === undefined ? {} : { bindingId: info.bindingId }),
+      ...(info.lean?.last_activity_ms === undefined ? {} : { receipt: info.lean.last_activity_ms }),
+    });
+    if (!admission.accept) continue;
+    applyLiveIdentity(admission);
+    const settlementSequence = nextLiveActivitySequence();
+    acceptLiveTaskInfo(info, settlementSequence, requestSequence);
     acceptLiveDagCounts(info, requestSequence);
     const entry = next.get(info.id);
     if (entry === undefined) continue;
@@ -338,8 +361,8 @@ export function settleLiveBadgePoll(
   emit();
 }
 
-/** Settle attached overrides when the overview socket publishes the same side,
- * and atomically migrate any provisional durable identity. */
+/** Settle attached overrides and migrate only admitted replacement sources.
+ * Ownership and alias changes are committed by the identity reducer. */
 export function settleLiveBadgePush(
   sessionId: string,
   sourceIds: readonly string[],
@@ -352,10 +375,13 @@ export function settleLiveBadgePush(
   let changed = false;
   for (const sourceId of sourceIds) {
     if (next.has(sourceId)) changed = true;
-    remapOverride(next, sourceId, sessionId);
+    migrateReplacementData(next, sourceId, sessionId);
   }
   const entry = next.get(sessionId);
-  if (entry === undefined) { if (beforeAuthorities !== taskAuthorities) emit(); return; }
+  if (entry === undefined) {
+    if (changed || beforeAuthorities !== taskAuthorities) { overrides = next; emit(); }
+    return;
+  }
   const task = taskUpdated && (entry.task?.sequence ?? -1) <= pushSequence ? undefined : entry.task;
   const dag = dagUpdated && (entry.dag?.sequence ?? -1) <= pushSequence ? undefined : entry.dag;
   if (task !== entry.task || dag !== entry.dag) {
@@ -373,10 +399,19 @@ export function settleLiveBadgePush(
 }
 
 /** Task snapshots enter per-ID authority; null cannot clear task membership.
- * Activity advances its own progress clock. DAG-side settlement remains arrival-ordered. */
-export function ingestExtensionEvent(sessionId: string, frameName: string, data: unknown): void {
+ * Server content revisions fence all shared mutations before arrival ordering. */
+export function ingestExtensionEvent(
+  sessionId: string, frameName: string, data: unknown, provenance?: AttachedBadgeProvenance,
+  revision?: number,
+): void {
+  const acceptedDurable = liveAcceptedDurable(sessionId);
+  if (provenance !== undefined && (provenance.connection !== provenance.currentConnection
+    || provenance.instanceId !== adoptedInstanceId
+    || (acceptedDurable !== undefined && provenance.durableSessionId !== acceptedDurable))) return;
   if (frameName !== TASK_FRAME && frameName !== DAG_FRAME && frameName !== ACTIVITY_FRAME) return;
   const id = canonicalLiveSessionId(sessionId);
+  if (provenance !== undefined && !admitsAttachedBinding(provenance, liveAcceptedBinding(id)?.bindingId)) return;
+  if (!acceptAttachedContentRevision(id, provenance?.bindingId ?? liveAcceptedBinding(id)?.bindingId, revision)) return;
   if (frameName === TASK_FRAME) acceptLiveTaskInfo({ id, task: data }, nextLiveActivitySequence());
   if (frameName === ACTIVITY_FRAME) {
     const parsed = parseDagActivity(data);
@@ -536,9 +571,16 @@ export function useMergedLiveSummaries(pollSummaries: readonly LiveSessionSummar
 
 /** Reset module state so fake-clock ordering and TTL tests are isolated. */
 export function __resetLiveBadgeStoreForTests(): void {
+  activitySequence = 0;
+  resetAttachedSourcesForTests();
+  resetLiveBadgeState();
+}
+
+/** An instance change invalidates all task, alias and revision provenance. */
+export function resetLiveBadgeState(): void {
   overrides = new Map();
   taskAuthorities = new Map();
-  activitySequence = 0;
-  sessionAliases = new Map();
+  adoptedInstanceId = undefined;
+  resetLiveIdentities();
   emit();
 }

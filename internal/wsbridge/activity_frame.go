@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
+	"strconv"
 )
 
 func cloneActivitySummary(summary session.Summary) session.Summary {
@@ -38,6 +39,11 @@ func activityFrame(summary session.Summary, overflow bool) wscontract.SessionsAc
 	}
 	if summary.ReplacesSessionID != "" {
 		frame.ReplacesSessionID = &summary.ReplacesSessionID
+	}
+	if summary.BindingID != "" {
+		// Binding IDs are server-issued base32 tokens. Preserve the optional
+		// wire field through the generated contract's forward-compatible map.
+		frame.ExtraFields = map[string]json.RawMessage{"bindingId": json.RawMessage(strconv.Quote(summary.BindingID))}
 	}
 	return frame
 }

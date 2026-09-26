@@ -486,7 +486,7 @@ func (s *Session) forwardExtensionEventLocked(raw map[string]any) {
 		running, total := s.refreshExactCountsLocked()
 		dataBytes = addActivityCounts(dataBytes, name, &s.taskSnapshots, &s.dagSnapshots, running, total)
 	}
-	s.publishLocked(Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: extensionFrameData(name, dataBytes, s.activityOversized[name])})
+	s.publishLocked(s.produceExtensionFrameLocked(name, dataBytes, s.activityOversized[name]))
 	if (name == activitySnapshotOrder[0] || name == activitySnapshotOrder[1]) && s.manager != nil {
 		s.manager.notifySessionOverviewLocked(s)
 	}

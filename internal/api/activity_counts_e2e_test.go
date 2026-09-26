@@ -166,6 +166,7 @@ func TestSessionsLiveExactCountsBeyondDigestCap(t *testing.T) {
 	fixture := newCountsE2EFixture(t)
 	fixture.attachChat()
 	_, overviewFrames := fixture.connectSubscribe()
+	requireBindingIncarnation(t, overviewFrames.next(t, "sessions.activity"), "")
 	fixture.emitTruncatingActivity()
 	// The overview frame proves the manager ingested both snapshots before the
 	// poll; the frame scalars themselves are covered by the frame test below.
@@ -181,6 +182,7 @@ func TestActivityFrameExactCountsBeyondDigestCap(t *testing.T) {
 	fixture := newCountsE2EFixture(t)
 	fixture.attachChat()
 	_, overviewFrames := fixture.connectSubscribe()
+	requireBindingIncarnation(t, overviewFrames.next(t, "sessions.activity"), "")
 	fixture.emitTruncatingActivity()
 	taskFrame := overviewFrames.next(t, "sessions.activity")
 	dagFrame := overviewFrames.next(t, "sessions.activity")

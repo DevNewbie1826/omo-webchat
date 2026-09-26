@@ -6,7 +6,8 @@ import { Sidebar } from "../../components/Sidebar";
 import { useLiveSessionInfos } from "./useLiveSessions";
 import { useLiveSessionSummaries, type LiveSessionSummary } from "./useLiveSessionSummaries";
 import { __resetLiveBadgeStoreForTests, useMergedLiveSummaries } from "./liveBadgeStore";
-import { listLiveSessions, type LiveSessionInfo } from "./workspace";
+import { listLiveSessions } from "./workspace";
+import type { LiveSessionInfo } from "./useLiveSessionsLean";
 
 vi.mock("../../lib/chatWs", async (original) => ({
   ...await original<typeof import("../../lib/chatWs")>(), connectChat: vi.fn(),
@@ -154,8 +155,10 @@ describe("main running transport and sidebar", () => {
     vi.stubGlobal("fetch", vi.fn(() => poll.promise));
     await mount();
     push({ sessionId: "durable", durableSessionId: "durable", active: true });
-    push({ sessionId: "s1", durableSessionId: "s1", running: { dag: 0 } });
-    push({ replacesSessionId: "durable" });
+    // PR #197 server contract: replacesSessionId names a provisional of the
+    // SAME durable, so s1 must claim durable before its one-sided update.
+    push({ sessionId: "s1", durableSessionId: "durable", running: { dag: 0 }, replacesSessionId: "durable" });
+    push({ sessionId: "s1", durableSessionId: "durable", running: { agents: 2 } });
     expect(infos).toHaveLength(1);
     expect(infos[0]).toMatchObject({ id: "s1", active: true });
     await act(async () => { poll.resolve(response([{ ...base, active: false }])); await poll.promise; });
@@ -182,11 +185,10 @@ describe("main running transport and sidebar", () => {
     expect(active()).toBe(false);
   });
 
-  // Regression (round 2): applyPoll matched a canonicalized previous id against
-  // a raw incoming id, so once a durable->chat remap was established a poll row
-  // still keyed by the durable id could not match its own previous row and an
-  // omitting `active` field discarded the previously known boolean.
-  it.each([true, false])("carries known active=%s across a poll row still keyed by the durable id", async (value) => {
+  // PR #197 server contract: stored rows use chat IDs; durable-keyed rows
+  // exist only while unowned. A stale P-era REST row is ignored while the
+  // full response retains s1's chat row with its known `active`.
+  it.each([true, false])("keeps known active=%s when a claimed durable's stale REST row arrives", async (value) => {
     vi.useFakeTimers();
     const next = deferred<Response>();
     const pollResponses: readonly (Response | Promise<Response>)[] = [
@@ -210,7 +212,10 @@ describe("main running transport and sidebar", () => {
     // Trigger the poller's scheduled request, then settle it deterministically.
     await act(async () => { await vi.advanceTimersToNextTimerAsync(); });
     expect(liveCalls).toBe(2);
-    await act(async () => { next.resolve(response([{ ...base, id: "durable" }])); await next.promise; });
+    await act(async () => {
+      next.resolve(response([{ ...base }, { ...base, id: "durable" }]));
+      await next.promise;
+    });
     expect(infos).toMatchObject([{ id: "s1", active: value }]);
     expect(summaries[0]).toMatchObject({ id: "s1", active: value, runningCount: 0 });
     if (value) {
@@ -260,11 +265,12 @@ describe("main running transport and sidebar", () => {
     push({ sessionId: "s1", durableSessionId: "durable" });
     await act(async () => { await vi.advanceTimersToNextTimerAsync(); });
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    await act(async () => { second.resolve(response([{ ...base, id: "durable" }])); await second.promise; });
+    // PR #197 server contract: after claim REST is chat-keyed, not durable-keyed.
+    await act(async () => { second.resolve(response([{ ...base }])); await second.promise; });
     expect(infos).toMatchObject([{ id: "s1", active: true }]);
     await act(async () => { await vi.advanceTimersToNextTimerAsync(); });
     expect(fetchMock).toHaveBeenCalledTimes(3);
-    await act(async () => { third.resolve(response([{ ...base, id: "durable", active: false }])); await third.promise; });
+    await act(async () => { third.resolve(response([{ ...base, active: false }])); await third.promise; });
     expect(infos).toMatchObject([{ id: "s1", active: false }]);
   });
 
@@ -282,7 +288,9 @@ describe("main running transport and sidebar", () => {
     expect(infos).toMatchObject([{ id: "s1", active: false }]);
     await act(async () => { await vi.advanceTimersToNextTimerAsync(); });
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    await act(async () => { next.resolve(response([{ ...base, id: "durable" }])); await next.promise; });
+    // PR #197 server contract: the later REST response retains the stored
+    // chat ID; this checks pushed activity wins on a tied receipt.
+    await act(async () => { next.resolve(response([{ ...base }])); await next.promise; });
     expect(infos).toMatchObject([{ id: "s1", active: false }]);
   });
 
@@ -292,8 +300,34 @@ describe("main running transport and sidebar", () => {
     await mount();
     push({ sessionId: "s1", durableSessionId: "durable", active: true });
     expect(infos).toMatchObject([{ id: "s1", active: true }]);
-    await act(async () => { poll.resolve(response([{ ...base, id: "durable", active: false }])); await poll.promise; });
+    // PR #197 server contract: a stored chat's REST row is always chat-keyed.
+    await act(async () => { poll.resolve(response([{ ...base, active: false }])); await poll.promise; });
     expect(infos).toMatchObject([{ id: "s1", active: true }]);
     expect(summaries[0]).toMatchObject({ id: "s1", active: true });
+  });
+
+  it.each([false, true])("keeps the hook on X after a pending Y-era REST response (overflow=%s)", async (overflow) => {
+    vi.useFakeTimers();
+    const pending = deferred<Response>();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response([]))
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValue(response([{ ...base, durableSessionId: "X", last_activity_ms: 301, running: { agents: 1, tasks: 1, dag: 0 } }]));
+    vi.stubGlobal("fetch", fetchMock);
+    await mount();
+    push({ durableSessionId: "X", last_activity_ms: 100, running: { agents: 1, tasks: 1, dag: 0 } });
+    push({ durableSessionId: "Y", last_activity_ms: 200, running: { agents: 2, tasks: 2, dag: 0 } });
+    await act(async () => { await vi.advanceTimersToNextTimerAsync(); });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    push({ durableSessionId: "X", last_activity_ms: 300, running: { agents: 1, tasks: 1, dag: 0 }, overflow });
+    await act(async () => {
+      pending.resolve(response([{ ...base, last_activity_ms: 200, running: { agents: 2, tasks: 2, dag: 0 } }]));
+      await pending.promise;
+    });
+    expect(infos[0]?.lean?.running?.tasks).toBe(1);
+
+    await act(async () => { await vi.advanceTimersToNextTimerAsync(); });
+    expect(infos[0]?.lean?.running?.tasks).toBe(1);
   });
 });

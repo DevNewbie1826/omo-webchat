@@ -13,6 +13,8 @@ export interface LeanSessionFields {
   readonly last_line?: string;
 }
 export interface LiveSessionInfo extends LegacySessionInfo {
+  readonly durableSessionId?: string;
+  readonly bindingId?: string;
   readonly lean?: LeanSessionFields;
 }
 
@@ -46,8 +48,7 @@ export function parseLeanSessionFields(value: unknown): LeanSessionFields | unde
   return Object.keys(fields).length === 0 ? undefined : fields;
 }
 
-export async function listLiveSummarySessions(signal: AbortSignal): Promise<readonly LiveSessionInfo[]> {
-  const response = await apiJson<unknown>("/api/sessions/live", { signal });
+export function parseLiveSummarySessions(response: unknown): readonly LiveSessionInfo[] {
   if (!isRecord(response) || !Array.isArray(response["sessions"])) throw new TypeError("Invalid live sessions response");
   const sessions: LiveSessionInfo[] = [];
   for (const entry of response["sessions"]) {
@@ -59,11 +60,27 @@ export async function listLiveSummarySessions(signal: AbortSignal): Promise<read
     const lean = parseLeanSessionFields(entry);
     sessions.push({
       id: entry["id"], title: typeof entry["title"] === "string" ? entry["title"] : "",
+      ...(typeof entry["durableSessionId"] === "string" && entry["durableSessionId"].length > 0
+        ? { durableSessionId: entry["durableSessionId"] } : {}),
+      ...(typeof entry["bindingId"] === "string" && entry["bindingId"].length > 0
+        ? { bindingId: entry["bindingId"] } : {}),
       ...(typeof entry["active"] === "boolean" ? { active: entry["active"] } : {}),
       task: null, dag: null, lean: lean ?? {},
     });
   }
   return sessions;
+}
+
+export async function listLiveSummarySessions(signal: AbortSignal): Promise<{
+  readonly instanceId?: string;
+  readonly sessions: readonly LiveSessionInfo[];
+}> {
+  const response = await apiJson<unknown>("/api/sessions/live", { signal });
+  return {
+    sessions: parseLiveSummarySessions(response),
+    ...(isRecord(response) && typeof response["instanceId"] === "string" && response["instanceId"].length > 0
+      ? { instanceId: response["instanceId"] } : {}),
+  };
 }
 
 /** Retain the newest server revision across poll settles, pushes and aliases.

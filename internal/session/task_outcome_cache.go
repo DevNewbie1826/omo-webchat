@@ -184,7 +184,7 @@ func (s *Session) reconcileActivityCacheLocked() {
 	if len(raw) > 0 {
 		running, total := s.refreshExactCountsLocked()
 		raw = addActivityCounts(raw, name, &s.taskSnapshots, &s.dagSnapshots, running, total)
-		s.publishLocked(Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: extensionFrameData(name, raw, s.activityOversized[name])})
+		s.publishLocked(s.produceExtensionFrameLocked(name, raw, s.activityOversized[name]))
 	}
 	if s.manager != nil {
 		s.manager.notifySessionOverviewLocked(s)

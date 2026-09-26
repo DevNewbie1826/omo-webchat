@@ -141,17 +141,23 @@ export function parseSessionFrame(
     case "extensionEvent": {
       if (sessionId === null) return null;
       const name = reqString(msg, "name");
+      const bindingId = optString(msg, "bindingId");
+      const revision = optLeanInteger(msg, "revision");
       const data = msg["data"];
-      if (name === null || name.length === 0) return null;
-      return { type: "extensionEvent", sessionId, name, ...(data !== undefined ? { data: sanitizeJson(data) } : {}) };
+      if (name === null || name.length === 0 || bindingId === null || bindingId === "" || revision === null) return null;
+      return { type: "extensionEvent", sessionId, name,
+        ...(bindingId === undefined ? {} : { bindingId }),
+        ...(revision === undefined ? {} : { revision }),
+        ...(data !== undefined ? { data: sanitizeJson(data) } : {}) };
     }
     case "sessions.activity": {
       if (sessionId === null) return null;
       const overflow = reqBoolean(msg, "overflow");
       if (overflow === null) return null;
       const durableSessionId = reqString(msg, "durableSessionId");
+      const bindingId = optString(msg, "bindingId");
       const replacesSessionId = optString(msg, "replacesSessionId");
-      if (durableSessionId === null || replacesSessionId === null) return null;
+      if (durableSessionId === null || replacesSessionId === null || bindingId === null || bindingId === "") return null;
       const id = optString(msg, "id");
       const title = optString(msg, "title");
       const lastLine = optString(msg, "last_line");
@@ -178,6 +184,7 @@ export function parseSessionFrame(
         type: "sessions.activity",
         sessionId,
         durableSessionId,
+        ...(bindingId === undefined ? {} : { bindingId }),
         ...(replacesSessionId === undefined ? {} : { replacesSessionId }),
         ...(id === undefined ? {} : { id }),
         ...(title === undefined ? {} : { title }),

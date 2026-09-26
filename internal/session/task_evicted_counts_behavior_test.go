@@ -48,6 +48,9 @@ func TestEvictedTaskOutcomePublishesCorrectedScalarsOnRESTAndActivityWS(t *testi
 	if ack := frames.next(t, "ack"); ack["command"] != "sessions.subscribe" {
 		t.Fatalf("subscription ack = %v", ack)
 	}
+	if initial := frames.nextTaskCountFrame(t); initial["bindingId"] == nil || initial["active"] != false {
+		t.Fatalf("initial idle binding = %v", initial)
+	}
 
 	tasks := make([]any, evictedTotalCounts)
 	for i := range tasks {

@@ -108,6 +108,36 @@ func assertSoleLiveRow(t *testing.T, serverURL, token string) map[string]any {
 	return rows[0]
 }
 
+func TestLiveRowResolutionRESTIncludesDurableIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stored bool
+	}{
+		{name: "stored chat", stored: true},
+		{name: "provisional row"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newLiveResolveFixture(t)
+			const durableID = "durable-rest-identity"
+			if tc.stored {
+				fixture.saveChatClaiming("chat-rest-identity", "Stored", durableID)
+			}
+			frames := fixture.subscribeExplicit(durableID, "chat-rest-identity")
+			fixture.emitUnboundTask(durableID, 1)
+			frames.next(t, "sessions.activity")
+
+			row := assertSoleLiveRow(t, fixture.serverURL, fixture.token)
+			wantID := durableID
+			if tc.stored {
+				wantID = "chat-rest-identity"
+			}
+			if row["id"] != wantID || row["durableSessionId"] != durableID {
+				t.Fatalf("live REST row = %v, want id %q and durableSessionId %q", row, wantID, durableID)
+			}
+		})
+	}
+}
+
 // A durable owned by a stored, never-acquired chat keys its live-overview
 // rows by the chat's id and name on both real wire surfaces.
 func TestLiveRowResolutionStoredChatKeysOverviewRowsByChatIdentity(t *testing.T) {

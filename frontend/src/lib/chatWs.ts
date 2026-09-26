@@ -151,6 +151,10 @@ interface ErrorFrameSeam {
   readonly message: string;
 }
 
+/** Additive binding incarnation supplied by current servers. */
+export type SessionsActivityFrame = ct.SessionsActivityFrame & { readonly bindingId?: string };
+type ExtensionEventFrame = ct.ExtensionEventFrame & { readonly bindingId?: string; readonly revision?: number };
+
 export type ChatServerFrame =
   | ct.ReadyFrame
   | ChatNameFrameSeam
@@ -159,8 +163,8 @@ export type ChatServerFrame =
   | ToolFrameSeam
   | ct.StateFrame
   | ct.StatsFrame
-  | ct.ExtensionEventFrame
-  | ct.SessionsActivityFrame
+  | ExtensionEventFrame
+  | SessionsActivityFrame
   | ct.ChatGoalFrame
   | ct.ChatTodoFrame
   | ct.ApprovalFrame
@@ -224,10 +228,13 @@ export interface ChatClient {
 
 export interface ChatHandlers {
   readonly getHistoryResume?: () => ct.HistoryResumeCursor | undefined;
-  readonly onOpen?: () => void;
-  readonly onFrame: (frame: ChatServerFrame) => void;
+  /** Monotonic socket number, allocated when the socket starts CONNECTING. */
+  readonly onAttempt?: (connection: number) => void;
+  readonly onOpen?: (connection?: number) => void;
+  readonly onHello?: (instanceId: string | undefined, connection?: number) => void;
+  readonly onFrame: (frame: ChatServerFrame, connection?: number) => void;
   readonly onParseError?: (raw: string) => void;
-  readonly onClose?: (code: number) => void;
+  readonly onClose?: (code: number, connection?: number) => void;
 }
 
 export type ChatConnector = (handlers: ChatHandlers) => ChatClient;
@@ -255,6 +262,8 @@ export const connectChat: ChatConnector = (handlers) => {
   // stream as live. Late hello frames are dropped, never delivered.
   let helloSeen = false;
   let helloWarned = false;
+  let connection = 0;
+  let attemptPending = false;
   // --- reconnect re-bind state ---------------------------------------------
   // The chat binding is rebuilt on reconnect (snapshot-then-live ordering on
   // the server makes the replay self-settling). The connector remembers the
@@ -276,20 +285,30 @@ export const connectChat: ChatConnector = (handlers) => {
   };
 
   const wsHandlers: WsHandlers = {
+    onAttempt: () => {
+      connection += 1;
+      attemptPending = true;
+      handlers.onAttempt?.(connection);
+    },
     onOpen: () => {
+      // Preserve numbering with transports that have not exposed attempts.
+      if (!attemptPending) connection += 1;
+      attemptPending = false;
       helloSeen = false;
       createSentSinceOpen = false;
       rebindPending = openedOnce;
       openedOnce = true;
       // Contract: the client announces its wire version first.
       sendClient?.({ type: "hello", version: CHAT_WIRE_VERSION });
-      handlers.onOpen?.();
+      handlers.onOpen?.(connection);
     },
     onMessage: (msg) => {
       if (!helloSeen) {
         helloSeen = true;
         const hello = parseHello(msg);
         if (hello) {
+          handlers.onHello?.(typeof msg === "object" && msg !== null && "instanceId" in msg
+            && typeof msg.instanceId === "string" && msg.instanceId.length > 0 ? msg.instanceId : undefined, connection);
           if (hello.version !== CHAT_WIRE_VERSION) {
             console.warn(
               `[chatWs] wire contract version mismatch: client v${CHAT_WIRE_VERSION}, server v${hello.version} (${hello.serverVersion}) — proceeding`,
@@ -312,10 +331,10 @@ export const connectChat: ChatConnector = (handlers) => {
         return; // late or replayed hello: not a session frame
       }
       const frame = parseChatServerFrame(msg);
-      if (frame) handlers.onFrame(frame); // null drops unknown/malformed silently (R1)
+      if (frame) handlers.onFrame(frame, connection); // null drops unknown/malformed silently (R1)
     },
     ...(handlers.onParseError ? { onParseError: handlers.onParseError } : {}),
-    ...(handlers.onClose ? { onClose: handlers.onClose } : {}),
+    ...(handlers.onClose ? { onClose: (code: number) => handlers.onClose?.(code, connection) } : {}),
   };
 
   const conn = connectWs(CHAT_WS_ENDPOINT, wsHandlers, {

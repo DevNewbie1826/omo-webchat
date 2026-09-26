@@ -12,6 +12,9 @@ func TestLiveRevisionOnRESTAndActivityWS_whenMainActivityFlips(t *testing.T) {
 	conn, frames := f.connect()
 	writeEvictedCountsFrame(t, conn, map[string]any{"type": "sessions.subscribe", "mode": "explicit", "sessionIds": []string{f.chat.ID}})
 	frames.next(t, "ack")
+	if initial := frames.nextTaskCountFrame(t); initial["bindingId"] == nil || initial["active"] != false {
+		t.Fatalf("initial idle binding = %v", initial)
+	}
 	var previous float64
 	for _, event := range []string{"agent_start", "agent_settled", "agent_start"} {
 		// When main activity starts, completes, then starts again.
@@ -35,6 +38,9 @@ func TestLiveProgressClearOnRESTAndActivityWS_whenProgressDisappears(t *testing.
 	conn, frames := f.connect()
 	writeEvictedCountsFrame(t, conn, map[string]any{"type": "sessions.subscribe", "mode": "explicit", "sessionIds": []string{f.chat.ID}})
 	frames.next(t, "ack")
+	if initial := frames.nextTaskCountFrame(t); initial["bindingId"] == nil || initial["active"] != false {
+		t.Fatalf("initial idle binding = %v", initial)
+	}
 	for _, stage := range []struct{ at, status, progress string }{
 		{"2026-09-10T10:01:00Z", "pending", ""},
 		{"2026-09-10T10:02:00Z", "running", "working"},
@@ -75,6 +81,9 @@ func TestLiveMalformedCountsOnRESTAndActivityWS_whenNestedCountsAreInvalid(t *te
 	conn, frames := f.connect()
 	writeEvictedCountsFrame(t, conn, map[string]any{"type": "sessions.subscribe", "mode": "explicit", "sessionIds": []string{f.chat.ID}})
 	frames.next(t, "ack")
+	if initial := frames.nextTaskCountFrame(t); initial["bindingId"] == nil || initial["active"] != false {
+		t.Fatalf("initial idle binding = %v", initial)
+	}
 	// When malformed display counts arrive alongside usable running work.
 	f.daemon.EmitSession(f.chat.SessionFile, map[string]any{"type": "extension_event", "name": "omo.dag.updated", "data": map[string]any{"parent_session_id": f.chat.DurableSessionID, "truncated_runs": false, "runs": []any{map[string]any{"run_id": "r", "status": "running", "updated_at": "2026-09-10T10:02:00Z", "counts": json.RawMessage(`{"completed":1,"total":9007199254740992}`), "nodes": []any{map[string]any{"id": "n", "state": "running"}}}}}})
 	frame := frames.nextTaskCountFrame(t)

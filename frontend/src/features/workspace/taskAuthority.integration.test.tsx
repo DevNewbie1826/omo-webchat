@@ -102,16 +102,19 @@ describe("lean revision authority through both sidebar sources", () => {
     // Then the completion fence is not a permanent terminal latch.
     counts(0, 3);
   });
-  it("routes old multi-hop aliases when a newer lean revision arrives", async () => {
-    // Given canonical membership remapped twice.
+  it("keeps independent chat rows when a former durable ID is published", async () => {
+    // PR #197 keys stored rows by chat ID, not by transitive durable aliases.
     await poll(completed, "route");
-    push({ ...completed, durableSessionId: "durable" }, "route");
-    push({ ...completed, durableSessionId: "route" }, "new-route");
-    // When the old durable identity publishes newer work.
-    push({ ...running, last_activity_ms: 300 }, "durable");
-    // Then a single canonical row advances, without duplicate membership.
-    expect(overview.map(item => item.id)).toEqual(["new-route"]);
-    counts(0, 3);
+    push({ ...completed, durableSessionId: "durable", last_activity_ms: 201 }, "route");
+    push({ ...completed, durableSessionId: "route", last_activity_ms: 202 }, "new-route");
+    // When the current chat publishes newer work under its own ID.
+    push({ ...running, durableSessionId: "durable", last_activity_ms: 300 }, "route");
+    // Then it advances independently; the chat owning durable "route" stays.
+    expect(overview.map(item => item.id)).toEqual(["route", "new-route"]);
+    expect(overview).toMatchObject([{ id: "route", doneCount: 0, runningCount: 3 },
+      { id: "new-route", doneCount: 2, runningCount: 0 }]);
+    expect(merged).toMatchObject([{ id: "route", doneCount: 0, runningCount: 3 },
+      { id: "new-route", doneCount: 2, runningCount: 0 }]);
   });
   it.each([null, 42, {}, [], false, "invalid"])("ignores removed raw clocks when updated_at=%j", async updated_at => {
     // Given irrelevant legacy keys beside a valid lean revision.

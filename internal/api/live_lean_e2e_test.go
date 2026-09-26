@@ -7,6 +7,7 @@ func TestLiveLeanPayload_whenTaskAndDAGActivityArrive(t *testing.T) {
 	fixture := newCountsE2EFixture(t)
 	fixture.attachChat()
 	_, frames := fixture.connectSubscribe()
+	requireBindingIncarnation(t, frames.next(t, "sessions.activity"), "")
 	fixture.daemon.EmitSession(fixture.chat.SessionFile, map[string]any{
 		"type": "extension_event", "name": "omo.task.updated",
 		"data": map[string]any{"tasks": []any{
