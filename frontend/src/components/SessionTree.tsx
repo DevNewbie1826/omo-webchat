@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useT } from "../i18n";
 import {
   IconChevron,
@@ -47,6 +47,59 @@ interface RenameTarget {
   readonly tmId: string;
 }
 
+interface SelectionIndicatorState {
+  /** Session the indicator last tracked, placed or hidden. */
+  key: string | null;
+  /** Last applied geometry; null while hidden so the next placement jumps. */
+  box: string | null;
+}
+
+const INDICATOR_VISIBLE = "th-tree-indicator--visible";
+const INDICATOR_INSTANT = "th-tree-indicator--instant";
+
+const roundPx = (value: number): number => Math.round(value * 100) / 100;
+
+/** Moves the tree's single selection indicator onto the active row. Only a
+ * selection change between two visible rows travels (CSS transform
+ * transition, retargeted mid-flight); first placement and layout-only moves
+ * jump, and a hidden or collapsed active row hides the indicator. */
+function placeSelectionIndicator(
+  tree: HTMLElement,
+  indicator: HTMLElement,
+  key: string | null,
+  state: SelectionIndicatorState,
+): void {
+  const row = tree.querySelector<HTMLElement>(".th-tree-node--active");
+  if (row === null || row.closest(".th-tree-children--closed") !== null) {
+    indicator.classList.remove(INDICATOR_VISIBLE);
+    state.key = key;
+    state.box = null;
+    return;
+  }
+  const origin = tree.getBoundingClientRect();
+  const bounds = row.getBoundingClientRect();
+  const left = roundPx(bounds.left - origin.left);
+  const top = roundPx(bounds.top - origin.top);
+  const width = roundPx(bounds.width);
+  const height = roundPx(bounds.height);
+  const box = `${left},${top},${width},${height}`;
+  if (state.key === key && state.box === box) return;
+  const travel = state.box !== null && state.key !== key;
+  if (!travel) indicator.classList.add(INDICATOR_INSTANT);
+  indicator.style.left = `${left}px`;
+  indicator.style.width = `${width}px`;
+  indicator.style.height = `${height}px`;
+  indicator.style.transform = `translateY(${top}px)`;
+  indicator.classList.add(INDICATOR_VISIBLE);
+  if (!travel) {
+    // Flush the jump while transitions are off, then restore them.
+    void indicator.offsetHeight;
+    indicator.classList.remove(INDICATOR_INSTANT);
+  }
+  state.key = key;
+  state.box = box;
+}
+
 export function SessionTree({
   workspaces,
   touchActions = false,
@@ -75,6 +128,31 @@ export function SessionTree({
   const { t } = useT();
   const [rename, setRename] = useState<RenameTarget | null>(null);
   const openingRef = useRef(new Set<string>());
+  const treeRef = useRef<HTMLDivElement>(null);
+  const indicatorRef = useRef<HTMLSpanElement>(null);
+  const indicatorState = useRef<SelectionIndicatorState>({ key: null, box: null });
+  const activeKeyRef = useRef(activeTerminalId);
+
+  // Any render can move, reveal, or hide the active row.
+  useLayoutEffect(() => {
+    activeKeyRef.current = activeTerminalId;
+    const tree = treeRef.current;
+    const indicator = indicatorRef.current;
+    if (tree && indicator) placeSelectionIndicator(tree, indicator, activeTerminalId, indicatorState.current);
+  });
+
+  // Type-size changes and font swaps resize rows without a render.
+  useEffect(() => {
+    const tree = treeRef.current;
+    const indicator = indicatorRef.current;
+    if (!tree || !indicator || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      placeSelectionIndicator(tree, indicator, activeKeyRef.current, indicatorState.current);
+    });
+    observer.observe(tree);
+    return () => observer.disconnect();
+  }, []);
+
   const openDiscovered = (ws: Workspace, session: WorkspaceSession, force = false): void => {
     const key = sessionOpenAttemptKey(ws.id, session.id);
     if (openingRef.current.has(key)) return;
@@ -105,10 +183,12 @@ export function SessionTree({
 
   return (
     <div
+      ref={treeRef}
       className={`th-tree${touchActions ? " th-tree--touch" : ""}`}
       role="navigation"
       aria-label={t("sidebar.title")}
     >
+      <span ref={indicatorRef} className="th-tree-indicator" aria-hidden="true" />
       {workspaces.map((ws) => {
         const isOpen = expanded.has(ws.id);
         const paging = sessionPages.get(ws.id);
@@ -232,13 +312,13 @@ export function SessionTree({
                     key={`${item.source}:${item.id}`}
                     className={`th-tree-node${active ? " th-tree-node--active" : ""}${rowDisabled ? " th-tree-node--disabled" : ""}`}
                   >
-                    {live && <span className="th-tree-live" aria-hidden="true" />}
                     <span
                       className={`th-tree-placed${tm !== undefined && placedSessions.has(item.id) ? " th-tree-placed--on" : ""}`}
                       aria-hidden="true"
                     />
                     <span className="th-tree-icon">
                       <IconTerminal size={13} />
+                      {live && <span className="th-tree-live" aria-hidden="true" />}
                     </span>
                     {renamingTm && tm ? (
                       <RenameInput initial={tm.name} onCommit={(v) => commitRename(renamingTm, v)} />
@@ -344,7 +424,7 @@ function RunningChip({ className, count, countLabelKey, mainRunning }: RunningCh
   const { t } = useT();
   return (
     <span
-      className={className}
+      className={`${className}${count > 0 ? " th-tree-running--count" : ""}`}
       role="img"
       aria-label={count > 0 ? t(countLabelKey, { n: count }) : t("sidebar.tm.mainRunning")}
       title={mainRunning ? t("sidebar.tm.mainRunning") : undefined}
@@ -376,7 +456,7 @@ function RenameInput({ initial, onCommit }: RenameInputProps) {
   return (
     <input
       ref={inputRef}
-      className="th-tree-rename"
+      className="th-input th-tree-rename"
       value={value}
       onClick={(ev) => ev.stopPropagation()}
       onChange={(ev) => setValue(ev.target.value)}

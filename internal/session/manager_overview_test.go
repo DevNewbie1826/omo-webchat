@@ -377,7 +377,7 @@ func TestSlowOverviewSubscriberDoesNotStallEventLoop(t *testing.T) {
 
 func publishOverviewForTest(mgr *Manager, snapshot Summary) {
 	mgr.mu.Lock()
-	subscribers := mgr.updateOverviewLocked(snapshot)
+	subscribers := mgr.updateOverviewLocked(&snapshot)
 	mgr.mu.Unlock()
 	deliverOverview(subscribers, snapshot)
 }

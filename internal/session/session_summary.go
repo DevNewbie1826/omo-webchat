@@ -20,6 +20,7 @@ type Summary struct {
 	TaskDigest        *TaskDigest
 	DagDigest         *DagDigest
 	live              *LiveValues
+	invalidRemaps     map[string]bool
 }
 
 func (s *Session) summaryLocked() Summary {
@@ -38,9 +39,9 @@ func (s *Session) summaryLocked() Summary {
 	return s.liveRevision.project(snapshot, time.Now().UnixMilli())
 }
 
-func (entry *overviewCacheEntry) summary(chatID, durableID string) Summary {
+func (entry *overviewCacheEntry) summary(chatID, durableID, title string) Summary {
 	snapshot := Summary{
-		ChatID: chatID, DurableSessionID: durableID,
+		ChatID: chatID, DurableSessionID: durableID, Title: title,
 		ActivityPair: ActivityPair{
 			Task: append(json.RawMessage(nil), entry.snapshots[activitySnapshotOrder[0]]...),
 			Dag:  append(json.RawMessage(nil), entry.snapshots[activitySnapshotOrder[1]]...),

@@ -23,10 +23,24 @@ function show(run: ActivityDagRun) {
   renderShelf(harness, activityState({ dags: [run] }));
   openGraph(harness.container);
 }
-const lines = () => [...harness.container.querySelectorAll<SVGLineElement>(".th-activity-gedge")];
-function check(line: SVGLineElement, fulfilled: boolean, flow: boolean) {
+const lines = () => [...harness.container.querySelectorAll<SVGPathElement>(".th-activity-gedge")];
+/** A dependency is one cubic bezier with horizontal tangents at both ends. */
+function curve(line: SVGPathElement) {
+  const d = line.getAttribute("d") ?? "";
+  expect(d).toMatch(/^M-?[\d.]+ -?[\d.]+C(?:-?[\d.]+ ){5}-?[\d.]+$/);
+  const [x1, y1, c1x, c1y, c2x, c2y, x2, y2] = (d.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+  expect(c1y).toBe(y1);
+  expect(c2y).toBe(y2);
+  return { x1, y1, c1x, c2x, x2, y2 };
+}
+function check(line: SVGPathElement, fulfilled: boolean, flow: boolean) {
   expect(line.classList.contains("th-activity-gedge--fulfilled")).toBe(fulfilled);
   expect(line.classList.contains("th-activity-gedge--flow")).toBe(flow);
+  curve(line);
+  // The travelling comet rides exactly the flowing dependency, never another.
+  const comets = [...(line.closest("svg")?.querySelectorAll(".th-activity-gedge-comet") ?? [])]
+    .filter(comet => comet.getAttribute("d") === line.getAttribute("d"));
+  expect(comets).toHaveLength(flow ? 1 : 0);
   const ref = line.getAttribute("marker-end")!;
   expect(ref).toMatch(/^url\(#th-dag-arrow-[A-Za-z0-9_-]+\)$/);
   const marker = requireElement(document.getElementById(ref.slice(5, -1)), "resolved marker");
@@ -64,23 +78,24 @@ describe("derived DAG dependency edges", () => {
     expect(lines()).toHaveLength(4);
     [[true, true], [false, false], [true, false], [false, false]].forEach(([fulfilled, flow], i) => check(lines()[i]!, fulfilled!, flow!));
     // This legal four-node layout has collinear a -> c flow and static a -> d.
-    const [flow, , fanOut] = lines();
-    expect(flow!.getAttribute("y1")).toBe(flow!.getAttribute("y2"));
-    expect(fanOut!.getAttribute("y1")).toBe(flow!.getAttribute("y1"));
-    expect(fanOut!.getAttribute("y2")).toBe(flow!.getAttribute("y2"));
-    // Emphasizing the moving stroke must not magnify either arrow variant.
+    const [flow, , fanOut] = lines().map(curve);
+    expect(flow!.y1).toBe(flow!.y2);
+    expect(fanOut!.y1).toBe(flow!.y1);
+    expect(fanOut!.y2).toBe(flow!.y2);
+    expect(harness.container.querySelectorAll(".th-activity-gedge-comet")).toHaveLength(1);
+    // Subtle arrowheads never scale with any stroke width in either variant.
     for (const marker of harness.container.querySelectorAll("marker")) {
       expect(marker.getAttribute("markerUnits")).toBe("userSpaceOnUse");
-      expect(marker.getAttribute("markerWidth")).toBe("7");
-      expect(marker.getAttribute("markerHeight")).toBe("6");
-      expect(marker.getAttribute("viewBox")).toBe("0 0 8 6");
+      expect(marker.getAttribute("markerWidth")).toBe("5");
+      expect(marker.getAttribute("markerHeight")).toBe("4");
+      expect(marker.getAttribute("viewBox")).toBe("0 0 5 4");
     }
   });
   it("recomputes retries without latching color and keeps DOM, geometry, keys and markers through elapsed ticks", () => {
     vi.useFakeTimers();
     show(pair("completed", "running"));
     const line = lines()[0]!;
-    const geometry = ["x1", "y1", "x2", "y2"].map(key => line.getAttribute(key));
+    const geometry = line.getAttribute("d");
     const marker = line.getAttribute("marker-end");
     act(() => { vi.advanceTimersByTime(1000); });
     expect(lines()[0]).toBe(line);
@@ -94,7 +109,7 @@ describe("derived DAG dependency edges", () => {
     ] as const) {
       show(pair(source, destination, status));
       expect(lines()[0]).toBe(line);
-      expect(["x1", "y1", "x2", "y2"].map(key => line.getAttribute(key))).toEqual(geometry);
+      expect(line.getAttribute("d")).toBe(geometry);
       check(line, fulfilled, flow);
     }
   });
@@ -157,8 +172,8 @@ describe("derived DAG dependency edges", () => {
       const markers = [...document.querySelectorAll("marker")].map(e => e.id);
       expect(new Set(markers).size).toBe(markers.length);
       expect(markers.every(id => /^[A-Za-z0-9_-]+$/.test(id))).toBe(true);
-      for (const line of document.querySelectorAll<SVGLineElement>(".th-activity-gedge")) check(line, true, true);
-      const survivor = sibling.container.querySelector("line")!;
+      for (const line of document.querySelectorAll<SVGPathElement>(".th-activity-gedge")) check(line, true, true);
+      const survivor = sibling.container.querySelector(".th-activity-gedge")!;
       const ref = survivor.getAttribute("marker-end");
       renderShelf(harness, activityState());
       expect(survivor.getAttribute("marker-end")).toBe(ref);

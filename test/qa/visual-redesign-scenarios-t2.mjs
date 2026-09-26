@@ -7,14 +7,14 @@
  *
  * This module is a per-task scenario plugin (see the contract in
  * visual-redesign.mjs): the CLI auto-loads `visual-redesign-scenarios-*.mjs`
- * and merges the exported `scenarios` object over the built-in registry.
- * It owns the T2 chat surface ids S4, S6, S7, S9 and S22, plus the
- * chat-scoped variants S5:chat and S8:chat. Canonical S5 and S8 stay the
- * built-in app-wide drivers. Where a built-in driver already existed
- * (S4/S6) this override keeps every built-in assertion and adds the
- * T2-specific gates. S5:chat keeps the shared painted-border and uppercase
- * rules in .th-chat-pane and T2-owned body portals (question/approval modal
- * and portalled model picker), excluding T4-owned activity shelf, GoalBar,
+ * and registers the exported `scenarios` alongside built-in drivers.
+ * It owns the T2 chat surface ids S7, S9 and S22, plus the chat-scoped
+ * variants S4:chat, S5:chat, S6:chat and S8:chat. Canonical S4/S5/S6/S8
+ * stay the built-in app-wide drivers; the scoped S4/S6 probes keep every
+ * built-in assertion and add the T2-specific gates. S5:chat keeps the shared
+ * painted-border and uppercase rules in .th-chat-pane and T2-owned body
+ * portals (question/approval modal and portalled model picker), excluding
+ * T4-owned activity shelf, GoalBar,
  * activity chips, activity-graph nodes, and T3 shell. S8:chat keeps the running-glyph accent and reduced-motion
  * gates for every other glyph (tool, tree, overview) and does not judge
  * those same T4 elements.
@@ -1878,9 +1878,9 @@ async function interruptionT2(ctx) {
 // ---------------------------------------------------------------------------
 
 export const scenarios = {
-  S4: separationT2,
+  'S4:chat': separationT2,
   'S5:chat': stateColorsT2,
-  S6: headerT2,
+  'S6:chat': headerT2,
   S7: timelineT2,
   'S8:chat': runningT2,
   S9: composerT2,

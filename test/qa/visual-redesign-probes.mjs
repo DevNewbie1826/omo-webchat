@@ -485,16 +485,23 @@ export function probeStateColors() {
     // Only painted borders encode state: a zero-width or style:none border
     // reports currentColor and must not be counted. Status glyphs and status
     // text may carry status/accent colour (DESIGN.md state encoding: wash +
-    // glyph), so SVG shapes count only when they draw an enclosure outline
-    // (a stroked rect), never icon/glyph strokes or fills.
+    // glyph). Count every painted SVG shape, including dependency paths and
+    // path-based enclosures. Only the actual production status glyph, comet,
+    // glow and halo selectors are semantic exceptions; focus and alerts were
+    // excluded above. A group inheriting stroke is not itself painted.
     const colours = [];
     for (const side of ['Top', 'Right', 'Bottom', 'Left']) {
       const width = parseFloat(style['border' + side + 'Width']) || 0;
       const lineStyle = style['border' + side + 'Style'];
       if (width > 0 && lineStyle !== 'none' && lineStyle !== 'hidden') colours.push(style['border' + side + 'Color']);
     }
-    if (element.namespaceURI === 'http://www.w3.org/2000/svg' && element.localName === 'rect'
-      && style.stroke && style.stroke !== 'none' && (parseFloat(style.strokeWidth) || 0) > 0) colours.push(style.stroke);
+    if (element.namespaceURI === 'http://www.w3.org/2000/svg'
+      && /^(rect|path|line|polyline|polygon|circle|ellipse)$/.test(element.localName)
+      && !element.closest('.th-activity-gstatus, .th-tool-glyph--ok, .th-activity-gedge-comet, .th-activity-gedge-glow, .th-activity-gnode-halo')
+      && style.stroke && style.stroke !== 'none'
+      && (parseFloat(style.strokeWidth) || 0) > 0
+      && (style.strokeOpacity === '' || style.strokeOpacity === undefined
+        || parseFloat(style.strokeOpacity) > 0.02)) colours.push(style.stroke);
     const where = describeElement(element);
     for (const raw of colours) {
       const colour = parseColor(raw);

@@ -129,7 +129,7 @@ func TestManagerObservesReusedRouteEpoch(t *testing.T) {
 				frames.awaitError(t, "provider_disconnected")
 				mgr.mu.Lock()
 				routed := mgr.byRoute[current.routingID] == current
-				_, retired := mgr.retiredDurable[old.ID()]
+				retired := mgr.durableRetiredLocked(old.ID())
 				_, mapped := mgr.durableToChat[old.ID()]
 				mgr.mu.Unlock()
 				if !routed {

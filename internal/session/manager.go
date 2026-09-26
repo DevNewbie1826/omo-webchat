@@ -176,43 +176,39 @@ type durableTombstoneRecord struct {
 	binding *durableEpochBinding
 }
 
-type retiredDurableRecord struct {
-	durable    string
-	generation uint64
-}
-
 type Manager struct {
 	cfg Config
 
-	chats              keyedFlight
-	mu                 sync.Mutex
-	byChat             map[string]*Session
-	byRoute            map[string]*Session
-	routeCleanup       map[string]chan struct{}
-	operationOwners    map[string]*sendOperationOwner
-	byDurableEpoch     map[omorpc.EpochToken]map[string]*durableEpochBinding
-	durableTombstones  []durableTombstoneRecord
-	durableToChat      map[string]string
-	retiredDurable     map[string]uint64
-	retiredDurableFIFO []retiredDurableRecord
-	identityGeneration uint64
-	invalidatedEpochs  map[omorpc.EpochToken]struct{}
-	epochIngestions    map[omorpc.EpochToken]int
-	retiringByChat     map[string]map[retiringRoute]struct{}
-	retiringFIFO       []retiringRecord
-	slotGeneration     map[string]uint64
-	slotGenerationFIFO []generationRecord
-	generation         uint64
-	closed             bool
-	done               chan struct{}
-	shutdownCtx        context.Context
-	shutdownCancel     context.CancelFunc
-	closeOnce          sync.Once
-	acquireWG          sync.WaitGroup
-	cleanupWG          sync.WaitGroup
-	eventWG            sync.WaitGroup
-	sessionReconciler  func(chatID string, stale *Session)
-	openCleanupExpired chan struct{}
+	durableChatResolver DurableChatResolver
+	chats               keyedFlight
+	mu                  sync.Mutex
+	byChat              map[string]*Session
+	byRoute             map[string]*Session
+	routeCleanup        map[string]chan struct{}
+	operationOwners     map[string]*sendOperationOwner
+	byDurableEpoch      map[omorpc.EpochToken]map[string]*durableEpochBinding
+	durableTombstones   []durableTombstoneRecord
+	durableToChat       map[string]string
+	retiredDurable      map[string]struct{} // view of retirement.values for existing package readers
+	retirement          residencyLRU[struct{}]
+	deletingDurable     map[string]int
+	invalidatedEpochs   map[omorpc.EpochToken]struct{}
+	epochIngestions     map[omorpc.EpochToken]int
+	retiringByChat      map[string]map[retiringRoute]struct{}
+	retiringFIFO        []retiringRecord
+	slotGeneration      map[string]uint64
+	slotGenerationFIFO  []generationRecord
+	generation          uint64
+	closed              bool
+	done                chan struct{}
+	shutdownCtx         context.Context
+	shutdownCancel      context.CancelFunc
+	closeOnce           sync.Once
+	acquireWG           sync.WaitGroup
+	cleanupWG           sync.WaitGroup
+	eventWG             sync.WaitGroup
+	sessionReconciler   func(chatID string, stale *Session)
+	openCleanupExpired  chan struct{}
 	// retiredRoutes records provider route handles retired by open
 	// recovery, scoped to the connection epoch that minted them.
 	// Publication of a retired handle is refused even after its
@@ -239,12 +235,16 @@ type Manager struct {
 	// openSettled broadcasts detached-open settlement: the channel is
 	// closed and replaced under m.mu each time a retained detached open
 	// releases its slot, so waiters observe settlement without polling.
-	openSettled          chan struct{}
-	overviewCache        map[string]*overviewCacheEntry
-	overviewCurrent      map[string]Summary
-	overviewClock        uint64
-	overviewSubscribers  map[uint64]*overviewSubscriber
-	overviewSubscriberID uint64
+	openSettled           chan struct{}
+	overviewCache         map[string]*overviewCacheEntry
+	overviewCurrent       map[string]Summary
+	overviewOwners        residencyLRU[string]
+	overviewExposed       residencyLRU[overviewExposure]
+	overviewPrevious      overviewPublications
+	overviewClock         uint64
+	overviewRevisionClock int64
+	overviewSubscribers   map[uint64]*overviewSubscriber
+	overviewSubscriberID  uint64
 }
 
 func NewManager(cfg Config) *Manager {
@@ -279,7 +279,13 @@ func NewManager(cfg Config) *Manager {
 		cfg.RetiredRouteLimit = DefaultRetiredRouteLimit
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-	m := &Manager{cfg: cfg, nidGeneration: time.Now().UnixNano(), byChat: make(map[string]*Session), byRoute: make(map[string]*Session), routeCleanup: make(map[string]chan struct{}), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), retiredDurable: make(map[string]uint64), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[retiringRoute]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), retiredRoutes: make(map[retiringRoute]struct{}), noticeJournals: make(map[string]*noticeJournal), pendingOpen: make(map[string]chan struct{}), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), openSettled: make(chan struct{}), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
+	m := &Manager{cfg: cfg, nidGeneration: time.Now().UnixNano(), byChat: make(map[string]*Session), byRoute: make(map[string]*Session), routeCleanup: make(map[string]chan struct{}), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[retiringRoute]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), retiredRoutes: make(map[retiringRoute]struct{}), noticeJournals: make(map[string]*noticeJournal), pendingOpen: make(map[string]chan struct{}), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), openSettled: make(chan struct{}), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
+	m.retirement = newResidencyLRU[struct{}](maxIdentityTombstones)
+	m.retiredDurable = m.retirement.values
+	m.overviewOwners = newResidencyLRU[string](maxIdentityTombstones)
+	m.overviewExposed = newResidencyLRU[overviewExposure](maxIdentityTombstones)
+	m.overviewPrevious = overviewPublications{ids: newResidencyLRU[string](maxOverviewPublications)}
+	m.durableChatResolver, _ = cfg.Store.(DurableChatResolver)
 	if cfg.Client != nil {
 		m.eventWG.Add(1)
 		go m.eventLoop()
@@ -396,7 +402,7 @@ func (m *Manager) scheduleSessionReconciliation() {
 			}
 		}
 		m.mu.Lock()
-		_, retired := m.retiredDurable[s.durableID]
+		retired := m.durableRetiredLocked(s.durableID)
 		m.mu.Unlock()
 		if retired {
 			continue
@@ -424,7 +430,7 @@ func (m *Manager) enqueueReconciliation(chatID string, stale *Session) {
 		m.mu.Lock()
 		reconcile := m.sessionReconciler
 		current := m.byChat[chatID] == stale
-		_, retired := m.retiredDurable[stale.durableID]
+		retired := m.durableRetiredLocked(stale.durableID)
 		closed := m.closed
 		m.mu.Unlock()
 		if reconcile == nil || retired || closed || !current {
@@ -502,7 +508,7 @@ func (m *Manager) triggerProactiveReconnect(lost omorpc.EpochToken) {
 				}
 				m.mu.Lock()
 				current := m.byChat[s.chatID] == s && !m.closed
-				_, retired := m.retiredDurable[s.durableID]
+				retired := m.durableRetiredLocked(s.durableID)
 				m.mu.Unlock()
 				if !current || retired {
 					continue
@@ -595,11 +601,17 @@ func (m *Manager) detachEpoch(token omorpc.EpochToken) []*Session {
 	m.pruneDurableTombstonesLocked(token)
 	for id, entry := range m.overviewCache {
 		if entry.epoch == token {
+			if entry.retired {
+				m.recordRetirementLocked(id)
+			}
 			delete(m.overviewCache, id)
-			delete(m.overviewCurrent, entry.chatID)
+			m.syncOverviewEvidenceLocked(id)
+			m.syncRetirementResidencyLocked(id)
+			m.removeDurableOverviewLocked(id)
 		}
 	}
 	for _, s := range all {
+		m.syncOverviewEvidenceLocked(s.durableID)
 		m.removeOverviewLocked(s.chatID)
 	}
 	return all
@@ -644,7 +656,7 @@ func (m *Manager) endEpochIngestion(token omorpc.EpochToken) {
 // cannot revive a permanently retired durable; only a validated session
 // activation may do that. Manager.mu is held.
 func (m *Manager) bindIdentityLocked(s *Session) {
-	if _, retired := m.retiredDurable[s.durableID]; retired {
+	if m.durableRetiredLocked(s.durableID) {
 		return
 	}
 	for durable, chatID := range m.durableToChat {
@@ -653,6 +665,7 @@ func (m *Manager) bindIdentityLocked(s *Session) {
 		}
 	}
 	m.durableToChat[s.durableID] = s.chatID
+	m.syncOverviewEvidenceLocked(s.durableID)
 	byDurable := m.byDurableEpoch[s.epoch]
 	if byDurable == nil {
 		byDurable = make(map[string]*durableEpochBinding)
@@ -668,7 +681,10 @@ func (m *Manager) bindIdentityLocked(s *Session) {
 func (m *Manager) activateIdentityLocked(s *Session) {
 	if m.byChat[s.chatID] == s && m.byRoute[s.routingID] == s {
 		if _, invalidated := m.invalidatedEpochs[s.epoch]; !invalidated {
-			delete(m.retiredDurable, s.durableID)
+			m.retirement.Delete(s.durableID)
+			if entry := m.overviewCache[s.durableID]; entry != nil {
+				entry.retired = false
+			}
 		}
 	}
 	m.bindIdentityLocked(s)
@@ -711,11 +727,19 @@ func (m *Manager) pruneDurableTombstonesLocked(epoch omorpc.EpochToken) {
 }
 
 func (m *Manager) retireDurableLocked(durable, chatID string) {
-	delete(m.durableToChat, durable)
-	if entry := m.overviewCache[durable]; entry != nil {
-		delete(m.overviewCurrent, entry.chatID)
-		delete(m.overviewCache, durable)
+	// A stale alias or duplicate stored cursor cannot retire another chat's
+	// current activity or route. Ownership has the same precedence as reads.
+	if current, _ := m.currentOverviewOwnerLocked(durable, ""); current != "" && current != chatID {
+		if m.durableToChat[durable] == chatID {
+			delete(m.durableToChat, durable)
+			m.syncOverviewEvidenceLocked(durable)
+		}
+		return
 	}
+	delete(m.durableToChat, durable)
+	m.removeDurableOverviewLocked(durable)
+	delete(m.overviewCache, durable)
+	m.syncOverviewEvidenceLocked(durable)
 	for epoch, entries := range m.byDurableEpoch {
 		if binding := entries[durable]; binding != nil && binding.chatID == chatID {
 			delete(entries, durable)
@@ -724,31 +748,80 @@ func (m *Manager) retireDurableLocked(durable, chatID string) {
 			}
 		}
 	}
-	m.identityGeneration++
-	generation := m.identityGeneration
-	m.retiredDurable[durable] = generation
-	m.retiredDurableFIFO = append(m.retiredDurableFIFO, retiredDurableRecord{durable: durable, generation: generation})
-	for len(m.retiredDurableFIFO) > maxIdentityTombstones {
-		old := m.retiredDurableFIFO[0]
-		m.retiredDurableFIFO = m.retiredDurableFIFO[1:]
-		if m.retiredDurable[old.durable] == old.generation {
-			delete(m.retiredDurable, old.durable)
+	m.recordRetirementLocked(durable)
+}
+
+// durableRetiredLocked checks the resident cache before the non-resident
+// retirement history. Both are protected by Manager.mu.
+func (m *Manager) durableRetiredLocked(durable string) bool {
+	if entry := m.overviewCache[durable]; entry != nil && entry.retired {
+		return true
+	}
+	_, retired := m.retirement.Get(durable)
+	return retired
+}
+
+// syncRetirementResidencyLocked protects cached or bound identities without
+// charging them against the non-resident history.
+func (m *Manager) syncRetirementResidencyLocked(durable string) {
+	if _, recorded := m.retirement.Get(durable); !recorded {
+		return
+	}
+	if m.overviewCache[durable] != nil {
+		m.retirement.Pin(durable)
+		return
+	}
+	for _, s := range m.byChat {
+		if s.durableID == durable {
+			m.retirement.Pin(durable)
+			return
 		}
 	}
+	m.retirement.Unpin(durable)
+}
+
+// Evidence outside residency and the latest distinct non-resident window may expire.
+func (m *Manager) recordRetirementLocked(durable string) {
+	if m.overviewCache[durable] != nil {
+		m.retirement.Pin(durable)
+		m.retirement.Put(durable, struct{}{})
+		return
+	}
+	for _, s := range m.byChat {
+		if s.durableID == durable {
+			m.retirement.Pin(durable)
+			m.retirement.Put(durable, struct{}{})
+			return
+		}
+	}
+	m.retirement.Unpin(durable)
+	m.retirement.Put(durable, struct{}{})
 }
 
 func (m *Manager) retireChatIdentityLocked(chatID string) {
 	delete(m.overviewCurrent, chatID)
+	m.overviewExposed.Delete(chatID)
 	for durable, mappedChat := range m.durableToChat {
 		if mappedChat == chatID {
 			m.retireDurableLocked(durable, chatID)
 		}
+	}
+	var owned []string
+	m.overviewOwners.Range(func(durable, owner string) {
+		if owner == chatID {
+			owned = append(owned, durable)
+		}
+	})
+	for _, durable := range owned {
+		m.retireDurableLocked(durable, chatID)
 	}
 }
 
 func (m *Manager) retireSessionIdentityLocked(s *Session, bumpGeneration bool) {
 	if m.byChat[s.chatID] == s {
 		delete(m.byChat, s.chatID)
+		m.syncOverviewEvidenceLocked(s.durableID)
+		m.syncRetirementResidencyLocked(s.durableID)
 		m.removeOverviewLocked(s.chatID)
 		if bumpGeneration {
 			m.bumpSlotGenerationLocked(s.chatID)
@@ -756,6 +829,7 @@ func (m *Manager) retireSessionIdentityLocked(s *Session, bumpGeneration bool) {
 	}
 	if m.byRoute[s.routingID] == s {
 		delete(m.byRoute, s.routingID)
+		m.syncOverviewEvidenceLocked(s.durableID)
 	}
 	m.tombstoneSessionIdentityLocked(s)
 }
@@ -766,9 +840,14 @@ func (m *Manager) retireSessionIdentityLocked(s *Session, bumpGeneration bool) {
 // later lookup - from a publisher racing this retirement or holding the old
 // pointer - lands on the dead journal and is refused, and no second journal
 // can ever be created for the same pathname within this manager instance.
-func (m *Manager) RetireIdentity(chatID string) {
+func (m *Manager) RetireIdentity(chatID string, durableIDs ...string) {
 	m.mu.Lock()
 	m.retireChatIdentityLocked(chatID)
+	for _, durable := range durableIDs {
+		if !m.durableRetiredLocked(durable) {
+			m.retireDurableLocked(durable, chatID)
+		}
+	}
 	delete(m.operationOwners, chatID)
 	journal := m.noticeJournals[chatID]
 	if journal == nil {
@@ -1262,8 +1341,11 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 				delete(m.byRoute, existing.routingID)
 			}
 			m.byChat[chatID] = s
+			if existing != nil && existing.durableID != s.durableID {
+				m.syncOverviewEvidenceLocked(existing.durableID)
+				m.syncRetirementResidencyLocked(existing.durableID)
+			}
 			m.byRoute[data.SessionID] = s
-			delete(m.overviewCurrent, chatID)
 			overviewSnapshot, overviewSubscribers = m.mergeOverviewIntoSessionLocked(s)
 		}
 		deliverOverview(overviewSubscribers, overviewSnapshot)
@@ -1335,10 +1417,15 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			delete(m.byRoute, existing.routingID)
 		}
 		m.byChat[chatID] = s
-		delete(m.overviewCurrent, chatID)
+		if existing != nil && existing.durableID != s.durableID {
+			m.syncOverviewEvidenceLocked(existing.durableID)
+			m.syncRetirementResidencyLocked(existing.durableID)
+		}
 		if epochLive && !cleanupInFlight && !retiredRoute {
 			m.byRoute[data.SessionID] = s
 			overviewSnapshot, overviewSubscribers = m.mergeOverviewIntoSessionLocked(s)
+		} else {
+			delete(m.overviewCurrent, chatID)
 		}
 	}
 	deliverOverview(overviewSubscribers, overviewSnapshot)
@@ -2029,22 +2116,37 @@ func (m *Manager) LiveSummaries() []Summary {
 	m.mu.Lock()
 	all := make([]*Session, 0, len(m.byChat))
 	for _, s := range m.byChat {
-		if _, retired := m.retiredDurable[s.durableID]; !retired {
+		if m.byRoute[s.routingID] == s {
 			all = append(all, s)
 		}
 	}
-	cached := make([]Summary, 0, len(m.overviewCache))
-	for id, entry := range m.overviewCache {
-		cached = append(cached, entry.summary(entry.chatID, id))
-	}
+	cached := m.projectedOverviewLocked()
 	m.mu.Unlock()
 	out := make([]Summary, 0, len(all)+len(cached))
+	emitted := make(map[string]struct{}, len(all))
 	for _, s := range all {
-		if sum, ok := s.summary(); ok {
-			out = append(out, sum)
+		s.lifecycleMu.Lock()
+		if !s.closed && !s.closing && !s.resumable {
+			sum := s.summaryLocked()
+			m.mu.Lock()
+			if m.byRoute[s.routingID] == s {
+				sum = m.projectOverviewLocked(sum)
+				if sum.ChatID != "" {
+					m.syncBoundOverviewRevisionLocked(s, sum)
+					out = append(out, sum)
+					emitted[sum.ChatID] = struct{}{}
+				}
+			}
+			m.mu.Unlock()
+		}
+		s.lifecycleMu.Unlock()
+	}
+	for _, snapshot := range cached {
+		if _, exists := emitted[snapshot.ChatID]; !exists {
+			out = append(out, snapshot)
+			emitted[snapshot.ChatID] = struct{}{}
 		}
 	}
-	out = append(out, cached...)
 	sort.Slice(out, func(i, j int) bool { return out[i].ChatID < out[j].ChatID })
 	return out
 }
@@ -2140,14 +2242,17 @@ func (m *Manager) CloseAll(ctx context.Context) error {
 	m.byDurableEpoch = make(map[omorpc.EpochToken]map[string]*durableEpochBinding)
 	m.durableTombstones = nil
 	m.durableToChat = make(map[string]string)
-	m.retiredDurable = make(map[string]uint64)
-	m.retiredDurableFIFO = nil
+	m.retirement = newResidencyLRU[struct{}](maxIdentityTombstones)
+	m.retiredDurable = m.retirement.values
 	m.invalidatedEpochs = make(map[omorpc.EpochToken]struct{})
 	m.epochIngestions = make(map[omorpc.EpochToken]int)
 	m.slotGeneration = make(map[string]uint64)
 	m.slotGenerationFIFO = nil
 	m.overviewCache = make(map[string]*overviewCacheEntry)
 	m.overviewCurrent = make(map[string]Summary)
+	m.overviewOwners = newResidencyLRU[string](maxIdentityTombstones)
+	m.overviewExposed = newResidencyLRU[overviewExposure](maxIdentityTombstones)
+	m.overviewPrevious = overviewPublications{ids: newResidencyLRU[string](maxOverviewPublications)}
 	for id, sub := range m.overviewSubscribers {
 		delete(m.overviewSubscribers, id)
 		close(sub.stop)

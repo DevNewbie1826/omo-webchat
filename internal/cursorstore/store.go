@@ -457,6 +457,54 @@ func (s *Store) GetChat(id string) (Chat, error) {
 	return c, nil
 }
 
+// ChatName reads the current stored name by chat ID without resolving
+// competing durable-session claims or performing any persistence work.
+func (s *Store) ChatName(id string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	chat, ok := s.data.Chats[id]
+	return chat.Name, ok
+}
+
+// ChatForDurable returns the launchable chat whose DurableSessionID equals
+// durableID. An empty durableID matches nothing. Chats whose provider is not
+// launchable (see IsLaunchableProvider) are skipped. When more than one
+// launchable chat claims the same durable id, the choice is deterministic:
+// the greatest LastUsedAt wins, then the greatest CreatedAt, then the
+// lexicographically smallest ID. The lookup holds only s.mu and reads the
+// in-memory chat map; it does not flush, migrate, or call out of this package.
+func (s *Store) ChatForDurable(durableID string) (Chat, bool) {
+	if durableID == "" {
+		return Chat{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var found Chat
+	ok := false
+	for _, chat := range s.data.Chats {
+		if chat.DurableSessionID != durableID || !IsLaunchableProvider(chat.Provider) {
+			continue
+		}
+		if !ok || newerDurableClaim(chat, found) {
+			found = chat
+			ok = true
+		}
+	}
+	return found, ok
+}
+
+// newerDurableClaim reports whether candidate should replace current when both
+// launchable chats claim the same durable session id.
+func newerDurableClaim(candidate, current Chat) bool {
+	if candidate.LastUsedAt != current.LastUsedAt {
+		return candidate.LastUsedAt > current.LastUsedAt
+	}
+	if candidate.CreatedAt != current.CreatedAt {
+		return candidate.CreatedAt > current.CreatedAt
+	}
+	return candidate.ID < current.ID
+}
+
 // GetChatForOpen returns only identities safe to pass to the provider. Empty
 // session files create a new provider session; non-empty legacy or
 // unknown-provenance paths require migration first.

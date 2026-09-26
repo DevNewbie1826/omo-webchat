@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useT } from "../i18n";
 import { SessionTree } from "./SessionTree";
 import type { ToastKind } from "./SessionTree";
@@ -89,6 +89,18 @@ export function Sidebar({
   const { t } = useT();
   const isMobile = useMediaQuery(MOBILE_QUERY);
   const showTreeActions = useMediaQuery("(hover: none)");
+  const toolbarToggle = useRef<HTMLButtonElement>(null);
+  const railToggle = useRef<HTMLButtonElement>(null);
+  const transferToggleFocus = useRef(false);
+  const toggleCollapse = (event: React.MouseEvent<HTMLButtonElement>) => {
+    transferToggleFocus.current = !isMobile && document.activeElement === event.currentTarget;
+    onToggleCollapse();
+  };
+  useLayoutEffect(() => {
+    if (!transferToggleFocus.current) return;
+    (collapsed ? railToggle : toolbarToggle).current?.focus();
+    transferToggleFocus.current = false;
+  }, [collapsed]);
   const [statsOpen, setStatsOpen] = useState(false);
   const [highlightedSessionId, setHighlightedSessionId] = useState<string | null>(null);
   const [engineRestartOpen, setEngineRestartOpen] = useState(false);
@@ -315,7 +327,7 @@ export function Sidebar({
           <div className="th-sidebar-nav">
             <span className="th-sidebar-logo">
               <img className="th-sidebar-logo-icon" src="./icon-192.png" alt="" />
-              {t("sidebar.nav.brand")}
+              <span className="th-sidebar-brand">{t("sidebar.nav.brand")}</span>
             </span>
             <div className="th-sidebar-nav-actions">
               <button
@@ -339,9 +351,10 @@ export function Sidebar({
                 <button
                   type="button"
                   className="th-btn-icon th-sidebar-toggle"
+                  ref={toolbarToggle}
                   title={t("sidebar.collapse")}
                   aria-label={t("sidebar.collapse")}
-                  onClick={onToggleCollapse}
+                  onClick={toggleCollapse}
                 >
                   <IconChevron size={15} />
                 </button>
@@ -431,9 +444,10 @@ export function Sidebar({
             <button
               type="button"
               className="th-sidebar-toggle"
+              ref={railToggle}
               title={t("sidebar.expand")}
               aria-label={t("sidebar.expand")}
-              onClick={onToggleCollapse}
+              onClick={toggleCollapse}
             >
               <IconChevron size={13} />
             </button>

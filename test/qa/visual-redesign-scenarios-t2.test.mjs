@@ -24,25 +24,27 @@ import { JSDOM } from '../../frontend/node_modules/jsdom/lib/api.js';
 // ---------------------------------------------------------------------------
 
 describe('T2 plugin registration', () => {
-  test('registers T2-owned canonical scenarios and chat-scoped S5 and S8', async () => {
+  test('registers T2 stub owners and chat-scoped variants without replacing built-ins', async () => {
     const plugins = await loadScenarioPlugins(import.meta.dir);
     const mine = plugins.find(plugin => plugin.file === 'visual-redesign-scenarios-t2.mjs');
     expect(mine?.skipped).toBeUndefined();
     const registry = buildScenarioRegistry(plugins);
-    for (const id of ['S4', 'S6', 'S7', 'S9', 'S22']) {
+    for (const id of ['S7', 'S9', 'S22']) {
       const entry = registry.find(candidate => candidate.id === id);
       expect(entry?.origin, `${id} origin`).toBe('plugin:visual-redesign-scenarios-t2.mjs');
       expect(entry?.stub, `${id} stub`).toBe(false);
       expect(entry?.reason, `${id} reason`).toBe(null);
       expect(entry?.run, `${id} run`).toBe(scenarios[id]);
     }
-    for (const id of ['S5', 'S8']) {
+    for (const id of ['S4', 'S5', 'S6', 'S8']) {
       const entry = registry.find(candidate => candidate.id === id);
       expect(entry?.origin, `${id} stays the built-in app-wide driver`).toBe('builtin');
       expect(entry?.run, `${id} run`).not.toBe(scenarios[`${id}:chat`]);
     }
     for (const [id, title] of [
+      ['S4:chat', 'Tonal separation vs stacked borders (chat scope)'],
       ['S5:chat', 'No state encoded by coloured border/stroke (chat scope)'],
+      ['S6:chat', 'Pane header label discipline (chat scope)'],
       ['S8:chat', 'Running indicator accent + reduced motion (chat scope)'],
     ]) {
       const entry = registry.find(candidate => candidate.id === id);
@@ -51,15 +53,17 @@ describe('T2 plugin registration', () => {
       });
       expect(entry.run, `${id} run`).toBe(scenarios[id]);
     }
-    expect(Object.keys(scenarios).sort()).toEqual(['S22', 'S4', 'S5:chat', 'S6', 'S7', 'S8:chat', 'S9']);
+    expect(Object.keys(scenarios).sort()).toEqual(['S22', 'S4:chat', 'S5:chat', 'S6:chat', 'S7', 'S8:chat', 'S9']);
+    expect(selectScenarioIds(registry, ['S4', 'S6'])).toEqual(['S4', 'S4:chat', 'S6', 'S6:chat']);
   });
 
-  test('selecting S5 yields the builtin driver and S5:chat', async () => {
+  test('selecting S5 yields the builtin driver and both scoped variants', async () => {
     const plugins = await loadScenarioPlugins(import.meta.dir);
     const registry = buildScenarioRegistry(plugins);
-    expect(selectScenarioIds(registry, ['S5'])).toEqual(['S5', 'S5:chat']);
+    expect(selectScenarioIds(registry, ['S5'])).toEqual(['S5', 'S5:chat', 'S5:shell']);
     expect(registry.find(entry => entry.id === 'S5').origin).toBe('builtin');
     expect(registry.find(entry => entry.id === 'S5:chat').run).toBe(scenarios['S5:chat']);
+    expect(registry.find(entry => entry.id === 'S5:shell').origin).toBe('plugin:visual-redesign-scenarios-t3.mjs');
   });
 
   test('probes that fail or throw are possible: each scenario is a real function', () => {

@@ -6,6 +6,11 @@
   gap: var(--th-space-0-5);
 }
 
+/* Containing block for the single selection indicator. */
+.th-tree {
+  position: relative;
+}
+
 /* Desktop sidebar rows (DESIGN.md "Spacing scale"): 36px minimum height, 8px
    inline padding, 8px between icon and label, 2px between adjacent rows. */
 .th-tree-node {
@@ -18,7 +23,7 @@
   border-radius: var(--th-radius-sm);
   cursor: pointer;
   user-select: none;
-  transition: background var(--th-dur-fast) var(--th-ease);
+  transition: background-color var(--th-dur-fast) var(--th-ease);
 }
 
 /* Coarse pointers grow rows to 44px targets without changing the text tier. */
@@ -58,8 +63,36 @@
   background: var(--th-hover);
 }
 
-.th-tree-node--active {
+/* Selection is painted by .th-tree-indicator, one element that slides to
+   the active row, so the row itself stays clear even while hovered. */
+.th-tree-node--active,
+.th-tree-node--active:hover {
+  background: transparent;
+}
+
+/* The indicator sits first in .th-tree, so every positioned row paints
+   above it. SessionTree measures the active row and writes left/width/
+   height plus a translateY; only transform animates, so rapid selection
+   changes retarget from the current position. Layout-only moves and first
+   placement add --instant, and reduced motion collapses the travel through
+   the global policy. */
+.th-tree-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border-radius: var(--th-radius-sm);
   background: var(--th-active);
+  pointer-events: none;
+  visibility: hidden;
+  transition: transform var(--th-dur) var(--th-ease-in-out);
+}
+
+.th-tree-indicator--visible {
+  visibility: visible;
+}
+
+.th-tree-indicator--instant {
+  transition: none;
 }
 
 .th-tree-node--disabled {
@@ -76,52 +109,43 @@
   background: transparent;
 }
 
-.th-tree-live {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: var(--th-success);
-  z-index: 1;
-}
-
-/* Running-agent chip for live sessions with active sub-agents. Mirrors the
-   .th-tree-count pill at the success hue; the dot breathes while work is alive
-   (animation is disabled globally under prefers-reduced-motion). The min-height
-   matches the text chip's full height (micro line box + border) so a dot-only
-   chip (main session running, no agents) keeps the same size as `● N`. */
+/* The dot-only chip (main session running, no agents) keeps the count pill's
+   height so rows do not shift when a count appears. */
 .th-tree-running {
   display: inline-flex;
   flex: none;
   align-items: center;
-  gap: var(--th-space-0-5);
-  min-height: calc(var(--th-type-micro-size) * var(--th-type-micro-line) + 2px);
-  font-family: var(--th-font-mono);
+  gap: var(--th-space-1);
+  min-height: calc(var(--th-type-micro-size) * var(--th-type-micro-line) + 2 * var(--th-space-0-5));
+  padding: 0 var(--th-space-1);
+  border-radius: var(--th-radius-pill);
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
-  color: var(--th-success);
-  border: 1px solid var(--th-success);
-  border-radius: var(--th-radius-pill);
-  padding: 0 var(--th-space-1);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
+  font-variant-numeric: tabular-nums;
+  color: var(--th-muted);
+}
+
+.th-tree-running--count {
+  background: var(--th-active);
 }
 
 .th-tree-running-dot {
-  width: 5px;
-  height: 5px;
+  flex: none;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: var(--th-success);
-  animation: th-tree-running-blink calc(var(--th-dur-slow) * 4) var(--th-ease) infinite alternate;
+  background: var(--th-accent);
+  animation: th-tree-running-breathe calc(var(--th-dur-slow) * 4) var(--th-ease-in-out) infinite alternate;
 }
 
-@keyframes th-tree-running-blink {
+@keyframes th-tree-running-breathe {
   from {
     opacity: 1;
   }
   to {
-    opacity: 0.35;
+    opacity: 0.4;
   }
 }
 
@@ -148,6 +172,7 @@
 }
 
 .th-tree-icon {
+  position: relative;
   display: inline-flex;
   flex: none;
   color: var(--th-muted);
@@ -157,19 +182,32 @@
   color: var(--th-text);
 }
 
+/* Live provider process: a neutral presence badge riding the terminal
+   glyph's top-right corner, distinct from placement and from running. */
+.th-tree-live {
+  position: absolute;
+  top: calc(-1 * var(--th-space-0-5));
+  right: calc(-1 * var(--th-space-0-5));
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--th-text-dim);
+}
+
+/* Placed in a pane: a neutral filled dot; unplaced rows keep the slot empty
+   so every session glyph stays on one column. */
 .th-tree-placed {
   flex: none;
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  border: 1px solid var(--th-faint);
-  transition: background var(--th-dur-fast) var(--th-ease),
-    border-color var(--th-dur-fast) var(--th-ease);
+  background: var(--th-text-dim);
+  opacity: 0;
+  transition: opacity var(--th-dur-fast) var(--th-ease);
 }
 
 .th-tree-placed--on {
-  background: var(--th-success);
-  border-color: var(--th-success);
+  opacity: 1;
 }
 
 .th-tree-activation {
@@ -203,17 +241,20 @@
   color: var(--th-faint);
 }
 
+/* The min-width keeps a single-digit pill round. */
 .th-tree-count {
   flex: none;
-  font-family: var(--th-font-mono);
+  min-width: calc(var(--th-type-micro-size) * var(--th-type-micro-line) + 2 * var(--th-space-0-5));
+  padding: var(--th-space-0-5) var(--th-space-1);
+  border-radius: var(--th-radius-pill);
+  background: var(--th-active);
+  color: var(--th-muted);
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
-  color: var(--th-faint);
-  border: 1px solid var(--th-border);
-  border-radius: var(--th-radius-pill);
-  padding: 0 var(--th-space-1);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
 }
 
 .th-tree-actions {
@@ -239,6 +280,17 @@
   height: 24px;
 }
 
+/* A hovered row already wears --th-hover, so row actions step one tone
+   further to stay visible; on the selected row (--th-active underneath)
+   they step back instead. Danger keeps its own error wash. */
+.th-tree-actions .th-btn-icon:not(.th-btn-icon--danger):hover {
+  background: var(--th-active);
+}
+
+.th-tree-node--active .th-tree-actions .th-btn-icon:not(.th-btn-icon--danger):hover {
+  background: var(--th-hover);
+}
+
 .th-tree--touch .th-tree-actions {
   display: inline-flex;
 }
@@ -247,12 +299,12 @@
   display: none;
 }
 
+/* Nesting reads through indentation alone; no guide line. */
 .th-tree-children {
   min-width: 0;
   margin: 0 0 0 var(--th-space-3);
   padding: 0 0 0 var(--th-space-2);
   border: 0;
-  border-left: 1px solid var(--th-border);
   display: flex;
   flex-direction: column;
   gap: var(--th-space-0-5);
@@ -263,26 +315,25 @@
   display: none;
 }
 
-/* Pagination affordance at the end of an expanded workspace's session list.
-   Dashed border echoes .th-btn-add, the sidebar's other additive action. */
+/* Pagination affordance at the end of an expanded workspace's session list:
+   a ghost pill like .th-btn-add. The transparent border keeps the measured
+   27.5px visual box that the coarse hit ring below is sized against. */
 .th-tree-more {
   margin: var(--th-space-0-5);
   padding: var(--th-space-1) var(--th-space-2);
-  border: 1px dashed var(--th-border);
-  border-radius: var(--th-radius-sm);
+  border: 1px solid transparent;
+  border-radius: var(--th-radius-pill);
   color: var(--th-muted);
   font-size: var(--th-type-secondary-size);
   line-height: var(--th-type-secondary-line);
   letter-spacing: var(--th-type-secondary-tracking);
   text-align: left;
   transition: color var(--th-dur-fast) var(--th-ease),
-    border-color var(--th-dur-fast) var(--th-ease),
-    background var(--th-dur-fast) var(--th-ease);
+    background-color var(--th-dur-fast) var(--th-ease);
 }
 
 .th-tree-more:hover:not(:disabled) {
   color: var(--th-text-dim);
-  border-color: var(--th-border-strong);
   background: var(--th-hover);
 }
 
@@ -308,20 +359,12 @@
   font-size: var(--th-type-micro-size);
 }
 
-.th-tree-rename {
+/* Inline rename composes the .th-input primitive (raised fill, hairline,
+   ring focus); only its geometry shrinks to sit inside a 36px row. The
+   compound selector outranks form-controls.css, which loads later. */
+.th-input.th-tree-rename {
   flex: 1;
   min-width: 0;
-  background: var(--th-bg);
-  border: 1px solid var(--th-border-strong);
-  border-radius: var(--th-radius-sm);
-  padding: var(--th-space-0-5) var(--th-space-1);
-  font-family: var(--th-font-mono);
-  font-size: var(--th-type-input-size);
-  line-height: var(--th-type-input-line);
-  letter-spacing: var(--th-type-input-tracking);
-  color: var(--th-text);
-}
-
-.th-tree-rename:focus {
-  border-color: var(--th-accent);
+  height: auto;
+  padding: var(--th-space-0-5) var(--th-space-2);
 }

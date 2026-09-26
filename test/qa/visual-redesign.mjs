@@ -41,6 +41,7 @@
  * ctx passed to every probe function (built-in drivers receive the same
  * object plus the browser as their first argument):
  *   scenario: id, theme: "dark"|"light", viewport: {width, height, label},
+ *   browser: the shared browser (S15's built-in driver keeps page ownership),
  *   evidenceDir, shotsDir, baseline: per-combo counts from --baseline-file or
  *     <evidence>/baseline-counts.json (null when absent),
  *   setupDesign(options?) -> {page, context, fixture, errors, close()} - the
@@ -342,6 +343,8 @@ async function setupOverlays(browser, options = {}) {
  * the chat socket (activity shelf) and the all_live push socket (tree). */
 async function deliverRunningDag(env, notes) {
   const frame = summaryFrame('complete2');
+  const dag = frame.snapshots.find(snapshot => snapshot.name === 'omo.dag.updated').data;
+  env.fixture.base.setDagRuns(CHAT, dag.runs);
   await env.fixture.deliver(CHAT, frame);
   const peers = env.fixture.overview(frame);
   notes.push(`overview frame reached ${peers.length} all_live subscriber(s)`);
@@ -349,6 +352,7 @@ async function deliverRunningDag(env, notes) {
     await env.page.waitForSelector('[data-activity-tab="dag"]', { timeout: 4000 });
     await env.page.click('[data-activity-tab="dag"]');
     await env.page.waitForSelector('.th-activity-gnode--running', { timeout: 4000 });
+    notes.push('DAG graph reached');
   } catch (error) {
     notes.push(`DAG graph not reached: ${error instanceof Error ? error.message.split('\n')[0] : error}`);
   }
@@ -399,8 +403,13 @@ async function driveStateColors(browser, ctx) {
   await deliverRunningDag(env, notes);
   await deliverApproval(env, notes);
   try {
+    if (await env.page.locator('.th-modal-overlay').isVisible()) {
+      await env.page.keyboard.press('Escape');
+      await env.page.waitForSelector('.th-modal-overlay', { state: 'detached', timeout: 4000 });
+    }
     await env.page.click('.th-model-picker-btn');
     await env.page.waitForSelector('.th-model-picker-popover', { timeout: 4000 });
+    notes.push('model picker reached');
   } catch (error) {
     notes.push(`model picker not reached: ${error instanceof Error ? error.message.split('\n')[0] : error}`);
   }
@@ -787,7 +796,7 @@ export function requiredInteractionVerdict(records) {
  * state, not only after closing it), and every open/close/interaction is
  * driven through the surface's real entry point (hover-revealed tree
  * actions, mobile drawer for sidebar-dwelling triggers). */
-async function driveMotion(browser, ctx) {
+async function driveMotion(browser, ctx, afterInteractions) {
   const env = await setupOverlays(browser, ctx);
   const page = env.page;
   const failures = [];
@@ -875,6 +884,14 @@ async function driveMotion(browser, ctx) {
   result.measurements.interactions = interactions;
   const shot = await screenshot(page, ctx, '');
   await closeMobileDrawer(page);
+  let extension = null;
+  if (afterInteractions) {
+    try {
+      extension = await afterInteractions(page);
+    } catch (error) {
+      failures.push(`S15 same-page capture failed: ${errLine(error)}`);
+    }
+  }
   // Merge, never overwrite: probeMotion's own failures-only spread used to
   // drop the interaction failures accumulated above (the round-2 false pass
   // where a timed-out file-palette interaction left the cell green).
@@ -882,8 +899,9 @@ async function driveMotion(browser, ctx) {
     ...result,
     pass: result.pass && failures.length === 0,
     failures: [...result.failures, ...failures],
-    measurements: withPageErrors(env, result.measurements),
-    screenshots: [shot], teardown: await env.close(),
+    measurements: withPageErrors(env, { ...result.measurements, ...extension?.measurements }),
+    screenshots: [shot, ...(extension?.screenshots ?? [])],
+    teardown: await env.close(),
   };
 }
 
@@ -1350,10 +1368,13 @@ const DRIVERS = {
 const PLUGIN_GLOB = 'visual-redesign-scenarios-*.mjs';
 
 /** Import every plugin module in `dir` (sorted; later files override earlier
- * ones and everything overrides built-in stubs). Returns one entry per file
+ * ones and built-in stubs). Returns one entry per file
  * that exports a `scenarios` object. Exported for unit tests. */
 export async function loadScenarioPlugins(dir) {
-  const files = Array.from(new Bun.Glob(PLUGIN_GLOB).scanSync({ cwd: dir })).sort();
+  // Colocated unit-test modules (`*.test.mjs`) match the glob too; importing
+  // them registers bun:test suites, so they are never plugins.
+  const files = Array.from(new Bun.Glob(PLUGIN_GLOB).scanSync({ cwd: dir }))
+    .filter(file => !file.endsWith('.test.mjs')).sort();
   const plugins = [];
   for (const file of files) {
     try {
@@ -1389,6 +1410,9 @@ export function buildScenarioRegistry(plugins) {
       const [canonical, scope] = id.split(':');
       if (scoped && (!SCENARIOS[canonical] || !/^[a-z][a-z0-9-]*$/.test(scope ?? '') || id !== `${canonical}:${scope}`)) {
         throw new Error(`invalid scoped scenario "${id}" in ${plugin.file} (want <canonical>:<scope>)`);
+      }
+      if (!scoped && DRIVERS[id]) {
+        throw new Error(`plugin ${plugin.file} cannot replace built-in scenario "${id}"; register "${id}:<scope>" instead`);
       }
       const previous = registry.get(id);
       registry.set(id, {
@@ -1499,7 +1523,7 @@ async function main() {
         for (const viewport of options.viewports) {
           const comboKey = `${theme}/${viewport.label}`;
           const ctx = {
-            scenario: id, theme, viewport, shotsDir,
+            scenario: id, theme, viewport, shotsDir, browser,
             evidenceDir: options.evidence,
             baseline: !baselineMode && baselineData?.counts?.[comboKey] ? baselineData.counts[comboKey] : null,
             setupDesign: (extra = {}) => setupDesign(browser, { theme, viewport: { width: viewport.width, height: viewport.height }, ...extra }),
