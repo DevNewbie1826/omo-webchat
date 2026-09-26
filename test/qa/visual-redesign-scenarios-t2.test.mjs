@@ -263,22 +263,21 @@ describe('serialized thinking disclosure rendering (S7)', () => {
     <button class="th-chat-thinking-head" aria-expanded="true" aria-controls="reasoning"><span class="th-chat-thinking-chevron th-chat-thinking-chevron--open"></span></button>
     <div id="reasoning" class="th-chat-thinking-body"><div class="th-chat-thinking-body-inner"><pre>${marker}</pre></div></div>
   </div></section></body>`;
-  const measured = ({ clipped = false } = {}) => (window, document) => {
+  const measured = ({ clipped = false, track = null } = {}) => (window, document) => {
     const body = document.querySelector('.th-chat-thinking-body');
     const record = document.querySelector('.th-chat-thinking');
     const original = window.getComputedStyle.bind(window);
     window.getComputedStyle = element => {
       const style = original(element);
       if (element === body) return new Proxy(style, { get(target, key) {
-        if (key === 'gridTemplateRows') return !clipped && record.classList.contains('th-chat-thinking--open') ? '36px' : '0px';
+        if (key === 'gridTemplateRows') return track !== null ? `${track}px` : !clipped && record.classList.contains('th-chat-thinking--open') ? '36px' : '0px';
         return Reflect.get(target, key, target);
       } });
       return style;
     };
-    body.getBoundingClientRect = () => ({ height: !clipped && record.classList.contains('th-chat-thinking--open') ? 36 : 0 });
-    for (const selector of ['.th-chat-thinking-body-inner', '.th-chat-thinking-body pre']) {
-      document.querySelector(selector).getBoundingClientRect = () => ({ height: 36 });
-    }
+    body.getBoundingClientRect = () => ({ height: track !== null ? track : !clipped && record.classList.contains('th-chat-thinking--open') ? 36 : 0 });
+    document.querySelector('.th-chat-thinking-body-inner').getBoundingClientRect = () => ({ height: track !== null ? track : 36 });
+    document.querySelector('.th-chat-thinking-body pre').getBoundingClientRect = () => ({ height: 36 });
   };
   const inspect = (markup, options) => {
     const fact = serializedProbeInDom(probeThinkingDisclosure, { kind: 'historical' }, {
@@ -303,6 +302,19 @@ describe('serialized thinking disclosure rendering (S7)', () => {
     expect(fact.trackHeight).toBe(0);
     expect(verdict.pass).toBe(false);
     expect(verdict.failures.join(' ')).toContain('expanded thinking body is clipped');
+  });
+  test('a nonzero but clipped expanded track (1px) fails through the real probe', () => {
+    const { fact, verdict } = inspect(html, { track: 1 });
+    expect(fact.trackHeight).toBe(1);
+    expect(fact.textClipped).toBe(true);
+    expect(fact.textReadable).toBe(false);
+    expect(verdict.pass).toBe(false);
+    expect(verdict.failures.join(' ')).toContain('expanded thinking body is clipped');
+  });
+  test('a fully exposed text box inside the clip passes', () => {
+    const { fact, verdict } = inspect(html, { track: 36 });
+    expect(fact.textClipped).toBe(false);
+    expect(verdict.pass).toBe(true);
   });
   test('closed content must be inert or hidden and excluded from the accessibility snapshot', () => {
     const closed = html.replace('th-chat-record th-chat-thinking--open', 'th-chat-record')

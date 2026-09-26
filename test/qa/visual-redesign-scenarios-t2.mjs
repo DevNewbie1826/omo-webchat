@@ -266,7 +266,7 @@ export function thinkingDisclosureDecision(fact, { open, marker, accessibilitySn
   if (fact.openClass !== open || fact.chevronOpen !== open) failures.push('open class or chevron disagrees with the disclosure state');
   if (!fact.bodyPresent || !fact.text.includes(marker ?? '')) failures.push('thinking body lost its streamed or historical text');
   if (open) {
-    if (fact.bodyHeight <= 0 || fact.innerHeight <= 0 || fact.textHeight <= 0 || fact.trackHeight <= 0 || !fact.textReadable) {
+    if (fact.bodyHeight <= 0 || fact.innerHeight <= 0 || fact.textHeight <= 0 || fact.trackHeight <= 0 || fact.textClipped || !fact.textReadable) {
       failures.push(`expanded thinking body is clipped or unreadable (body=${fact.bodyHeight}, track=${fact.trackHeight})`);
     }
     if (fact.inert || fact.ariaHidden || !accessibilitySnapshot?.includes(marker)) failures.push('expanded thinking is absent from the accessible reading surface');
@@ -436,7 +436,12 @@ export function probeThinkingDisclosure(arg) {
     chevronOpen: !!chevron?.classList.contains('th-chat-thinking-chevron--open'),
     bodyHeight, innerHeight, textHeight, trackHeight,
     text: text?.textContent ?? '',
+    // The disclosure clips at the body/inner box; the displayed <pre> box must
+    // fit inside that clip (the pre's own internal scroll cap is legitimate:
+    // its rendered box is capped, its scrollHeight is not compared).
+    textClipped: textHeight - Math.min(bodyHeight, innerHeight) > 1,
     textReadable: bodyHeight > 0.5 && innerHeight > 0.5 && textHeight > 0
+      && textHeight - Math.min(bodyHeight, innerHeight) <= 1
       && textStyle?.display !== 'none' && textStyle?.visibility !== 'hidden'
       && !hiddenAncestor,
     inert: !!body?.closest('[inert]'),
