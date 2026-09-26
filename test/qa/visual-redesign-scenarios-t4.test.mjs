@@ -425,30 +425,30 @@ describe('T4 plugin registration', () => {
     } };
     expect(settleTablist(page)).rejects.toThrow('Timeout 1600ms exceeded');
   });
-  test('the module registers S8/S13/S14 over the built-in registry', async () => {
+  test('the module registers shelf variants alongside S8/S15 and fills S13/S14 stubs', async () => {
     // Scan the REAL test/qa directory: relative imports inside the plugin
     // (visual-redesign-probes.mjs) only resolve in place, never from a copy.
     const plugins = await loadScenarioPlugins(import.meta.dir);
     const mine = plugins.find(plugin => plugin.file === 'visual-redesign-scenarios-t4.mjs');
     expect(mine).toBeDefined();
     expect(mine.skipped).toBeUndefined();
-    expect(Object.keys(mine.scenarios).sort()).toEqual(['S13', 'S14', 'S15', 'S8']);
+    expect(Object.keys(mine.scenarios).sort()).toEqual(['S13', 'S14', 'S15:shelf', 'S8:shelf']);
     const registry = buildScenarioRegistry(plugins);
-    for (const id of ['S8', 'S13', 'S14', 'S15']) {
+    for (const id of ['S8:shelf', 'S13', 'S14', 'S15:shelf']) {
       const entry = registry.find(candidate => candidate.id === id);
       expect(entry.origin).toBe('plugin:visual-redesign-scenarios-t4.mjs');
       expect(entry.stub).toBe(false);
       expect(typeof entry.run).toBe('function');
     }
-    // The plugin replaces the built-in S8 driver (origin flips) and the
-    // untouched built-ins stay put.
-    expect(registry.find(candidate => candidate.id === 'S1').origin).toBe('builtin');
-    expect(registry.find(candidate => candidate.id === 'S1').run).toBeInstanceOf(Function);
+    for (const id of ['S1', 'S8', 'S15']) {
+      expect(registry.find(candidate => candidate.id === id).origin).toBe('builtin');
+      expect(registry.find(candidate => candidate.id === id).run).toBeInstanceOf(Function);
+    }
   });
   test('the scenarios export includes S15 settled capture without losing its built-in motion driver', () => {
-    expect(Object.keys(scenarios).sort()).toEqual(['S13', 'S14', 'S15', 'S8']);
+    expect(Object.keys(scenarios).sort()).toEqual(['S13', 'S14', 'S15:shelf', 'S8:shelf']);
     for (const run of Object.values(scenarios)) expect(run.constructor.name).toBe('AsyncFunction');
-    expect(scenarios.S15.toString()).toContain('original(browser, ctx, async');
+    expect(scenarios['S15:shelf'].toString()).toContain('original(browser, ctx, async');
   });
 });
 
@@ -1154,7 +1154,7 @@ describe('T4 S8 scope via the serialized probeT4RunningIndicators', () => {
   });
 
   test('driveS8 measures the scoped probe rather than the shared glyph census', () => {
-    const source = scenarios.S8.toString();
+    const source = scenarios['S8:shelf'].toString();
     expect(source).toContain('probeT4RunningIndicators');
     expect(source).not.toContain('probeRunningGlyphs');
     expect(source).not.toContain('probeRunningReducedMotion');

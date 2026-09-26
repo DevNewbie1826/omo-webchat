@@ -1476,8 +1476,8 @@ async function driveS15(ctx) {
 /** Per-task scenario plugin export (merged over the built-in registry by
  * visual-redesign.mjs; see the plugin contract in its header). */
 export const scenarios = Object.freeze({
-  S8: driveS8,
+  'S8:shelf': driveS8,
   S13: driveS13,
   S14: driveS14,
-  S15: driveS15,
+  'S15:shelf': driveS15,
 });

@@ -7,7 +7,8 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildScenarioRegistry, loadScenarioPlugins, NEW_CHAT_DIALOG_SURFACE, openNewChatDialogNative, overlayCycle, requiredInteractionVerdict } from './visual-redesign.mjs';
+import { buildScenarioRegistry, loadScenarioPlugins, selectScenarioIds, NEW_CHAT_DIALOG_SURFACE, openNewChatDialogNative, overlayCycle, requiredInteractionVerdict } from './visual-redesign.mjs';
+import { probeShellStateColors } from './visual-redesign-scenarios-t3.mjs';
 import {
   CONTRAST_BODY_MIN, CONTRAST_FAINT_MIN, HIERARCHY_MIN_RATIO, OLD_PALETTE_HEXES, classifyBorderFacts,
   collectAnimations, colorEquals, compositeOver, contrastRatio, defaultMotionAllowed, describeElement,
@@ -65,6 +66,32 @@ describe('per-task scenario plugins (T2/T3/T4 extension contract)', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+  test('actual T3 and T4 discovery keeps app-wide drivers and selects scoped variants', async () => {
+    const plugins = await loadScenarioPlugins(import.meta.dir);
+    expect(plugins.map(plugin => plugin.file)).toEqual([
+      'visual-redesign-scenarios-t3.mjs', 'visual-redesign-scenarios-t4.mjs',
+    ]);
+    const registry = buildScenarioRegistry(plugins);
+    for (const id of ['S5', 'S8', 'S15']) {
+      expect(registry.find(entry => entry.id === id).origin).toBe('builtin');
+    }
+    expect(selectScenarioIds(registry, ['S5'])).toEqual(['S5', 'S5:shell']);
+    expect(selectScenarioIds(registry, ['S8', 'S15'])).toEqual(['S8', 'S8:shelf', 'S15', 'S15:shelf']);
+    expect(selectScenarioIds(registry, ['S5:shell'])).toEqual(['S5:shell']);
+    expect(selectScenarioIds(registry, ['S5', 'S5:shell'])).toEqual(['S5', 'S5:shell']);
+    expect(() => selectScenarioIds(registry, ['S5:missing'])).toThrow('unknown scenario S5:missing');
+    expect(registry.find(entry => entry.id === 'S5:shell').title).toMatch(/\(shell scope\)$/);
+    expect(registry.find(entry => entry.id === 'S8:shelf').title).toMatch(/\(shelf scope\)$/);
+    for (const id of ['S10', 'S11', 'S13', 'S14']) {
+      expect(registry.find(entry => entry.id === id).origin.startsWith('plugin:')).toBe(true);
+    }
+  });
+  test('a plugin cannot silently replace a built-in driver', () => {
+    expect(() => buildScenarioRegistry([{ file: 'rogue.mjs', scenarios: { S5: async () => ({ pass: true }) } }]))
+      .toThrow('plugin rogue.mjs cannot replace built-in scenario "S5"');
+    expect(() => buildScenarioRegistry([{ file: 'rogue.mjs', scenarios: { 'S5:': async () => ({ pass: true }) } }]))
+      .toThrow('invalid scoped scenario "S5:"');
   });
 });
 
@@ -956,6 +983,47 @@ describe('serialized S5 SVG stroke coverage in production element order', () => 
       html: '<body><div class="th-alert" style="border:1px solid #8b7cf6"></div></body>', tokens,
     }).pass).toBe(true);
   });
+});
+
+test('normal S5 after both plugins still drives the app-wide DAG stroke census', async () => {
+  const registry = buildScenarioRegistry(await loadScenarioPlugins(import.meta.dir));
+  const [canonicalId, shellId] = selectScenarioIds(registry, ['S5']);
+  const canonical = registry.find(entry => entry.id === canonicalId);
+  const shell = registry.find(entry => entry.id === shellId);
+  expect(canonical.origin).toBe('builtin');
+  expect(canonical.run).toBe(buildScenarioRegistry([]).find(entry => entry.id === 'S5').run);
+  expect(shell.origin).toBe('plugin:visual-redesign-scenarios-t3.mjs');
+  expect(shell.run).toBe((await import('./visual-redesign-scenarios-t3.mjs')).scenarios['S5:shell']);
+
+  const tokens = {
+    '--th-success': '#16a34a', '--th-warning': '#d97706',
+    '--th-error': '#dc2626', '--th-accent': '#8b7cf6',
+  };
+  const check = (svg, shellMarkup = '') => {
+    const dom = { tokens, html: `<body><aside class="th-sidebar">${shellMarkup}</aside>
+      <div class="th-chat-pane"><div class="th-activity-shelf"><div class="th-activity-graph">
+        <svg xmlns="http://www.w3.org/2000/svg">${svg}</svg>
+      </div></div></div></body>` };
+    return [serializedProbeInDom(probeStateColors, {}, dom),
+      serializedProbeInDom(probeShellStateColors, {}, dom)];
+  };
+  for (const shape of [
+    '<path class="th-activity-gedge th-activity-gedge--fulfilled" style="stroke:#16a34a;stroke-width:2px" />',
+    '<rect class="th-activity-gnode-card" style="stroke:#8b7cf6;stroke-width:2px" />',
+  ]) {
+    const [appWide, scoped] = check(shape);
+    expect(appWide.pass).toBe(false);
+    expect(appWide.measurements.stateColorViolationCount).toBe(1);
+    expect(scoped.pass).toBe(true);
+  }
+  for (const shape of [
+    '<path class="th-activity-gedge th-activity-gedge--fulfilled" style="stroke:#c4c4cc;stroke-width:2px" />',
+    '<g class="th-activity-gstatus th-activity-gstatus--error"><path style="stroke:#dc2626;stroke-width:2px" /></g>',
+  ]) expect(check(shape)[0].pass).toBe(true);
+  const [appWide, scoped] = check('',
+    '<svg xmlns="http://www.w3.org/2000/svg"><rect style="stroke:#8b7cf6;stroke-width:2px" /></svg>');
+  expect(appWide.pass).toBe(false);
+  expect(scoped.pass).toBe(false);
 });
 
 describe('T3 serialized shell probes (S5 scope and S11 picker)', () => {
