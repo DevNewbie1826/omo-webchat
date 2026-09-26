@@ -4,6 +4,7 @@ import {
   IconChevron,
   IconEdit,
   IconFolder,
+  IconMore,
   IconPlus,
   IconTerminal,
   IconTrash,
@@ -127,6 +128,28 @@ export function SessionTree({
 }: SessionTreeProps) {
   const { t } = useT();
   const [rename, setRename] = useState<RenameTarget | null>(null);
+  // Workspace-row overflow menu (coarse pointers, G40): three row actions
+  // collapse behind one trigger so the disclosure, the workspace identity,
+  // and every 44px hit area fit the 264px shell. The menu closes on any
+  // outside pointer press or Escape; it offers every action the
+  // fine-pointer cluster does.
+  const [overflowFor, setOverflowFor] = useState<string | null>(null);
+  useEffect(() => {
+    if (overflowFor === null) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.closest(".th-tree-actions--overflow")) return;
+      setOverflowFor(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOverflowFor(null);
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [overflowFor]);
   const openingRef = useRef(new Set<string>());
   const treeRef = useRef<HTMLDivElement>(null);
   const indicatorRef = useRef<HTMLSpanElement>(null);
@@ -237,32 +260,84 @@ export function SessionTree({
                   mainRunning={workspaceMainRunning}
                 />
               ) : null}
-              <span className="th-tree-actions">
-                <button
-                  type="button"
-                  className="th-btn-icon"
-                  title={t("sidebar.ws.rename")}
-                  onClick={() => setRename({ kind: "workspace", wsId: ws.id, tmId: "" })}
-                >
-                  <IconEdit size={12} />
-                </button>
-                <button
-                  type="button"
-                  className="th-btn-icon"
-                  title={t("sidebar.ws.addTerminal")}
-                  onClick={() => onAddTerminal(ws)}
-                >
-                  <IconPlus size={13} />
-                </button>
-                <button
-                  type="button"
-                  className="th-btn-icon th-btn-icon--danger"
-                  title={t("sidebar.ws.delete")}
-                  onClick={() => onDeleteWorkspace(ws)}
-                >
-                  <IconTrash size={12} />
-                </button>
-              </span>
+              {touchActions ? (
+                <span className="th-tree-actions th-tree-actions--overflow">
+                  <button
+                    type="button"
+                    className="th-btn-icon"
+                    title={t("sidebar.ws.moreActions")}
+                    aria-haspopup="true"
+                    aria-expanded={overflowFor === ws.id}
+                    onClick={() => setOverflowFor((open) => (open === ws.id ? null : ws.id))}
+                  >
+                    <IconMore size={14} />
+                  </button>
+                  {overflowFor === ws.id ? (
+                    <span className="th-tree-overflow">
+                      <button
+                        type="button"
+                        className="th-tree-overflow-item"
+                        onClick={() => {
+                          setOverflowFor(null);
+                          setRename({ kind: "workspace", wsId: ws.id, tmId: "" });
+                        }}
+                      >
+                        <IconEdit size={13} />
+                        {t("sidebar.ws.rename")}
+                      </button>
+                      <button
+                        type="button"
+                        className="th-tree-overflow-item"
+                        onClick={() => {
+                          setOverflowFor(null);
+                          onAddTerminal(ws);
+                        }}
+                      >
+                        <IconPlus size={13} />
+                        {t("sidebar.ws.addTerminal")}
+                      </button>
+                      <button
+                        type="button"
+                        className="th-tree-overflow-item th-tree-overflow-item--danger"
+                        onClick={() => {
+                          setOverflowFor(null);
+                          onDeleteWorkspace(ws);
+                        }}
+                      >
+                        <IconTrash size={13} />
+                        {t("sidebar.ws.delete")}
+                      </button>
+                    </span>
+                  ) : null}
+                </span>
+              ) : (
+                <span className="th-tree-actions">
+                  <button
+                    type="button"
+                    className="th-btn-icon"
+                    title={t("sidebar.ws.rename")}
+                    onClick={() => setRename({ kind: "workspace", wsId: ws.id, tmId: "" })}
+                  >
+                    <IconEdit size={12} />
+                  </button>
+                  <button
+                    type="button"
+                    className="th-btn-icon"
+                    title={t("sidebar.ws.addTerminal")}
+                    onClick={() => onAddTerminal(ws)}
+                  >
+                    <IconPlus size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    className="th-btn-icon th-btn-icon--danger"
+                    title={t("sidebar.ws.delete")}
+                    onClick={() => onDeleteWorkspace(ws)}
+                  >
+                    <IconTrash size={12} />
+                  </button>
+                </span>
+              )}
             </div>
 
             <fieldset className={`th-tree-children${isOpen ? "" : " th-tree-children--closed"}`}>

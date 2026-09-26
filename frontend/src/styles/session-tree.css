@@ -26,36 +26,38 @@
   transition: background-color var(--th-dur-fast) var(--th-ease);
 }
 
-/* Coarse pointers grow rows to 44px targets without changing the text tier. */
+/* Coarse pointers (G40) grow rows and every nested interactive target to
+   44px without changing the text tier. The boxes themselves are the hit
+   areas, so element-geometry measurements see the full target — a ::before
+   overflow ring would hit-test but never measure. */
 @media (pointer: coarse) {
   .th-tree-node {
     min-height: var(--th-space-11);
   }
 
-  /* The chevron glyph stays compact; only its box grows, centred inside the
-     already-44px row. */
+  /* The chevron glyph stays compact; only its button box grows, centred
+     inside the already-44px row. */
   .th-tree-chevron {
-    min-width: 24px;
-    min-height: 24px;
+    min-width: var(--th-space-11);
+    min-height: var(--th-space-11);
     align-items: center;
     justify-content: center;
   }
 
-  /* The more-button keeps its 27.5px visual size; the ::before ring grows the
-     hitbox without overlapping neighbours. The button sits at the end of the
-     .th-tree-children list: the activation row ends 4px before the button.
-     The top inset takes 4px of free space, leaving measured zero theft; sides
-     take 2px of the 4px gap; the bottom is 6px. Visual 47x27.5; nominal
-     hitbox 49x35.5; gate:
-     centre-span >= 30px (measured 47.5x30). */
-  .th-tree-more {
-    position: relative;
+  /* Row actions grow to 44px boxes. The cluster keeps its 2px gap (44 + 2 +
+     44 never overlaps) and every button rides inside the 44px row, so no
+     container geometry changes are needed. */
+  .th-tree-actions .th-btn-icon {
+    min-width: var(--th-space-11);
+    min-height: var(--th-space-11);
   }
 
-  .th-tree-more::before {
-    content: "";
-    position: absolute;
-    inset: -4px -2px -6px;
+  /* The more-button grows its box to the 44px target. It sits at the end of
+     the .th-tree-children list with the list's 2px row gap on every side,
+     so the grown box meets its neighbours across the dead band without
+     overlap. */
+  .th-tree-more {
+    min-height: var(--th-space-11);
   }
 }
 
@@ -291,6 +293,63 @@
   background: var(--th-hover);
 }
 
+/* Workspace-row overflow (coarse pointers, G40): three 44px row actions
+   cannot fit beside the disclosure and the workspace identity inside the
+   264px shell, so touch rows collapse them behind one 44px trigger whose
+   popover keeps every action. The popover is a floating layer: Overlay fill
+   with the glass upgrade under backdrop-filter, the strong boundary, and
+   the overlay shadow. */
+.th-tree-actions--overflow {
+  position: relative;
+}
+
+.th-tree-overflow {
+  position: absolute;
+  top: calc(100% + var(--th-space-1));
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-0-5);
+  padding: var(--th-space-1);
+  border: 1px solid var(--th-border-overlay);
+  border-radius: var(--th-radius);
+  background: var(--th-surface-overlay);
+  box-shadow: var(--th-shadow-overlay), var(--th-highlight);
+}
+
+@supports (backdrop-filter: blur(1px)) {
+  .th-tree-overflow {
+    background: var(--th-glass);
+    backdrop-filter: var(--th-glass-filter);
+  }
+}
+
+.th-tree-overflow-item {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  min-height: var(--th-space-11);
+  padding: 0 var(--th-space-3);
+  border-radius: var(--th-radius-sm);
+  color: var(--th-text-dim);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+  white-space: nowrap;
+  text-align: start;
+}
+
+.th-tree-overflow-item:hover {
+  background: var(--th-hover);
+  color: var(--th-text);
+}
+
+.th-tree-overflow-item--danger:hover {
+  color: var(--th-error);
+  background: var(--th-error-bg);
+}
+
 .th-tree--touch .th-tree-actions {
   display: inline-flex;
 }
@@ -317,7 +376,7 @@
 
 /* Pagination affordance at the end of an expanded workspace's session list:
    a ghost pill like .th-btn-add. The transparent border keeps the measured
-   27.5px visual box that the coarse hit ring below is sized against. */
+   27.5px visual box that the coarse 44px minimum below grows from. */
 .th-tree-more {
   margin: var(--th-space-0-5);
   padding: var(--th-space-1) var(--th-space-2);

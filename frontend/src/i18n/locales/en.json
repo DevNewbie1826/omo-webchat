@@ -64,6 +64,7 @@
   "sidebar.ws.rename": "Rename workspace",
   "sidebar.ws.more": "Load more sessions",
   "sidebar.ws.moreLoading": "Loading…",
+  "sidebar.ws.moreActions": "More actions",
   "sidebar.confirmDeleteWs": "Delete workspace “{name}” and all its chat sessions?",
   "sidebar.confirmDeleteTm": "Delete chat session “{name}”?",
   "toast.copied": "Attach command copied",
