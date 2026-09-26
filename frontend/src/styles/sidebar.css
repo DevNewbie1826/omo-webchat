@@ -12,8 +12,9 @@
      shadow separate the shell from the panes; no divider line. */
   background: var(--th-surface);
   box-shadow: var(--th-shadow-surface);
-  transition: width var(--th-dur-slow) var(--th-ease),
-    transform var(--th-dur-slow) var(--th-ease);
+  /* The shell width never animates: desktop collapse/reopen swaps --th-sidebar-w
+     for the 44px rail instantly (DESIGN.md Motion bans width animation), and
+     the mobile drawer owns its transform/visibility transition below. */
   z-index: 40;
   /* Reserve the bottom home-indicator inset inside the shell at every width:
      landscape phones exceed the 768px drawer breakpoint, and #root keeps a 0
@@ -50,6 +51,22 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* Desktop collapse/reopen feel: the width swap above is instant, so the
+   content column alone supplies the softening -- a short opacity crossfade on
+   reopen (state-change duration), reversing cleanly on a rapid retarget.
+   Scoped to >=769px so the drawer's own transform/visibility behavior at
+   <=768px is untouched, and the global reduced-motion policy keeps the
+   swap instant for reduced motion. */
+@media (min-width: 769px) {
+  .th-sidebar-inner {
+    transition: opacity var(--th-dur) var(--th-ease);
+  }
+
+  .th-sidebar--collapsed .th-sidebar-inner {
+    opacity: 0;
+  }
 }
 
 /* Toolbar: brand leading, icon actions trailing. The brand starts on the
