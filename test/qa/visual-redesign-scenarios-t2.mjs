@@ -13,9 +13,9 @@
  * built-in app-wide drivers. Where a built-in driver already existed
  * (S4/S6) this override keeps every built-in assertion and adds the
  * T2-specific gates. S5:chat keeps the shared painted-border and uppercase
- * rules but measures only .th-chat-pane, excluding T4-owned activity shelf,
- * GoalBar, activity chips, and activity-graph nodes, plus anything outside
- * the pane (T3). S8:chat keeps the running-glyph accent and reduced-motion
+ * rules in .th-chat-pane and T2-owned body portals (question/approval modal
+ * and portalled model picker), excluding T4-owned activity shelf, GoalBar,
+ * activity chips, activity-graph nodes, and T3 shell. S8:chat keeps the running-glyph accent and reduced-motion
  * gates for every other glyph (tool, tree, overview) and does not judge
  * those same T4 elements.
  *
@@ -255,6 +255,29 @@ export function disclosureConsistency(state) {
   };
 }
 
+/** S7: rendered thinking, not the presence of a class or text in the DOM.
+ * The accessibility snapshot is collected separately from the real browser. */
+export function thinkingDisclosureDecision(fact, { open, marker, accessibilitySnapshot } = {}) {
+  const failures = [];
+  const expanded = String(open);
+  if (!fact.found) failures.push(`${fact.kind} thinking record is missing`);
+  if (fact.ariaExpanded !== expanded) failures.push(`aria-expanded=${fact.ariaExpanded}, expected ${expanded}`);
+  if (!fact.bodyId || fact.ariaControls !== fact.bodyId || !fact.controlsTarget) failures.push('aria-controls does not target the thinking body');
+  if (fact.openClass !== open || fact.chevronOpen !== open) failures.push('open class or chevron disagrees with the disclosure state');
+  if (!fact.bodyPresent || !fact.text.includes(marker ?? '')) failures.push('thinking body lost its streamed or historical text');
+  if (open) {
+    if (fact.bodyHeight <= 0 || fact.innerHeight <= 0 || fact.textHeight <= 0 || fact.trackHeight <= 0 || !fact.textReadable) {
+      failures.push(`expanded thinking body is clipped or unreadable (body=${fact.bodyHeight}, track=${fact.trackHeight})`);
+    }
+    if (fact.inert || fact.ariaHidden || !accessibilitySnapshot?.includes(marker)) failures.push('expanded thinking is absent from the accessible reading surface');
+  } else {
+    if (fact.bodyHeight > 0.5 && fact.textReadable) failures.push(`closed thinking body remains readable (${fact.bodyHeight}px)`);
+    if (!fact.inert && !fact.ariaHidden) failures.push('closed thinking body has no inert or aria-hidden ancestor');
+    if (fact.focusable || accessibilitySnapshot?.includes(marker)) failures.push('closed thinking text remains focusable or accessible');
+  }
+  return { pass: failures.length === 0, failures, measurements: { ...fact, accessibleTextPresent: accessibilitySnapshot?.includes(marker) ?? null } };
+}
+
 /** S6: visible header text must be sans. Mono is reserved for code, paths,
  * tool I/O and identifiers (DESIGN.md "Type scale"); badges and chrome
  * labels are not paths. Path carriers are skipped here - the no-visible-cwd
@@ -384,6 +407,42 @@ export function probeDisclosureState(arg) {
     ariaExpanded: head ? head.getAttribute('aria-expanded') : null,
     bodyPresent: !!body,
     bodyVisible: !!body && isVisibleElement(body),
+  };
+}
+
+/** S7: called after the disclosure's finite transition and virtual row settle. */
+export function probeThinkingDisclosure(arg) {
+  const record = document.querySelector(arg.kind === 'live'
+    ? '.th-chat-live .th-chat-thinking'
+    : '.th-chat-history .th-chat-thinking');
+  if (!record) return { found: false, kind: arg.kind };
+  const head = record.querySelector('.th-chat-thinking-head');
+  const body = record.querySelector('.th-chat-thinking-body');
+  const inner = body?.querySelector('.th-chat-thinking-body-inner');
+  const text = body?.querySelector('pre');
+  const chevron = head?.querySelector('.th-chat-thinking-chevron');
+  const bodyHeight = body?.getBoundingClientRect().height ?? 0;
+  const innerHeight = inner?.getBoundingClientRect().height ?? 0;
+  const textHeight = text?.getBoundingClientRect().height ?? 0;
+  const trackHeight = body ? parseFloat(getComputedStyle(body).gridTemplateRows) : 0;
+  const hiddenAncestor = text?.closest('[inert], [aria-hidden="true"]');
+  const textStyle = text ? getComputedStyle(text) : null;
+  return {
+    found: true, kind: arg.kind, ariaExpanded: head?.getAttribute('aria-expanded') ?? null,
+    ariaControls: head?.getAttribute('aria-controls') ?? null,
+    bodyPresent: !!body, bodyId: body?.id ?? null,
+    controlsTarget: !!body && document.getElementById(head?.getAttribute('aria-controls')) === body,
+    openClass: record.classList.contains('th-chat-thinking--open'),
+    chevronOpen: !!chevron?.classList.contains('th-chat-thinking-chevron--open'),
+    bodyHeight, innerHeight, textHeight, trackHeight,
+    text: text?.textContent ?? '',
+    textReadable: bodyHeight > 0.5 && innerHeight > 0.5 && textHeight > 0
+      && textStyle?.display !== 'none' && textStyle?.visibility !== 'hidden'
+      && !hiddenAncestor,
+    inert: !!body?.closest('[inert]'),
+    ariaHidden: !!body?.closest('[aria-hidden="true"]'),
+    focusable: !!body?.querySelector('a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])')
+      && !hiddenAncestor,
   };
 }
 
@@ -529,8 +588,9 @@ export function probeToolStatusWords() {
 /** S5 chat scope. Same violation rules as the shared probeStateColors
  * (painted borders only: width > 0 and style not none/hidden; SVG stroke
  * only on a <rect> enclosure, never a glyph circle; :focus-visible,
- * focused .th-input, and .th-alert stay exempt) but the census is only
- * elements inside every .th-chat-pane. Anything outside the pane is T3.
+ * focused .th-input, and .th-alert stay exempt). Measure every pane AND
+ * T2-owned body portals, including the enclosing question overlay/panel
+ * and the compact or panel model-picker popup. Other body content is T3.
  * Elements matching or inside the T4 selectors below are not judged:
  * .th-activity-shelf, GoalBar's root section.th-goal-shelf (GoalBar.tsx),
  * the summary button .th-goal-bar, .th-activity-chip, and activity-graph
@@ -556,6 +616,10 @@ export function probeChatStateColors() {
   };
   // end T4 ownership exclusion
   const panes = [...document.querySelectorAll('.th-chat-pane')];
+  const questionPortals = [...document.body.querySelectorAll('.th-modal-overlay')]
+    .filter(overlay => overlay.parentElement === document.body && overlay.querySelector('.th-question-window'));
+  const pickerPortals = [...document.body.querySelectorAll(':scope > .th-model-picker-popover')];
+  const portals = [...questionPortals, ...pickerPortals];
   if (panes.length === 0) {
     return {
       scenario: 'S5', pass: false,
@@ -572,10 +636,12 @@ export function probeChatStateColors() {
   const excludedSamples = [];
   let excludedElementCount = 0;
   const seen = new Set();
-  for (const pane of panes) {
-    for (const element of [pane, ...pane.querySelectorAll('*')]) {
+  let portalElementCount = 0;
+  for (const root of [...panes, ...portals]) {
+    for (const element of [root, ...root.querySelectorAll('*')]) {
       if (seen.has(element)) continue;
       seen.add(element);
+      if (portals.includes(root)) portalElementCount += 1;
       if (isExcluded(element)) {
         excludedElementCount += 1;
         if (excludedSamples.length < 12) excludedSamples.push(describeElement(element));
@@ -618,6 +684,9 @@ export function probeChatStateColors() {
     uppercaseCount: uppercaseCensus.uppercaseCount,
     uppercaseSamples: uppercaseCensus.uppercase.slice(0, 12).map(index => uppercaseFacts[index]),
     excludedSelectors, excludedElementCount, excludedSamples,
+    portalMeasured: questionPortals.length > 0,
+    portalCount: portals.length, questionPortalCount: questionPortals.length,
+    modelPickerPortalCount: pickerPortals.length, portalElementCount,
   };
   const failures = [];
   if (violations.length > 0) failures.push(`${violations.length} elements carry a state/accent coloured border or stroke (first: ${violations[0].where} ${violations[0].token})`);
@@ -1058,6 +1127,39 @@ async function rapidDisclosureToggles(page, id, count) {
   return record;
 }
 
+/** Settle the real grid transition and virtual row without guessing its
+ * duration. A cancelled/reversed animation is not itself a failure; the
+ * final geometry must stop moving before the failing deadline. */
+async function settleThinkingDisclosure(page, kind, open) {
+  return page.evaluate(({ kind, open }) => new Promise((resolve, reject) => {
+    const selector = kind === 'live' ? '.th-chat-live .th-chat-thinking' : '.th-chat-history .th-chat-thinking';
+    let frame = 0;
+    let previous = null;
+    let stable = 0;
+    const deadline = setTimeout(() => {
+      cancelAnimationFrame(frame);
+      reject(new Error(`${kind} thinking disclosure did not settle within 4000ms`));
+    }, 4000);
+    const sample = () => {
+      const record = document.querySelector(selector);
+      const body = record?.querySelector('.th-chat-thinking-body');
+      const row = record?.closest('.th-chat-row');
+      const rect = body?.getBoundingClientRect();
+      const rowRect = row?.getBoundingClientRect();
+      const animations = body?.getAnimations({ subtree: true }).filter(animation =>
+        animation.playState === 'running' && animation.effect?.getTiming().iterations !== Infinity) ?? [];
+      const signature = `${rect?.height}:${rowRect?.top}:${rowRect?.bottom}`;
+      stable = body && signature === previous && animations.length === 0 ? stable + 1 : 0;
+      previous = signature;
+      if (stable >= 2 && record.querySelector('.th-chat-thinking-head')?.getAttribute('aria-expanded') === String(open)) {
+        clearTimeout(deadline);
+        resolve({ stableFrames: stable, bodyHeight: rect.height, rowHeight: rowRect?.height ?? null, animationCount: 0 });
+      } else frame = requestAnimationFrame(sample);
+    };
+    frame = requestAnimationFrame(sample);
+  }), { kind, open });
+}
+
 /** The virtualizer measures changed disclosure rows asynchronously. Two
  * successive animation frames with identical mounted row rectangles confirm
  * both the measured heights and absolute positions have stopped changing.
@@ -1217,9 +1319,9 @@ async function separationT2(ctx) {
 }
 
 /** S5 - no state encoded by coloured border/stroke, no uppercase, measured
- * only inside .th-chat-pane. Elements matching or inside .th-activity-shelf,
+ * inside .th-chat-pane and T2-owned body portals. Elements matching or inside .th-activity-shelf,
  * GoalBar's root .th-goal-shelf, .th-goal-bar, .th-activity-chip, or
- * .th-activity-g* are T4 and excluded; anything outside the pane is T3.
+ * .th-activity-g* are T4 and excluded; other content outside the pane is T3.
  * The live fixture still opens the running DAG, an expanded tool record,
  * the model picker, the slash palette and the approval so every
  * chat-surface selection state is mounted for that census. */
@@ -1280,6 +1382,9 @@ async function stateColorsT2(ctx) {
       }
     }
     const result = await ctx.probe(page, probeChatStateColors);
+    if (!result.measurements.portalMeasured || result.measurements.portalElementCount === 0) {
+      failures.push('approval question portal was not measured by the chat census');
+    }
     result.measurements.surfaceNotes = notes;
     result.measurements.questionWindowSettle = questionWindowSettle;
     result.measurements.motion = await ctx.motionSweep(page);
@@ -1323,19 +1428,92 @@ async function headerT2(ctx) {
   }
 }
 
-/** S7 - transcript timeline + disclosure: rail per tool record, Enter/Space
- * keyboard disclosure with content visibility, bottom fade on expanded
- * overflowing output, 5 rapid toggles ending consistent. */
+/** S7 - transcript timeline + disclosure: tool and live/historical thinking
+ * interact through native controls with rendered and accessible body checks. */
 async function timelineT2(ctx) {
   const env = await ctx.setupDesign();
   try {
     const page = env.page;
     const failures = [];
     const measurements = { narrowViewport: await isNarrow(page) };
+    const historicalText = 'QA historical reasoning remains readable.';
+    await env.fixture.deliver('stored-a', {
+      type: 'message', message: {
+        role: 'assistant',
+        blocks: [{ kind: 'thinking', id: 'qa-historical-thought', thinking: historicalText }],
+        model: 'qa', usage: {}, ts: 1,
+      },
+    });
+    await page.waitForSelector('.th-chat-history .th-chat-thinking', { timeout: 4000 });
     await env.fixture.deliver('stored-a', {
       type: 'messageDelta', delta: { kind: 'thinking_delta', delta: 'Checking the timeline.' },
     });
     await page.waitForSelector('.th-chat-thinking--running .th-chat-thinking-dot', { timeout: 4000 });
+    const thinkingShots = [];
+    measurements.thinking = {};
+    for (const reduced of [false, true]) {
+      await page.emulateMedia({ reducedMotion: reduced ? 'reduce' : 'no-preference' });
+      for (const [kind, marker] of [['live', 'Checking the timeline.'], ['historical', historicalText]]) {
+        const head = page.locator(`${kind === 'live' ? '.th-chat-live' : '.th-chat-history'} .th-chat-thinking-head`).first();
+        const record = page.locator(`${kind === 'live' ? '.th-chat-live' : '.th-chat-history'} .th-chat-thinking`).first();
+        const states = [];
+        const observe = async (action, open, capture = false) => {
+          const settlement = await settleThinkingDisclosure(page, kind, open);
+          const fact = await ctx.probe(page, probeThinkingDisclosure, { kind });
+          const accessibilitySnapshot = await record.ariaSnapshot();
+          const verdict = thinkingDisclosureDecision(fact, { open, marker, accessibilitySnapshot });
+          states.push({ action, ...verdict.measurements, settlement, pass: verdict.pass });
+          failures.push(...verdict.failures.map(failure => `${kind} thinking ${reduced ? 'reduced' : 'normal'} ${action}: ${failure}`));
+          if (capture) thinkingShots.push(await ctx.save(page, `-thinking-${kind}-${reduced ? 'reduced' : 'normal'}-${action}`));
+        };
+        try {
+          await head.scrollIntoViewIfNeeded();
+          await observe('initial-closed', false);
+          await head.click();
+          await observe('pointer-open', true, true);
+          await head.focus();
+          await page.keyboard.press('Enter');
+          await observe('enter-closed', false, true);
+          await page.keyboard.press('Space');
+          await observe('space-open', true, true);
+          // Two native pointer clicks reverse open -> closed -> open before
+          // the disclosure's 320ms transition can finish.
+          const box = await head.boundingBox();
+          if (!box) throw new Error('thinking toggle has no pointer hit box');
+          await page.evaluate(() => {
+            window.__qaThinkingFrameCount = 0;
+            window.__qaThinkingFrameActive = true;
+            const count = () => {
+              if (!window.__qaThinkingFrameActive) return;
+              window.__qaThinkingFrameCount += 1;
+              requestAnimationFrame(count);
+            };
+            requestAnimationFrame(count);
+          });
+          await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+          // The scroll follower can move the header as soon as its body
+          // collapses, especially under reduced motion. Read the live box
+          // again; a second click at the old coordinate hits the empty row.
+          const reversedBox = await head.boundingBox();
+          if (!reversedBox) throw new Error('thinking toggle disappeared during reversal');
+          await page.mouse.click(reversedBox.x + reversedBox.width / 2, reversedBox.y + reversedBox.height / 2);
+          const reversalFrames = await page.evaluate(() => {
+            window.__qaThinkingFrameActive = false;
+            return window.__qaThinkingFrameCount;
+          });
+          states.push({ action: 'reversal-frame-count', frames: reversalFrames });
+          if (reversalFrames > 1) failures.push(`${kind} thinking ${reduced ? 'reduced' : 'normal'} reversal crossed ${reversalFrames} animation frames`);
+          await observe('rapid-open-close-open', true, true);
+          await head.click();
+          await observe('final-closed', false);
+        } catch (error) {
+          states.push({ action: 'interaction-error', state: await ctx.probe(page, probeThinkingDisclosure, { kind }).catch(() => null) });
+          failures.push(`${kind} thinking ${reduced ? 'reduced' : 'normal'} interaction failed: ${errLine(error)}`);
+        }
+        measurements.thinking[`${kind}-${reduced ? 'reduced' : 'normal'}`] = states;
+      }
+    }
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
     await page.locator('[data-tool-call-id="design-failed"]').scrollIntoViewIfNeeded().catch(() => {});
 
     const rail = await ctx.probe(page, probeToolRail);
@@ -1415,7 +1593,7 @@ async function timelineT2(ctx) {
     const shot = await ctx.save(page, '');
     return {
       pass: failures.length === 0, measurements: withErrors(env, measurements),
-      failures, screenshots: [shot], teardown: await env.close(),
+      failures, screenshots: [...thinkingShots, shot], teardown: await env.close(),
     };
   } catch (error) {
     await env.close().catch(() => {});

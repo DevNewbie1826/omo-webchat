@@ -14,7 +14,7 @@ import {
   fadeDecision, headerTextDecision, keyboardHintRowText, outputFadeDecision, paletteDecision,
   probeChatRunningGlyphs, probeChatRunningReducedMotion, probeChatStateColors, probeComposerFacts, probeDisclosureState, probeHeaderTexts, probeOutputFade, probePaletteFacts,
   probeToolMaterial, probeToolRail, probeBorderedSamples, probeTranscriptRows, railFactsDecision, ringColorDecision, scenarios,
-  settleEnterAnimations, switchOutcomeDecision, toolMaterialDecision, transcriptRowsDecision,
+  probeThinkingDisclosure, thinkingDisclosureDecision, settleEnterAnimations, switchOutcomeDecision, toolMaterialDecision, transcriptRowsDecision,
 } from './visual-redesign-scenarios-t2.mjs';
 
 import { JSDOM } from '../../frontend/node_modules/jsdom/lib/api.js';
@@ -254,6 +254,68 @@ describe('serialized probeDisclosureState', () => {
     const state = serializedProbeInDom(probeDisclosureState, { id: 't1' }, { html });
     expect(state.bodyPresent).toBe(false);
     expect(disclosureConsistency(state).ok).toBe(false);
+  });
+});
+
+describe('serialized thinking disclosure rendering (S7)', () => {
+  const marker = 'QA historical reasoning remains readable.';
+  const html = `<body><section class="th-chat-history"><div class="th-chat-thinking th-chat-record th-chat-thinking--open">
+    <button class="th-chat-thinking-head" aria-expanded="true" aria-controls="reasoning"><span class="th-chat-thinking-chevron th-chat-thinking-chevron--open"></span></button>
+    <div id="reasoning" class="th-chat-thinking-body"><div class="th-chat-thinking-body-inner"><pre>${marker}</pre></div></div>
+  </div></section></body>`;
+  const measured = ({ clipped = false } = {}) => (window, document) => {
+    const body = document.querySelector('.th-chat-thinking-body');
+    const record = document.querySelector('.th-chat-thinking');
+    const original = window.getComputedStyle.bind(window);
+    window.getComputedStyle = element => {
+      const style = original(element);
+      if (element === body) return new Proxy(style, { get(target, key) {
+        if (key === 'gridTemplateRows') return !clipped && record.classList.contains('th-chat-thinking--open') ? '36px' : '0px';
+        return Reflect.get(target, key, target);
+      } });
+      return style;
+    };
+    body.getBoundingClientRect = () => ({ height: !clipped && record.classList.contains('th-chat-thinking--open') ? 36 : 0 });
+    for (const selector of ['.th-chat-thinking-body-inner', '.th-chat-thinking-body pre']) {
+      document.querySelector(selector).getBoundingClientRect = () => ({ height: 36 });
+    }
+  };
+  const inspect = (markup, options) => {
+    const fact = serializedProbeInDom(probeThinkingDisclosure, { kind: 'historical' }, {
+      html: markup, patch: measured(options),
+    });
+    return { fact, verdict: thinkingDisclosureDecision(fact, { open: true, marker, accessibilitySnapshot: `- text: ${marker}` }) };
+  };
+  test('expanded historical reasoning has body geometry and an accessible text target', () => {
+    const { fact, verdict } = inspect(html);
+    expect(fact).toMatchObject({ ariaExpanded: 'true', controlsTarget: true, openClass: true, chevronOpen: true, bodyHeight: 36, trackHeight: 36 });
+    expect(verdict.pass).toBe(true);
+    expect(verdict.measurements.accessibleTextPresent).toBe(true);
+  });
+  test('removing the open class fails even with aria-expanded and text still present', () => {
+    const { fact, verdict } = inspect(html.replace('th-chat-record th-chat-thinking--open', 'th-chat-record'));
+    expect(fact.bodyHeight).toBe(0);
+    expect(verdict.pass).toBe(false);
+    expect(verdict.failures.join(' ')).toContain('expanded thinking body is clipped');
+  });
+  test('forcing an expanded body to grid-template-rows 0fr fails', () => {
+    const { fact, verdict } = inspect(html, { clipped: true });
+    expect(fact.trackHeight).toBe(0);
+    expect(verdict.pass).toBe(false);
+    expect(verdict.failures.join(' ')).toContain('expanded thinking body is clipped');
+  });
+  test('closed content must be inert or hidden and excluded from the accessibility snapshot', () => {
+    const closed = html.replace('th-chat-record th-chat-thinking--open', 'th-chat-record')
+      .replace('aria-expanded="true"', 'aria-expanded="false"')
+      .replace('th-chat-thinking-chevron--open', 'th-chat-thinking-chevron')
+      .replace('id="reasoning" class=', 'id="reasoning" inert aria-hidden="true" class=');
+    const fact = serializedProbeInDom(probeThinkingDisclosure, { kind: 'historical' }, { html: closed, patch: measured() });
+    expect(thinkingDisclosureDecision(fact, { open: false, marker, accessibilitySnapshot: '- button: Thinking' }).pass).toBe(true);
+    expect(thinkingDisclosureDecision(fact, { open: false, marker, accessibilitySnapshot: `- text: ${marker}` }).pass).toBe(false);
+    const exposed = serializedProbeInDom(probeThinkingDisclosure, { kind: 'historical' }, {
+      html: closed.replace(' inert aria-hidden="true"', ''), patch: measured(),
+    });
+    expect(thinkingDisclosureDecision(exposed, { open: false, marker, accessibilitySnapshot: '- button: Thinking' }).pass).toBe(false);
   });
 });
 
@@ -758,6 +820,33 @@ describe('serialized probeChatStateColors (S5 chat scope)', () => {
     });
     expect(result.pass).toBe(false);
     expect(result.failures).toEqual(['.th-chat-pane not found']);
+  });
+
+  test('a body-level question/approval portal fails for a painted state border and uppercase label', () => {
+    const html = `<body><section class="th-chat-pane">chat</section>
+      <div class="th-modal-overlay"><div class="th-modal"><div class="th-question-window">
+        <div class="th-approval-options"><button style="border: 1px solid #b3252e; text-transform: uppercase">Approve</button></div>
+      </div></div></div></body>`;
+    const result = serializedProbeInDom(probeChatStateColors, {}, { html, tokens: chatStateTokens });
+    expect(result.pass).toBe(false);
+    expect(result.measurements).toMatchObject({ portalMeasured: true, portalCount: 1, questionPortalCount: 1 });
+    expect(result.measurements.portalElementCount).toBeGreaterThanOrEqual(4);
+    expect(result.measurements.stateColorViolationSamples[0]).toMatchObject({ token: 'error' });
+    expect(result.measurements.uppercaseSamples[0].text).toBe('Approve');
+  });
+
+  test('a valid body portal passes, including its enclosing overlay and panel', () => {
+    const html = `<body><section class="th-chat-pane">chat</section>
+      <div class="th-modal-overlay" style="border: 1px solid #999"><div class="th-modal">
+        <div class="th-question-window"><button style="border: 1px solid #999">Approve</button></div>
+      </div></div><div class="th-model-picker-popover"><span>Model</span></div></body>`;
+    const result = serializedProbeInDom(probeChatStateColors, {}, { html, tokens: chatStateTokens });
+    expect(result.pass).toBe(true);
+    expect(result.measurements).toMatchObject({
+      portalMeasured: true, portalCount: 2, questionPortalCount: 1, modelPickerPortalCount: 1,
+      stateColorViolationCount: 0, uppercaseCount: 0,
+    });
+    expect(result.measurements.portalElementCount).toBeGreaterThanOrEqual(5);
   });
 });
 
