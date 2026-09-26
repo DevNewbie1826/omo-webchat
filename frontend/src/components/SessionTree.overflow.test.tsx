@@ -1,9 +1,12 @@
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionTree } from "./SessionTree";
 import type { Workspace } from "../features/workspace/workspace";
+import { NewChatDialog } from "./NewChatDialog";
+import { useConfirm } from "./ConfirmDialog";
+import { useT } from "../i18n";
 
 const workspaceOne: Workspace = {
   id: "ws-1",
@@ -51,34 +54,64 @@ describe("SessionTree workspace overflow disclosure", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
-    act(() => {
-      root.render(
-        <SessionTree
-          workspaces={[workspaceOne, workspaceTwo]}
-          touchActions
-          activeTerminalId={null}
-          placedSessions={new Set()}
-          liveSessions={new Set()}
-          expanded={new Set(["ws-1", "ws-2"])}
-          sessionLists={
-            new Map([
-              ["ws-1", sessionsOne],
-              ["ws-2", sessionsTwo],
-            ])
-          }
-          sessionPages={new Map()}
-          onToggle={() => undefined}
-          onLoadMoreSessions={() => undefined}
-          onSelect={() => undefined}
-          onOpen={async () => undefined}
-          onAddTerminal={onAddTerminal}
-          onDeleteWorkspace={onDeleteWorkspace}
-          onDeleteTerminal={() => undefined}
-          onRenameWorkspace={onRenameWorkspace}
-          onRenameTerminal={async () => undefined}
-          notify={() => undefined}
-        />,
+    function OverflowHarness() {
+      const { t } = useT();
+      const [chatOpen, setChatOpen] = useState(false);
+      const { confirm, dialog } = useConfirm(t);
+      return (
+        <>
+          <aside className="th-sidebar">
+            <SessionTree
+              workspaces={[workspaceOne, workspaceTwo]}
+              touchActions
+              activeTerminalId={null}
+              placedSessions={new Set()}
+              liveSessions={new Set()}
+              expanded={new Set(["ws-1", "ws-2"])}
+              sessionLists={
+                new Map([
+                  ["ws-1", sessionsOne],
+                  ["ws-2", sessionsTwo],
+                ])
+              }
+              sessionPages={new Map()}
+              onToggle={() => undefined}
+              onLoadMoreSessions={() => undefined}
+              onSelect={() => undefined}
+              onOpen={async () => undefined}
+              onAddTerminal={(ws) => {
+                onAddTerminal(ws);
+                setChatOpen(true);
+              }}
+              onDeleteWorkspace={(ws) => {
+                onDeleteWorkspace(ws);
+                void confirm({
+                  title: t("sidebar.ws.delete"),
+                  message: t("sidebar.confirmDeleteWs", { name: ws.name }),
+                  danger: true,
+                });
+              }}
+              onDeleteTerminal={() => undefined}
+              onRenameWorkspace={onRenameWorkspace}
+              onRenameTerminal={async () => undefined}
+              notify={() => undefined}
+            />
+          </aside>
+          <main className="th-main">
+            <section className="th-pane--focused"><div className="th-chat-input"><textarea /></div></section>
+          </main>
+          <NewChatDialog
+            open={chatOpen}
+            providerDiscovery={{ status: "loading" }}
+            onRetryProviders={() => undefined}
+            onClose={() => setChatOpen(false)}
+          />
+          {dialog}
+        </>
       );
+    }
+    act(() => {
+      root.render(<OverflowHarness />);
     });
   });
 
@@ -247,7 +280,8 @@ describe("SessionTree workspace overflow disclosure", () => {
   });
 
   it("cancelling the rename flow keeps its existing dismissal behavior", () => {
-    act(() => triggerOf("ws-2").click());
+    const trigger = triggerOf("ws-2");
+    act(() => trigger.click());
     const popup = popupOf("ws-2")!;
     const rename = actionButtons(popup).find((button) => button.textContent === "sidebar.ws.rename")!;
 
@@ -259,25 +293,80 @@ describe("SessionTree workspace overflow disclosure", () => {
     act(() => pressKey(input!, "Escape"));
     expect(container.querySelector(".th-tree-rename")).toBeNull();
     expect(onRenameWorkspace).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(trigger);
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it("returns focus after an empty rename commit", () => {
+    const trigger = triggerOf("ws-1");
+    act(() => trigger.click());
+    act(() => actionButtons(popupOf("ws-1")!)[0]?.click());
+    const input = container.querySelector<HTMLInputElement>(".th-tree-rename")!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    act(() => pressKey(input, "Enter"));
+    expect(container.querySelector(".th-tree-rename")).toBeNull();
+    expect(onRenameWorkspace).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("uses the composer fallback when the rename trigger becomes hidden", () => {
+    act(() => triggerOf("ws-2").click());
+    act(() => actionButtons(popupOf("ws-2")!)[0]?.click());
+    const input = container.querySelector<HTMLInputElement>(".th-tree-rename")!;
+    const composer = container.querySelector<HTMLTextAreaElement>(".th-pane--focused .th-chat-input textarea");
+    container.querySelector<HTMLElement>(".th-sidebar")?.setAttribute("inert", "");
+    act(() => pressKey(input, "Escape"));
+    expect(container.querySelector(".th-tree-rename")).toBeNull();
+    expect(document.activeElement).toBe(composer);
+    expect(document.activeElement).not.toBe(document.body);
   });
 
   it("runs the add-chat flow from its action", () => {
-    act(() => triggerOf("ws-2").click());
+    const trigger = triggerOf("ws-2");
+    act(() => trigger.click());
     const popup = popupOf("ws-2")!;
     const add = actionButtons(popup).find((button) => button.textContent === "sidebar.ws.addTerminal")!;
 
     act(() => add.click());
     expect(popups()).toHaveLength(0);
     expect(onAddTerminal).toHaveBeenCalledWith(workspaceTwo);
+    expect(document.activeElement?.closest(".th-modal[role='dialog']")).not.toBeNull();
+    act(() => pressKey(document.activeElement!, "Escape"));
+    expect(document.querySelector(".th-new-chat")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(document.activeElement).not.toBe(document.body);
   });
 
   it("runs the delete flow from its action", () => {
-    act(() => triggerOf("ws-1").click());
+    const trigger = triggerOf("ws-1");
+    act(() => trigger.click());
     const popup = popupOf("ws-1")!;
     const del = actionButtons(popup).find((button) => button.textContent === "sidebar.ws.delete")!;
 
     act(() => del.click());
     expect(popups()).toHaveLength(0);
     expect(onDeleteWorkspace).toHaveBeenCalledWith(workspaceOne);
+    expect(document.activeElement?.closest(".th-modal[role='dialog']")).not.toBeNull();
+    act(() => document.querySelector<HTMLButtonElement>(".th-confirm-actions button")?.click());
+    expect(document.querySelector(".th-confirm")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it("uses the modal fallback when add-chat cancellation finds its drawer hidden", () => {
+    const trigger = triggerOf("ws-2");
+    const composer = container.querySelector<HTMLTextAreaElement>(".th-pane--focused .th-chat-input textarea");
+    act(() => trigger.click());
+    act(() => actionButtons(popupOf("ws-2")!)[1]?.click());
+    const sidebar = container.querySelector<HTMLElement>(".th-sidebar")!;
+    sidebar.setAttribute("inert", "");
+    sidebar.style.display = "none";
+    act(() => document.querySelector<HTMLButtonElement>(".th-new-chat-actions button")?.click());
+    expect(document.querySelector(".th-new-chat")).toBeNull();
+    expect(document.activeElement).toBe(composer);
+    expect(document.activeElement).not.toBe(document.body);
   });
 });

@@ -137,6 +137,7 @@ export function SessionTree({
   // popup unmounts.
   const [overflowFor, setOverflowFor] = useState<string | null>(null);
   const overflowTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const renameTriggerRef = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
     if (overflowFor === null) return;
     const onPointerDown = (event: PointerEvent) => {
@@ -197,8 +198,34 @@ export function SessionTree({
   };
 
   const commitRename = (target: RenameTarget, value: string): void => {
-    setRename(null);
     const name = value.trim();
+    const trigger = renameTriggerRef.current;
+    renameTriggerRef.current = null;
+    if (name.length === 0 && trigger) {
+      // Rename is inline, not a modal: follow modalStack's trigger ->
+      // focused composer -> main focus-return policy before removing input.
+      const canFocus = (element: HTMLElement | null): element is HTMLElement => {
+        if (!element?.isConnected || element.matches(":disabled") || element.closest("[inert]")) return false;
+        for (let node: HTMLElement | null = element; node; node = node.parentElement) {
+          const style = getComputedStyle(node);
+          if (node.hidden || style.display === "none" || style.visibility !== "visible") return false;
+        }
+        return true;
+      };
+      if (canFocus(trigger)) trigger.focus();
+      if (document.activeElement !== trigger) {
+        const composer = document.querySelector<HTMLTextAreaElement>(".th-pane--focused .th-chat-input textarea");
+        if (canFocus(composer)) composer.focus();
+        if (document.activeElement !== composer) {
+          const main = document.querySelector<HTMLElement>("main.th-main");
+          if (canFocus(main)) {
+            if (!main.hasAttribute("tabindex")) main.tabIndex = -1;
+            main.focus();
+          }
+        }
+      }
+    }
+    setRename(null);
     if (name.length === 0) return;
     const ws = workspaces.find((w) => w.id === target.wsId);
     if (!ws) return;
@@ -299,6 +326,7 @@ export function SessionTree({
                         type="button"
                         className="th-tree-overflow-item"
                         onClick={() => {
+                          renameTriggerRef.current = overflowTriggerRef.current;
                           setOverflowFor(null);
                           setRename({ kind: "workspace", wsId: ws.id, tmId: "" });
                         }}
@@ -310,6 +338,7 @@ export function SessionTree({
                         type="button"
                         className="th-tree-overflow-item"
                         onClick={() => {
+                          overflowTriggerRef.current?.focus();
                           setOverflowFor(null);
                           onAddTerminal(ws);
                         }}
@@ -321,6 +350,7 @@ export function SessionTree({
                         type="button"
                         className="th-tree-overflow-item th-tree-overflow-item--danger"
                         onClick={() => {
+                          overflowTriggerRef.current?.focus();
                           setOverflowFor(null);
                           onDeleteWorkspace(ws);
                         }}
@@ -337,7 +367,10 @@ export function SessionTree({
                     type="button"
                     className="th-btn-icon"
                     title={t("sidebar.ws.rename")}
-                    onClick={() => setRename({ kind: "workspace", wsId: ws.id, tmId: "" })}
+                    onClick={() => {
+                      renameTriggerRef.current = null;
+                      setRename({ kind: "workspace", wsId: ws.id, tmId: "" });
+                    }}
                   >
                     <IconEdit size={12} />
                   </button>
