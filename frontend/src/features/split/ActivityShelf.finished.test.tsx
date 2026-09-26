@@ -79,9 +79,11 @@ describe("ActivityShelf finished work", () => {
     const graph = requireElement(harness.container.querySelector(".th-activity-graph"), "graph view");
     const glyphOf = (id: string): Element | null =>
       graph.querySelector(`.th-activity-gnode[data-node="${id}"] .th-activity-gstatus`) ?? null;
-    // Completed nodes carry a check glyph; the running node carries a ring.
-    expect(glyphOf("a")?.textContent).toBe("✓");
-    expect(glyphOf("b")?.textContent).toBe("✓");
+    // Completed nodes carry a drawn check glyph; the running node carries a ring.
+    for (const id of ["a", "b"]) {
+      expect(glyphOf(id)?.getAttribute("data-glyph")).toBe("check");
+      expect(glyphOf(id)?.getAttribute("d")).toMatch(/^M.+L.+L.+$/);
+    }
     expect(glyphOf("c")?.classList.contains("th-activity-gstatus--running")).toBe(true);
     for (const glyph of graph.querySelectorAll(".th-activity-gstatus")) {
       expect(glyph.getAttribute("aria-hidden")).toBe("true");

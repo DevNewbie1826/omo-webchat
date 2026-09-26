@@ -393,6 +393,14 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
           its own measured fixed band for the shared column allocator. A
           selected-tab click closes while retaining the selection. */}
       <div ref={tablistRef} role="tablist" aria-label={t("activity.tabs")} className="th-activity-tabs">
+        {/* Segmented-control thumb: one element that slides to the selected
+            tab (CSS maps data-index to a translateX), painted beneath the
+            tab labels. Decorative only; aria-selected carries the state. */}
+        <span
+          className="th-activity-tab-thumb"
+          aria-hidden="true"
+          data-index={SHELF_TABS.indexOf(selectedTab)}
+        />
         {SHELF_TABS.map((tab) => {
           const count = tabCount(tab);
           return (
@@ -459,7 +467,7 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
                 data-activity-roster-status={tab === "agents" ? taskRoster.status : undefined}
               >
                 {tab === "todo" && (activities.todo !== null
-                  ? <TodoSection phases={activities.todo} />
+                  ? <TodoSection phases={activities.todo} runInFlight={activities.runInFlight === true} t={t} />
                   : <p className="th-activity-empty">{t("activity.emptyTodo")}</p>)}
                 {tab === "agents" && (taskRoster.status === "loading"
                   ? <p className="th-activity-empty" role="status">{t("chat.loading")}</p>

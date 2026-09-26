@@ -3,6 +3,9 @@ import type { ActivityDagRun, ActivityTask, TodoPhase } from "./activityTypes";
 
 export type DagView = "list" | "graph";
 export type StatusKind = "running" | "ok" | "error" | "muted";
+/** Timeline rail glyph: pending hollow ring, running violet arc, done check,
+ *  error exclamation, stopped (cancelled/skipped/dropped) ring with a dash. */
+export type GlyphKind = "pending" | "running" | "done" | "error" | "stopped";
 /** Primary activity regions in the user's fixed order. */
 export type ShelfTab = "todo" | "agents" | "dag";
 export const SHELF_TABS: readonly ShelfTab[] = ["todo", "agents", "dag"];
@@ -54,6 +57,23 @@ export function statusKind(status: string): StatusKind {
 
 export function statusLabel(t: Translate, status: string): string {
   return KNOWN_STATUSES.has(status) ? t(`activity.status.${status}`) : status;
+}
+
+const STOPPED_STATUSES: ReadonlySet<string> = new Set([
+  "cancelled",
+  "canceled",
+  "skipped",
+  "lost",
+  "interrupted",
+  "abandoned",
+]);
+
+/** Glyph for a task or todo status; unknown statuses read as not started. */
+export function glyphKind(status: string): GlyphKind {
+  if (status === "running" || status === "in_progress") return "running";
+  if (status === "completed") return "done";
+  if (status === "failed" || status === "error") return "error";
+  return STOPPED_STATUSES.has(status) ? "stopped" : "pending";
 }
 
 export function lastActivityMs(task: ActivityTask): number | null {
