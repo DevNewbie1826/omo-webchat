@@ -15,7 +15,7 @@ import { buildScenarioRegistry } from './visual-redesign.mjs';
 import { pageKit, probeStateColors } from './visual-redesign-probes.mjs';
 import {
   ENTRANCE_RECORDER_SOURCE, armSidebarReversal, emptyStateVerdict, entranceVerdict, firstFamily, probeEmptyState,
-  probeSelectionFacts, probeShellCoarseTargets, probeShellStateColors, probeSidebarMotion, probeSidebarStatic, scenarios, selectionVerdict, shellLiveFrame,
+  probeCancellationFocus, probeSelectionFacts, probeShellCoarseTargets, probeShellStateColors, probeSidebarMotion, probeSidebarStatic, scenarios, selectionVerdict, shellLiveFrame,
   sidebarFocusVerdict, sidebarReversalVerdict, sidebarStaticVerdict, runStateColorsShell,
 } from './visual-redesign-scenarios-t3.mjs';
 
@@ -90,6 +90,18 @@ describe('T3 plugin contract with the shared harness', () => {
     expect(source).toContain("root: '.th-picker-pane'");
     expect(source).toContain('requireDisplayTier: true');
     expect(source).toContain('picker pane absent');
+  });
+
+  test('S24 drives the persisted maximum font through coarse shell and empty picker', async () => {
+    const source = await Bun.file(new URL('./visual-redesign-scenarios-t3.mjs', import.meta.url)).text();
+    expect(source).toContain('for (const fontSize of [14, 15, 24])');
+    expect(source).toContain('for (const fontSize of [24, 15, 14])');
+    expect(source).toContain("localStorage.setItem('th-font-size', String(size))");
+    expect(source).toContain("localStorage.getItem('th-font-size')");
+    expect(source).toContain("getPropertyValue('--th-font-size').trim()");
+    expect(source).toContain('appliedFont.computed !== `${fontSize}px`');
+    expect(source).toContain('fontSize === 14 || fontSize === 24');
+    expect(source).toContain("], '.th-empty');");
   });
 });
 
@@ -306,7 +318,7 @@ describe('entranceVerdict (S11 choreography)', () => {
 // ---------------------------------------------------------------------------
 
 describe('in-page probes serialize cleanly with the shared kit', () => {
-  const probes = [probeSidebarStatic, probeSidebarMotion, probeSelectionFacts, probeEmptyState, probeShellStateColors, probeShellCoarseTargets];
+  const probes = [probeSidebarStatic, probeSidebarMotion, probeSelectionFacts, probeEmptyState, probeShellStateColors, probeShellCoarseTargets, probeCancellationFocus];
   test('kit-augmented sources parse', () => {
     for (const probe of probes) {
       expect(() => new Function(`${pageKit()}\nreturn (${probe.toString()})();`)).not.toThrow();
@@ -713,6 +725,67 @@ describe('serialized S24 coarse shell hit areas', () => {
       expect(result.elements[0].visible.height).toBeLessThan(44);
       expect(result.failures.join(' ')).toContain('visible region');
       expect(result.pass).toBe(false);
+    });
+  });
+});
+
+describe('serialized S24 cancellation focus destination', () => {
+  const fixture = page(`
+<aside class="th-sidebar"><button aria-controls="th-tree-overflow-ws-2">More actions</button></aside>
+<main class="th-main"><section class="th-pane--focused">
+  <div class="th-chat-input"><textarea></textarea></div>
+</section></main>`);
+  const args = JSON.stringify({ triggerSelector: 'button[aria-controls="th-tree-overflow-ws-2"]' });
+
+  test('the surviving workspace trigger is connected, visible, and focusable', async () => {
+    await withView(fixture, async view => {
+      await runScript(view, `document.querySelector('[aria-controls]').focus();`);
+      const result = await runSerialized(view, probeCancellationFocus, args);
+      expect(result).toMatchObject({
+        selector: 'button[aria-controls="th-tree-overflow-ws-2"]',
+        connected: true, visible: true, focusable: true, failures: [], pass: true,
+      });
+    });
+  });
+
+  test('body focus fails even when the trigger survives', async () => {
+    await withView(fixture, async view => {
+      const result = await runSerialized(view, probeCancellationFocus, args);
+      expect(result.selector).toBe('body');
+      expect(result.failures.join(' ')).toContain('focus fell to body');
+      expect(result.pass).toBe(false);
+    });
+  });
+
+  test('hidden drawer requires the documented composer fallback, never its trigger', async () => {
+    await withView(fixture, async view => {
+      await runScript(view, `document.querySelector('.th-sidebar').setAttribute('inert', '');
+document.querySelector('.th-chat-input textarea').focus();`);
+      const result = await runSerialized(view, probeCancellationFocus, args);
+      expect(result).toMatchObject({
+        selector: '.th-pane--focused .th-chat-input textarea',
+        connected: true, visible: true, focusable: true, failures: [], pass: true,
+      });
+    });
+  });
+
+  test('a hidden focused destination fails and falls through to main when composer is disabled', async () => {
+    await withView(fixture, async view => {
+      await runScript(view, `const sidebar = document.querySelector('.th-sidebar');
+sidebar.style.display = 'none';
+document.querySelector('.th-chat-input textarea').disabled = true;
+document.querySelector('main.th-main').tabIndex = -1;
+document.querySelector('main.th-main').focus();`);
+      const result = await runSerialized(view, probeCancellationFocus, args);
+      expect(result).toMatchObject({
+        selector: 'main.th-main', connected: true, visible: true, focusable: true, failures: [], pass: true,
+      });
+      await runScript(view, `document.querySelector('.th-sidebar').style.display = '';
+document.querySelector('[aria-controls]').focus();
+document.querySelector('.th-sidebar').style.display = 'none';`);
+      const hidden = await runSerialized(view, probeCancellationFocus, args);
+      expect(hidden.pass).toBe(false);
+      expect(hidden.failures.join(' ')).toContain('hidden');
     });
   });
 });

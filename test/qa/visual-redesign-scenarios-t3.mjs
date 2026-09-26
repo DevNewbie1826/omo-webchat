@@ -1529,6 +1529,46 @@ export function probeShellCoarseTargets({ root, requireCoarse = true, scrollOwne
   return { coarseMatches, hoverNoneMatches, elements, overlaps, scrolls, failures, pass: failures.length === 0 };
 }
 
+/** Serialized focus probe for S24's workspace-action cancellation paths. */
+export function probeCancellationFocus(options = {}) {
+  const triggerSelector = options.triggerSelector;
+  const trigger = document.querySelector(triggerSelector);
+  const composer = document.querySelector('.th-pane--focused .th-chat-input textarea');
+  const main = document.querySelector('main.th-main');
+  const active = document.activeElement;
+  const visible = element => {
+    if (!(element instanceof HTMLElement) || !element.isConnected
+      || element.matches(':disabled') || element.closest('[inert]')) return false;
+    for (let node = element; node; node = node.parentElement) {
+      if (node.hidden) return false;
+      const style = getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+    }
+    return true;
+  };
+  const focusable = element => visible(element) && (
+    element.matches('button:not([disabled]), textarea:not([disabled])')
+    || element === main && element.hasAttribute('tabindex')
+  );
+  const selectorOf = element => element === trigger ? triggerSelector
+    : element === composer ? '.th-pane--focused .th-chat-input textarea'
+      : element === main ? 'main.th-main' : element?.tagName.toLowerCase() ?? null;
+  const expected = focusable(trigger) ? trigger : focusable(composer) ? composer : main;
+  const destination = {
+    selector: selectorOf(active),
+    connected: active?.isConnected === true,
+    visible: visible(active),
+    focusable: focusable(active),
+  };
+  const failures = [];
+  if (active === document.body) failures.push('focus fell to body');
+  if (!destination.connected || !destination.visible || !destination.focusable) {
+    failures.push('focus destination is detached, hidden, or not focusable');
+  }
+  if (active !== expected) failures.push(`focus reached ${destination.selector}, expected ${selectorOf(expected)}`);
+  return { ...destination, expectedSelector: selectorOf(expected), failures, pass: failures.length === 0 };
+}
+
 /** S24 G40 coarse-target scenario. The shared live
  * fixture starts with a normal context; only this second, measured context is
  * mobile/touch. The fixture and both contexts are closed on every outcome. */
@@ -1536,7 +1576,7 @@ export async function runShellCoarseTargets(ctx) {
   const env = await ctx.setupLive();
   const failures = [];
   const screenshots = [];
-  const measurements = { elements: [], stages: [], scrolls: [], captures: [], pageErrors: [] };
+  const measurements = { elements: [], stages: [], scrolls: [], captures: [], focusReturns: [], pageErrors: [] };
   let touchContext;
   let teardown;
   try {
@@ -1627,17 +1667,30 @@ export async function runShellCoarseTargets(ctx) {
       await page.keyboard.press('Escape');
       await page.waitForSelector('.th-tree-overflow', { state: 'detached', timeout: 4000 });
     };
-    for (const fontSize of [14, 15]) {
-      const prefix = fontSize === 15 ? 'font-15-' : '';
-      if (fontSize === 15) {
+    const recordCancellationFocus = async (stage, row) => {
+      const controls = await row.locator('.th-tree-actions--overflow > button').getAttribute('aria-controls');
+      const focus = await ctx.probe(page, probeCancellationFocus, {
+        triggerSelector: `button[aria-controls="${controls}"]`,
+      });
+      measurements.focusReturns.push({ stage, ...focus });
+      failures.push(...focus.failures.map(failure => `[${stage}] ${failure}`));
+    };
+    for (const fontSize of [14, 15, 24]) {
+      const prefix = fontSize === 14 ? '' : `font-${fontSize}-`;
+      if (fontSize !== 14) {
         // The original installSignals init script reasserts 14 on reload;
         // install the same settings-path value later in script order.
-        await page.addInitScript(() => localStorage.setItem('th-font-size', '15'));
+        await page.addInitScript(size => localStorage.setItem('th-font-size', String(size)), fontSize);
         await page.reload();
-        await page.waitForFunction(() => getComputedStyle(document.documentElement)
-          .getPropertyValue('--th-font-size').trim() === '15px');
         await page.waitForSelector('.th-mobile-menu', { state: 'visible', timeout: 8000 });
         await deliverShellLive(env, ctx.constants.CHAT, []);
+      }
+      const appliedFont = await page.evaluate(() => ({
+        stored: localStorage.getItem('th-font-size'),
+        computed: getComputedStyle(document.documentElement).getPropertyValue('--th-font-size').trim(),
+      }));
+      if (appliedFont.stored !== String(fontSize) || appliedFont.computed !== `${fontSize}px`) {
+        failures.push(`[${prefix}font] persisted/computed font was ${JSON.stringify(appliedFont)}, expected ${fontSize}px`);
       }
       await measure(`${prefix}header`, '.th-termhead', ['.th-mobile-menu']);
       await openDrawer(page);
@@ -1656,49 +1709,61 @@ export async function runShellCoarseTargets(ctx) {
       const lastIndex = await page.locator('.th-tree-workspace').count() - 1;
       if (lastIndex < 1) failures.push(`[${prefix}actions-bottom] fixture lacks a distinct last workspace`);
       const last = await openActions(lastIndex, `${prefix}actions-bottom`);
-      if (fontSize === 14) {
+      if (fontSize === 14 || fontSize === 24) {
         await page.keyboard.press('Tab');
         const actionFocused = await last.locator('.th-tree-overflow-item').first()
           .evaluate(element => document.activeElement === element);
-        if (!actionFocused) failures.push('[actions-bottom-focus] Tab did not focus the first popup action');
-        await capture('actions-bottom-focus');
+        if (!actionFocused) failures.push(`[${prefix}actions-bottom-focus] Tab did not focus the first popup action`);
+        await capture(`${prefix}actions-bottom-focus`);
         await dismissActions();
         const triggerFocused = await last.locator('.th-tree-actions--overflow > button')
           .evaluate(element => document.activeElement === element);
-        if (!triggerFocused) failures.push('[actions-bottom-focus] Escape did not restore the last workspace trigger');
+        if (!triggerFocused) failures.push(`[${prefix}actions-bottom-focus] Escape did not restore the last workspace trigger`);
+      } else await dismissActions();
+      if (fontSize === 14) {
         await openActions(lastIndex, 'actions-bottom-rename');
         await last.locator('.th-tree-overflow-item').nth(0).click();
         await last.locator('.th-tree-rename').waitFor({ state: 'visible' });
         await page.keyboard.press('Escape');
         await last.locator('.th-tree-rename').waitFor({ state: 'detached' });
+        await recordCancellationFocus('actions-bottom-rename-cancel', last);
         await openActions(lastIndex, 'actions-bottom-add');
         await last.locator('.th-tree-overflow-item').nth(1).click();
         await page.waitForSelector('.th-modal-overlay .th-modal[role="dialog"]', { state: 'visible' });
         await page.keyboard.press('Escape');
         await page.waitForSelector('.th-modal-overlay', { state: 'detached' });
+        await recordCancellationFocus('actions-bottom-add-cancel', last);
         await openDrawer(page);
         await openActions(lastIndex, 'actions-bottom-delete');
         await last.locator('.th-tree-overflow-item').nth(2).click();
         await page.waitForSelector('.th-confirm', { state: 'visible' });
         await page.locator('.th-confirm-actions button').first().click();
         await page.waitForSelector('.th-confirm', { state: 'detached' });
-      } else await dismissActions();
+        await recordCancellationFocus('actions-bottom-delete-cancel', last);
+      }
     }
     await focusEmptyLayout(env);
-    // Inspect the empty picker at both settings, without moving back to an
+    // Inspect the empty picker at each setting, without moving back to an
     // occupied layout in between (the previous pane-close is intentional).
-    for (const fontSize of [15, 14]) {
-      const prefix = fontSize === 15 ? 'font-15-' : '';
-      if (fontSize === 14) await page.addInitScript(() => localStorage.setItem('th-font-size', '14'));
+    for (const fontSize of [24, 15, 14]) {
+      const prefix = fontSize === 14 ? '' : `font-${fontSize}-`;
+      await page.addInitScript(size => localStorage.setItem('th-font-size', String(size)), fontSize);
       await page.reload();
       await page.waitForSelector('.th-empty .th-picker-pane', { state: 'visible', timeout: 8000 });
+      const appliedFont = await page.evaluate(() => ({
+        stored: localStorage.getItem('th-font-size'),
+        computed: getComputedStyle(document.documentElement).getPropertyValue('--th-font-size').trim(),
+      }));
+      if (appliedFont.stored !== String(fontSize) || appliedFont.computed !== `${fontSize}px`) {
+        failures.push(`[${prefix}empty] persisted/computed font was ${JSON.stringify(appliedFont)}, expected ${fontSize}px`);
+      }
       await page.locator('.th-picker-pane select').selectOption('ws');
       await page.waitForSelector('.th-picker-pane-item', { state: 'visible', timeout: 8000 });
       await settleFiniteMotion(page);
       await measure(`${prefix}empty`, '.th-empty', [
         '.th-empty-menu', '.th-empty-hero', 'select:nth-of-type', '.th-picker-pane-item',
         'button.th-btn.th-btn--ghost', '.th-picker-pane-create',
-      ]);
+      ], '.th-empty');
       await capture(`${prefix}empty`);
     }
     if (measurements.pageErrors.length) failures.push(...measurements.pageErrors.map(error => `page error: ${error}`));
