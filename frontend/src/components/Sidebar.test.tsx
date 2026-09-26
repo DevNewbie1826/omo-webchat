@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
 import { Sidebar } from "./Sidebar";
@@ -112,5 +112,90 @@ describe("Sidebar mobile drawer", () => {
     const tree = container.querySelector<HTMLElement>(".th-tree");
     expect(tree?.classList.contains("th-tree--touch")).toBe(true);
     expect(container.querySelector('button[title="sidebar.ws.addTerminal"]')).toBeDefined();
+  });
+});
+
+describe("Sidebar desktop collapse focus", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    vi.mocked(useMediaQuery).mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function renderSidebar() {
+    function Harness() {
+      const [collapsed, setCollapsed] = useState(false);
+      return (
+        <Sidebar
+          collapsed={collapsed}
+          onToggleCollapse={() => setCollapsed(value => !value)}
+          workspaces={[]}
+          activeTerminalId={null}
+          placedSessions={new Set()}
+          liveSessions={new Set()}
+          expanded={new Set()}
+          sessionLists={new Map()}
+          sessionPages={new Map()}
+          onToggleExpanded={() => undefined}
+          onLoadMoreSessions={() => undefined}
+          onSelectTerminal={() => undefined}
+          onOpenSession={async () => undefined}
+          onAddWorkspace={() => undefined}
+          onAddTerminal={() => undefined}
+          onDeleteWorkspace={() => undefined}
+          onDeleteTerminal={() => undefined}
+          onRenameWorkspace={async () => undefined}
+          onRenameTerminal={async () => undefined}
+          onLogout={() => undefined}
+          notify={() => undefined}
+        />
+      );
+    }
+    act(() => root.render(<Harness />));
+  }
+
+  it("focuses the rail expand control when the focused toolbar collapses", () => {
+    renderSidebar();
+    const toolbar = container.querySelector<HTMLButtonElement>(".th-sidebar-nav .th-sidebar-toggle");
+    toolbar?.focus();
+    act(() => toolbar?.click());
+    expect(document.activeElement).toBe(container.querySelector(".th-sidebar-rail .th-sidebar-toggle"));
+  });
+
+  it("focuses the toolbar collapse control when the focused rail reopens", () => {
+    renderSidebar();
+    const toolbar = container.querySelector<HTMLButtonElement>(".th-sidebar-nav .th-sidebar-toggle");
+    toolbar?.focus();
+    act(() => toolbar?.click());
+    const rail = container.querySelector<HTMLButtonElement>(".th-sidebar-rail .th-sidebar-toggle");
+    act(() => rail?.click());
+    expect(document.activeElement).toBe(toolbar);
+  });
+
+  it("keeps focus outside the sidebar when a toggle is activated without focus", () => {
+    renderSidebar();
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    try {
+      outside.focus();
+      act(() => container.querySelector<HTMLButtonElement>(".th-sidebar-nav .th-sidebar-toggle")?.click());
+      expect(document.activeElement).toBe(outside);
+      act(() => container.querySelector<HTMLButtonElement>(".th-sidebar-rail .th-sidebar-toggle")?.click());
+      expect(document.activeElement).toBe(outside);
+    } finally {
+      outside.remove();
+    }
   });
 });
