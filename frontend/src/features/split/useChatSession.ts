@@ -10,6 +10,7 @@ import { getChatActivity } from "./activityHistory";
 import { getChatGoal, type ChatGoal } from "./goalState";
 import { COMPACT_COMMAND, isCuratedCompact, isCuratedReload, RELOAD_COMMAND } from "./curatedCommands";
 import { useChatFrameState } from "./useChatFrameState";
+import { bindAttachedBadgeSource, ingestExtensionEvent, releaseAttachedBadgeSource } from "../workspace/liveBadgeStore";
 
 export function useChatSession(
   session: ChatSessionRef,
@@ -24,6 +25,7 @@ export function useChatSession(
   const goalPushedRef = useRef(false);
   const clientRef = useRef<ChatClient | null>(null);
   const connectionGenerationRef = useRef(0);
+  const releaseBadgeSourceRef = useRef<() => void>(() => undefined);
   const frameHandlerRef = useRef<typeof frameState.handleFrame>(() => undefined);
   const onChatNameRef = useRef(onChatName);
   const markOpenRef = useRef<() => number>(() => 0);
@@ -46,6 +48,15 @@ export function useChatSession(
 
   useEffect(() => {
     let opened = false;
+    let socketConnection = 0;
+    let socketInstanceId: string | undefined;
+    let socketDurableSessionId: string | undefined;
+    const attemptToken = {};
+    const releaseBadgeSource = (): void => {
+      releaseAttachedBadgeSource(attemptToken);
+      socketDurableSessionId = undefined;
+    };
+    releaseBadgeSourceRef.current = releaseBadgeSource;
     const createFrame = { type: "chat.create" as const, wsId: session.wsId, chatId: session.id };
     // The server publishes the socket binding only after the provider session
     // opens (see the ready frame). A chat.stats sent before that is rejected
@@ -53,12 +64,27 @@ export function useChatSession(
     // fires at most once per connection.
     let initialStatsSent = false;
     const sendInitialFrames = (client: ChatClient, reconnected = false): void => {
+      releaseBadgeSourceRef.current();
+      socketDurableSessionId = undefined;
       const resume = reconnected ? historyResumeRef.current() : undefined;
       client.send({ ...createFrame, ...(resume ? { resume } : {}) });
     };
     const client = connect({
       getHistoryResume: () => historyResumeRef.current(),
-      onOpen: () => {
+      onAttempt: (connection) => {
+        releaseBadgeSourceRef.current();
+        socketConnection = connection;
+        socketInstanceId = undefined;
+        socketDurableSessionId = undefined;
+      },
+      onOpen: (connection) => {
+        if (connection !== undefined && connection < socketConnection) return;
+        if (connection === undefined || connection !== socketConnection) {
+          releaseBadgeSourceRef.current();
+          socketConnection = connection ?? socketConnection + 1;
+          socketInstanceId = undefined;
+          socketDurableSessionId = undefined;
+        }
         const reconnected = opened;
         opened = true;
         connectionGenerationRef.current = markOpenRef.current();
@@ -70,8 +96,38 @@ export function useChatSession(
           if (reconnected) clientRef.current.send({ type: "activity.refresh", sessionId: session.id });
         }
       },
-      onFrame: (frame) => {
+      onHello: (instanceId, connection) => {
+        if (connection !== undefined && connection !== socketConnection) return;
+        socketInstanceId = instanceId;
+      },
+      onFrame: (frame, connection) => {
+        if (connection !== undefined && connection !== socketConnection) return;
         if (frame.sessionId !== undefined && frame.sessionId !== session.id) return;
+        if (frame.type === "ready") {
+          socketDurableSessionId = frame.piSessionId ?? undefined;
+          bindAttachedBadgeSource(frame.sessionId, {
+            attemptToken,
+            instanceId: socketInstanceId,
+            connection: connection ?? socketConnection,
+            currentConnection: socketConnection,
+            bindingId: frame.bindingId,
+            durableSessionId: socketDurableSessionId,
+          });
+        }
+        if (frame.type === "error" && frame.code === "session_unloaded" && !frame.requestId) {
+          releaseBadgeSourceRef.current();
+          socketDurableSessionId = undefined;
+        }
+        if (frame.type === "extensionEvent") {
+          ingestExtensionEvent(frame.sessionId, frame.name, frame.data, {
+            attemptToken,
+            instanceId: socketInstanceId,
+            connection: connection ?? socketConnection,
+            currentConnection: socketConnection,
+            bindingId: frame.bindingId,
+            durableSessionId: socketDurableSessionId,
+          }, frame.revision);
+        }
         if (frame.type === "approval") {
           const surface = !isFallbackApprovalFrame(frame) && frame.method === "question" ? "question" : "approval";
           const other = surface === "question" ? "approval" : "question";
@@ -108,11 +164,22 @@ export function useChatSession(
         console.warn("[chatWs] non-JSON frame dropped", raw.slice(0, 500));
         frameState.reportParseError(t("chat.malformedFrame"));
       },
-      onClose: () => markCloseRef.current(),
+      onClose: (_code, connection) => {
+        if (connection !== undefined && connection !== socketConnection) return;
+        releaseBadgeSourceRef.current();
+        socketConnection += 1;
+        socketInstanceId = undefined;
+        socketDurableSessionId = undefined;
+        markCloseRef.current();
+      },
     });
     clientRef.current = client;
     if (opened) sendInitialFrames(client);
     return () => {
+      releaseBadgeSourceRef.current();
+      socketConnection += 1;
+      socketInstanceId = undefined;
+      socketDurableSessionId = undefined;
       markCloseRef.current();
       client.close();
       clientRef.current = null;
@@ -247,9 +314,13 @@ export function useChatSession(
 
   const stop = (): boolean => sendControl({ type: "chat.abort", sessionId: session.id }, "Failed to stop the current run.");
 
-  const disconnect = (): boolean => sendControl({ type: "chat.disconnect", sessionId: session.id }, "Failed to disconnect the session.");
+  const disconnect = (): boolean => {
+    releaseBadgeSourceRef.current();
+    return sendControl({ type: "chat.disconnect", sessionId: session.id }, "Failed to disconnect the session.");
+  };
 
   const reloadExternalWrite = (): boolean => {
+    releaseBadgeSourceRef.current();
     frameState.beginExternalWriteRecovery();
     const client = clientRef.current;
     try {
@@ -267,6 +338,7 @@ export function useChatSession(
   // user authorizes the activity gate bypass for this one attach, the same
   // choice the sidebar's discovered-row force-open makes through REST.
   const forceOpen = (): boolean => {
+    releaseBadgeSourceRef.current();
     frameState.beginExternalWriteRecovery();
     frameState.setSessionActive(false);
     const client = clientRef.current;
@@ -301,6 +373,7 @@ export function useChatSession(
       return false;
     }
     frameState.beginResync();
+    releaseBadgeSourceRef.current();
     if (!sendControl({ type: "chat.close", sessionId: session.id }, t("chat.resyncError"))) {
       frameState.failResync();
       return false;

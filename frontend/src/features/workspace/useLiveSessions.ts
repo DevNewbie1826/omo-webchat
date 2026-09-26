@@ -1,7 +1,7 @@
 import { useMemo, useSyncExternalStore } from "react";
 import { connectChat } from "../../lib/chatWs";
 import type { ChatClient } from "../../lib/chatWs";
-import { nextLiveActivitySequence } from "./liveBadgeStore";
+import { adoptLiveBadgeInstance, nextLiveActivitySequence } from "./liveBadgeStore";
 import { LiveSessionMembership } from "./liveSessionMembership";
 import { listLiveSummarySessions } from "./useLiveSessionsLean";
 import type { LiveSessionInfo } from "./useLiveSessionsLean";
@@ -19,6 +19,12 @@ let generation = 0;
 let refreshRequested = false;
 let pushClient: ChatClient | undefined;
 let pushOpen = false;
+let instanceId: string | undefined;
+let retiredInstances = new Set<string>();
+let transportGeneration = 0;
+let socketConnection = 0;
+let helloGeneration: number | undefined;
+let revalidateOnHello = false;
 
 function publish(): void {
   const next = membership.values();
@@ -37,24 +43,68 @@ function requestFallbackRefresh(): void {
   timer = window.setTimeout(tick, 0);
 }
 
+/** Revisions and ownership belong to one server instance, never to wall time. */
+function acceptInstance(incoming: string | undefined, mayAdopt = false): boolean {
+  if (incoming === undefined) return instanceId === undefined; // older servers omit the optional epoch
+  if (retiredInstances.has(incoming)) return false;
+  if (instanceId !== incoming) {
+    if (!mayAdopt) return false;
+    if (instanceId !== undefined) retiredInstances.add(instanceId);
+    instanceId = incoming;
+    membership.reset();
+    adoptLiveBadgeInstance(incoming);
+    publish();
+  }
+  return true;
+}
+
 function startPush(): void {
   if (pushClient !== undefined) return;
   let openedSynchronously = false;
+  let socketInstanceId: string | undefined;
   try {
     const client = connectChat({
-      onOpen: () => {
+      onAttempt: (connection) => {
+        transportGeneration += 1;
+        socketConnection = connection;
+        helloGeneration = undefined;
+        socketInstanceId = undefined;
+        pushOpen = false;
+      },
+      onOpen: (connection) => {
+        if (connection !== undefined && connection < socketConnection) return;
+        // Connector test doubles may invoke onOpen without an attempt.
+        if (connection === undefined || connection !== socketConnection) transportGeneration += 1;
+        socketConnection = connection ?? socketConnection + 1;
+        helloGeneration = undefined;
+        socketInstanceId = undefined;
         pushOpen = true;
         openedSynchronously = true;
         pushClient?.send({ type: "sessions.subscribe", mode: "all_live" });
       },
-      onFrame: (frame) => {
-        if (frame.type !== "sessions.activity") return;
+      onHello: (id, connection) => {
+        if (connection !== undefined && (!pushOpen || connection !== socketConnection)) return;
+        socketInstanceId = id;
+        helloGeneration = transportGeneration;
+        acceptInstance(id, true);
+        if (revalidateOnHello) {
+          revalidateOnHello = false;
+          requestFallbackRefresh();
+        }
+      },
+      onFrame: (frame, connection) => {
+        if ((connection !== undefined && (!pushOpen || connection !== socketConnection))
+          || frame.type !== "sessions.activity" || !acceptInstance(socketInstanceId)) return;
         membership.push(frame, nextLiveActivitySequence());
         publish();
         if (frame.overflow) requestFallbackRefresh();
       },
-      onClose: () => {
+      onClose: (_code, connection) => {
+        if (connection !== undefined && connection !== socketConnection) return;
         pushOpen = false;
+        transportGeneration += 1;
+        helloGeneration = undefined;
+        if (!acceptInstance(socketInstanceId)) return;
         membership.disconnect(nextLiveActivitySequence());
         publish();
       },
@@ -72,6 +122,8 @@ function startPush(): void {
 function tick(): void {
   if (!polling) return;
   const requestGeneration = generation;
+  const requestTransportGeneration = transportGeneration;
+  const startedAfterHello = helloGeneration === transportGeneration;
   const requestSequence = nextLiveActivitySequence();
   let settled = false;
   let superseded = false;
@@ -90,10 +142,22 @@ function tick(): void {
     }
   };
   void listLiveSummarySessions(ctrl.signal).then(
-    (infos) => {
-      if (polling && generation === requestGeneration && !superseded) {
-        membership.poll(infos, requestSequence);
-        publish();
+    ({ sessions: infos, instanceId: responseInstance }) => {
+      if (polling && generation === requestGeneration && !superseded
+        && requestTransportGeneration === transportGeneration) {
+        const unfamiliar = responseInstance !== undefined && responseInstance !== instanceId;
+        const mayAdopt = pushClient === undefined || (startedAfterHello && helloGeneration === transportGeneration);
+        if (!startedAfterHello && helloGeneration === transportGeneration && pushClient !== undefined) {
+          // The socket completed its handshake after this request started.
+          // Only a post-hello request may project membership for that epoch.
+          if (unfamiliar && responseInstance !== undefined && !retiredInstances.has(responseInstance)) refreshRequested = true;
+        } else if (unfamiliar && !mayAdopt && !retiredInstances.has(responseInstance)) {
+          revalidateOnHello = helloGeneration !== transportGeneration;
+          refreshRequested = !revalidateOnHello;
+        } else if (acceptInstance(responseInstance, mayAdopt)) {
+          membership.poll(infos, requestSequence);
+          publish();
+        }
       }
       reschedule();
     },
@@ -109,8 +173,8 @@ function tick(): void {
 function start(): void {
   if (polling) return;
   polling = true;
-  tick();
   startPush();
+  tick();
 }
 
 function stop(): void {
@@ -127,7 +191,13 @@ function stop(): void {
   pushClient?.close();
   pushClient = undefined;
   pushOpen = false;
+  transportGeneration += 1;
+  socketConnection = 0;
+  helloGeneration = undefined;
+  revalidateOnHello = false;
   membership.reset();
+  instanceId = undefined;
+  retiredInstances = new Set();
   sessions = EMPTY_SESSIONS;
 }
 

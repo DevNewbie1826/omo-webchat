@@ -1271,7 +1271,7 @@ describe("live polling hooks", () => {
     expect(Array.from(captured.ids)).toEqual([]);
   });
 
-  it("bounds push-only rows while REST is unavailable", async () => {
+  it("retains resident push-only rows while REST is unavailable", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
     await act(async () => root.render(<Host enabled={true} />));
     openPush();
@@ -1288,8 +1288,8 @@ describe("live polling hooks", () => {
       }
     });
 
-    expect(captured.summaries).toHaveLength(256);
-    expect(captured.ids.has("push-0")).toBe(false);
+    expect(captured.summaries).toHaveLength(257);
+    expect(captured.ids.has("push-0")).toBe(true);
     expect(captured.ids.has("push-256")).toBe(true);
   });
 

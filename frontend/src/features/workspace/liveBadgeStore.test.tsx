@@ -490,7 +490,7 @@ describe("liveBadgeStore", () => {
     expect(captured.overrides.get("s1")?.summary.runningCount).toBe(1);
   });
 
-  it("renews a near-expiry target task from an alias heartbeat during a delayed poll remap", async () => {
+  it("does not migrate an alias heartbeat from an unreachable REST parent remap", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
     act(() => {
@@ -516,8 +516,8 @@ describe("liveBadgeStore", () => {
     });
     await act(async () => vi.advanceTimersByTimeAsync(16_000));
 
-    expect(captured.overrides.has("durable-child")).toBe(false);
-    expect(captured.overrides.get("attached-chat")?.summary.runningCount).toBe(1);
+    expect(captured.overrides.has("durable-child")).toBe(true);
+    expect(captured.overrides.get("attached-chat")).toBeUndefined();
   });
 
   it("renews a near-expiry target task from an alias heartbeat during a delayed push remap", async () => {
@@ -550,7 +550,7 @@ describe("liveBadgeStore", () => {
     expect(captured.overrides.get("attached-chat")?.summary.runningCount).toBe(1);
   });
 
-  it("unions activity stamps from both identities during a poll remap", () => {
+  it("does not union activity stamps from an unreachable REST parent remap", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
     act(() => {
@@ -582,8 +582,8 @@ describe("liveBadgeStore", () => {
       }], requestSequence);
     });
 
-    expect(captured.overrides.has("durable-child")).toBe(false);
-    expect(captured.overrides.get("attached-chat")?.summary.runningCount).toBe(2);
+    expect(captured.overrides.has("durable-child")).toBe(true);
+    expect(captured.overrides.get("attached-chat")?.summary.runningCount).toBe(1);
   });
 
   it("unions activity stamps from both identities during a push remap", () => {

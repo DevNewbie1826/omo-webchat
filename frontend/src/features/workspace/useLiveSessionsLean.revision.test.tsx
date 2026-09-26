@@ -46,31 +46,32 @@ describe("lean revision transport fences", () => {
     container.remove();
     vi.unstubAllGlobals();
     __resetLiveBadgeStoreForTests();
+    vi.useRealTimers();
   });
   async function poll(row: object): Promise<void> {
     await act(async () => settle({ sessions: [row] }));
   }
-  function push(fields: object): void {
+  function push(fields: object, connection?: number): void {
     const frame = parseChatServerFrame({ type: "sessions.activity", sessionId: "s", durableSessionId: "s",
       overflow: false, ...fields });
     if (frame === null) throw new TypeError("Invalid activity fixture");
-    act(() => handlers.onFrame(frame));
+    act(() => handlers.onFrame(frame, connection));
   }
-  it("keeps completed counts when a pre-push poll settles at the same receipt", async () => {
+  it("keeps completed counts when an older pre-push poll settles", async () => {
     // Given an outstanding request overtaken by completion.
     push(completed);
-    // When the old server returns a tied running snapshot.
-    await poll(running);
+    // When the old server returns an earlier running revision.
+    await poll({ ...running, last_activity_ms: 199 });
     // Then neither summary consumer resurrects work.
     for (const summaries of [overview, merged]) {
       expect(summaries[0]).toMatchObject({ active: false, runningCount: 0, doneCount: 7, dagRunning: 0 });
     }
   });
-  it("accepts later same-transport pushes at the same receipt", () => {
+  it("accepts later same-transport pushes with newer revisions", () => {
     // Given an accepted running push.
     push(running);
-    // When completion arrives without a changed receipt.
-    push(completed);
+    // When completion arrives with its own server revision.
+    push({ ...completed, last_activity_ms: 201 });
     // Then the later observation wins.
     expect(overview[0]).toMatchObject({ active: false, runningCount: 0, doneCount: 7 });
   });
@@ -82,22 +83,63 @@ describe("lean revision transport fences", () => {
     // Then server revision outranks the transport fence.
     expect(overview[0]).toMatchObject({ active: true, runningCount: 7 });
   });
-  it("merges a same-receipt main-activity flip without resurrecting children", async () => {
+  it("merges a newer main-activity flip without resurrecting children", async () => {
     // Given completed children followed by a partial main-activity push.
     push(completed);
-    push({ active: true, last_activity_ms: 200 });
-    // When the outstanding stale poll settles.
+    push({ active: true, last_activity_ms: 201 });
+    // When the outstanding earlier poll settles.
     await poll(running);
     // Then main activity changes independently from cleared child counts.
     expect(overview[0]).toMatchObject({ active: true, runningCount: 0, doneCount: 7, dagRunning: 0 });
   });
-  it("prefers a tied push over an already accepted REST row", async () => {
+  it("prefers a newer push over an already accepted REST row", async () => {
     // Given an accepted running poll.
     await poll(running);
-    // When completion is pushed at the same receipt.
-    push(completed);
+    // When completion is pushed at a higher revision.
+    push({ ...completed, last_activity_ms: 201 });
     // Then the push wins even though REST was observed first.
     expect(overview[0]).toMatchObject({ active: false, runningCount: 0 });
+  });
+  it.each([false, true])("resets backwards revisions on a new WS hello and rejects late old REST (overflow=%s)", async overflow => {
+    // Given old-instance row and an outstanding request for the old instance.
+    handlers.onHello?.("old-instance");
+    push({ ...running, last_activity_ms: 500, overflow });
+    expect(overview[0]?.runningCount).toBe(7);
+
+    // When the new instance announces itself with a lower revision.
+    act(() => handlers.onHello?.("new-instance"));
+    push({ ...completed, last_activity_ms: 100, overflow });
+    await act(async () => settle({ instanceId: "old-instance", sessions: [{ ...running, last_activity_ms: 600 }] }));
+
+    // Then the previous instance cannot resurrect its larger revision.
+    expect(overview).toHaveLength(1);
+    expect(overview[0]).toMatchObject({ active: false, runningCount: 0, lean: { last_activity_ms: 100 } });
+    expect(merged[0]).toMatchObject({ active: false, runningCount: 0 });
+  });
+  it.each([false, true])("revalidates pre-hello REST before accepting the new instance and rejecting the old socket (overflow=%s)", async overflow => {
+    // Given an old-instance push with a larger revision and a pending mount request.
+    vi.useFakeTimers();
+    act(() => handlers.onOpen?.(1));
+    act(() => handlers.onHello?.("old-instance", 1));
+    push({ ...running, last_activity_ms: 500, overflow }, 1);
+
+    // A request made before the current hello cannot establish a newer epoch.
+    await act(async () => settle({ instanceId: "new-instance", sessions: [{ ...completed, last_activity_ms: 100 }] }));
+    expect(overview[0]).toMatchObject({ active: true, runningCount: 7, lean: { last_activity_ms: 500 } });
+
+    // The reconnect hello, followed by a fresh REST request, establishes it.
+    act(() => handlers.onClose?.(1006, 1));
+    act(() => handlers.onOpen?.(2));
+    act(() => handlers.onHello?.("new-instance", 2));
+    await act(async () => vi.advanceTimersByTimeAsync(4000));
+    await act(async () => settle({ instanceId: "new-instance", sessions: [{ ...completed, last_activity_ms: 100 }] }));
+    expect(overview[0]).toMatchObject({ active: false, runningCount: 0, lean: { last_activity_ms: 100 } });
+    push({ ...running, last_activity_ms: 600, overflow }, 1);
+    expect(overview[0]).toMatchObject({ active: false, runningCount: 0 });
+    push({ ...running, last_activity_ms: 101, overflow }, 2);
+
+    // Only the current socket's lower revision advances the row.
+    expect(overview[0]).toMatchObject({ active: true, runningCount: 7, lean: { last_activity_ms: 101 } });
   });
   for (const transport of ["REST", "WS"] as const) {
     for (const scenario of ["clear", "omit", "clear then omit"] as const) {

@@ -10,7 +10,6 @@ import { parseTaskCounts } from "./activityParseTask";
 import { parseDagCounts } from "./activityParseDag";
 import { applyCountAuthority, type CountAuthority } from "./taskAuthority";
 import { applyTodoAuthority, bindTodoAuthority, type TodoAuthority } from "./todoAuthority";
-import { ingestExtensionEvent } from "../workspace/liveBadgeStore";
 import type { UiMessage } from "./chatEntries";
 import { forgetSteerMark, steerMarks } from "./chatSteerMarks";
 import type { useConfirmedControls } from "./chatConfirmedControls";
@@ -283,7 +282,6 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         return;
       }
       case "extensionEvent": {
-        ingestExtensionEvent(frame.sessionId, frame.name, frame.data);
         const activityEvent = validatedActivityEvent(frame.name, frame.data);
         const before = bindings.activitiesRef.current;
         let next = applyActivityEvent(before, frame.name, frame.data);
