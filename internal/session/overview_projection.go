@@ -11,7 +11,38 @@ type overviewPublications struct {
 	fifo []string
 }
 
-func (p *overviewPublications) project(snapshot Summary) Summary {
+// touchOverviewHistory keeps the oldest last-used identity at the front.
+func touchOverviewHistory(fifo []string, durable string) []string {
+	for i, id := range fifo {
+		if id == durable {
+			copy(fifo[i:], fifo[i+1:])
+			fifo[len(fifo)-1] = durable
+			return fifo
+		}
+	}
+	return append(fifo, durable)
+}
+
+// evictOverviewHistory spends the retirement window before live evidence.
+func evictOverviewHistory(ids map[string]string, fifo []string, limit int, live func(string) bool) []string {
+	for len(fifo) > limit {
+		oldest := -1
+		for i, id := range fifo {
+			if !live(id) {
+				oldest = i
+				break
+			}
+		}
+		if oldest < 0 {
+			break
+		}
+		delete(ids, fifo[oldest])
+		fifo = append(fifo[:oldest], fifo[oldest+1:]...)
+	}
+	return fifo
+}
+
+func (p *overviewPublications) project(snapshot Summary, live func(string) bool) Summary {
 	durable := snapshot.DurableSessionID
 	if durable == "" || snapshot.ChatID == "" {
 		return snapshot
@@ -24,14 +55,10 @@ func (p *overviewPublications) project(snapshot Summary) Summary {
 		if previous != snapshot.ChatID {
 			snapshot.ReplacesSessionID = previous
 		}
-	} else {
-		p.fifo = append(p.fifo, durable)
 	}
+	p.fifo = touchOverviewHistory(p.fifo, durable)
 	p.ids[durable] = snapshot.ChatID
-	for len(p.fifo) > maxOverviewPublications {
-		delete(p.ids, p.fifo[0])
-		p.fifo = p.fifo[1:]
-	}
+	p.fifo = evictOverviewHistory(p.ids, p.fifo, maxOverviewPublications, live)
 	return snapshot
 }
 
@@ -66,16 +93,9 @@ func (m *Manager) projectOverviewLocked(snapshot Summary) Summary {
 		if m.overviewOwners == nil {
 			m.overviewOwners = make(map[string]string)
 		}
-		_, known := m.overviewOwners[durable]
-		if !known {
-			m.overviewOwnerFIFO = append(m.overviewOwnerFIFO, durable)
-		}
+		m.overviewOwnerFIFO = touchOverviewHistory(m.overviewOwnerFIFO, durable)
 		m.overviewOwners[durable] = chatID
-		for len(m.overviewOwnerFIFO) > maxIdentityTombstones {
-			old := m.overviewOwnerFIFO[0]
-			m.overviewOwnerFIFO = m.overviewOwnerFIFO[1:]
-			delete(m.overviewOwners, old)
-		}
+		m.overviewOwnerFIFO = evictOverviewHistory(m.overviewOwners, m.overviewOwnerFIFO, maxIdentityTombstones, m.overviewDurableLiveLocked)
 	} else {
 		_, retired := m.retiredDurable[durable]
 		_, known := m.overviewOwners[durable]
@@ -94,6 +114,10 @@ func (m *Manager) projectOverviewLocked(snapshot Summary) Summary {
 	}
 	snapshot.ChatID, snapshot.Title = chatID, title
 	return snapshot
+}
+
+func (m *Manager) overviewDurableLiveLocked(durable string) bool {
+	return m.overviewCache[durable] != nil || m.durableToChat[durable] != ""
 }
 
 // projectedOverviewLocked is the common initial-WS/REST cache projection.

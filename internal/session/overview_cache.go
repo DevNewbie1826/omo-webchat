@@ -39,6 +39,7 @@ type overviewSubscriber struct {
 	stop       chan struct{}
 	mu         sync.Mutex
 	published  overviewPublications
+	live       map[string]struct{}
 }
 
 func (s *overviewSubscriber) run() {
@@ -79,7 +80,7 @@ func (m *Manager) SubscribeActivity(allLive bool, sessionIDs []string, onSnapsho
 	initial := make([]Summary, 0, len(m.overviewCurrent))
 	for _, snapshot := range m.projectedOverviewLocked() {
 		if sub.matches(snapshot) {
-			sub.published.project(snapshot)
+			sub.published.project(snapshot, m.overviewDurableLiveLocked)
 			initial = append(initial, snapshot)
 		}
 	}
@@ -139,7 +140,7 @@ func (m *Manager) updateOverviewLocked(snapshot *Summary) []*overviewSubscriber 
 		return nil
 	}
 	published := overviewPublications{ids: m.overviewPreviousIDs, fifo: m.overviewPreviousFIFO}
-	*snapshot = published.project(*snapshot)
+	*snapshot = published.project(*snapshot, m.overviewDurableLiveLocked)
 	m.overviewPreviousIDs, m.overviewPreviousFIFO = published.ids, published.fifo
 	for id, previous := range m.overviewCurrent {
 		if snapshot.DurableSessionID != "" && previous.DurableSessionID == snapshot.DurableSessionID {
@@ -155,6 +156,21 @@ func (m *Manager) updateOverviewLocked(snapshot *Summary) []*overviewSubscriber 
 	matched := make([]*overviewSubscriber, 0, len(m.overviewSubscribers))
 	for _, sub := range m.overviewSubscribers {
 		if sub.matches(*snapshot) {
+			// Delivery may follow this manager-locked publication later. Capture
+			// residency for the subscriber's next bounded-history eviction.
+			sub.mu.Lock()
+			if len(sub.published.fifo) >= maxOverviewPublications-1 {
+				sub.live = make(map[string]struct{})
+				for _, id := range sub.published.fifo {
+					if m.overviewDurableLiveLocked(id) {
+						sub.live[id] = struct{}{}
+					}
+				}
+				if m.overviewDurableLiveLocked(snapshot.DurableSessionID) {
+					sub.live[snapshot.DurableSessionID] = struct{}{}
+				}
+			}
+			sub.mu.Unlock()
 			matched = append(matched, sub)
 		}
 	}
@@ -164,7 +180,10 @@ func (m *Manager) updateOverviewLocked(snapshot *Summary) []*overviewSubscriber 
 func deliverOverview(subscribers []*overviewSubscriber, snapshot Summary) {
 	for _, sub := range subscribers {
 		sub.mu.Lock()
-		update := overviewUpdate{summary: cloneSummary(sub.published.project(snapshot))}
+		update := overviewUpdate{summary: cloneSummary(sub.published.project(snapshot, func(id string) bool {
+			_, live := sub.live[id]
+			return live
+		}))}
 		sub.mu.Unlock()
 		select {
 		case sub.queue <- update:

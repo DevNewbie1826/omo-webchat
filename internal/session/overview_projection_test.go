@@ -88,6 +88,99 @@ func TestPR197ProjectionOwnerEvidenceSurvivesUnownedCacheChurn(t *testing.T) {
 	}
 }
 
+func TestPR197ProjectionKeepsResidentOwnerAndEvictsOldestUnusedOwner(t *testing.T) {
+	store := newResolvingCursorStore()
+	mgr := NewManager(Config{Store: store})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+	mgr.overviewCache["hot"] = &overviewCacheEntry{}
+	project := func(durable string) Summary {
+		store.setOwner(durable, "chat-"+durable, durable)
+		mgr.mu.Lock()
+		defer mgr.mu.Unlock()
+		return mgr.projectOverviewLocked(Summary{DurableSessionID: durable})
+	}
+
+	// Given: a resident owner and two older non-resident owners.
+	project("hot")
+	project("cold")
+	project("recent")
+	for i := 0; i < maxIdentityTombstones-3; i++ {
+		project(fmt.Sprintf("filler-%d", i))
+	}
+	project("recent")
+
+	// When: new ownership exceeds the bounded history.
+	project("new")
+	mgr.mu.Lock()
+	_, hot := mgr.overviewOwners["hot"]
+	_, cold := mgr.overviewOwners["cold"]
+	_, recent := mgr.overviewOwners["recent"]
+	count := len(mgr.overviewOwners)
+	mgr.mu.Unlock()
+
+	// Then: only the oldest unused owner was evicted; late activity stays suppressed.
+	if !hot || cold || !recent || count != maxIdentityTombstones {
+		t.Fatalf("owner eviction: hot=%v cold=%v recent=%v count=%d", hot, cold, recent, count)
+	}
+	store.deleteOwner("hot")
+	mgr.mu.Lock()
+	late := mgr.projectOverviewLocked(Summary{DurableSessionID: "hot"})
+	mgr.mu.Unlock()
+	if late.ChatID != "" {
+		t.Fatalf("resident former owner reappeared: %+v", late)
+	}
+}
+
+func TestPR197ProjectionKeepsResidentRemapInManagerAndSubscriber(t *testing.T) {
+	store := newResolvingCursorStore()
+	store.setOwner("hot", "first-chat", "First")
+	mgr := NewManager(Config{Store: store})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+	mgr.overviewCache["hot"] = &overviewCacheEntry{}
+	sub := &overviewSubscriber{allLive: true, queue: make(chan overviewUpdate, maxOverviewPublications+3), stop: make(chan struct{})}
+	mgr.overviewSubscribers[1] = sub
+	publish := func(durable string) Summary {
+		snapshot := Summary{ChatID: durable, DurableSessionID: durable}
+		mgr.mu.Lock()
+		subscribers := mgr.updateOverviewLocked(&snapshot)
+		deliverOverview(subscribers, snapshot)
+		mgr.mu.Unlock()
+		return snapshot
+	}
+
+	// Given: the resident remap source is old while another source is refreshed.
+	publish("hot")
+	publish("cold")
+	publish("recent")
+	for i := 0; i < maxOverviewPublications-3; i++ {
+		publish(fmt.Sprintf("filler-%d", i))
+	}
+	publish("recent")
+
+	// When: history exceeds its bound and the hot durable changes owner.
+	publish("new")
+	store.setOwner("hot", "second-chat", "Second")
+	remap := publish("hot")
+	var subscriberRemap Summary
+	for len(sub.queue) > 0 {
+		subscriberRemap = (<-sub.queue).summary
+	}
+
+	// Then: both histories evict the oldest unused record, not the resident source.
+	if remap.ReplacesSessionID != "first-chat" || subscriberRemap.ReplacesSessionID != "first-chat" {
+		t.Fatalf("resident remap lost: manager=%+v subscriber=%+v", remap, subscriberRemap)
+	}
+	for name, history := range map[string]overviewPublications{
+		"subscriber": sub.published,
+		"manager":    {ids: mgr.overviewPreviousIDs, fifo: mgr.overviewPreviousFIFO},
+	} {
+		if len(history.ids) != maxOverviewPublications || len(history.fifo) != maxOverviewPublications ||
+			history.ids["cold"] != "" || history.ids["recent"] != "recent" || history.ids["hot"] != "second-chat" {
+			t.Errorf("%s history did not retain live/recent identities within bound: %+v", name, history)
+		}
+	}
+}
+
 func TestPR197ProjectionRemapsEvictedProvisionalRow(t *testing.T) {
 	store := newResolvingCursorStore()
 	mgr := NewManager(Config{Store: store})
