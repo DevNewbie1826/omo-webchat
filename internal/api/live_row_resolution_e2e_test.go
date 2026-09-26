@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -189,5 +190,78 @@ func TestLiveRowResolutionKeepsUnownedDurableUnderOwnID(t *testing.T) {
 	}
 	if row := assertSoleLiveRow(t, fixture.serverURL, fixture.token); row["id"] != durableID {
 		t.Fatalf("repeat orphan REST row = %v", row)
+	}
+}
+
+// renameChatE2E renames a stored chat through the authenticated REST surface
+// the frontend uses, so the manager hook fires exactly as in production.
+func renameChatE2E(t *testing.T, f *liveResolveFixture, chatID, name string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"name": name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPatch,
+		f.serverURL+"/api/workspaces/"+f.storeWorkspaceID()+"/chats/"+chatID,
+		bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: f.token})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rename status = %d", resp.StatusCode)
+	}
+}
+
+// Renaming a stored chat refreshes the cached live row's title on both wire
+// surfaces: the existing subscription is republished, a brand-new
+// subscription's initial snapshot carries the new name, and the next engine
+// snapshot advances the freshness revision even when its payload is
+// unchanged, because the title is part of the revision projection.
+func TestLiveRowResolutionRenameRefreshesCachedRowTitle(t *testing.T) {
+	fixture := newLiveResolveFixture(t)
+	const chatID, durableID = "chat-live-resolve-rename", "durable-live-resolve-rename"
+	const originalName, renamedName = "Original rename title", "Renamed live title"
+	fixture.saveChatClaiming(chatID, originalName, durableID)
+
+	frames := fixture.subscribeExplicit(chatID)
+	fixture.emitUnboundTask(durableID, 1)
+	first := frames.next(t, "sessions.activity")
+	if first["sessionId"] != chatID || first["title"] != originalName {
+		t.Fatalf("subscriber frame = %v", first)
+	}
+	firstRevision, _ := first["last_activity_ms"].(float64)
+
+	renameChatE2E(t, fixture, chatID, renamedName)
+
+	refreshed := frames.next(t, "sessions.activity")
+	if refreshed["sessionId"] != chatID || refreshed["title"] != renamedName {
+		t.Fatalf("existing subscriber missed rename: %v", refreshed)
+	}
+	if row := assertSoleLiveRow(t, fixture.serverURL, fixture.token); row["title"] != renamedName {
+		t.Fatalf("REST row after rename = %v", row)
+	}
+
+	resubscribed := fixture.subscribeExplicit(chatID)
+	initial := resubscribed.next(t, "sessions.activity")
+	if initial["sessionId"] != chatID || initial["title"] != renamedName {
+		t.Fatalf("new subscription initial frame = %v", initial)
+	}
+
+	// The repeated revision isolates the title from payload-driven advances.
+	fixture.emitUnboundTask(durableID, 1)
+	late := frames.next(t, "sessions.activity")
+	if late["title"] != renamedName {
+		t.Fatalf("post-rename activity frame = %v", late)
+	}
+	lateRevision, _ := late["last_activity_ms"].(float64)
+	if lateRevision <= firstRevision {
+		t.Fatalf("revision did not advance across rename: %v -> %v", firstRevision, lateRevision)
 	}
 }

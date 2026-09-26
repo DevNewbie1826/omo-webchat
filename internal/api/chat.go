@@ -210,6 +210,7 @@ func (s *Server) handleRenameChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.manager != nil {
+		s.manager.ApplyChatTitle(id, name)
 		if sess, ok := s.manager.Get(id); ok {
 			_ = sess.SetSessionName(r.Context(), name)
 		}

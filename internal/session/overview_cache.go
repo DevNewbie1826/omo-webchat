@@ -343,10 +343,36 @@ func (m *Manager) ingestUnboundOverviewLocked(epoch omorpc.EpochToken, ev *omorp
 	}
 	refreshOverviewExactCounts(entry)
 	m.evictOverviewLRULocked()
-	snapshot := entry.summary(entry.chatID, durableID)
-	snapshot.Title = entry.title
+	snapshot := entry.summary(entry.chatID, durableID, entry.title)
 	snapshot.ReplacesSessionID = replaces
 	return snapshot, m.updateOverviewLocked(snapshot)
+}
+
+// ApplyChatTitle republishes cached unbound rows under a stored chat's new
+// name, so a rename is visible to REST and to a new WS subscription's
+// initial snapshot without waiting for the next engine snapshot. The title
+// is projected like any activity change and therefore advances the freshness
+// revision. Rows owned by a live session are skipped: SetSessionName owns
+// their title and its own publication.
+func (m *Manager) ApplyChatTitle(chatID, name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return
+	}
+	if m.byChat[chatID] != nil {
+		return
+	}
+	for durableID, entry := range m.overviewCache {
+		if entry.chatID != chatID {
+			continue
+		}
+		entry.title = name
+		m.overviewClock++
+		entry.used = m.overviewClock
+		snapshot := entry.summary(chatID, durableID, name)
+		deliverOverview(m.updateOverviewLocked(snapshot), snapshot)
+	}
 }
 
 func reconcileOverviewEntry(entry *overviewCacheEntry) {

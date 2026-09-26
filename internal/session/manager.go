@@ -2042,8 +2042,7 @@ func (m *Manager) LiveSummaries() []Summary {
 	}
 	cached := make([]Summary, 0, len(m.overviewCache))
 	for id, entry := range m.overviewCache {
-		snapshot := entry.summary(entry.chatID, id)
-		snapshot.Title = entry.title
+		snapshot := entry.summary(entry.chatID, id, entry.title)
 		cached = append(cached, snapshot)
 	}
 	m.mu.Unlock()
