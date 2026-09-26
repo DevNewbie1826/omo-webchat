@@ -974,3 +974,22 @@ describe('lead fix: camelCase and hyphen-stripped motion property names', () => 
     expect(motionViolations(['marginLeft'])).toEqual(['margin-left']);
   });
 });
+
+describe('T3 desktop sidebar motion inventory', () => {
+  test('the serialized sidebar probe exposes a width transition to the shared S15 allowlist', async () => {
+    const { probeSidebarMotion } = await import('./visual-redesign-scenarios-t3.mjs');
+    const dom = new JSDOM(`<!doctype html><html style="--th-sidebar-w: 264px"><body>
+      <aside class="th-sidebar" style="transition-property: width, transform; transition-duration: .32s, .32s"></aside>
+    </body></html>`, { runScripts: 'dangerously', pretendToBeVisual: true });
+    dom.window.Element.prototype.getAnimations = () => [];
+    const invoke = () => dom.window.eval(`(function(){ ${pageKit()} return (${probeSidebarMotion.toString()})(); })()`);
+    const animated = invoke();
+    expect(animated.found).toBe(true);
+    expect(animated.transitionProperties).toContain('width');
+    expect(motionViolations(animated.transitionProperties)).toContain('width');
+    dom.window.document.querySelector('.th-sidebar').style.transitionProperty = 'transform';
+    expect(motionViolations(invoke().transitionProperties)).toEqual([]);
+    dom.window.document.querySelector('.th-sidebar').style.transitionProperty = 'none';
+    expect(invoke().inventory).toEqual([]);
+  });
+});

@@ -44,7 +44,7 @@
  * Run: QA_PLAYWRIGHT=... bun test/qa/visual-redesign.mjs --evidence DIR
  * Unit tests: bun test test/qa/visual-redesign-scenarios-t3.test.mjs
  */
-import { motionViolations } from './visual-redesign-probes.mjs';
+import { motionViolations, parseColor } from './visual-redesign-probes.mjs';
 
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-tested; driver-side only - never serialized into the page)
@@ -114,7 +114,7 @@ export function sidebarStaticVerdict(facts) {
  * the selection moved to the clicked row through ONE of the plan's two
  * idioms: a single indicator element whose transform changed, or the active
  * class moving with a non-coloured-border fill. Returns { mode, failures }. */
-export function selectionVerdict(before, after) {
+export function selectionVerdict(before, after, clickedLabel = null) {
   const failures = [];
   const prior = before ?? {};
   const next = after ?? {};
@@ -122,26 +122,36 @@ export function selectionVerdict(before, after) {
   const afterActive = next.activeRows ?? [];
   const afterIndicators = next.indicators ?? [];
   const beforeIndicators = prior.indicators ?? [];
-  const indicatorMoved = beforeIndicators.length > 0
-    && beforeIndicators.length === afterIndicators.length
-    && beforeIndicators.every((entry, index) => afterIndicators[index]
-      && afterIndicators[index].label === entry.label && afterIndicators[index].parentLabel === entry.parentLabel)
-    && beforeIndicators.some((entry, index) => afterIndicators[index].transform !== entry.transform);
   if (afterActive.length !== 1) {
     failures.push(`expected exactly one selected session row after the click, found ${afterActive.length}${afterActive.length ? ` (${afterActive.map(row => row.label).join(', ')})` : ''}`);
     return { mode: 'none', failures };
   }
   const classMoved = beforeActive.length === 1 && afterActive[0].label !== beforeActive[0].label;
-  if (!classMoved && !indicatorMoved) {
-    failures.push(`selection did not move to the clicked row (before: ${beforeActive.map(row => row.label).join(', ') || 'none'}; after: ${afterActive[0].label})`);
-  }
+  if (clickedLabel !== null && afterActive[0].label !== clickedLabel) failures.push(`selected row ${afterActive[0].label} is not the clicked row ${clickedLabel}`);
   const treatment = next.activeTreatment;
   if (treatment) {
     for (const border of treatment.borderColors ?? []) {
       failures.push(`selected row ${treatment.label} encodes state with a coloured border on ${border.on} (${border.color} ~= --th-${border.token})`);
     }
   }
-  return { mode: indicatorMoved ? 'indicator' : 'class', failures };
+  if (beforeIndicators.length || afterIndicators.length) {
+    if (beforeIndicators.length !== 1 || afterIndicators.length !== 1) {
+      failures.push(`expected exactly one persistent selection indicator, found ${beforeIndicators.length} before and ${afterIndicators.length} after`);
+    } else {
+      const priorIndicator = beforeIndicators[0], nextIndicator = afterIndicators[0];
+      if (!priorIndicator.id || priorIndicator.id !== nextIndicator.id) failures.push('selection indicator was replaced instead of moved');
+      if (!priorIndicator.visible || !nextIndicator.visible || !priorIndicator.painted || !nextIndicator.painted) {
+        failures.push('selection indicator is hidden or has no painted fill');
+      }
+      if (!priorIndicator.aligned || !nextIndicator.aligned) failures.push('selection indicator is not aligned with the selected row');
+      if (priorIndicator.transform === nextIndicator.transform) failures.push('selection indicator did not move to the clicked row');
+    }
+    return { mode: 'indicator', failures };
+  }
+  const wash = (parseColor(treatment?.background)?.a ?? 0) > 0.02;
+  if (!classMoved) failures.push(`selection did not move to the clicked row (before: ${beforeActive.map(row => row.label).join(', ') || 'none'}; after: ${afterActive[0].label})`);
+  if (!wash) failures.push('selected row has no visible non-coloured-border wash');
+  return { mode: 'class', failures };
 }
 
 /** S11 static verdict from probeEmptyState facts. Returns failure strings.
@@ -296,10 +306,26 @@ export function probeSelectionFacts() {
       if (activeNode === null) activeNode = { node, activation, label };
     }
   }
-  for (const element of document.querySelectorAll('.th-sidebar [class*="indicator"], .th-sidebar [class*="thumb"]')) {
+  window.__thT3IndicatorIds ??= new WeakMap();
+  window.__thT3IndicatorNextId ??= 0;
+  for (const element of document.querySelectorAll('.th-tree-indicator')) {
+    if (!window.__thT3IndicatorIds.has(element)) window.__thT3IndicatorIds.set(element, ++window.__thT3IndicatorNextId);
+    const style = getComputedStyle(element);
+    const box = element.getBoundingClientRect();
+    const rowBox = activeNode?.node.getBoundingClientRect();
+    const aligned = !!rowBox && box.width > 0 && box.height > 0
+      && box.left + box.width / 2 >= rowBox.left && box.left + box.width / 2 <= rowBox.right
+      && box.top + box.height / 2 >= rowBox.top && box.top + box.height / 2 <= rowBox.bottom;
+    let visible = isVisibleElement(element) && Number(style.opacity) > 0;
+    for (let parent = element.parentElement; visible && parent; parent = parent.parentElement) {
+      if (Number(getComputedStyle(parent).opacity) === 0) visible = false;
+    }
     facts.indicators.push({
+      id: window.__thT3IndicatorIds.get(element),
       label: describeElement(element), parentLabel: describeElement(element.parentElement),
-      transform: getComputedStyle(element).transform,
+      transform: style.transform, visible,
+      painted: (parseColor(style.backgroundColor)?.a ?? 0) > 0.02,
+      aligned,
     });
   }
   if (activeNode) {
@@ -327,6 +353,26 @@ export function probeSelectionFacts() {
     };
   }
   return facts;
+}
+
+/** Sidebar-only slice of the shared S15 animation inventory. The static
+ * transition declaration also matters: a width transition can finish before
+ * a driver roundtrip samples its Animation object. */
+export function probeSidebarMotion() {
+  const sidebar = document.querySelector('.th-sidebar');
+  if (!sidebar) return { found: false, inventory: [] };
+  const style = getComputedStyle(sidebar);
+  return {
+    found: true,
+    collapsed: sidebar.classList.contains('th-sidebar--collapsed'),
+    width: sidebar.getBoundingClientRect().width,
+    expandedWidth: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--th-sidebar-w')),
+    transitionProperties: style.transitionProperty.split(',').map(value => value.trim()),
+    transitionDurations: style.transitionDuration.split(',').map(value => value.trim()),
+    inventory: collectAnimations(sidebar),
+    focusedPaneCount: document.querySelectorAll('.th-pane--focused').length,
+    activeElement: describeElement(document.activeElement),
+  };
 }
 
 /** S11: presence facts for one root (.th-empty below 1024px, .th-picker-pane
@@ -931,6 +977,8 @@ export async function runSidebarSelection(ctx) {
   const narrow = isNarrowViewport(ctx);
   const notes = [];
   const failures = [];
+  const sidebarMotion = [];
+  const sidebarViolations = [];
   let screenshots = [];
   try {
     await deliverShellLive(env, chatId, notes);
@@ -949,18 +997,66 @@ export async function runSidebarSelection(ctx) {
     if (narrow) await openDrawer(env.page); // the drawer auto-closes on selection
     await settleFiniteMotion(env.page); // the indicator slide must settle before measuring
     const after = await ctx.probe(env.page, probeSelectionFacts);
-    const verdict = selectionVerdict(before.measurements ?? before, after.measurements ?? after);
+    const verdict = selectionVerdict(before.measurements ?? before, after.measurements ?? after, 'Newer');
     failures.push(...verdict.failures);
     await settleDrawerMotion(env.page);
     screenshots = [await ctx.save(env.page, '')];
     if (narrow) await closeDrawerSettled(env.page);
+    if (isSplitViewport(ctx)) {
+      const initialFocus = (await ctx.probe(env.page, probeSidebarMotion)).focusedPaneCount;
+      if (initialFocus !== 1) failures.push(`expected one focused pane before sidebar interactions, found ${initialFocus}`);
+      for (const reduced of [false, true]) {
+        if (reduced) await env.page.emulateMedia({ reducedMotion: 'reduce' });
+        await env.page.evaluate(() => {
+          window.__thT3SidebarTransitions = [];
+          const sidebar = document.querySelector('.th-sidebar');
+          sidebar.addEventListener('transitionrun', event => {
+            window.__thT3SidebarTransitions.push(event.propertyName);
+          });
+        });
+        const states = [];
+        for (const collapsed of [true, false, true, false]) {
+          await env.page.locator('.th-sidebar-toggle:visible').click({ timeout: 4000 });
+          await env.page.waitForFunction(want => document.querySelector('.th-sidebar')
+            ?.classList.contains('th-sidebar--collapsed') === want, collapsed, { timeout: 4000 });
+          const snapshot = await ctx.probe(env.page, probeSidebarMotion);
+          states.push(snapshot);
+          if (!snapshot.found || snapshot.collapsed !== collapsed
+            || Math.abs(snapshot.width - (collapsed ? 44 : snapshot.expandedWidth)) > 1) {
+            failures.push(`sidebar ${reduced ? 'reduced ' : ''}${collapsed ? 'collapse' : 'reopen'} did not settle at its target width`);
+          }
+          if (snapshot.focusedPaneCount !== initialFocus) {
+            failures.push(`sidebar ${collapsed ? 'collapse' : 'reopen'} changed focused pane count from ${initialFocus} to ${snapshot.focusedPaneCount}`);
+          }
+          const declared = snapshot.transitionProperties.flatMap((property, index) =>
+            (parseFloat(snapshot.transitionDurations[index % snapshot.transitionDurations.length]) > 0 ? [property] : []));
+          const animated = snapshot.inventory.flatMap(animation => animation.properties);
+          for (const bad of motionViolations([...declared, ...animated])) {
+            failures.push(`sidebar ${reduced ? 'reduced ' : ''}${collapsed ? 'collapse' : 'reopen'} animates ${bad}`);
+            sidebarViolations.push({
+              kind: 'transition', name: `desktop-${collapsed ? 'collapse' : 'reopen'}${reduced ? '-reduced' : ''}`,
+              violations: [bad],
+            });
+          }
+          if (reduced && snapshot.inventory.length) {
+            failures.push(`sidebar under reduced motion retains ${snapshot.inventory.length} Animation objects`);
+          }
+        }
+        const events = await env.page.evaluate(() => window.__thT3SidebarTransitions);
+        for (const bad of motionViolations(events)) {
+          failures.push(`sidebar transitionrun animates ${bad}`);
+          sidebarViolations.push({ kind: 'transition', name: 'desktop-sidebar-transitionrun', violations: [bad] });
+        }
+        sidebarMotion.push({ reduced, states, events });
+      }
+    }
     return {
       scenario: 'S10', pass: failures.length === 0,
       measurements: {
         surfaceNotes: notes, selectionMode: verdict.mode,
         selectionMoved: moved,
         before: before.measurements ?? before, after: after.measurements ?? after,
-        static: staticResult.measurements,
+        static: staticResult.measurements, sidebarMotion, motion: { violating: sidebarViolations },
         pageErrors: env.errors.slice(0, 5),
       },
       failures, screenshots, teardown: await closeEnv(env),
@@ -968,7 +1064,9 @@ export async function runSidebarSelection(ctx) {
   } catch (error) {
     failures.push(`harness error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
     return {
-      scenario: 'S10', pass: false, measurements: { surfaceNotes: notes, pageErrors: env.errors.slice(0, 5) },
+      scenario: 'S10', pass: false, measurements: {
+        surfaceNotes: notes, sidebarMotion, motion: { violating: sidebarViolations }, pageErrors: env.errors.slice(0, 5),
+      },
       failures, screenshots, teardown: await closeEnv(env),
     };
   }
@@ -992,21 +1090,39 @@ export async function runEmptyState(ctx) {
     await page.waitForSelector('.th-empty', { state: 'visible', timeout: 8000 });
     notes.push(`empty layout reached (${label})`);
   };
-  const settleEntrance = async () => {
-    await page.evaluate(() => {
-      const finite = [];
-      for (const root of document.querySelectorAll('.th-empty, .th-picker-pane')) {
-        for (const animation of root.getAnimations({ subtree: true })) {
-          try {
-            if (animation.effect?.getComputedTiming()?.iterations !== Infinity) finite.push(animation);
-          } catch { /* excluded */ }
-        }
+  const settleEntrance = async (selector = '.th-empty, .th-picker-pane') => {
+    return page.evaluate(async selector => {
+      const roots = Array.from(document.querySelectorAll(selector));
+      if (!roots.length) throw new Error(`settlement target missing: ${selector}`);
+      const finite = [...new Set(roots.flatMap(root => root.getAnimations({ subtree: true })))].filter(animation =>
+        animation.effect?.getComputedTiming().iterations !== Infinity);
+      let deadline;
+      try {
+        await Promise.race([
+          Promise.all(finite.map(animation => animation.finished)),
+          new Promise((_, reject) => {
+            deadline = setTimeout(() => reject(new Error(`animation settlement deadline exceeded: ${selector}`)), 2500);
+          }),
+        ]);
+      } finally {
+        clearTimeout(deadline);
       }
-      return Promise.race([
-        Promise.allSettled(finite.map(animation => animation.finished)),
-        new Promise(done => setTimeout(done, 2500)),
-      ]);
-    }).catch(() => {});
+      if (selector === '.th-modal-overlay, .th-modal') {
+        const overlay = document.querySelector('.th-modal-overlay');
+        const panel = overlay?.querySelector('.th-modal');
+        if (!overlay || !panel) throw new Error('portaled modal overlay or panel missing');
+        const final = [overlay, panel].map(element => {
+          const style = getComputedStyle(element);
+          return { opacity: Number(style.opacity), transform: style.transform };
+        });
+        if (final.some(state => state.opacity < 0.999
+          || (state.transform !== 'none' && state.transform !== 'matrix(1, 0, 0, 1, 0, 0)'))) {
+          throw new Error(`portaled modal did not reach final opacity/transform: ${JSON.stringify(final)}`);
+        }
+        return final;
+      }
+      return null;
+    }, selector);
   };
   const readEntrance = () => page.evaluate(() => ({
     events: (window.__thT3Entrance?.events ?? []).slice(0, 40),
@@ -1040,6 +1156,9 @@ export async function runEmptyState(ctx) {
       let animatedProperties = [];
       let reducedEntrance = null;
       let runningUnderReduce = null;
+      let dialogTitle = null;
+      let dialogClosed = false;
+      let modalState = null;
       if (pickerReady) {
         facts = await ctx.probe(page, probeEmptyState, { root: '.th-picker-pane', requireDisplayTier: true });
         failures.push(...emptyStateVerdict(facts));
@@ -1052,6 +1171,20 @@ export async function runEmptyState(ctx) {
         failures.push(...entranceVerdict(entrance));
         await settleEntrance();
         screenshots.push(await ctx.save(page, '-desktop-picker-pane'));
+        try {
+          await page.locator('.th-picker-pane-create button').click({ timeout: 4000 });
+          await page.waitForSelector('.th-modal-overlay .th-modal[role="dialog"]', { state: 'visible', timeout: 4000 });
+          dialogTitle = (await page.locator('#th-new-chat-title').textContent())?.trim() ?? null;
+          modalState = await settleEntrance('.th-modal-overlay, .th-modal');
+          screenshots.push(await ctx.save(page, '-dialog'));
+          await page.keyboard.press('Escape');
+          await page.waitForSelector('.th-modal-overlay', { state: 'detached', timeout: 3000 });
+          dialogClosed = true;
+        } catch (error) {
+          failures.push(`desktop picker CTA did not open and close the new chat dialog: ${errDetail(error)}`);
+        }
+        if (dialogTitle !== 'New chat') failures.push(`desktop new chat dialog title was ${JSON.stringify(dialogTitle)}, expected "New chat"`);
+        if (!dialogClosed) failures.push('desktop new chat dialog did not close');
         await page.emulateMedia({ reducedMotion: 'reduce' });
         await page.reload();
         try {
@@ -1082,7 +1215,7 @@ export async function runEmptyState(ctx) {
         measurements: {
           surfaceNotes: notes, facts, entrance,
           entranceProperties: animatedProperties,
-          reducedEntrance, runningUnderReduce,
+          reducedEntrance, runningUnderReduce, dialogTitle, dialogClosed, modalState,
           pageErrors: env.errors.slice(0, 5),
         },
         failures, screenshots, teardown: await closeEnv(env),
@@ -1100,18 +1233,22 @@ export async function runEmptyState(ctx) {
     failures.push(...entranceFailures);
     // CTA opens the new chat dialog.
     let dialogTitle = null;
+    let dialogClosed = false;
+    let modalState = null;
     try {
       await page.locator('.th-empty button').filter({ hasText: /new chat/i }).first().click({ timeout: 4000 });
       await page.waitForSelector('.th-modal-overlay', { timeout: 4000 });
       dialogTitle = (await page.locator('#th-new-chat-title').textContent())?.trim() ?? null;
-      await settleEntrance(); // the modal's enter animation must settle before capture
+      modalState = await settleEntrance('.th-modal-overlay, .th-modal');
       screenshots.push(await ctx.save(page, '-dialog'));
       await page.keyboard.press('Escape');
       await page.waitForSelector('.th-modal-overlay', { state: 'detached', timeout: 3000 });
+      dialogClosed = true;
     } catch (error) {
       failures.push(`empty-state CTA did not open the new chat dialog: ${errLine(error)}`);
     }
     if (dialogTitle !== 'New chat') failures.push(`new chat dialog title was ${JSON.stringify(dialogTitle)}, expected "New chat"`);
+    if (!dialogClosed) failures.push('new chat dialog did not close');
     await settleEntrance();
     screenshots.push(await ctx.save(page, ''));
     // Reduced motion: reload with the preference active; nothing may start.
@@ -1136,7 +1273,7 @@ export async function runEmptyState(ctx) {
         surfaceNotes: notes, facts, entrance,
         entranceProperties: animatedProperties,
         reducedEntrance, runningUnderReduce,
-        dialogTitle, pageErrors: env.errors.slice(0, 5),
+        dialogTitle, dialogClosed, modalState, pageErrors: env.errors.slice(0, 5),
       },
       failures, screenshots, teardown: await closeEnv(env),
     };

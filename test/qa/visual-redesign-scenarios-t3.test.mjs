@@ -175,15 +175,15 @@ describe('selectionVerdict (S10 selection idiom)', () => {
     );
     expect(verdict.failures.join('\n')).toContain('coloured border');
   });
-  test('one moving indicator element passes even without a class change', () => {
+  test('one visible persistent indicator follows the newly selected row', () => {
     const verdict = selectionVerdict(
       {
         activeRows: [{ label: 'Stored A' }], activeTreatment: treatment,
-        indicators: [{ label: 'div.th-tree-indicator', parentLabel: 'div.th-tree', transform: 'matrix(1, 0, 0, 1, 0, 0)' }],
+        indicators: [{ id: 1, visible: true, painted: true, aligned: true, label: 'div.th-tree-indicator', parentLabel: 'div.th-tree', transform: 'matrix(1, 0, 0, 1, 0, 0)' }],
       },
       {
-        activeRows: [{ label: 'Stored A' }], activeTreatment: treatment,
-        indicators: [{ label: 'div.th-tree-indicator', parentLabel: 'div.th-tree', transform: 'matrix(1, 0, 0, 1, 0, 96)' }],
+        activeRows: [{ label: 'Newer' }], activeTreatment: treatment,
+        indicators: [{ id: 1, visible: true, painted: true, aligned: true, label: 'div.th-tree-indicator', parentLabel: 'div.th-tree', transform: 'matrix(1, 0, 0, 1, 0, 96)' }],
       },
     );
     expect(verdict.mode).toBe('indicator');
@@ -606,15 +606,46 @@ async function runScript(view, statements) {
   return await view.evaluate(`(() => { ${statements} })()`);
 }
 
-/** Condition poll with a deadline (waitForFunction's shape, test-side). */
-async function waitForView(view, source, predicate, timeoutMs = 2500) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const value = await view.evaluate(source);
-    if (predicate(value)) return value;
-    if (Date.now() >= deadline) return value;
-    await new Promise(done => setTimeout(done, 30));
-  }
+/** Subscribe before the mutation, then require the actual start event. */
+async function awaitViewStarts(view, eventType, selectors, trigger) {
+  return view.evaluate(`(() => new Promise((resolve, reject) => {
+    const pending = new Set(${JSON.stringify(selectors)});
+    const timer = setTimeout(() => {
+      document.removeEventListener(${JSON.stringify(eventType)}, onStart, true);
+      reject(new Error('missing ${eventType}: ' + [...pending].join(', ')));
+    }, 2500);
+    function onStart(event) {
+      for (const selector of pending) {
+        if (event.target.matches(selector)) pending.delete(selector);
+      }
+      if (pending.size === 0) {
+        clearTimeout(timer);
+        document.removeEventListener(${JSON.stringify(eventType)}, onStart, true);
+        resolve(true);
+      }
+    }
+    document.addEventListener(${JSON.stringify(eventType)}, onStart, true);
+    try { ${trigger} } catch (error) {
+      clearTimeout(timer);
+      document.removeEventListener(${JSON.stringify(eventType)}, onStart, true);
+      reject(error);
+    }
+  }))()`);
+}
+
+/** Await the exact finite animation, not an elapsed-time guess. */
+async function awaitViewFinished(view, selector) {
+  return view.evaluate(`(() => {
+    const animations = document.querySelector(${JSON.stringify(selector)}).getAnimations();
+    if (!animations.length) throw new Error('expected running animation on ${selector}');
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('animation.finished deadline: ${selector}')), 2500);
+      Promise.all(animations.map(animation => animation.finished)).then(
+        () => { clearTimeout(timer); resolve(true); },
+        error => { clearTimeout(timer); reject(error); },
+      );
+    });
+  })()`);
 }
 
 const SIDEBAR_BASELINE = page(`
@@ -709,11 +740,11 @@ activation.style.border = '1px solid var(--th-accent)';`);
   });
   test('one moving indicator element passes', async () => {
     await withView(page(`
-<aside class="th-sidebar"><div class="th-tree" role="navigation">
-  <span class="th-tree-indicator" aria-hidden="true" style="position:absolute;left:8px;width:200px;height:36px;transform: translateY(0px);"></span>
-  <div class="th-tree-workspace"><fieldset class="th-tree-children">
-    <div class="th-tree-node"><button type="button" class="th-tree-activation" aria-current="true"><span class="th-tree-label">Stored A</span></button></div>
-    <div class="th-tree-node"><button type="button" class="th-tree-activation"><span class="th-tree-label">Newer</span></button></div>
+<aside class="th-sidebar"><div class="th-tree" role="navigation" style="position:relative;">
+  <span class="th-tree-indicator" aria-hidden="true" style="position:absolute;top:0;left:0;width:200px;height:44px;transform: translateY(0px);background: var(--th-surface-raised);"></span>
+  <div class="th-tree-workspace"><fieldset class="th-tree-children" style="margin:0;padding:0;border:0;">
+    <div class="th-tree-node" style="width:200px;height:44px;"><button type="button" class="th-tree-activation" aria-current="true"><span class="th-tree-label">Stored A</span></button></div>
+    <div class="th-tree-node" style="width:200px;height:44px;"><button type="button" class="th-tree-activation"><span class="th-tree-label">Newer</span></button></div>
   </fieldset></div>
 </div></aside>`), async view => {
       const before = await runSerialized(view, probeSelectionFacts);
@@ -728,6 +759,58 @@ document.querySelector('.th-tree-indicator').style.transform = 'translateY(44px)
       expect(verdict.failures).toEqual([]);
     });
   });
+});
+
+describe('serialized S10 selection counterexamples', () => {
+  const fixture = indicator => page(`
+<aside class="th-sidebar"><div class="th-tree" style="position:relative;">
+  ${indicator}
+  <div class="th-tree-workspace"><fieldset style="margin:0;padding:0;border:0;">
+    <div class="th-tree-node" style="width:200px;height:44px;">
+      <button class="th-tree-activation" aria-current="true"><span class="th-tree-label">Stored A</span></button>
+    </div>
+    <div class="th-tree-node" style="width:200px;height:44px;">
+      <button class="th-tree-activation"><span class="th-tree-label">Newer</span></button>
+    </div>
+  </fieldset></div>
+</div></aside>`);
+  const indicator = '<span class="th-tree-indicator" style="position:absolute;top:0;left:0;width:200px;height:44px;transform:translateY(0px);background:var(--th-surface-raised);"></span>';
+  const move = `
+const rows = document.querySelectorAll('.th-tree-node');
+rows[0].querySelector('button').removeAttribute('aria-current');
+rows[1].querySelector('button').setAttribute('aria-current', 'true');`;
+
+  test('transparent class-only selection fails; a painted row wash passes', async () => {
+    await withView(fixture(''), async view => {
+      const before = await runSerialized(view, probeSelectionFacts);
+      await runScript(view, move);
+      const after = await runSerialized(view, probeSelectionFacts);
+      expect(selectionVerdict(before, after, 'Newer').failures.join(' ')).toContain('no visible');
+      await runScript(view, `document.querySelectorAll('.th-tree-node')[1].style.background = 'var(--th-surface-raised)';`);
+      expect(selectionVerdict(before, await runSerialized(view, probeSelectionFacts), 'Newer').failures).toEqual([]);
+    });
+  });
+
+  for (const [name, mutation, expected] of [
+    ['absent', `document.querySelector('.th-tree-indicator').remove();`, 'exactly one persistent'],
+    ['hidden', `document.querySelector('.th-tree-indicator').style.visibility = 'hidden';`, 'hidden or has no painted'],
+    ['duplicate', `document.querySelector('.th-tree').appendChild(document.querySelector('.th-tree-indicator').cloneNode());`, 'exactly one persistent'],
+    ['replaced with the same description', `
+const previous = document.querySelector('.th-tree-indicator');
+previous.replaceWith(previous.cloneNode());`, 'replaced instead of moved'],
+    ['misaligned', `document.querySelector('.th-tree-indicator').style.left = '400px';`, 'not aligned'],
+  ]) {
+    test(`${name} indicator fails after the real serialized selection probe`, async () => {
+      await withView(fixture(indicator), async view => {
+        const before = await runSerialized(view, probeSelectionFacts);
+        await runScript(view, `${move}
+document.querySelector('.th-tree-indicator').style.transform = 'translateY(44px)';
+${mutation}`);
+        const after = await runSerialized(view, probeSelectionFacts);
+        expect(selectionVerdict(before, after, 'Newer').failures.join(' ')).toContain(expected);
+      });
+    });
+  }
 });
 
 describe('adversarial real-DOM proof: probeEmptyState + emptyStateVerdict (S11)', () => {
@@ -797,11 +880,11 @@ describe('adversarial real-DOM proof: entrance recorder + entranceVerdict (S11)'
   test('a finite entrance is recorded from real animation events and passes; infinite pulses do not count', async () => {
     await withView(ENTRANCE_HTML, async view => {
       await runScript(view, ENTRANCE_RECORDER_SOURCE);
-      await view.evaluate('document.getElementById("host").innerHTML = \'<div class="enter">hello</div><div class="pulse" aria-hidden="true"></div>\'');
-      const record = await waitForView(view, 'window.__thT3Entrance.events.length', count => count >= 2);
-      expect(record).toBeGreaterThanOrEqual(2);
+      await awaitViewStarts(view, 'animationstart', ['.enter', '.pulse'],
+        `document.getElementById('host').innerHTML = '<div class="enter">hello</div><div class="pulse" aria-hidden="true"></div>';`);
       const full = await view.evaluate('JSON.stringify(window.__thT3Entrance)');
       const parsed = JSON.parse(full);
+      expect(parsed.events.length).toBeGreaterThanOrEqual(2);
       const enter = parsed.events.find(event => event.name === 'rise');
       expect(enter.iterations).toBe(1);
       expect(enter.properties).toEqual(expect.arrayContaining(['opacity', 'transform']));
@@ -815,18 +898,16 @@ describe('adversarial real-DOM proof: entrance recorder + entranceVerdict (S11)'
   test('a replayed entrance fails the one-time rule', async () => {
     await withView(ENTRANCE_HTML, async view => {
       await runScript(view, ENTRANCE_RECORDER_SOURCE);
-      await view.evaluate('document.getElementById("host").innerHTML = \'<div id="target" class="enter">hello</div>\'');
-      await waitForView(view, 'window.__thT3Entrance.events.length', count => count >= 1);
-      await waitForView(view, 'document.getAnimations().filter(a => a instanceof CSSAnimation).every(a => a.playState !== "running")', done => done === true);
+      await awaitViewStarts(view, 'animationstart', ['.enter'],
+        `document.getElementById('host').innerHTML = '<div id="target" class="enter">hello</div>';`);
+      await awaitViewFinished(view, '#target');
       // Remount the animated node: a genuine second start.
-      await runScript(view, `
+      await awaitViewStarts(view, 'animationstart', ['.enter'], `
 const host = document.getElementById('host');
 const target = document.getElementById('target');
 target.remove();
 host.appendChild(Object.assign(document.createElement('div'), { className: 'enter', textContent: 'hello' }));`);
-      const parsed = JSON.parse(await waitForView(view,
-        'JSON.stringify(window.__thT3Entrance)',
-        text => JSON.parse(text).events.some(event => event.replays > 1)));
+      const parsed = JSON.parse(await view.evaluate('JSON.stringify(window.__thT3Entrance)'));
       const failures = entranceVerdict(parsed);
       expect(failures.some(f => f.includes('restarted 2 times'))).toBe(true);
     });
@@ -835,10 +916,11 @@ host.appendChild(Object.assign(document.createElement('div'), { className: 'ente
     await withView(ENTRANCE_HTML, async view => {
       await runScript(view, ENTRANCE_RECORDER_SOURCE);
       await view.evaluate('document.getElementById("host").innerHTML = \'<div id="hover" class="hovercolour">row</div>\'');
-      await view.evaluate('document.getElementById("hover").style.backgroundColor = "#2c2d33"');
-      const parsed = JSON.parse(await waitForView(view,
-        'JSON.stringify(window.__thT3Entrance)',
-        text => JSON.parse(text).events.length >= 1));
+      await awaitViewStarts(view, 'transitionrun', ['#hover'], `
+const target = document.getElementById('hover');
+void target.offsetWidth;
+target.style.backgroundColor = '#2c2d33';`);
+      const parsed = JSON.parse(await view.evaluate('JSON.stringify(window.__thT3Entrance)'));
       expect(parsed.events[0].name).toBe('background-color');
       const failures = entranceVerdict(parsed);
       expect(failures[0]).toContain('no finite entrance animation');
@@ -1033,10 +1115,10 @@ describe('adversarial real-DOM proof: entrance recorder on the picker pane', () 
 <div class="th-picker-pane" style="height: 200px;"><div id="host"></div></div>
 <div id="outside"></div>`), async view => {
       await runScript(view, ENTRANCE_RECORDER_SOURCE);
-      await view.evaluate('document.getElementById("host").innerHTML = \'<div class="enter">hello</div>\'');
-      await waitForView(view, 'window.__thT3Entrance.events.length', count => count >= 1);
-      await view.evaluate('document.getElementById("outside").innerHTML = \'<div class="outside-enter">nope</div>\'');
-      await new Promise(done => setTimeout(done, 80));
+      await awaitViewStarts(view, 'animationstart', ['.enter'],
+        `document.getElementById('host').innerHTML = '<div class="enter">hello</div>';`);
+      await awaitViewStarts(view, 'animationstart', ['.outside-enter'],
+        `document.getElementById('outside').innerHTML = '<div class="outside-enter">nope</div>';`);
       const parsed = JSON.parse(await view.evaluate('JSON.stringify(window.__thT3Entrance)'));
       expect(parsed.events.some(event => event.name === 'rise' && event.label === 'div.enter')).toBe(true);
       expect(parsed.events.some(event => event.label === 'div.outside-enter')).toBe(false);
