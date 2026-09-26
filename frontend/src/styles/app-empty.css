@@ -8,8 +8,8 @@
   flex-direction: column;
   align-items: center;
   justify-content: safe center;
-  gap: var(--th-space-3);
-  color: var(--th-faint);
+  gap: var(--th-space-4);
+  color: var(--th-muted);
   padding: var(--th-space-6);
   text-align: center;
   /* Positioning context for .th-empty-menu: anchors the button inside the
@@ -18,17 +18,45 @@
   position: relative;
 }
 
-.th-empty-glyph {
-  font-family: var(--th-font-mono);
-  font-size: var(--th-type-title-size);
-  font-weight: var(--th-weight-announce);
-  line-height: var(--th-type-title-line);
-  letter-spacing: var(--th-type-title-tracking);
-  color: var(--th-muted);
-  border: 1px dashed var(--th-border-strong);
-  border-radius: var(--th-radius);
-  padding: var(--th-space-3) var(--th-space-5);
-  background: var(--th-surface);
+/* One-time entrance (guidance motion): the orb settles from scale .9, then
+   greeting, hint, action and the secondary cards rise in on a
+   --th-dur-emph / 10 (~48ms) stagger; delay + duration of the last step equal
+   --th-dur-emph. `from`-only keyframes with backwards fill hold nothing after
+   they finish (no lingering transform or stacking context), and reduced
+   motion leaves every element in its final state. */
+.th-empty-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--th-space-3);
+  max-width: 100%;
+  margin-bottom: var(--th-space-2);
+  /* .th-empty centers by inheritance; the desktop picker pane does not, and
+     its flex column shrink-wraps this block, so center explicitly. */
+  text-align: center;
+}
+
+/* Sized from the Display tier it heads. Never loops: idle motion would
+   suggest agent work that is not happening. */
+.th-empty-orb {
+  position: relative;
+  flex: none;
+  width: calc(var(--th-type-display-size) * 2);
+  height: calc(var(--th-type-display-size) * 2);
+  margin-bottom: var(--th-space-2);
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 36%, var(--th-accent) 0%, var(--th-accent-solid) 58%, var(--th-accent-solid-hover) 100%);
+  box-shadow: var(--th-highlight), 0 0 var(--th-space-8) var(--th-accent-glow);
+  animation: th-empty-orb-in var(--th-dur-emph) var(--th-ease-out) backwards;
+}
+
+.th-empty-orb::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(circle at 34% 26%, var(--th-accent-fg) 0%, transparent 56%);
+  opacity: 0.5;
 }
 
 .th-empty-title {
@@ -36,7 +64,11 @@
   font-weight: var(--th-weight-announce);
   line-height: var(--th-type-display-line);
   letter-spacing: var(--th-type-display-tracking);
-  color: var(--th-text-dim);
+  color: var(--th-text);
+  overflow-wrap: anywhere;
+  word-break: keep-all;
+  text-wrap: balance;
+  animation: th-empty-rise calc(var(--th-dur-emph) / 2) var(--th-ease-out) calc(var(--th-dur-emph) / 10) backwards;
 }
 
 .th-empty-hint {
@@ -44,16 +76,42 @@
   line-height: var(--th-type-body-line);
   letter-spacing: var(--th-type-body-tracking);
   color: var(--th-muted);
-  max-width: 340px;
+  max-width: 360px;
   /* Korean wraps at word boundaries only; the anywhere fallback still saves a
      single over-long token from overflowing. Same pattern as .th-alert. */
   overflow-wrap: anywhere;
   word-break: keep-all;
+  text-wrap: balance;
+  animation: th-empty-rise calc(var(--th-dur-emph) / 2) var(--th-ease-out) calc(var(--th-dur-emph) / 5) backwards;
+}
+
+/* Hero-scoped (0,2,0) so it beats .th-btn's height, which form-controls.css
+   declares later in import order. */
+.th-empty-hero .th-empty-cta {
+  height: var(--th-space-9);
+  margin-top: var(--th-space-2);
+  padding: 0 var(--th-space-4);
+  animation: th-empty-rise calc(var(--th-dur-emph) / 2) var(--th-ease-out) calc(var(--th-dur-emph) * 0.3) backwards;
+}
+
+@keyframes th-empty-orb-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}
+
+@keyframes th-empty-rise {
+  from {
+    opacity: 0;
+    transform: translateY(var(--th-space-2));
+  }
 }
 
 /* Touch and narrow layouts get the full 44px target; dense desktop keeps 34px. */
 @media (max-width: 768px), (pointer: coarse) {
-  .th-empty .th-btn {
+  .th-empty .th-btn,
+  .th-empty-hero .th-empty-cta {
     min-height: 44px;
   }
 }
@@ -81,48 +139,90 @@
   height: 44px;
 }
 
-/* In-flow banner at the top of the main pane (first child of .th-main).
-   Reserving real layout height means it can never overlap the transcript,
-   pane header, composer, or palettes at any width, scroll position, or
-   message length — including wrapped multi-line text. */
+/* Floating glass status chip just below the header band, so it never covers
+   pane-header controls or the composer. Being fixed, it
+   reserves no layout height, so showing or dismissing it never shifts the
+   panes; pointer-events: none keeps everything beneath it clickable. Status
+   is carried by the leading glyph plus the text colour, never a coloured
+   border. Long messages wrap inside the viewport-bounded chip. */
 .th-toast {
-  flex: none;
+  position: fixed;
+  top: calc(env(safe-area-inset-top) + var(--th-header-h) + var(--th-space-2));
+  left: 0;
+  right: 0;
+  z-index: 80;
   display: flex;
   align-items: center;
   gap: var(--th-space-2);
-  margin: var(--th-space-2) var(--th-space-3) 0;
-  padding: var(--th-space-2) var(--th-space-4);
-  border-radius: var(--th-radius);
-  border: 1px solid var(--th-border-raised);
-  background: var(--th-surface-raised);
+  width: fit-content;
+  max-width: min(420px, calc(100% - var(--th-space-8)));
+  margin: 0 auto;
+  padding: var(--th-space-2) var(--th-space-4) var(--th-space-2) var(--th-space-3);
+  border: 1px solid var(--th-border-overlay);
+  border-radius: var(--th-radius-xl);
+  background: var(--th-surface-overlay);
+  box-shadow: var(--th-shadow-overlay), var(--th-highlight);
   color: var(--th-text);
-  font-size: var(--th-type-body-size);
-  line-height: var(--th-type-body-line);
-  letter-spacing: var(--th-type-body-tracking);
-  box-shadow: var(--th-shadow-raised);
+  font-size: var(--th-type-secondary-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
   overflow-wrap: anywhere;
   word-break: keep-all;
-  animation: th-toast-in var(--th-dur-slow) var(--th-ease);
+  pointer-events: none;
+  animation: th-toast-in var(--th-dur-slow) var(--th-ease-out);
+}
+
+/* Beside a sidebar column the viewport centre is not the work area's centre,
+   so the chip anchors to the top-right corner instead. */
+@media (min-width: 769px) {
+  .th-toast {
+    left: auto;
+    right: calc(env(safe-area-inset-right) + var(--th-space-4));
+    margin: 0;
+  }
+}
+
+/* Floating layer: glass where backdrop-filter is available; the solid
+   Overlay fill above stands as the fallback. */
+@supports (backdrop-filter: blur(1px)) {
+  .th-toast {
+    background: var(--th-glass);
+    backdrop-filter: var(--th-glass-filter);
+  }
+}
+
+/* Status glyph (circled i / check / exclamation): a currentColor mask, so it
+   follows the status text colour and adds nothing for assistive tech. */
+.th-toast::before {
+  content: "";
+  flex: none;
+  width: var(--th-space-4);
+  height: var(--th-space-4);
+  background-color: currentColor;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 11v5M12 8h.01'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 
 .th-toast--success {
-  border-color: var(--th-success);
   color: var(--th-success);
 }
 
+.th-toast--success::before {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='m8.5 12.5 2.5 2.5 4.5-5'/%3E%3C/svg%3E");
+}
+
 .th-toast--error {
-  border-color: var(--th-error);
   color: var(--th-error);
+}
+
+.th-toast--error::before {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 7.5v5.5M12 16.5h.01'/%3E%3C/svg%3E");
 }
 
 @keyframes th-toast-in {
   from {
     opacity: 0;
-    transform: translateX(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
+    transform: translateY(calc(-1 * var(--th-space-2))) scale(0.98);
   }
 }
 
@@ -150,6 +250,15 @@
   width: 100%;
   min-width: 0;
   overflow: visible;
+  animation: th-empty-rise calc(var(--th-dur-emph) / 2) var(--th-ease-out) calc(var(--th-dur-emph) / 2) backwards;
+}
+
+/* The single-pane shell already leads with its own hero, so the picker's
+   presence copy stays hidden there; the desktop split leaf (picker straight
+   inside .th-pane-wrap) is where it shows. display:none also removes it from
+   the accessibility tree. */
+.th-empty > .th-picker-pane > .th-empty-hero {
+  display: none;
 }
 
 /* Same non-shrinking contract as the picker's: the running-sessions block
@@ -159,4 +268,5 @@
    .th-pane-wrap > .th-home-live rule in split-view.css. */
 .th-empty > .th-home-live {
   flex: none;
+  animation: th-empty-rise calc(var(--th-dur-emph) / 2) var(--th-ease-out) calc(var(--th-dur-emph) * 0.4) backwards;
 }

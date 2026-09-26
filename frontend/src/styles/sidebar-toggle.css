@@ -17,15 +17,15 @@
   justify-content: center;
 }
 
-/* Collapsed reopen: a bordered Raised icon button so the rail's sole action
-   stays discoverable against the Surface shell. The expanded toolbar toggle
-   keeps the bare .th-btn-icon treatment of its neighbours. */
+/* Collapsed reopen: a Raised icon button (fill, raised shadow, top-edge
+   highlight) so the rail's sole action stays discoverable against the
+   Surface shell. The expanded toolbar toggle keeps the bare .th-btn-icon
+   treatment of its neighbours. */
 .th-sidebar--collapsed .th-sidebar-toggle {
   border-radius: var(--th-radius-sm);
-  border: 1px solid var(--th-border-raised);
   background: var(--th-surface-raised);
   color: var(--th-text-dim);
-  box-shadow: var(--th-shadow-raised);
+  box-shadow: var(--th-shadow-raised), var(--th-highlight);
   transition: color var(--th-dur-fast) var(--th-ease),
     background var(--th-dur-fast) var(--th-ease);
 }

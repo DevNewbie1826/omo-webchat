@@ -882,3 +882,114 @@ describe('requiredInteractionVerdict (R4: broken required interactions fail S15)
     expect(failures[0]).toContain('no in-state motion inspection');
   });
 });
+
+describe('lead fix: S5 painted-border and S15 background-position longhands', () => {
+  test('background-position-x/y longhands normalise onto the allowed shorthand', () => {
+    expect(normalizeMotionProperty('background-position-x')).toBe('background-position');
+    expect(normalizeMotionProperty('backgroundpositiony')).toBe('background-position');
+    expect(motionViolations(['background-position-x', 'background-position-y'])).toEqual([]);
+    expect(motionViolations(['width'])).toEqual(['width']);
+  });
+});
+
+describe('T3 serialized shell probes (S5 scope and S11 picker)', () => {
+  const tokens = {
+    '--th-success': '#34d399', '--th-warning': '#f5a623', '--th-error': '#f87171', '--th-accent': '#8b7cf6',
+  };
+  const load = async () => import('./visual-redesign-scenarios-t3.mjs');
+
+  test('an in-scope painted border, rect stroke, and uppercase fail; chat and shelf copies do not', async () => {
+    const { probeShellStateColors } = await load();
+    const result = serializedProbeInDom(probeShellStateColors, {}, {
+      tokens,
+      html: `<body>
+        <aside class="th-sidebar">
+          <div class="th-sidebar-section-label" style="text-transform: uppercase;">Workspaces</div>
+          <span class="th-tree-running" style="border: 1px solid #f5a623;">2</span>
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><rect id="shell-rect" width="16" height="16" style="stroke: #8b7cf6; stroke-width: 2px; fill: none;"></rect></svg>
+          <span style="border-width: 0px; border-style: solid; border-color: #f5a623;">quiet</span>
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><circle cx="8" cy="8" r="6" style="stroke: #f5a623; stroke-width: 2px; fill: none;"></circle></svg>
+        </aside>
+        <div class="th-pane-wrap"><div class="th-chat-pane">
+          <span class="th-tool-glyph" style="border: 1.5px solid #f5a623;">run</span>
+          <span style="text-transform: uppercase;">Running</span>
+        </div></div>
+        <div class="th-activity-shelf">
+          <span class="th-activity-chip" style="text-transform: uppercase;">Active</span>
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><rect id="shelf-rect" width="16" height="16" style="stroke: #f5a623; stroke-width: 2px; fill: none;"></rect></svg>
+        </div>
+      </body>`,
+    });
+    expect(result.pass).toBe(false);
+    expect(result.measurements.stateColorViolationCount).toBeGreaterThanOrEqual(2);
+    expect(result.measurements.uppercaseCount).toBeGreaterThanOrEqual(1);
+    const blob = JSON.stringify(result.measurements);
+    expect(blob).toContain('th-tree-running');
+    expect(blob).toContain('shell-rect');
+    expect(blob).not.toContain('th-tool-glyph');
+    expect(blob).not.toContain('th-activity-chip');
+    expect(blob).not.toContain('shelf-rect');
+  });
+
+  test('the same chat-pane and shelf violations alone are ignored', async () => {
+    const { probeShellStateColors } = await load();
+    const result = serializedProbeInDom(probeShellStateColors, {}, {
+      tokens,
+      html: `<body>
+        <aside class="th-sidebar"><div class="th-sidebar-section-label">Workspaces</div></aside>
+        <div class="th-chat-pane"><span class="th-tool-glyph" style="border: 1.5px solid #f5a623;">run</span></div>
+        <div class="th-activity-shelf">
+          <span class="th-activity-chip" style="text-transform: uppercase;">Active</span>
+          <svg xmlns="http://www.w3.org/2000/svg"><rect id="shelf-rect" style="stroke: #f5a623; stroke-width: 2px;" width="8" height="8"></rect></svg>
+        </div>
+      </body>`,
+    });
+    expect(result.pass).toBe(true);
+    expect(result.measurements.stateColorViolationCount).toBe(0);
+    expect(result.measurements.uppercaseCount).toBe(0);
+  });
+
+  test('a picker pane without an orb fails the serialized presence probe', async () => {
+    const { probeEmptyState, emptyStateVerdict } = await load();
+    const facts = serializedProbeInDom(probeEmptyState, { root: '.th-picker-pane', requireDisplayTier: true }, {
+      html: `<body>
+        <div class="th-empty"><div class="th-empty-orb" aria-hidden="true"></div><h2>Elsewhere</h2></div>
+        <div class="th-picker-pane"><div class="th-picker-pane-title">Pick a session</div><button type="button">New chat session</button></div>
+      </body>`,
+    });
+    const failures = emptyStateVerdict(facts);
+    expect(facts.surface).toBe('picker');
+    expect(facts.orb.found).toBe(false);
+    expect(failures.some(failure => failure.includes('no orb'))).toBe(true);
+    expect(failures.some(failure => failure.includes('no greeting'))).toBe(true);
+  });
+});
+
+describe('lead fix: camelCase and hyphen-stripped motion property names', () => {
+  test('strokeDashoffset / strokedashoffset normalise to stroke-dashoffset and are allowed', () => {
+    expect(normalizeMotionProperty('strokeDashoffset')).toBe('stroke-dashoffset');
+    expect(normalizeMotionProperty('strokedashoffset')).toBe('stroke-dashoffset');
+    expect(normalizeMotionProperty('backgroundPositionX')).toBe('background-position');
+    expect(motionViolations(['strokedashoffset', 'backgroundPositionY'])).toEqual([]);
+    expect(motionViolations(['marginLeft'])).toEqual(['margin-left']);
+  });
+});
+
+describe('T3 desktop sidebar motion inventory', () => {
+  test('the serialized sidebar probe exposes a width transition to the shared S15 allowlist', async () => {
+    const { probeSidebarMotion } = await import('./visual-redesign-scenarios-t3.mjs');
+    const dom = new JSDOM(`<!doctype html><html style="--th-sidebar-w: 264px"><body>
+      <aside class="th-sidebar" style="transition-property: width, transform; transition-duration: .32s, .32s"></aside>
+    </body></html>`, { runScripts: 'dangerously', pretendToBeVisual: true });
+    dom.window.Element.prototype.getAnimations = () => [];
+    const invoke = () => dom.window.eval(`(function(){ ${pageKit()} return (${probeSidebarMotion.toString()})(); })()`);
+    const animated = invoke();
+    expect(animated.found).toBe(true);
+    expect(animated.transitionProperties).toContain('width');
+    expect(motionViolations(animated.transitionProperties)).toContain('width');
+    dom.window.document.querySelector('.th-sidebar').style.transitionProperty = 'transform';
+    expect(motionViolations(invoke().transitionProperties)).toEqual([]);
+    dom.window.document.querySelector('.th-sidebar').style.transitionProperty = 'none';
+    expect(invoke().inventory).toEqual([]);
+  });
+});

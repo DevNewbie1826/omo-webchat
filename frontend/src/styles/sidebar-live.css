@@ -1,7 +1,7 @@
 /* Pinned running-sessions section, inserted between .th-sidebar-nav and the
    workspace tree (.th-sidebar-body). It never flexes and caps its own height,
    scrolling internally, so a long list of live sessions can never push the
-   tree out of reach; a hairline separates it from the tree below. */
+   tree out of reach; spacing, not a divider, separates it from the tree. */
 
 .th-sidebar-live {
   flex: none;
@@ -12,27 +12,33 @@
   overflow-y: auto;
   overflow-x: hidden;
   padding: var(--th-space-2);
-  border-bottom: 1px solid var(--th-border);
 }
 
-/* Header row: the same uppercase Micro treatment as .th-sidebar-section-label,
-   laid out as a flex row with the live count pinned to its far edge. */
+/* Header row: the same Micro caption as .th-sidebar-section-label, laid out
+   as a flex row with the live count pinned to its far edge. */
 .th-sidebar-live-label {
   display: flex;
   align-items: center;
   gap: var(--th-space-1);
+  padding: var(--th-space-1) var(--th-space-2);
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
-  text-transform: uppercase;
-  color: var(--th-faint);
+  color: var(--th-muted);
   white-space: nowrap;
 }
 
+/* Same soft count pill as the tree's .th-tree-count. */
 .th-sidebar-live-count {
   margin-left: auto;
+  min-width: calc(var(--th-type-micro-size) * var(--th-type-micro-line) + 2 * var(--th-space-0-5));
+  padding: var(--th-space-0-5) var(--th-space-1);
+  border-radius: var(--th-radius-pill);
+  background: var(--th-active);
   color: var(--th-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
 }
 
 .th-sidebar-live-list {
