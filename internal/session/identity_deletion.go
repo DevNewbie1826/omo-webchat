@@ -23,11 +23,11 @@ func (m *Manager) DeleteChatIdentities(chats map[string]string, remove func() er
 			owned[durable] = owner
 		}
 	}
-	for durable, owner := range m.overviewOwners {
+	m.overviewOwners.Range(func(durable, owner string) {
 		if _, affected := chats[owner]; affected {
 			owned[durable] = owner
 		}
-	}
+	})
 	if m.deletingDurable == nil {
 		m.deletingDurable = make(map[string]int)
 	}

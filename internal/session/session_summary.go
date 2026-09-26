@@ -20,6 +20,7 @@ type Summary struct {
 	TaskDigest        *TaskDigest
 	DagDigest         *DagDigest
 	live              *LiveValues
+	invalidRemaps     map[string]bool
 }
 
 func (s *Session) summaryLocked() Summary {

@@ -457,6 +457,15 @@ func (s *Store) GetChat(id string) (Chat, error) {
 	return c, nil
 }
 
+// ChatName reads the current stored name by chat ID without resolving
+// competing durable-session claims or performing any persistence work.
+func (s *Store) ChatName(id string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	chat, ok := s.data.Chats[id]
+	return chat.Name, ok
+}
+
 // ChatForDurable returns the launchable chat whose DurableSessionID equals
 // durableID. An empty durableID matches nothing. Chats whose provider is not
 // launchable (see IsLaunchableProvider) are skipped. When more than one

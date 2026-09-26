@@ -18,11 +18,12 @@ type resolvingCursorStore struct {
 	*memCursorStore
 	mu     sync.Mutex
 	owners map[string]durableOwner
+	names  map[string]string
 	calls  int
 }
 
 func newResolvingCursorStore() *resolvingCursorStore {
-	return &resolvingCursorStore{memCursorStore: newMemStore(), owners: make(map[string]durableOwner)}
+	return &resolvingCursorStore{memCursorStore: newMemStore(), owners: make(map[string]durableOwner), names: make(map[string]string)}
 }
 
 func (s *resolvingCursorStore) ChatForDurable(durableID string) (string, string, bool) {
@@ -33,10 +34,37 @@ func (s *resolvingCursorStore) ChatForDurable(durableID string) (string, string,
 	return owner.chatID, owner.name, ok
 }
 
+func (s *resolvingCursorStore) ChatName(chatID string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name, ok := s.names[chatID]
+	return name, ok
+}
+
+// UpdateName keeps the fake's resolver reads consistent with its persisted
+// cursor, as the real cursor store does: a successful rename is visible to both
+// ChatName and ChatForDurable.
+func (s *resolvingCursorStore) UpdateName(ctx context.Context, chatID, name, source string) error {
+	if err := s.memCursorStore.UpdateName(ctx, chatID, name, source); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.names[chatID] = name
+	for durable, owner := range s.owners {
+		if owner.chatID == chatID {
+			owner.name = name
+			s.owners[durable] = owner
+		}
+	}
+	return nil
+}
+
 func (s *resolvingCursorStore) setOwner(durableID, chatID, name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.owners[durableID] = durableOwner{chatID: chatID, name: name}
+	s.names[chatID] = name
 }
 
 func (s *resolvingCursorStore) deleteOwner(durableID string) {

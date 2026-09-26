@@ -108,6 +108,7 @@ type CursorStore interface {
 // must not call back into Manager or acquire Manager.mu while holding store.mu.
 type DurableChatResolver interface {
 	ChatForDurable(durableID string) (chatID, name string, ok bool)
+	ChatName(chatID string) (name string, ok bool)
 }
 
 type ChatRef interface {

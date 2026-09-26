@@ -80,11 +80,11 @@ func TestPR197ProjectionOwnerEvidenceSurvivesUnownedCacheChurn(t *testing.T) {
 	}
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
-	if len(mgr.overviewOwners) != maxIdentityTombstones || len(mgr.overviewOwnerFIFO) != maxIdentityTombstones {
-		t.Fatalf("owner history exceeded its bound: %d records, %d FIFO", len(mgr.overviewOwners), len(mgr.overviewOwnerFIFO))
+	if mgr.overviewOwners.HistoryLen() > maxIdentityTombstones {
+		t.Fatalf("owner history exceeded its bound: %d entries", mgr.overviewOwners.HistoryLen())
 	}
-	if len(mgr.overviewPreviousIDs) != maxOverviewPublications || len(mgr.overviewPreviousFIFO) != maxOverviewPublications {
-		t.Fatalf("publication history exceeded its bound: %d records, %d FIFO", len(mgr.overviewPreviousIDs), len(mgr.overviewPreviousFIFO))
+	if mgr.overviewPrevious.ids.HistoryLen() > maxOverviewPublications {
+		t.Fatalf("publication history exceeded its bound: %d entries", mgr.overviewPrevious.ids.HistoryLen())
 	}
 }
 
@@ -104,7 +104,7 @@ func TestPR197ProjectionKeepsResidentOwnerAndEvictsOldestUnusedOwner(t *testing.
 	project("hot")
 	project("cold")
 	project("recent")
-	for i := 0; i < maxIdentityTombstones-3; i++ {
+	for i := 0; i < maxIdentityTombstones-2; i++ {
 		project(fmt.Sprintf("filler-%d", i))
 	}
 	project("recent")
@@ -112,14 +112,14 @@ func TestPR197ProjectionKeepsResidentOwnerAndEvictsOldestUnusedOwner(t *testing.
 	// When: new ownership exceeds the bounded history.
 	project("new")
 	mgr.mu.Lock()
-	_, hot := mgr.overviewOwners["hot"]
-	_, cold := mgr.overviewOwners["cold"]
-	_, recent := mgr.overviewOwners["recent"]
-	count := len(mgr.overviewOwners)
+	_, hot := mgr.overviewOwners.Get("hot")
+	_, cold := mgr.overviewOwners.Get("cold")
+	_, recent := mgr.overviewOwners.Get("recent")
+	count := mgr.overviewOwners.Len()
 	mgr.mu.Unlock()
 
 	// Then: only the oldest unused owner was evicted; late activity stays suppressed.
-	if !hot || cold || !recent || count != maxIdentityTombstones {
+	if !hot || cold || !recent || count != maxIdentityTombstones+1 {
 		t.Fatalf("owner eviction: hot=%v cold=%v recent=%v count=%d", hot, cold, recent, count)
 	}
 	store.deleteOwner("hot")
@@ -152,7 +152,7 @@ func TestPR197ProjectionKeepsResidentRemapInManagerAndSubscriber(t *testing.T) {
 	publish("hot")
 	publish("cold")
 	publish("recent")
-	for i := 0; i < maxOverviewPublications-3; i++ {
+	for i := 0; i < maxOverviewPublications-2; i++ {
 		publish(fmt.Sprintf("filler-%d", i))
 	}
 	publish("recent")
@@ -172,12 +172,38 @@ func TestPR197ProjectionKeepsResidentRemapInManagerAndSubscriber(t *testing.T) {
 	}
 	for name, history := range map[string]overviewPublications{
 		"subscriber": sub.published,
-		"manager":    {ids: mgr.overviewPreviousIDs, fifo: mgr.overviewPreviousFIFO},
+		"manager":    mgr.overviewPrevious,
 	} {
-		if len(history.ids) != maxOverviewPublications || len(history.fifo) != maxOverviewPublications ||
-			history.ids["cold"] != "" || history.ids["recent"] != "recent" || history.ids["hot"] != "second-chat" {
-			t.Errorf("%s history did not retain live/recent identities within bound: %+v", name, history)
+		_, cold := history.ids.Get("cold")
+		recent, hasRecent := history.ids.Get("recent")
+		hot, hasHot := history.ids.Get("hot")
+		if history.ids.HistoryLen() != maxOverviewPublications || cold || !hasRecent || recent != "recent" || !hasHot || hot != "second-chat" {
+			t.Errorf("%s history did not retain live/recent identities: count=%d cold=%t recent=%q hot=%q", name, history.ids.HistoryLen(), cold, recent, hot)
 		}
+		if len(history.rows) > history.ids.Len() {
+			t.Errorf("%s reverse row history exceeded durable history: rows=%d durables=%d", name, len(history.rows), history.ids.Len())
+		}
+	}
+}
+
+func TestPR197ProjectionRemapsOnlyWhenPreviousRowStillBelongsToDurable(t *testing.T) {
+	for _, name := range []string{"manager", "subscriber"} {
+		t.Run(name, func(t *testing.T) {
+			var history overviewPublications
+			history.project(Summary{ChatID: "chat-a", DurableSessionID: "durable-x"})
+			history.project(Summary{ChatID: "chat-a", DurableSessionID: "durable-y"})
+
+			// X's historical row belongs to Y now, so transferring X cannot remove A.
+			transferred := history.project(Summary{ChatID: "chat-b", DurableSessionID: "durable-x"})
+			if transferred.ReplacesSessionID != "" {
+				t.Fatalf("transfer removed another durable's row: %+v", transferred)
+			}
+			// A row that still belongs to its durable remains a valid remap source.
+			moved := history.project(Summary{ChatID: "chat-c", DurableSessionID: "durable-y"})
+			if moved.ReplacesSessionID != "chat-a" {
+				t.Fatalf("lost remap for durable-y: %+v", moved)
+			}
+		})
 	}
 }
 
@@ -283,5 +309,183 @@ func TestPR197ProjectionDeletingDuplicateCursorKeepsBoundOwner(t *testing.T) {
 	defer mgr.mu.Unlock()
 	if mgr.byRoute[sess.routingID] != sess || mgr.durableToChat[sess.ID()] != "owner" {
 		t.Fatal("duplicate cursor deletion removed the bound route")
+	}
+}
+
+func TestPR197ExposedRowRevisionAdvancesAcrossRESTAndDurablePublications(t *testing.T) {
+	store := newResolvingCursorStore()
+	store.setOwner("x", "chat", "Stable")
+	mgr := NewManager(Config{Store: store})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+	publish := func(durable string) Summary {
+		_, snapshot, _ := mgr.ingestEpochEvent(omorpc.EpochToken{}, &omorpc.Event{
+			Type: "extension_event", SessionID: durable,
+			Raw: []byte(`{"name":"omo.task.updated","data":{"tasks":[]}}`),
+		})
+		return snapshot
+	}
+	read := func(durable string) Summary {
+		t.Helper()
+		rows := mgr.LiveSummaries()
+		if len(rows) != 1 || rows[0].ChatID != "chat" || rows[0].DurableSessionID != durable {
+			t.Fatalf("REST row for %s = %+v", durable, rows)
+		}
+		return rows[0]
+	}
+	revision := func(snapshot Summary) int64 {
+		t.Helper()
+		value := snapshot.LiveValues().LastActivityMS
+		if snapshot.ChatID != "chat" || value == nil {
+			t.Fatalf("missing chat revision: %+v", snapshot)
+		}
+		return *value
+	}
+
+	// Given publications on X and Y under the same chat identity.
+	first := revision(publish("x"))
+	store.deleteOwner("x")
+	store.setOwner("y", "chat", "Stable")
+	last := revision(publish("y"))
+	if last <= first {
+		t.Fatalf("Y publication did not advance X: X=%d Y=%d", first, last)
+	}
+
+	// When a cursor-only return to X is exposed through REST.
+	store.deleteOwner("y")
+	store.setOwner("x", "chat", "Stable")
+	exposed := revision(read("x"))
+	if exposed <= last {
+		t.Fatalf("REST X did not advance Y: Y=%d X=%d", last, exposed)
+	}
+
+	// Then an unchanged Y publication, another REST transition, and a
+	// repeated read all preserve the latest exposed row revision.
+	store.deleteOwner("x")
+	store.setOwner("y", "chat", "Stable")
+	returned := revision(publish("y"))
+	if returned <= exposed {
+		t.Fatalf("Y publication regressed REST X: X=%d Y=%d", exposed, returned)
+	}
+	store.deleteOwner("y")
+	store.setOwner("x", "chat", "Stable")
+	again := revision(read("x"))
+	if again <= returned {
+		t.Fatalf("REST X regressed Y publication: Y=%d X=%d", returned, again)
+	}
+	if repeated := revision(read("x")); repeated != again {
+		t.Fatalf("unchanged REST row advanced: before=%d after=%d", again, repeated)
+	}
+}
+
+func TestPR197ExposedRowRevisionKeepsResidentsWithinBound(t *testing.T) {
+	store := newResolvingCursorStore()
+	store.setOwner("resident", "resident-chat", "Resident")
+	mgr := NewManager(Config{Store: store})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+	mgr.overviewCache["resident"] = &overviewCacheEntry{
+		task: &TaskDigest{ReceivedAt: "2026-09-26T00:00:00Z"},
+	}
+	mgr.mu.Lock()
+	resident := mgr.projectOverviewLocked(Summary{DurableSessionID: "resident"})
+	mgr.mu.Unlock()
+	if resident.LiveValues().LastActivityMS == nil {
+		t.Fatal("resident row has no revision")
+	}
+	project := func(i int) {
+		durable := fmt.Sprintf("unused-%d", i)
+		store.setOwner(durable, "chat-"+durable, "Unused")
+		revision := int64(i + 1)
+		mgr.mu.Lock()
+		mgr.projectOverviewLocked(Summary{
+			DurableSessionID: durable,
+			live:             &LiveValues{LastActivityMS: &revision},
+		})
+		mgr.mu.Unlock()
+	}
+
+	// Given a resident revision and more distinct unused rows than the bound.
+	for i := 0; i <= maxIdentityTombstones; i++ {
+		project(i)
+	}
+	mgr.mu.Lock()
+	_, retained := mgr.overviewExposed.Get("resident-chat")
+	history := mgr.overviewExposed.HistoryLen()
+	mgr.mu.Unlock()
+	if !retained || history > maxIdentityTombstones {
+		t.Fatalf("resident exposure lost or history unbounded: resident=%t history=%d", retained, history)
+	}
+
+	// When the source leaves residency, later rows can evict its evidence.
+	mgr.mu.Lock()
+	delete(mgr.overviewCache, "resident")
+	mgr.syncOverviewEvidenceLocked("resident")
+	mgr.mu.Unlock()
+	for i := maxIdentityTombstones + 1; i <= 2*maxIdentityTombstones+1; i++ {
+		project(i)
+	}
+	mgr.mu.Lock()
+	_, retained = mgr.overviewExposed.Get("resident-chat")
+	history = mgr.overviewExposed.HistoryLen()
+	mgr.mu.Unlock()
+	if retained || history > maxIdentityTombstones {
+		t.Fatalf("non-resident exposure was not evicted: resident=%t history=%d", retained, history)
+	}
+}
+
+func TestPR197ExposedRowPinFollowsAnotherResidentOwnerAndKeepsRevision(t *testing.T) {
+	store := newResolvingCursorStore()
+	store.setOwner("moving", "first", "First")
+	store.setOwner("other", "third", "Third")
+	mgr := NewManager(Config{Store: store})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+	for _, durable := range []string{"moving", "other"} {
+		mgr.overviewCache[durable] = &overviewCacheEntry{
+			task: &TaskDigest{ReceivedAt: "2026-09-26T00:00:00Z"},
+		}
+	}
+	project := func(durable string) int64 {
+		t.Helper()
+		mgr.mu.Lock()
+		defer mgr.mu.Unlock()
+		row := mgr.projectOverviewLocked(Summary{DurableSessionID: durable})
+		if revision := row.LiveValues().LastActivityMS; revision != nil {
+			return *revision
+		}
+		t.Fatalf("missing revision for %s: %+v", durable, row)
+		return 0
+	}
+
+	// Given: first exposed a resident row and now owns another resident durable.
+	initial := project("moving")
+	store.setOwner("other", "first", "First")
+	store.setOwner("moving", "second", "Second")
+	project("moving")
+	mgr.mu.Lock()
+	_, pinnedElsewhere := mgr.overviewExposed.pinned["first"]
+	mgr.mu.Unlock()
+	if !pinnedElsewhere {
+		t.Fatal("former owner lost its pin while owning another resident durable")
+	}
+
+	// When first exposes the other durable, then relinquishes that row too.
+	otherRevision := project("other")
+	if otherRevision <= initial {
+		t.Fatalf("new durable regressed the first row: initial=%d other=%d", initial, otherRevision)
+	}
+	store.setOwner("other", "third", "Third")
+	project("other")
+	mgr.mu.Lock()
+	retained, present := mgr.overviewExposed.Get("first")
+	_, stillPinned := mgr.overviewExposed.pinned["first"]
+	mgr.mu.Unlock()
+	if !present || stillPinned || retained.revision != otherRevision {
+		t.Fatalf("former owner lost its retained high-watermark: present=%t pinned=%t retained=%+v want=%d",
+			present, stillPinned, retained, otherRevision)
+	}
+
+	// Then a later return to the moving durable advances that retained revision.
+	store.setOwner("moving", "first", "First")
+	if returned := project("moving"); returned <= otherRevision {
+		t.Fatalf("returning owner regressed revision: retained=%d returned=%d", otherRevision, returned)
 	}
 }

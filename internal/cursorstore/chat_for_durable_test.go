@@ -122,3 +122,35 @@ func TestChatForDurable(t *testing.T) {
 		})
 	}
 }
+
+func TestChatNameReadsBoundChatDespiteDuplicateDurableClaim(t *testing.T) {
+	s := mustOpen(t, filepath.Join(t.TempDir(), "state.json"))
+	if err := s.SaveWorkspace(testWorkspace("ws")); err != nil {
+		t.Fatal(err)
+	}
+	bound := testChat("bound", "ws")
+	bound.Name = "Before"
+	bound.DurableSessionID = "shared"
+	other := testChat("other", "ws")
+	other.Name = "Other"
+	other.DurableSessionID = "shared"
+	other.LastUsedAt = 4102444800000
+	for _, chat := range []Chat{bound, other} {
+		if err := s.SaveChat(chat); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if winner, ok := s.ChatForDurable("shared"); !ok || winner.ID != other.ID {
+		t.Fatalf("duplicate claimant did not win: %+v, %t", winner, ok)
+	}
+
+	if err := s.UpdateName(bound.ID, "After", NameSourceUser); err != nil {
+		t.Fatal(err)
+	}
+	if name, ok := s.ChatName(bound.ID); !ok || name != "After" {
+		t.Fatalf("bound chat title = %q, %t; want After", name, ok)
+	}
+	if name, ok := s.ChatName("missing"); ok || name != "" {
+		t.Fatalf("missing chat title = %q, %t", name, ok)
+	}
+}

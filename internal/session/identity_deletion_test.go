@@ -95,3 +95,45 @@ func TestPR197FailedDeletionDoesNotRetireIdentity(t *testing.T) {
 		t.Fatalf("failed deletion retired stored identity: %+v", snapshot)
 	}
 }
+
+func TestPR197ResidentRetirementSurvivesHistoryEviction(t *testing.T) {
+	mgr := NewManager(Config{})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+	ingest := func(id string) Summary {
+		_, snapshot, _ := mgr.ingestEpochEvent(omorpc.EpochToken{}, &omorpc.Event{
+			Type: "extension_event", SessionID: id,
+			Raw: []byte(`{"name":"omo.task.updated","data":{"tasks":[]}}`),
+		})
+		return snapshot
+	}
+
+	// Given: a deleted durable first receives activity after retirement.
+	mgr.mu.Lock()
+	mgr.retireDurableLocked("deleted", "chat")
+	mgr.mu.Unlock()
+	if snapshot := ingest("deleted"); snapshot.ChatID != "" {
+		t.Fatalf("late activity published a deleted durable: %+v", snapshot)
+	}
+
+	// When: non-resident retirements exhaust the bounded history.
+	mgr.mu.Lock()
+	for i := 0; i <= maxIdentityTombstones; i++ {
+		id := fmt.Sprintf("other-%03d", i)
+		mgr.retireDurableLocked(id, "other-chat")
+	}
+	resident := mgr.overviewCache["deleted"] != nil && mgr.overviewCache["deleted"].retired
+	_, oldestNonResident := mgr.retiredDurable["other-000"]
+	_, newestNonResident := mgr.retiredDurable[fmt.Sprintf("other-%03d", maxIdentityTombstones)]
+	historySize := mgr.retirement.HistoryLen()
+	mgr.mu.Unlock()
+
+	// Then: the resident barrier survives, while oldest non-resident evidence
+	// is evicted first and the retirement history remains bounded.
+	if !resident || oldestNonResident || !newestNonResident || historySize > maxIdentityTombstones {
+		t.Fatalf("retirement evidence after churn: resident=%t oldest=%t newest=%t size=%d",
+			resident, oldestNonResident, newestNonResident, historySize)
+	}
+	if snapshot := ingest("deleted"); snapshot.ChatID != "" {
+		t.Fatalf("resident deleted durable resurrected: %+v", snapshot)
+	}
+}

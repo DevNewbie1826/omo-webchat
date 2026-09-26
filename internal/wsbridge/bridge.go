@@ -2263,6 +2263,11 @@ func (s *CursorStore) ChatForDurable(durableID string) (chatID, name string, ok 
 	return chat.ID, chat.Name, true
 }
 
+// ChatName reads the bound chat's current stored title by its own identity.
+func (s *CursorStore) ChatName(chatID string) (string, bool) {
+	return (*cursorstore.Store)(s).ChatName(chatID)
+}
+
 var (
 	_ session.CursorStore = (*CursorStore)(nil)
 	_ http.Handler        = (*Handler)(nil)
