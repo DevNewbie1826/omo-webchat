@@ -75,3 +75,15 @@
     display: none;
   }
 }
+
+/* Coarse-pointer header (G40/S24): the 1px bottom border sits inside the
+   border-box height, so a 44px header leaves 43px for 44px icon targets and
+   clips them by half a pixel at the viewport top. Add the border back so the
+   content box holds a full 44px target. Fine pointers keep the 44px bar. */
+@media (pointer: coarse) {
+  .th-termhead,
+  .th-chat-pane .th-termhead.th-termhead {
+    height: calc(var(--th-header-h) + 1px);
+    flex-basis: calc(var(--th-header-h) + 1px);
+  }
+}

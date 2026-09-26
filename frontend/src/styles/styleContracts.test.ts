@@ -1453,3 +1453,60 @@ describe("coarse-pointer shell hit-area contracts (G40)", () => {
     expect(ko["sidebar.ws.moreActions"], "ko sidebar.ws.moreActions").toBeDefined();
   });
 });
+
+describe("overflow popup disclosure and entrance contracts", () => {
+  // PR #202 review r2 required change 4: the workspace More actions popup is
+  // a contracted floating menu — the menu radius token, concentric inner
+  // geometry, and the specified opacity/translate/scale entrance over the
+  // popover motion tokens.
+  it("uses the contracted menu radius with concentric inner geometry", () => {
+    const menu = ruleBody(sessionTree, ".th-tree-overflow");
+    expect(declarationValue(menu, "border-radius")).toBe("var(--th-radius-lg)");
+    // Concentric rule: inner radius = outer radius - padding (min 6px).
+    // Outer --th-radius-lg minus the popup's --th-space-1 padding resolves
+    // to --th-radius (16 - 4 = 12).
+    const outer = Number.parseFloat(tokenValue("--th-radius-lg"));
+    const padding = Number.parseFloat(tokenValue("--th-space-1"));
+    const item = ruleBody(sessionTree, ".th-tree-overflow-item");
+    const innerToken = wholeVarToken(declarationValue(item, "border-radius"));
+    expect(innerToken, "item radius must come from a --th-radius* token").toMatch(/^--th-radius/);
+    const inner = Number.parseFloat(tokenValue(innerToken));
+    expect(inner).toBe(outer - padding);
+    expect(inner).toBeGreaterThanOrEqual(6);
+  });
+
+  it("enters with the contracted opacity/translate/scale motion over the popover tokens", () => {
+    // Prose comments between declarations carry no semicolons, so strip
+    // them before declarationValue's (^|;) anchor runs.
+    const stripComments = (body: string): string => body.replace(/\/\*[\s\S]*?\*\//g, "");
+    const menu = stripComments(ruleBody(sessionTree, ".th-tree-overflow"));
+    expect(declarationValue(menu, "animation")).toBe("th-tree-overflow-in var(--th-dur) var(--th-ease-out)");
+    const keyframes = sessionTree.match(/@keyframes th-tree-overflow-in\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
+    expect(keyframes, "overflow entrance keyframes").not.toBe("");
+    const from = keyframes.match(/from\s*\{([^}]*)\}/)?.[1] ?? "";
+    const to = keyframes.match(/to\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(from).toMatch(/opacity:\s*0/);
+    expect(from).toMatch(/transform:\s*translateY\(4px\)\s*scale\(0\.98\)/);
+    expect(to).toMatch(/opacity:\s*1/);
+    expect(to).toMatch(/transform:\s*translateY\(0\)\s*scale\(1\)/);
+    // Allowed properties only (opacity + transform): the entrance never
+    // animates a layout property, so it cannot delay focus or interaction.
+    for (const body of [from, to]) {
+      const props = Array.from(body.matchAll(/(?:^|;)\s*([a-z-]+)\s*:/gi), (match) => match[1]);
+      expect(props.sort()).toEqual(["opacity", "transform"]);
+    }
+    // Exit is instant (no dismissal animation), and the reduced-motion
+    // policy that collapses this animation to the final state is the
+    // existing global contract asserted above.
+    expect(declarationValue(menu, "transition")).toBe("");
+  });
+});
+
+describe("coarse header keeps a full 44px content box (G40/S24)", () => {
+  it("adds the 1px bottom border back to the header height on coarse pointers", () => {
+    const coarse = termhead.match(/@media \(pointer: coarse\)\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
+    expect(coarse).toContain(".th-chat-pane .th-termhead.th-termhead");
+    expect(coarse).toMatch(/height:\s*calc\(var\(--th-header-h\) \+ 1px\)/);
+    expect(coarse).toMatch(/flex-basis:\s*calc\(var\(--th-header-h\) \+ 1px\)/);
+  });
+});

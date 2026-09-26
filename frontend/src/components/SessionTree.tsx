@@ -130,18 +130,31 @@ export function SessionTree({
   const [rename, setRename] = useState<RenameTarget | null>(null);
   // Workspace-row overflow menu (coarse pointers, G40): three row actions
   // collapse behind one trigger so the disclosure, the workspace identity,
-  // and every 44px hit area fit the 264px shell. The menu closes on any
-  // outside pointer press or Escape; it offers every action the
-  // fine-pointer cluster does.
+  // and every 44px hit area fit the 264px shell. The popup is a disclosure
+  // (labelled group of buttons), not a menu: aria-expanded + aria-controls,
+  // no aria-haspopup, natural Tab order, and Escape returns focus to the
+  // workspace's own trigger instead of dropping it on the body when the
+  // popup unmounts.
   const [overflowFor, setOverflowFor] = useState<string | null>(null);
+  const overflowTriggerRef = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
     if (overflowFor === null) return;
     const onPointerDown = (event: PointerEvent) => {
+      // Outside press closes without touching focus: the press lands where
+      // the user aimed it, never on the trigger.
       if (event.target instanceof Element && event.target.closest(".th-tree-actions--overflow")) return;
       setOverflowFor(null);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOverflowFor(null);
+      if (event.key !== "Escape") return;
+      // Dismissed from inside the popup, the focused action button is about
+      // to unmount; move focus to the surviving trigger first so Escape
+      // never leaves focus on the body. Escape on the trigger itself keeps
+      // focus there without help.
+      const active = document.activeElement;
+      const focusInPopup = active instanceof Element && active.closest(".th-tree-overflow") !== null;
+      setOverflowFor(null);
+      if (focusInPopup) overflowTriggerRef.current?.focus();
     };
     window.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("keydown", onKeyDown);
@@ -248,7 +261,7 @@ export function SessionTree({
                   aria-label={ws.name}
                   onClick={() => onToggle(ws.id)}
                 >
-                  {ws.name}
+                  <span className="th-tree-label-text">{ws.name}</span>
                 </button>
               )}
               <span className="th-tree-count">{mergedSessionIds.size}</span>
@@ -266,14 +279,22 @@ export function SessionTree({
                     type="button"
                     className="th-btn-icon"
                     title={t("sidebar.ws.moreActions")}
-                    aria-haspopup="true"
                     aria-expanded={overflowFor === ws.id}
-                    onClick={() => setOverflowFor((open) => (open === ws.id ? null : ws.id))}
+                    aria-controls={`th-tree-overflow-${ws.id}`}
+                    onClick={(event) => {
+                      overflowTriggerRef.current = event.currentTarget;
+                      setOverflowFor((open) => (open === ws.id ? null : ws.id));
+                    }}
                   >
                     <IconMore size={14} />
                   </button>
                   {overflowFor === ws.id ? (
-                    <span className="th-tree-overflow">
+                    <span
+                      id={`th-tree-overflow-${ws.id}`}
+                      role="group"
+                      aria-label={t("sidebar.ws.moreActions")}
+                      className="th-tree-overflow"
+                    >
                       <button
                         type="button"
                         className="th-tree-overflow-item"

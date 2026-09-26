@@ -234,6 +234,15 @@
   text-overflow: ellipsis;
 }
 
+/* The workspace label is a flex button, where text-overflow does not apply
+   to its bare text; the name span carries the truncation instead. */
+.th-tree-label-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .th-tree-source {
   flex: none;
   font-size: var(--th-type-micro-size);
@@ -296,9 +305,11 @@
 /* Workspace-row overflow (coarse pointers, G40): three 44px row actions
    cannot fit beside the disclosure and the workspace identity inside the
    264px shell, so touch rows collapse them behind one 44px trigger whose
-   popover keeps every action. The popover is a floating layer: Overlay fill
+   popup keeps every action. The popup is a floating layer: Overlay fill
    with the glass upgrade under backdrop-filter, the strong boundary, and
-   the overlay shadow. */
+   the overlay shadow. Radius is the contracted menu token; each item uses
+   the concentric inner radius (outer --th-radius-lg minus the popup's
+   --th-space-1 padding, which resolves to --th-radius). */
 .th-tree-actions--overflow {
   position: relative;
 }
@@ -313,9 +324,26 @@
   gap: var(--th-space-0-5);
   padding: var(--th-space-1);
   border: 1px solid var(--th-border-overlay);
-  border-radius: var(--th-radius);
+  border-radius: var(--th-radius-lg);
   background: var(--th-surface-overlay);
   box-shadow: var(--th-shadow-overlay), var(--th-highlight);
+  /* Overlay entrance (DESIGN.md Motion): opacity + translateY + scale over
+     --th-dur with --th-ease-out. Keyframes (not @starting-style) match the
+     settings menu precedent; the animation is entrance-only, never gates
+     focus or interaction, and the global reduced-motion policy renders the
+     final state immediately. Dismissal stays instant. */
+  animation: th-tree-overflow-in var(--th-dur) var(--th-ease-out);
+}
+
+@keyframes th-tree-overflow-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 @supports (backdrop-filter: blur(1px)) {
@@ -331,7 +359,7 @@
   gap: var(--th-space-2);
   min-height: var(--th-space-11);
   padding: 0 var(--th-space-3);
-  border-radius: var(--th-radius-sm);
+  border-radius: var(--th-radius);
   color: var(--th-text-dim);
   font-size: var(--th-type-secondary-size);
   line-height: var(--th-type-secondary-line);
