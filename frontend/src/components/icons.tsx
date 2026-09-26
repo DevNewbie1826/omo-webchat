@@ -106,6 +106,16 @@ export function IconMenu(props: IconProps) {
   );
 }
 
+export function IconMore(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <circle cx="12" cy="5" r="1" />
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="12" cy="19" r="1" />
+    </svg>
+  );
+}
+
 export function IconFile(props: IconProps) {
   return (
     <svg {...base(props)}>

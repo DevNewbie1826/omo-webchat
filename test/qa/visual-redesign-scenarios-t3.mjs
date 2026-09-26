@@ -27,6 +27,10 @@
  *       its box, greeting in the Display tier, one-time entrance,
  *       reduced-motion static) and fails when it is absent. pass:null is
  *       not a result.
+ *   S24 covers G40 without replacing the binary/font S21 check: at 390x844 on a
+ *       coarse pointer, measure visible shell hit areas in the drawer and
+ *       empty state; every target must be at least 44px on both axes and
+ *       adjacent hit areas must not overlap.
  *
  * Every product assertion has a counterpart that FAILS on the pre-redesign
  * baseline (dashed add button, success-hued running chip border/dot, mono
@@ -45,6 +49,7 @@
  * Unit tests: bun test test/qa/visual-redesign-scenarios-t3.test.mjs
  */
 import { motionViolations, parseColor } from './visual-redesign-probes.mjs';
+import { installSignals } from './design-workbench-fixture.mjs';
 
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-tested; driver-side only - never serialized into the page)
@@ -1410,9 +1415,373 @@ export async function runEmptyState(ctx) {
   }
 }
 
+/** Serialized S24 probe. Only the owning scroller may move to reveal a
+ * target. Measure the visible intersection, then ask the browser who owns
+ * five points in it. No module-scope references (ctx.probe serializes us). */
+export function probeShellCoarseTargets({ root, requireCoarse = true, scrollOwner = null } = {}) {
+  const coarseMatches = matchMedia('(pointer: coarse)').matches;
+  const hoverNoneMatches = matchMedia('(hover: none)').matches;
+  const failures = [];
+  const elements = [];
+  const overlaps = [];
+  const scrolls = [];
+  const container = document.querySelector(root);
+  if (requireCoarse && !coarseMatches) failures.push('pointer: coarse media query did not match');
+  if (requireCoarse && !hoverNoneMatches) failures.push('hover: none media query did not match');
+  if (!container) failures.push(`shell surface ${root} is missing`);
+  if (container) {
+    const scroller = scrollOwner ? document.querySelector(scrollOwner) : null;
+    if (scrollOwner && (!scroller || !scroller.contains(container) && !container.contains(scroller))) {
+      failures.push(`scroll owner ${scrollOwner} is missing or unrelated to ${root}`);
+    }
+    const interactive = 'button, a[href], [role="button"], [role="tab"], [role="option"], input, select, [tabindex="0"]';
+    for (const element of container.querySelectorAll(interactive)) {
+      let visible = true;
+      if (element.disabled) continue;
+      for (let ancestor = element; ancestor; ancestor = ancestor.parentElement) {
+        if (ancestor.hasAttribute('inert') || ancestor.getAttribute('aria-hidden') === 'true') { visible = false; break; }
+        const style = getComputedStyle(ancestor);
+        if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) === 0) {
+          visible = false; break;
+        }
+      }
+      if (!visible) continue;
+      const initial = element.getBoundingClientRect();
+      if (initial.width <= 0 || initial.height <= 0) continue;
+      const path = [];
+      for (let node = element; node && node !== container; node = node.parentElement) {
+        const peers = [...node.parentElement.children].filter(peer => peer.tagName === node.tagName);
+        path.unshift(`${node.tagName.toLowerCase()}${node.id ? `#${node.id}` : ''}${node.classList.length ? `.${[...node.classList].join('.')}` : ''}:nth-of-type(${peers.indexOf(node) + 1})`);
+      }
+      const selector = `${root} > ${path.join(' > ')}`;
+      const name = (element.getAttribute('aria-label') || element.getAttribute('title')
+        || element.textContent || '').trim().replace(/\s+/g, ' ');
+      const region = () => {
+        const rect = element.getBoundingClientRect();
+        let left = Math.max(0, rect.left), top = Math.max(0, rect.top);
+        let right = Math.min(innerWidth, rect.right), bottom = Math.min(innerHeight, rect.bottom);
+        for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+          const style = getComputedStyle(ancestor);
+          if (!/(hidden|auto|scroll|clip)/.test(style.overflowX + style.overflowY)) continue;
+          const bounds = ancestor.getBoundingClientRect();
+          if (/(hidden|auto|scroll|clip)/.test(style.overflowX)) {
+            left = Math.max(left, bounds.left); right = Math.min(right, bounds.right);
+          }
+          if (/(hidden|auto|scroll|clip)/.test(style.overflowY)) {
+            top = Math.max(top, bounds.top); bottom = Math.min(bottom, bounds.bottom);
+          }
+        }
+        return { left, top, right, bottom, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
+      };
+      let hit = region();
+      if (scroller && scroller.contains(element) && (hit.width < 44 || hit.height < 44)) {
+        const before = scroller.scrollTop;
+        const bounds = scroller.getBoundingClientRect();
+        const rect = element.getBoundingClientRect();
+        // Move only the scroll owner. scrollIntoView() on the target could
+        // scroll the page/drawer and hide a different fixed control.
+        if (rect.bottom > bounds.bottom) scroller.scrollTop += rect.bottom - bounds.bottom;
+        else if (rect.top < bounds.top) scroller.scrollTop += rect.top - bounds.top;
+        hit = region();
+        scrolls.push({ selector, owner: scrollOwner, from: before, to: scroller.scrollTop,
+          visible: { width: hit.width, height: hit.height } });
+      }
+      const rect = element.getBoundingClientRect();
+      // Rounded 44px controls clip their extreme painted corners; sample
+      // inside their rounded contour while still covering four quadrants.
+      const insetX = Math.min(11, hit.width / 4), insetY = Math.min(11, hit.height / 4);
+      const points = hit.width && hit.height ? [
+        [hit.left + hit.width / 2, hit.top + hit.height / 2],
+        [hit.left + insetX, hit.top + insetY], [hit.right - insetX, hit.top + insetY],
+        [hit.left + insetX, hit.bottom - insetY], [hit.right - insetX, hit.bottom - insetY],
+      ] : [];
+      const blocked = points.map(point => {
+        const x = point[0], y = point[1];
+        const owner = document.elementFromPoint(x, y);
+        return { x, y, owner: owner?.tagName.toLowerCase() ?? null,
+          owned: owner === element || element.contains(owner) };
+      }).filter(point => !point.owned);
+      const pointerEvents = getComputedStyle(element).pointerEvents;
+      const target = { selector, name, size: { width: rect.width, height: rect.height },
+        visible: hit, pointerEvents, blocked,
+        width: hit.width, height: hit.height, x: hit.left, y: hit.top,
+        scrollTop: scroller?.contains(element) ? scroller.scrollTop : null };
+      elements.push(target);
+      if (Math.min(hit.width, hit.height) < 44) {
+        failures.push(`${selector} (${name || 'unnamed'}) visible region is ${hit.width.toFixed(2)}x${hit.height.toFixed(2)}px (<44px)`);
+      }
+      if (pointerEvents === 'none') failures.push(`${selector} (${name || 'unnamed'}) has pointer-events: none`);
+      if (blocked.length) failures.push(`${selector} (${name || 'unnamed'}) is occluded at ${blocked.length}/5 hit points`);
+    }
+    for (let i = 0; i < elements.length; i += 1) {
+      const a = elements[i];
+      for (let j = i + 1; j < elements.length; j += 1) {
+        const b = elements[j];
+        if (a.scrollTop === b.scrollTop
+          && Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x) > 0.01
+          && Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y) > 0.01) {
+          overlaps.push([a.selector, b.selector]);
+          failures.push(`hit areas overlap: ${a.selector} and ${b.selector}`);
+        }
+      }
+    }
+  }
+  return { coarseMatches, hoverNoneMatches, elements, overlaps, scrolls, failures, pass: failures.length === 0 };
+}
+
+/** Serialized focus probe for S24's workspace-action cancellation paths. */
+export function probeCancellationFocus(options = {}) {
+  const triggerSelector = options.triggerSelector;
+  const trigger = document.querySelector(triggerSelector);
+  const composer = document.querySelector('.th-pane--focused .th-chat-input textarea');
+  const main = document.querySelector('main.th-main');
+  const active = document.activeElement;
+  const visible = element => {
+    if (!(element instanceof HTMLElement) || !element.isConnected
+      || element.matches(':disabled') || element.closest('[inert]')) return false;
+    for (let node = element; node; node = node.parentElement) {
+      if (node.hidden) return false;
+      const style = getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+    }
+    return true;
+  };
+  const focusable = element => visible(element) && (
+    element.matches('button:not([disabled]), textarea:not([disabled])')
+    || element === main && element.hasAttribute('tabindex')
+  );
+  const selectorOf = element => element === trigger ? triggerSelector
+    : element === composer ? '.th-pane--focused .th-chat-input textarea'
+      : element === main ? 'main.th-main' : element?.tagName.toLowerCase() ?? null;
+  const expected = focusable(trigger) ? trigger : focusable(composer) ? composer : main;
+  const destination = {
+    selector: selectorOf(active),
+    connected: active?.isConnected === true,
+    visible: visible(active),
+    focusable: focusable(active),
+  };
+  const failures = [];
+  if (active === document.body) failures.push('focus fell to body');
+  if (!destination.connected || !destination.visible || !destination.focusable) {
+    failures.push('focus destination is detached, hidden, or not focusable');
+  }
+  if (active !== expected) failures.push(`focus reached ${destination.selector}, expected ${selectorOf(expected)}`);
+  return { ...destination, expectedSelector: selectorOf(expected), failures, pass: failures.length === 0 };
+}
+
+/** S24 G40 coarse-target scenario. The shared live
+ * fixture starts with a normal context; only this second, measured context is
+ * mobile/touch. The fixture and both contexts are closed on every outcome. */
+export async function runShellCoarseTargets(ctx) {
+  const env = await ctx.setupLive();
+  const failures = [];
+  const screenshots = [];
+  const measurements = { elements: [], stages: [], scrolls: [], captures: [], focusReturns: [], pageErrors: [] };
+  let touchContext;
+  let teardown;
+  try {
+    const browser = env.context.browser();
+    if (!browser) throw new Error('live fixture context has no browser');
+    touchContext = await browser.newContext({
+      viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, colorScheme: ctx.theme,
+    });
+    // Keep the real fixture's final workspace/API, but prepend enough empty
+    // workspaces to make its last row require the sidebar's own scrollport.
+    // No DOM or product style is patched by this scenario.
+    await touchContext.route('**/api/workspaces', async route => {
+      const response = await route.fetch();
+      const original = await response.json();
+      const earlier = Array.from({ length: 12 }, (_, index) => ({
+        id: `qa-top-${index}`, name: `Earlier workspace ${index + 1}`, path: `/fixture/earlier-${index}`,
+        chats: [],
+      }));
+      await route.fulfill({ response, json: [...earlier, ...original] });
+    });
+    await touchContext.route(/\/api\/workspaces\/qa-top-\d+\/sessions(?:\?.*)?$/, route =>
+      route.fulfill({ status: 200, contentType: 'application/json',
+        body: JSON.stringify({ items: [], nextCursor: '' }) }));
+    await touchContext.route('**/api/providers', route => route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify([{ id: 'omo', label: 'omo', available: false }]),
+    }));
+    const page = await touchContext.newPage();
+    page.setDefaultTimeout(8000);
+    page.on('pageerror', error => measurements.pageErrors.push(String(error)));
+    await installSignals(page, { theme: ctx.theme });
+    await page.goto(env.fixture.url);
+    await page.waitForSelector('.th-mobile-menu', { state: 'visible', timeout: 8000 });
+    const capture = async (stage) => {
+      await settleFiniteMotion(page);
+      const media = await page.evaluate(() => ({
+        pointerCoarse: matchMedia('(pointer: coarse)').matches,
+        hoverNone: matchMedia('(hover: none)').matches,
+        fontSize: getComputedStyle(document.documentElement).getPropertyValue('--th-font-size').trim(),
+      }));
+      measurements.captures.push({ stage, ...media });
+      if (!media.pointerCoarse || !media.hoverNone) failures.push(`[${stage}] screenshot was not captured in a coarse/no-hover context`);
+      screenshots.push(await ctx.save(page, `-${stage}`));
+    };
+    const measure = async (stage, root, required, scrollOwner = null) => {
+      const result = await ctx.probe(page, probeShellCoarseTargets, { root, scrollOwner });
+      measurements.stages.push({ stage, root, count: result.elements.length, coarseMatches: result.coarseMatches,
+        hoverNoneMatches: result.hoverNoneMatches, failing: result.failures, overlaps: result.overlaps,
+        scrolls: result.scrolls });
+      measurements.elements.push(...result.elements.map(element => ({ stage, ...element })));
+      measurements.scrolls.push(...result.scrolls.map(scroll => ({ stage, ...scroll })));
+      failures.push(...result.failures.map(failure => `[${stage}] ${failure}`));
+      for (const selector of required) {
+        if (!result.elements.some(element => element.selector.includes(selector))) {
+          failures.push(`[${stage}] required shell target ${selector} was not measured`);
+        }
+      }
+      return result;
+    };
+    await deliverShellLive(env, ctx.constants.CHAT, []);
+    await page.waitForSelector('.th-sidebar-live .th-overview-card-open', { state: 'attached', timeout: 6000 });
+    const revealWorkspace = async index => {
+      const scroll = await page.evaluate(index => {
+        const owner = document.querySelector('.th-sidebar-body');
+        const row = document.querySelectorAll('.th-tree-workspace')[index];
+        if (!owner || !row) throw new Error(`workspace row ${index} or sidebar scroll owner missing`);
+        const from = owner.scrollTop, bounds = owner.getBoundingClientRect(), rect = row.getBoundingClientRect();
+        owner.scrollTop += rect.top - bounds.top - 8;
+        return { index, from, to: owner.scrollTop, max: owner.scrollHeight - owner.clientHeight };
+      }, index);
+      measurements.scrolls.push({ stage: 'workspace-reveal', owner: '.th-sidebar-body', ...scroll });
+      return scroll;
+    };
+    const openActions = async (index, stage) => {
+      await revealWorkspace(index);
+      const row = page.locator('.th-tree-workspace').nth(index);
+      await row.locator('.th-tree-actions--overflow > button').click();
+      await row.locator('.th-tree-overflow-item').first().waitFor({ state: 'visible', timeout: 4000 });
+      await settleFiniteMotion(page);
+      const menu = await measure(stage, '.th-tree-overflow', ['.th-tree-overflow-item'], '.th-sidebar-body');
+      if (menu.elements.length !== 3) {
+        failures.push(`[${stage}] expected three workspace actions, measured ${menu.elements.length}`);
+      }
+      await capture(stage);
+      return row;
+    };
+    const dismissActions = async () => {
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('.th-tree-overflow', { state: 'detached', timeout: 4000 });
+    };
+    const recordCancellationFocus = async (stage, row) => {
+      const controls = await row.locator('.th-tree-actions--overflow > button').getAttribute('aria-controls');
+      const focus = await ctx.probe(page, probeCancellationFocus, {
+        triggerSelector: `button[aria-controls="${controls}"]`,
+      });
+      measurements.focusReturns.push({ stage, ...focus });
+      failures.push(...focus.failures.map(failure => `[${stage}] ${failure}`));
+    };
+    for (const fontSize of [14, 15, 24]) {
+      const prefix = fontSize === 14 ? '' : `font-${fontSize}-`;
+      if (fontSize !== 14) {
+        // The original installSignals init script reasserts 14 on reload;
+        // install the same settings-path value later in script order.
+        await page.addInitScript(size => localStorage.setItem('th-font-size', String(size)), fontSize);
+        await page.reload();
+        await page.waitForSelector('.th-mobile-menu', { state: 'visible', timeout: 8000 });
+        await deliverShellLive(env, ctx.constants.CHAT, []);
+      }
+      const appliedFont = await page.evaluate(() => ({
+        stored: localStorage.getItem('th-font-size'),
+        computed: getComputedStyle(document.documentElement).getPropertyValue('--th-font-size').trim(),
+      }));
+      if (appliedFont.stored !== String(fontSize) || appliedFont.computed !== `${fontSize}px`) {
+        failures.push(`[${prefix}font] persisted/computed font was ${JSON.stringify(appliedFont)}, expected ${fontSize}px`);
+      }
+      await measure(`${prefix}header`, '.th-termhead', ['.th-mobile-menu']);
+      await openDrawer(page);
+      await page.waitForSelector('.th-sidebar-live .th-overview-card-open', { state: 'visible', timeout: 6000 });
+      await settleDrawerMotion(page);
+      await capture(`${prefix}drawer`);
+      const drawer = await measure(`${prefix}drawer`, '.th-sidebar', [
+        '.th-sidebar-nav-actions', '.th-overview-card-open', '.th-btn-add', '.th-tree-chevron',
+        '.th-tree-activation', '.th-tree-actions', '.th-sidebar-footer', '.th-tree-more',
+      ], '.th-sidebar-body');
+      if (!drawer.elements.some(element => element.selector.includes('.th-tree-more'))) {
+        failures.push(`[${prefix}drawer] workspace session pagination was not measured`);
+      }
+      await openActions(0, `${prefix}actions-top`);
+      await dismissActions();
+      const lastIndex = await page.locator('.th-tree-workspace').count() - 1;
+      if (lastIndex < 1) failures.push(`[${prefix}actions-bottom] fixture lacks a distinct last workspace`);
+      const last = await openActions(lastIndex, `${prefix}actions-bottom`);
+      if (fontSize === 14 || fontSize === 24) {
+        await page.keyboard.press('Tab');
+        const actionFocused = await last.locator('.th-tree-overflow-item').first()
+          .evaluate(element => document.activeElement === element);
+        if (!actionFocused) failures.push(`[${prefix}actions-bottom-focus] Tab did not focus the first popup action`);
+        await capture(`${prefix}actions-bottom-focus`);
+        await dismissActions();
+        const triggerFocused = await last.locator('.th-tree-actions--overflow > button')
+          .evaluate(element => document.activeElement === element);
+        if (!triggerFocused) failures.push(`[${prefix}actions-bottom-focus] Escape did not restore the last workspace trigger`);
+      } else await dismissActions();
+      if (fontSize === 14) {
+        await openActions(lastIndex, 'actions-bottom-rename');
+        await last.locator('.th-tree-overflow-item').nth(0).click();
+        await last.locator('.th-tree-rename').waitFor({ state: 'visible' });
+        await page.keyboard.press('Escape');
+        await last.locator('.th-tree-rename').waitFor({ state: 'detached' });
+        await recordCancellationFocus('actions-bottom-rename-cancel', last);
+        await openActions(lastIndex, 'actions-bottom-add');
+        await last.locator('.th-tree-overflow-item').nth(1).click();
+        await page.waitForSelector('.th-modal-overlay .th-modal[role="dialog"]', { state: 'visible' });
+        await page.keyboard.press('Escape');
+        await page.waitForSelector('.th-modal-overlay', { state: 'detached' });
+        await recordCancellationFocus('actions-bottom-add-cancel', last);
+        await openDrawer(page);
+        await openActions(lastIndex, 'actions-bottom-delete');
+        await last.locator('.th-tree-overflow-item').nth(2).click();
+        await page.waitForSelector('.th-confirm', { state: 'visible' });
+        await page.locator('.th-confirm-actions button').first().click();
+        await page.waitForSelector('.th-confirm', { state: 'detached' });
+        await recordCancellationFocus('actions-bottom-delete-cancel', last);
+      }
+    }
+    await focusEmptyLayout(env);
+    // Inspect the empty picker at each setting, without moving back to an
+    // occupied layout in between (the previous pane-close is intentional).
+    for (const fontSize of [24, 15, 14]) {
+      const prefix = fontSize === 14 ? '' : `font-${fontSize}-`;
+      await page.addInitScript(size => localStorage.setItem('th-font-size', String(size)), fontSize);
+      await page.reload();
+      await page.waitForSelector('.th-empty .th-picker-pane', { state: 'visible', timeout: 8000 });
+      const appliedFont = await page.evaluate(() => ({
+        stored: localStorage.getItem('th-font-size'),
+        computed: getComputedStyle(document.documentElement).getPropertyValue('--th-font-size').trim(),
+      }));
+      if (appliedFont.stored !== String(fontSize) || appliedFont.computed !== `${fontSize}px`) {
+        failures.push(`[${prefix}empty] persisted/computed font was ${JSON.stringify(appliedFont)}, expected ${fontSize}px`);
+      }
+      await page.locator('.th-picker-pane select').selectOption('ws');
+      await page.waitForSelector('.th-picker-pane-item', { state: 'visible', timeout: 8000 });
+      await settleFiniteMotion(page);
+      await measure(`${prefix}empty`, '.th-empty', [
+        '.th-empty-menu', '.th-empty-hero', 'select:nth-of-type', '.th-picker-pane-item',
+        'button.th-btn.th-btn--ghost', '.th-picker-pane-create',
+      ], '.th-empty');
+      await capture(`${prefix}empty`);
+    }
+    if (measurements.pageErrors.length) failures.push(...measurements.pageErrors.map(error => `page error: ${error}`));
+  } catch (error) {
+    failures.push(`harness error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+  } finally {
+    if (touchContext) {
+      try { await touchContext.close(); } catch (error) { failures.push(`touch context close failed: ${errLine(error)}`); }
+    }
+    teardown = await closeEnv(env);
+  }
+  return { scenario: 'S24', pass: failures.length === 0, measurements, failures, screenshots, teardown };
+}
+
 /** Plugin export merged over the built-in registry by visual-redesign.mjs. */
 export const scenarios = Object.freeze({
   'S5:shell': runStateColorsShell,
   S10: runSidebarSelection,
   S11: runEmptyState,
+  S24: runShellCoarseTargets,
 });

@@ -4,6 +4,7 @@ import {
   IconChevron,
   IconEdit,
   IconFolder,
+  IconMore,
   IconPlus,
   IconTerminal,
   IconTrash,
@@ -127,6 +128,42 @@ export function SessionTree({
 }: SessionTreeProps) {
   const { t } = useT();
   const [rename, setRename] = useState<RenameTarget | null>(null);
+  // Workspace-row overflow menu (coarse pointers, G40): three row actions
+  // collapse behind one trigger so the disclosure, the workspace identity,
+  // and every 44px hit area fit the 264px shell. The popup is a disclosure
+  // (labelled group of buttons), not a menu: aria-expanded + aria-controls,
+  // no aria-haspopup, natural Tab order, and Escape returns focus to the
+  // workspace's own trigger instead of dropping it on the body when the
+  // popup unmounts.
+  const [overflowFor, setOverflowFor] = useState<string | null>(null);
+  const overflowTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const renameTriggerRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (overflowFor === null) return;
+    const onPointerDown = (event: PointerEvent) => {
+      // Outside press closes without touching focus: the press lands where
+      // the user aimed it, never on the trigger.
+      if (event.target instanceof Element && event.target.closest(".th-tree-actions--overflow")) return;
+      setOverflowFor(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      // Dismissed from inside the popup, the focused action button is about
+      // to unmount; move focus to the surviving trigger first so Escape
+      // never leaves focus on the body. Escape on the trigger itself keeps
+      // focus there without help.
+      const active = document.activeElement;
+      const focusInPopup = active instanceof Element && active.closest(".th-tree-overflow") !== null;
+      setOverflowFor(null);
+      if (focusInPopup) overflowTriggerRef.current?.focus();
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [overflowFor]);
   const openingRef = useRef(new Set<string>());
   const treeRef = useRef<HTMLDivElement>(null);
   const indicatorRef = useRef<HTMLSpanElement>(null);
@@ -161,8 +198,34 @@ export function SessionTree({
   };
 
   const commitRename = (target: RenameTarget, value: string): void => {
-    setRename(null);
     const name = value.trim();
+    const trigger = renameTriggerRef.current;
+    renameTriggerRef.current = null;
+    if (name.length === 0 && trigger) {
+      // Rename is inline, not a modal: follow modalStack's trigger ->
+      // focused composer -> main focus-return policy before removing input.
+      const canFocus = (element: HTMLElement | null): element is HTMLElement => {
+        if (!element?.isConnected || element.matches(":disabled") || element.closest("[inert]")) return false;
+        for (let node: HTMLElement | null = element; node; node = node.parentElement) {
+          const style = getComputedStyle(node);
+          if (node.hidden || style.display === "none" || style.visibility !== "visible") return false;
+        }
+        return true;
+      };
+      if (canFocus(trigger)) trigger.focus();
+      if (document.activeElement !== trigger) {
+        const composer = document.querySelector<HTMLTextAreaElement>(".th-pane--focused .th-chat-input textarea");
+        if (canFocus(composer)) composer.focus();
+        if (document.activeElement !== composer) {
+          const main = document.querySelector<HTMLElement>("main.th-main");
+          if (canFocus(main)) {
+            if (!main.hasAttribute("tabindex")) main.tabIndex = -1;
+            main.focus();
+          }
+        }
+      }
+    }
+    setRename(null);
     if (name.length === 0) return;
     const ws = workspaces.find((w) => w.id === target.wsId);
     if (!ws) return;
@@ -225,7 +288,7 @@ export function SessionTree({
                   aria-label={ws.name}
                   onClick={() => onToggle(ws.id)}
                 >
-                  {ws.name}
+                  <span className="th-tree-label-text">{ws.name}</span>
                 </button>
               )}
               <span className="th-tree-count">{mergedSessionIds.size}</span>
@@ -237,32 +300,98 @@ export function SessionTree({
                   mainRunning={workspaceMainRunning}
                 />
               ) : null}
-              <span className="th-tree-actions">
-                <button
-                  type="button"
-                  className="th-btn-icon"
-                  title={t("sidebar.ws.rename")}
-                  onClick={() => setRename({ kind: "workspace", wsId: ws.id, tmId: "" })}
-                >
-                  <IconEdit size={12} />
-                </button>
-                <button
-                  type="button"
-                  className="th-btn-icon"
-                  title={t("sidebar.ws.addTerminal")}
-                  onClick={() => onAddTerminal(ws)}
-                >
-                  <IconPlus size={13} />
-                </button>
-                <button
-                  type="button"
-                  className="th-btn-icon th-btn-icon--danger"
-                  title={t("sidebar.ws.delete")}
-                  onClick={() => onDeleteWorkspace(ws)}
-                >
-                  <IconTrash size={12} />
-                </button>
-              </span>
+              {touchActions ? (
+                <span className="th-tree-actions th-tree-actions--overflow">
+                  <button
+                    type="button"
+                    className="th-btn-icon"
+                    title={t("sidebar.ws.moreActions")}
+                    aria-expanded={overflowFor === ws.id}
+                    aria-controls={`th-tree-overflow-${ws.id}`}
+                    onClick={(event) => {
+                      overflowTriggerRef.current = event.currentTarget;
+                      setOverflowFor((open) => (open === ws.id ? null : ws.id));
+                    }}
+                  >
+                    <IconMore size={14} />
+                  </button>
+                  {overflowFor === ws.id ? (
+                    <span
+                      id={`th-tree-overflow-${ws.id}`}
+                      role="group"
+                      aria-label={t("sidebar.ws.moreActions")}
+                      className="th-tree-overflow"
+                    >
+                      <button
+                        type="button"
+                        className="th-tree-overflow-item"
+                        onClick={() => {
+                          renameTriggerRef.current = overflowTriggerRef.current;
+                          setOverflowFor(null);
+                          setRename({ kind: "workspace", wsId: ws.id, tmId: "" });
+                        }}
+                      >
+                        <IconEdit size={13} />
+                        {t("sidebar.ws.rename")}
+                      </button>
+                      <button
+                        type="button"
+                        className="th-tree-overflow-item"
+                        onClick={() => {
+                          overflowTriggerRef.current?.focus();
+                          setOverflowFor(null);
+                          onAddTerminal(ws);
+                        }}
+                      >
+                        <IconPlus size={13} />
+                        {t("sidebar.ws.addTerminal")}
+                      </button>
+                      <button
+                        type="button"
+                        className="th-tree-overflow-item th-tree-overflow-item--danger"
+                        onClick={() => {
+                          overflowTriggerRef.current?.focus();
+                          setOverflowFor(null);
+                          onDeleteWorkspace(ws);
+                        }}
+                      >
+                        <IconTrash size={13} />
+                        {t("sidebar.ws.delete")}
+                      </button>
+                    </span>
+                  ) : null}
+                </span>
+              ) : (
+                <span className="th-tree-actions">
+                  <button
+                    type="button"
+                    className="th-btn-icon"
+                    title={t("sidebar.ws.rename")}
+                    onClick={() => {
+                      renameTriggerRef.current = null;
+                      setRename({ kind: "workspace", wsId: ws.id, tmId: "" });
+                    }}
+                  >
+                    <IconEdit size={12} />
+                  </button>
+                  <button
+                    type="button"
+                    className="th-btn-icon"
+                    title={t("sidebar.ws.addTerminal")}
+                    onClick={() => onAddTerminal(ws)}
+                  >
+                    <IconPlus size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    className="th-btn-icon th-btn-icon--danger"
+                    title={t("sidebar.ws.delete")}
+                    onClick={() => onDeleteWorkspace(ws)}
+                  >
+                    <IconTrash size={12} />
+                  </button>
+                </span>
+              )}
             </div>
 
             <fieldset className={`th-tree-children${isOpen ? "" : " th-tree-children--closed"}`}>

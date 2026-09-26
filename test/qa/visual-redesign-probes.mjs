@@ -949,6 +949,7 @@ export const SCENARIOS = Object.freeze({
     title: 'Modal focus restores to the trigger or a fallback', stub: false,
     detail: 'G25: a hidden or detached trigger must not drop focus on body',
   },
+  S24: { title: 'Coarse-pointer 44px targets', stub: true, reason: 'defined in T3b' },
 });
 
 /** Scenario ids this harness actively probes, in plan order. */

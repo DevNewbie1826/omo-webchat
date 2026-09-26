@@ -46,6 +46,15 @@
   box-shadow: 0 0 0 3px var(--th-ring);
 }
 
+/* Coarse pointers (G40): the card activation grows to the 44px touch
+   target; the card grows with it (its min-height is a floor, not a cap).
+   The focus ring rides the button box, so it follows the grown visual. */
+@media (pointer: coarse) {
+  .th-overview-card-open {
+    min-height: var(--th-space-11);
+  }
+}
+
 .th-overview-card-state {
   display: flex;
   align-items: center;
