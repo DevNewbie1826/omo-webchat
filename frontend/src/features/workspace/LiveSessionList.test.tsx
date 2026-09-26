@@ -147,6 +147,21 @@ describe("LiveSessionList", () => {
     expect(second.querySelector(".th-overview-card-line")).toBeNull();
   });
 
+  it("renders no card for a summary without an open target", () => {
+    // A poll row keyed by an engine UUID no stored chat or loaded session row
+    // owns cannot be opened; it must not render a card at all.
+    const ghost: LiveSessionSummary = {
+      ...summaries[0]!,
+      id: "durable-uuid-9",
+      title: "Ghost elsewhere",
+    };
+    renderList({ summaries: [...summaries, ghost] });
+
+    expect(container.querySelectorAll(".th-overview-card")).toHaveLength(2);
+    expect(container.textContent).not.toContain("Ghost elsewhere");
+    expect(container.textContent).not.toContain("durable-uuid-9");
+  });
+
   it("renders no meta line even when done and dag counts are present", () => {
     // The done/dag meta line is removed from the card render so every card
     // keeps a uniform height; the underlying summary fields stay intact.

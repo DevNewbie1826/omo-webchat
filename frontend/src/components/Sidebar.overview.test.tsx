@@ -251,6 +251,42 @@ describe("Sidebar pinned running sessions", () => {
     expect(cards[2]?.textContent).not.toContain("overview.done");
   });
 
+  it("hides the pinned section when every live session has no open target", async () => {
+    // A poll row keyed by an engine UUID no stored chat or loaded session row
+    // owns: clicking it could never open anything, so no section renders.
+    const fetchMock = vi.fn(async () => okResponse({
+      sessions: [{ id: "durable-uuid-9", title: "Ghost elsewhere", running: { agents: 2 }, done: 0 }],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSidebar(() => undefined, { chats: [], sessions: [discoveredRow] });
+
+    await act(async () => {});
+    expect(container.querySelector(".th-sidebar-live")).toBeNull();
+  });
+
+  it("renders only openable cards and counts only their running work", async () => {
+    // disk-1 resolves through the loaded session row; durable-uuid-9 does not
+    // resolve at all. The unopenable row must not render a card, and its two
+    // running agents must not leak into the section's working-count badge.
+    const fetchMock = vi.fn(async () => okResponse({
+      sessions: [
+        liveEntry("disk-1", "Openable", "running"),
+        { id: "durable-uuid-9", title: "Ghost elsewhere", running: { agents: 2 }, done: 0, last_activity_ms: 9000 },
+      ],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSidebar(() => undefined, { chats: [], sessions: [discoveredRow] });
+
+    await act(async () => {});
+    const pinned = container.querySelector(".th-sidebar-live");
+    expect(pinned).not.toBeNull();
+    const cards = Array.from(pinned?.querySelectorAll<HTMLElement>(".th-overview-card") ?? []);
+    expect(cards.map((card) => card.querySelector(".th-overview-card-name")?.textContent)).toEqual(["Openable"]);
+    expect(pinned?.querySelector(".th-sidebar-live-count")?.textContent).toBe("1");
+  });
+
   it("lists an idle live session without a running badge, and the tree never offers View live for it", async () => {
     const fetchMock = vi.fn(async () => okResponse(IDLE_LIVE_RESPONSE));
     vi.stubGlobal("fetch", fetchMock);

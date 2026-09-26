@@ -36,6 +36,7 @@ import { LiveSessionList } from "./features/workspace/LiveSessionList";
 import { useLiveSessionSummaries } from "./features/workspace/useLiveSessionSummaries";
 import { useMergedLiveSummaries } from "./features/workspace/liveBadgeStore";
 import { compareLiveSessions, isLiveSessionListed } from "./features/workspace/liveSessionOrder";
+import { resolveLiveSummaryTarget } from "./features/workspace/liveSummaryTarget";
 import "./styles/home-live.css";
 
 const SPLIT_QUERY = "(min-width: 1024px)";
@@ -240,9 +241,17 @@ export function App() {
     }
     return recency;
   }, [sessionLists, liveShare]);
+  // Cards render only for summaries with an open target: a stored chat, or a
+  // loaded session row. UUID-keyed rows no stored chat or loaded row owns
+  // would render a button that cannot open anything, so they are dropped.
+  const homeListedSummaries = useMemo(
+    () => homeLiveSummaries.filter((summary) => isLiveSessionListed(summary)
+      && resolveLiveSummaryTarget(summary, workspaces, sessionLists) !== null),
+    [homeLiveSummaries, workspaces, sessionLists],
+  );
   const homeOrderedSummaries = useMemo(
-    () => homeLiveSummaries.filter(isLiveSessionListed).sort((a, b) => compareLiveSessions(a, b, homeRecencyMs)),
-    [homeLiveSummaries, homeRecencyMs],
+    () => [...homeListedSummaries].sort((a, b) => compareLiveSessions(a, b, homeRecencyMs)),
+    [homeListedSummaries, homeRecencyMs],
   );
   const homeRunningCount = useMemo(
     () => homeOrderedSummaries.reduce((total, summary) => total + summary.runningCount, 0),

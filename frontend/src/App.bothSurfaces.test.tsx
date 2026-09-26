@@ -7,11 +7,12 @@ import { apiJson } from "./lib/api";
 
 /**
  * Both-surfaces integration: the REAL Sidebar and the REAL home live-session
- * block mount together on the REAL useWorkspaces hook. A live session absent
- * from the loaded picker rows gains its last-activity timestamp only through
- * the sidebar's membership crawl; both surfaces must still order identically
- * (working first, then most recent), before and after the session settles to
- * idle. Only the transport and pane layout are mocked.
+ * block mount together on the REAL useWorkspaces hook. A live session that
+ * has no open target - absent from the chat list and every loaded catalog
+ * page, resolvable only through the membership crawl - must not render a card
+ * on either surface, while the crawl still learns its recency, attributes its
+ * owner, and keeps the single 15s catalog cadence armed. Only the transport
+ * and pane layout are mocked.
  */
 
 const workspace = {
@@ -168,21 +169,23 @@ describe("App + Sidebar both-surfaces live ordering", () => {
     window.localStorage.clear();
   });
 
-  it("orders both surfaces identically from crawl-learned recency, before and after settling to idle", async () => {
+  it("excludes a crawl-only session from both surfaces while the crawl still learns its recency and arms the cadence", async () => {
     await act(async () => {
       root.render(<App />);
     });
     await act(async () => {});
 
-    // Both surfaces mounted; the membership crawl learned z-hidden's timestamp
-    // (it is absent from the loaded first page) and attributed it to ws-1.
+    // Both surfaces mounted. z-hidden is live but has no open target - it is
+    // absent from the chat list and the loaded first catalog page - so the
+    // pinned surfaces exclude it; the membership crawl still pages to learn
+    // its timestamp and attribute ws-1 as its owner.
     expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
     expect(container.querySelector(".th-home-live")).not.toBeNull();
     expect(catalogCalls()).toContain("/api/workspaces/ws-1/sessions?limit=5&cursor=p2");
 
-    // Working first: z-hidden (active main work) leads on BOTH surfaces.
-    expect(cardNames(".th-sidebar-live")).toEqual(["Z hidden", "A visible"]);
-    expect(cardNames(".th-home-live")).toEqual(["Z hidden", "A visible"]);
+    // Only the openable session renders a card on either surface.
+    expect(cardNames(".th-sidebar-live")).toEqual(["A visible"]);
+    expect(cardNames(".th-home-live")).toEqual(["A visible"]);
 
     // Production scheduling path: the catalog scheduler owns the single 15s
     // recency cadence. Nothing catalog-related fires before the cadence...
@@ -206,18 +209,17 @@ describe("App + Sidebar both-surfaces live ordering", () => {
       "/api/workspaces/ws-1/sessions?limit=5&cursor=p2",
     ]);
 
-    // z-hidden settles to idle; the next poll (4s cadence) delivers it.
+    // z-hidden settles to idle; the next poll (4s cadence) delivers it. It
+    // still has no open target, so both surfaces keep listing only the
+    // openable session, and the owner attribution keeps the cadence armed.
     livePayload = PHASE_IDLE;
     await act(async () => {
       await vi.advanceTimersByTimeAsync(4_000);
     });
     await act(async () => {});
 
-    // Both idle now: the crawl-learned timestamp (5000 > 10) puts z-hidden
-    // first on BOTH surfaces. Without the shared recency source the main
-    // surface has no timestamp for z-hidden and orders it last.
-    expect(cardNames(".th-sidebar-live")).toEqual(["Z hidden", "A visible"]);
-    expect(cardNames(".th-home-live")).toEqual(["Z hidden", "A visible"]);
+    expect(cardNames(".th-sidebar-live")).toEqual(["A visible"]);
+    expect(cardNames(".th-home-live")).toEqual(["A visible"]);
   });
 
   it("keeps exactly the 15s cadence for a stable owner while a second owner joins and leaves", async () => {

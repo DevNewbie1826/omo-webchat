@@ -287,6 +287,37 @@ describe("App home running sessions", () => {
     expect(container.querySelector(".th-home-live")).toBeNull();
   });
 
+  it("omits the block when every live session has no open target", async () => {
+    // A foreign engine UUID no stored chat or loaded session row owns: the
+    // card could not open anything, so the whole block stays unrendered.
+    home.livePayload = { sessions: [liveSessionEntry("durable-uuid-9", "Ghost elsewhere", { taskStatus: "running" })] };
+    home.catalogSessions = [];
+    await renderApp(".th-picker-pane");
+
+    expect(container.querySelector(".th-picker-pane")).not.toBeNull();
+    expect(container.querySelector(".th-home-live")).toBeNull();
+  });
+
+  it("renders only the openable card and counts only its running work", async () => {
+    // disk-1 resolves through the loaded catalog row; durable-uuid-9 resolves
+    // to nothing. Its three running agents must not appear on the card, in
+    // the label count, or anywhere in the block.
+    home.livePayload = {
+      sessions: [
+        liveSessionEntry("disk-1", "Refactor auth", { taskStatus: "running" }),
+        { id: "durable-uuid-9", title: "Ghost elsewhere", running: { agents: 3 }, done: 0, last_line: "pwd" },
+      ],
+    };
+    await renderApp(".th-home-live");
+
+    const block = container.querySelector(".th-home-live");
+    expect(block).not.toBeNull();
+    const cards = [...block!.querySelectorAll<HTMLElement>(".th-overview-card")];
+    expect(cards.map((card) => card.querySelector(".th-overview-card-name")?.textContent)).toEqual(["Refactor auth"]);
+    expect(block!.textContent).not.toContain("Ghost elsewhere");
+    expect(block!.querySelector(".th-home-live-count")?.textContent).toBe("1");
+  });
+
   it("lists every live session, working first then most recent, idle included", async () => {
     home.catalogSessions = [
       { ...home.discovered, id: "disk-1", recencyMs: 10 },

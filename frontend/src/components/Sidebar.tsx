@@ -14,6 +14,7 @@ export const MEMBERSHIP_MAX_RETRIES = 5;
 export const MEMBERSHIP_RETRY_DELAY_MS = 2000;
 import { useLiveSessionSummaries } from "../features/workspace/useLiveSessionSummaries";
 import { compareLiveSessions, isLiveSessionListed } from "../features/workspace/liveSessionOrder";
+import { resolveLiveSummaryTarget } from "../features/workspace/liveSummaryTarget";
 import { resolveWorkspaceSessionMembership } from "../features/workspace/workspace";
 import type { Terminal, Workspace, WorkspaceSession } from "../features/workspace/workspace";
 import type { WorkspaceSessionPaging } from "../features/workspace/useWorkspaces";
@@ -104,7 +105,9 @@ export function Sidebar({
     () => new Set(summaries.filter((summary) => summary.active === true).map((summary) => summary.id)),
     [summaries],
   );
-  // Server scalars make every child running count exact.
+  // Server scalars make every child running count exact. Unfiltered on
+  // purpose: tree badges, the restart dialog and the membership crawl key
+  // off every live row, including ones no stored chat or loaded row owns.
   const runningCounts = useMemo(
     () => new Map(
       summaries
@@ -112,17 +115,6 @@ export function Sidebar({
         .map((s) => [s.id, s.runningCount]),
     ),
     [summaries],
-  );
-  // Pin main-only work too, without adding parents to child-agent totals.
-  const runningSummaries = useMemo(
-    () => summaries.filter((summary) => summary.active === true || summary.runningCount > 0),
-    [summaries],
-  );
-  // The count next to the label means "how many are working": the exact
-  // running-agent total across the working sessions, idle rows excluded.
-  const totalRunningCount = useMemo(
-    () => runningSummaries.reduce((total, summary) => total + summary.runningCount, 0),
-    [runningSummaries],
   );
   // Last-activity ms per session id: catalog rows from the loaded session
   // pages, raised by whatever the membership crawl observed.
@@ -137,11 +129,22 @@ export function Sidebar({
     }
     return map;
   }, [sessionLists, crawlRecency]);
-  // The pinned section lists every live session, idle included: working
-  // sessions first, then most recent activity.
+  // The pinned section lists every live session with a resolvable open
+  // target, idle included: working sessions first, then most recent activity.
+  // A live row keyed by an engine UUID that no stored chat or loaded session
+  // row owns would render a card that cannot be opened, so it is dropped here.
   const liveSummaries = useMemo(
-    () => summaries.filter(isLiveSessionListed).sort((a, b) => compareLiveSessions(a, b, lastActivityMs)),
-    [summaries, lastActivityMs],
+    () => summaries
+      .filter((summary) => isLiveSessionListed(summary)
+        && resolveLiveSummaryTarget(summary, workspaces, sessionLists) !== null)
+      .sort((a, b) => compareLiveSessions(a, b, lastActivityMs)),
+    [summaries, workspaces, sessionLists, lastActivityMs],
+  );
+  // The count next to the label means "how many are working": the exact
+  // running-agent total across the pinned cards, idle rows excluded.
+  const totalRunningCount = useMemo(
+    () => liveSummaries.reduce((total, summary) => total + summary.runningCount, 0),
+    [liveSummaries],
   );
   // View live only names the row to focus and sort first. The tree offers it
   // strictly for running sessions, so a highlight never fabricates a row; an
