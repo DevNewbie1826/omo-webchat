@@ -1355,3 +1355,101 @@ describe("sidebar collapse motion contracts", () => {
     expect(declarationValue(ruleBody(desktopScope, ".th-sidebar--collapsed .th-sidebar-inner"), "opacity")).toBe("0");
   });
 });
+
+describe("coarse-pointer shell hit-area contracts (G40)", () => {
+  // Runtime measurement at 390x844 with a coarse pointer (both themes) found
+  // 17 shell targets below 44 CSS px: drawer nav-actions 32x32, pinned live
+  // card open 245x32, workspace chevron and row actions 24x24, chat row
+  // actions 24x24, load-more sessions 223x29, settings/logout 32x32, and the
+  // empty-state workspace picker select 280x26. The fix grows each element's
+  // OWN box to --th-space-11 (44px) under @media (pointer: coarse): the QA
+  // harness measures getBoundingClientRect, and an invisible ::before
+  // overflow ring hit-tests but never measures. Fine-pointer geometry stays
+  // untouched, and no two adjacent grown boxes overlap — every container
+  // keeps at least its 2px dead band.
+  const iconButton = readStyle("icon-button");
+  const overviewCss = readStyle("overview");
+  const sidebarLiveCss = readStyle("sidebar-live");
+
+  // Body of `selector`'s rule inside the FIRST @media (pointer: coarse)
+  // block of `css`. The base stylesheet may carry same-named rules; the
+  // media anchor keeps the match inside the coarse scope.
+  const coarseRule = (css: string, selector: string): string => {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return css.match(new RegExp(`@media \\(pointer: coarse\\)\\s*\\{[\\s\\S]*?${escaped}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+  };
+
+  it("grows the drawer nav-actions and footer icon buttons to 44px boxes on coarse pointers", () => {
+    const buttons = coarseRule(iconButton, ".th-sidebar-footer .th-btn-icon");
+    expect(buttons, "coarse nav/footer icon-button rule").not.toBe("");
+    expect(declarationValue(buttons, "min-width")).toBe("var(--th-space-11)");
+    expect(declarationValue(buttons, "min-height")).toBe("var(--th-space-11)");
+    // The grown box IS the hit area: the ring approach (an invisible ::before
+    // at a negative inset) hit-tested but never measured, which is why the
+    // runtime QA kept reporting the old small boxes.
+    expect(iconButton).not.toMatch(/th-sidebar-(?:nav-actions|footer) \.th-btn-icon::before/);
+    expect(iconButton).not.toContain("inset: -6px");
+    // Fine-pointer geometry keeps the 32px icon button.
+    expect(declarationValue(ruleBody(iconButton, ".th-btn-icon"), "width")).toBe("32px");
+    expect(declarationValue(ruleBody(iconButton, ".th-btn-icon"), "height")).toBe("32px");
+    // Adjacency: the nav cluster carries no gap override on coarse pointers —
+    // the default 2px dead band between two 44px boxes never overlaps.
+    expect(coarseRule(sidebar, ".th-sidebar-nav-actions")).toBe("");
+    // The footer's coarse bottom reserve survives so the 44px buttons stay
+    // clear of the safe-area band.
+    expect(declarationValue(coarseRule(sidebar, ".th-sidebar-footer"), "padding-bottom")).toBe("var(--th-space-2)");
+  });
+
+  it("grows the session-tree chevron, row actions, and load-more button to 44px on coarse pointers", () => {
+    const chevron = coarseRule(sessionTree, ".th-tree-chevron");
+    expect(declarationValue(chevron, "min-width")).toBe("var(--th-space-11)");
+    expect(declarationValue(chevron, "min-height")).toBe("var(--th-space-11)");
+    const actions = coarseRule(sessionTree, ".th-tree-actions .th-btn-icon");
+    expect(actions, "coarse row-actions rule").not.toBe("");
+    expect(declarationValue(actions, "min-width")).toBe("var(--th-space-11)");
+    expect(declarationValue(actions, "min-height")).toBe("var(--th-space-11)");
+    // The cluster keeps its 2px dead band between grown buttons.
+    expect(declarationValue(ruleBody(sessionTree, ".th-tree-actions"), "gap")).toBe("var(--th-space-0-5)");
+    // Fine-pointer row actions stay 24px; the growth is coarse-scoped only.
+    // (The coarse block now precedes the base rule in the file, so match the
+    // 24px declaration directly instead of relying on ruleBody's first-match.)
+    expect(sessionTree).toMatch(/\.th-tree-actions \.th-btn-icon\s*\{[^}]*width:\s*24px[^}]*\}/);
+    const more = coarseRule(sessionTree, ".th-tree-more");
+    expect(declarationValue(more, "min-height")).toBe("var(--th-space-11)");
+    // The load-more ::before ring is gone with the chevron ring approach.
+    expect(sessionTree).not.toContain("inset: -4px -2px -6px");
+  });
+
+  it("grows the live-card activation button to a 44px minimum on coarse pointers", () => {
+    const open = coarseRule(overviewCss, ".th-overview-card-open");
+    expect(open, "coarse live-card open rule").not.toBe("");
+    expect(declarationValue(open, "min-height")).toBe("var(--th-space-11)");
+    // The fine-pointer compact rule keeps no min-height of its own: the card
+    // owns the fine geometry (pinned live-session contracts above).
+    expect(declarationValue(ruleBody(sidebarLiveCss, ".th-sidebar-live-list .th-overview-card-open"), "min-height")).toBe("");
+  });
+
+  it("grows the empty-state workspace picker select to a 44px minimum on coarse pointers", () => {
+    const select = coarseRule(split, ".th-picker-pane > select");
+    expect(select, "coarse picker select rule").not.toBe("");
+    expect(declarationValue(select, "min-height")).toBe("var(--th-space-11)");
+    // The select already spans the pane width (280px in the QA fixture), well
+    // past the 44px minimum.
+    expect(declarationValue(ruleBody(split, ".th-picker-pane > select"), "width")).toBe("100%");
+  });
+
+  it("collapses the workspace row actions into one overflow trigger whose menu keeps every action at 44px", () => {
+    // Three 44px workspace actions cannot fit beside the disclosure and the
+    // workspace identity inside the 264px shell, so touch rows open an
+    // overflow popover behind one 44px trigger (SessionTree.tsx); the menu
+    // items keep the full 44px target so no action drops below the G40
+    // minimum, and the trigger label exists in both locales.
+    const item = ruleBody(sessionTree, ".th-tree-overflow-item");
+    expect(item, "overflow item rule").not.toBe("");
+    expect(declarationValue(item, "min-height")).toBe("var(--th-space-11)");
+    const en = JSON.parse(readFileSync("src/i18n/locales/en.json", "utf8")) as Record<string, string>;
+    const ko = JSON.parse(readFileSync("src/i18n/locales/ko.json", "utf8")) as Record<string, string>;
+    expect(en["sidebar.ws.moreActions"], "en sidebar.ws.moreActions").toBeDefined();
+    expect(ko["sidebar.ws.moreActions"], "ko sidebar.ws.moreActions").toBeDefined();
+  });
+});

@@ -15,7 +15,7 @@ import { buildScenarioRegistry } from './visual-redesign.mjs';
 import { pageKit, probeStateColors } from './visual-redesign-probes.mjs';
 import {
   ENTRANCE_RECORDER_SOURCE, armSidebarReversal, emptyStateVerdict, entranceVerdict, firstFamily, probeEmptyState,
-  probeSelectionFacts, probeShellStateColors, probeSidebarMotion, probeSidebarStatic, scenarios, selectionVerdict, shellLiveFrame,
+  probeSelectionFacts, probeShellCoarseTargets, probeShellStateColors, probeSidebarMotion, probeSidebarStatic, scenarios, selectionVerdict, shellLiveFrame,
   sidebarFocusVerdict, sidebarReversalVerdict, sidebarStaticVerdict, runStateColorsShell,
 } from './visual-redesign-scenarios-t3.mjs';
 
@@ -54,15 +54,15 @@ const REDESIGNED_SIDEBAR = {
 // ---------------------------------------------------------------------------
 
 describe('T3 plugin contract with the shared harness', () => {
-  test('registers S5/S10/S11 over the built-ins and de-stubs the T3 ids', () => {
-    expect(Object.keys(scenarios).sort()).toEqual(['S10', 'S11', 'S5']);
+  test('registers S5/S10/S11 and extends the S21 binary stub with G40', () => {
+    expect(Object.keys(scenarios).sort()).toEqual(['S10', 'S11', 'S21', 'S5']);
     for (const probe of Object.values(scenarios)) expect(typeof probe).toBe('function');
     const registry = buildScenarioRegistry([{ file: 'visual-redesign-scenarios-t3.mjs', scenarios }]);
     const s5 = registry.find(entry => entry.id === 'S5');
     expect(s5.origin).toBe('plugin:visual-redesign-scenarios-t3.mjs');
     expect(s5.stub).toBe(false);
     expect(s5.run).toBe(scenarios.S5);
-    for (const id of ['S10', 'S11']) {
+    for (const id of ['S10', 'S11', 'S21']) {
       const entry = registry.find(candidate => candidate.id === id);
       expect(entry.stub).toBe(false);
       expect(entry.origin).toBe('plugin:visual-redesign-scenarios-t3.mjs');
@@ -304,7 +304,7 @@ describe('entranceVerdict (S11 choreography)', () => {
 // ---------------------------------------------------------------------------
 
 describe('in-page probes serialize cleanly with the shared kit', () => {
-  const probes = [probeSidebarStatic, probeSidebarMotion, probeSelectionFacts, probeEmptyState, probeShellStateColors];
+  const probes = [probeSidebarStatic, probeSidebarMotion, probeSelectionFacts, probeEmptyState, probeShellStateColors, probeShellCoarseTargets];
   test('kit-augmented sources parse', () => {
     for (const probe of probes) {
       expect(() => new Function(`${pageKit()}\nreturn (${probe.toString()})();`)).not.toThrow();
@@ -329,7 +329,7 @@ describe('in-page probes serialize cleanly with the shared kit', () => {
     'Error', 'TypeError', 'RangeError', 'Promise', 'Symbol', 'Map', 'Set', 'WeakMap',
     'WeakSet', 'Proxy', 'Reflect', 'Intl', 'BigInt', 'parseInt', 'parseFloat', 'isNaN',
     'isFinite', 'encodeURIComponent', 'decodeURIComponent', 'structuredClone', 'globalThis',
-    'URL', 'URLSearchParams', 'Event', 'CustomEvent',
+    'URL', 'URLSearchParams', 'Event', 'CustomEvent', 'innerWidth', 'innerHeight', 'matchMedia',
   ]);
   const JS_NON_REFERENCES = new Set(['break', 'case', 'catch', 'class', 'const', 'continue', 'debugger',
     'default', 'delete', 'do', 'else', 'export', 'extends', 'finally', 'for', 'function', 'if',
@@ -600,6 +600,43 @@ async function withView(html, run) {
 async function runSerialized(view, probeFunction, argJson = '{}') {
   return await view.evaluate(`(() => { ${pageKit()}\nreturn (${probeFunction.toString()})(${argJson}); })()`);
 }
+
+describe('serialized S21 coarse shell hit areas', () => {
+  test('a 32px button fails the 44px minimum', async () => {
+    await withView(page('<aside class="th-sidebar"><button aria-label="Settings" style="width:32px;height:32px"></button></aside>'), async view => {
+      const result = await runSerialized(view, probeShellCoarseTargets, '{"root":".th-sidebar","requireCoarse":false}');
+      expect(result.elements).toHaveLength(1);
+      expect(result.elements[0]).toMatchObject({ name: 'Settings', size: { width: 32, height: 32 } });
+      expect(result.failures.some(failure => failure.includes('<44px'))).toBe(true);
+      expect(result.pass).toBe(false);
+    });
+  });
+
+  test('a 44px button passes and records its selector and name', async () => {
+    await withView(page('<aside class="th-sidebar"><button aria-label="Settings" style="width:44px;height:44px"></button></aside>'), async view => {
+      const result = await runSerialized(view, probeShellCoarseTargets, '{"root":".th-sidebar","requireCoarse":false}');
+      expect(result.elements).toHaveLength(1);
+      expect(result.elements[0].selector).toContain('.th-sidebar > button');
+      expect(result.elements[0].name).toBe('Settings');
+      expect(result.elements[0].size).toEqual({ width: 44, height: 44 });
+      expect(result.failures).toEqual([]);
+      expect(result.pass).toBe(true);
+    });
+  });
+
+  test('two overlapping 44px hit areas fail even though sizes pass', async () => {
+    await withView(page(`<aside class="th-sidebar" style="position:relative">
+      <button aria-label="First" style="position:absolute;left:0;top:0;width:44px;height:44px"></button>
+      <button aria-label="Second" style="position:absolute;left:22px;top:0;width:44px;height:44px"></button>
+    </aside>`), async view => {
+      const result = await runSerialized(view, probeShellCoarseTargets, '{"root":".th-sidebar","requireCoarse":false}');
+      expect(result.elements).toHaveLength(2);
+      expect(result.overlaps).toHaveLength(1);
+      expect(result.failures.some(failure => failure.includes('hit areas overlap'))).toBe(true);
+      expect(result.pass).toBe(false);
+    });
+  });
+});
 
 /** Evaluate a statement script (expression-wrapped evaluate, IIFE-wrapped call). */
 async function runScript(view, statements) {

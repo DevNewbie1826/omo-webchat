@@ -993,3 +993,14 @@ describe('T3 desktop sidebar motion inventory', () => {
     expect(invoke().inventory).toEqual([]);
   });
 });
+
+describe('S21 G40 plugin registration', () => {
+  test('the existing binary/font id runs the coarse shell probe instead of remaining a stub', async () => {
+    const { scenarios, runShellCoarseTargets } = await import('./visual-redesign-scenarios-t3.mjs');
+    const entry = buildScenarioRegistry([{ file: 'visual-redesign-scenarios-t3.mjs', scenarios }])
+      .find(row => row.id === 'S21');
+    expect(entry.stub).toBe(false);
+    expect(entry.origin).toBe('plugin:visual-redesign-scenarios-t3.mjs');
+    expect(entry.run).toBe(runShellCoarseTargets);
+  });
+});

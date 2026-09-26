@@ -27,6 +27,10 @@
  *       its box, greeting in the Display tier, one-time entrance,
  *       reduced-motion static) and fails when it is absent. pass:null is
  *       not a result.
+ *   S21 extends the plan's binary/font check with G40: at 390x844 on a
+ *       coarse pointer, measure visible shell hit areas in the drawer and
+ *       empty state; every target must be at least 44px on both axes and
+ *       adjacent hit areas must not overlap.
  *
  * Every product assertion has a counterpart that FAILS on the pre-redesign
  * baseline (dashed add button, success-hued running chip border/dot, mono
@@ -45,6 +49,7 @@
  * Unit tests: bun test test/qa/visual-redesign-scenarios-t3.test.mjs
  */
 import { motionViolations, parseColor } from './visual-redesign-probes.mjs';
+import { installSignals } from './design-workbench-fixture.mjs';
 
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-tested; driver-side only - never serialized into the page)
@@ -1410,9 +1415,155 @@ export async function runEmptyState(ctx) {
   }
 }
 
+/** Serialized S21 probe. Measure the actual hit rectangles, not the glyphs
+ * inside controls; hidden/inert and fully clipped descendants are excluded.
+ * No module-scope references may appear here (ctx.probe injects its source). */
+export function probeShellCoarseTargets({ root, requireCoarse = true } = {}) {
+  const coarseMatches = matchMedia('(pointer: coarse)').matches;
+  const failures = [];
+  const elements = [];
+  const overlaps = [];
+  const container = document.querySelector(root);
+  if (requireCoarse && !coarseMatches) failures.push('pointer: coarse media query did not match');
+  if (!container) failures.push(`shell surface ${root} is missing`);
+  if (container) {
+    const interactive = 'button, a[href], [role="button"], [role="tab"], [role="option"], input, select, [tabindex="0"]';
+    for (const element of container.querySelectorAll(interactive)) {
+      let visible = true;
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      let clip = { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
+      for (let ancestor = element; ancestor; ancestor = ancestor.parentElement) {
+        if (ancestor.hasAttribute('inert') || ancestor.getAttribute('aria-hidden') === 'true') { visible = false; break; }
+        const style = getComputedStyle(ancestor);
+        if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) === 0) {
+          visible = false; break;
+        }
+        if (ancestor !== element && /(hidden|auto|scroll|clip)/.test(style.overflowX + style.overflowY)) {
+          const bounds = ancestor.getBoundingClientRect();
+          clip = {
+            left: Math.max(clip.left, bounds.left), top: Math.max(clip.top, bounds.top),
+            right: Math.min(clip.right, bounds.right), bottom: Math.min(clip.bottom, bounds.bottom),
+          };
+        }
+      }
+      if (!visible || Math.min(rect.right, clip.right) <= Math.max(rect.left, clip.left)
+        || Math.min(rect.bottom, clip.bottom) <= Math.max(rect.top, clip.top)) continue;
+      const path = [];
+      for (let node = element; node && node !== container; node = node.parentElement) {
+        const peers = [...node.parentElement.children].filter(peer => peer.tagName === node.tagName);
+        path.unshift(`${node.tagName.toLowerCase()}${node.id ? `#${node.id}` : ''}${node.classList.length ? `.${[...node.classList].join('.')}` : ''}:nth-of-type(${peers.indexOf(node) + 1})`);
+      }
+      const selector = `${root} > ${path.join(' > ')}`;
+      const name = (element.getAttribute('aria-label') || element.getAttribute('title')
+        || element.textContent || '').trim().replace(/\s+/g, ' ');
+      const target = { selector, name, size: { width: rect.width, height: rect.height },
+        width: rect.width, height: rect.height, x: rect.left, y: rect.top };
+      elements.push(target);
+      if (Math.min(rect.width, rect.height) < 44) {
+        failures.push(`${selector} (${name || 'unnamed'}) is ${rect.width.toFixed(2)}x${rect.height.toFixed(2)}px (<44px)`);
+      }
+    }
+    for (let i = 0; i < elements.length; i += 1) {
+      const a = elements[i];
+      for (let j = i + 1; j < elements.length; j += 1) {
+        const b = elements[j];
+        if (Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x) > 0.01
+          && Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y) > 0.01) {
+          overlaps.push([a.selector, b.selector]);
+          failures.push(`hit areas overlap: ${a.selector} and ${b.selector}`);
+        }
+      }
+    }
+  }
+  return { coarseMatches, elements, overlaps, failures, pass: failures.length === 0 };
+}
+
+/** S21 G40 addition to the existing binary/font scenario. The shared live
+ * fixture starts with a normal context; only this second, measured context is
+ * mobile/touch. The fixture and both contexts are closed on every outcome. */
+export async function runShellCoarseTargets(ctx) {
+  const env = await ctx.setupLive();
+  const failures = [];
+  const measurements = { elements: [], stages: [], pageErrors: [] };
+  let touchContext;
+  let teardown;
+  try {
+    const browser = env.context.browser();
+    if (!browser) throw new Error('live fixture context has no browser');
+    touchContext = await browser.newContext({
+      viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, colorScheme: ctx.theme,
+    });
+    const page = await touchContext.newPage();
+    page.setDefaultTimeout(8000);
+    page.on('pageerror', error => measurements.pageErrors.push(String(error)));
+    await installSignals(page, { theme: ctx.theme });
+    await page.goto(env.fixture.url);
+    await page.waitForSelector('.th-mobile-menu', { state: 'visible', timeout: 8000 });
+    const measure = async (stage, root, required) => {
+      const result = await ctx.probe(page, probeShellCoarseTargets, { root });
+      measurements.stages.push({ stage, root, count: result.elements.length, coarseMatches: result.coarseMatches,
+        failing: result.failures, overlaps: result.overlaps });
+      measurements.elements.push(...result.elements.map(element => ({ stage, ...element })));
+      failures.push(...result.failures.map(failure => `[${stage}] ${failure}`));
+      for (const selector of required) {
+        if (!result.elements.some(element => element.selector.includes(selector))) {
+          failures.push(`[${stage}] required shell target ${selector} was not measured`);
+        }
+      }
+      return result;
+    };
+    await measure('header', '.th-termhead', ['.th-mobile-menu']);
+    await openDrawer(page);
+    await deliverShellLive(env, ctx.constants.CHAT, []);
+    await page.waitForSelector('.th-sidebar-live .th-overview-card-open', { state: 'visible', timeout: 6000 });
+    await settleDrawerMotion(page);
+    const drawer = await measure('drawer', '.th-sidebar', [
+      '.th-sidebar-nav-actions', '.th-overview-card-open', '.th-btn-add', '.th-tree-chevron',
+      '.th-tree-activation', '.th-tree-actions', '.th-sidebar-footer',
+    ]);
+    if (!drawer.elements.some(element => element.selector.includes('.th-tree-more'))) {
+      await page.locator('.th-tree-more').first().scrollIntoViewIfNeeded();
+      await measure('drawer-pagination', '.th-sidebar', ['.th-tree-more']);
+    }
+    // On coarse pointers the workspace's three actions may live in an
+    // overflow popover. Measure that open layer on its own: controls behind
+    // the popover are occluded, not overlapping active hit areas.
+    const workspaceActions = page.locator('.th-tree-actions--overflow > button').first();
+    if (await workspaceActions.count()) {
+      await workspaceActions.click();
+      await page.waitForSelector('.th-tree-overflow-item', { state: 'visible', timeout: 4000 });
+      const menu = await measure('workspace-actions', '.th-tree-overflow', ['.th-tree-overflow-item']);
+      if (menu.elements.length !== 3) {
+        failures.push(`[workspace-actions] expected three workspace actions, measured ${menu.elements.length}`);
+      }
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('.th-tree-overflow', { state: 'detached', timeout: 4000 });
+    }
+    await focusEmptyLayout(env);
+    await page.reload();
+    await page.waitForSelector('.th-empty .th-picker-pane', { state: 'visible', timeout: 8000 });
+    await settleFiniteMotion(page);
+    await measure('empty', '.th-empty', [
+      '.th-empty-menu', '.th-empty-hero', 'select:nth-of-type', '.th-picker-pane-item',
+      'button.th-btn.th-btn--ghost', '.th-picker-pane-create',
+    ]);
+    if (measurements.pageErrors.length) failures.push(...measurements.pageErrors.map(error => `page error: ${error}`));
+  } catch (error) {
+    failures.push(`harness error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+  } finally {
+    if (touchContext) {
+      try { await touchContext.close(); } catch (error) { failures.push(`touch context close failed: ${errLine(error)}`); }
+    }
+    teardown = await closeEnv(env);
+  }
+  return { scenario: 'S21', pass: failures.length === 0, measurements, failures, teardown };
+}
+
 /** Plugin export merged over the built-in registry by visual-redesign.mjs. */
 export const scenarios = Object.freeze({
   S5: runStateColorsShell,
   S10: runSidebarSelection,
   S11: runEmptyState,
+  S21: runShellCoarseTargets,
 });
