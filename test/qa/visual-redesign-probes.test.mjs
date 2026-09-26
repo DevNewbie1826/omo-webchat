@@ -7,7 +7,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildScenarioRegistry, loadScenarioPlugins, requiredInteractionVerdict } from './visual-redesign.mjs';
+import { buildScenarioRegistry, loadScenarioPlugins, NEW_CHAT_DIALOG_SURFACE, openNewChatDialogNative, overlayCycle, requiredInteractionVerdict } from './visual-redesign.mjs';
 import {
   CONTRAST_BODY_MIN, CONTRAST_FAINT_MIN, HIERARCHY_MIN_RATIO, OLD_PALETTE_HEXES, classifyBorderFacts,
   collectAnimations, colorEquals, compositeOver, contrastRatio, defaultMotionAllowed, describeElement,
@@ -784,6 +784,83 @@ describe('serialized probeReducedMotion (R4: finite entrances must fail)', () =>
       animations: [fakeAnimation({ iterations: 1, duration: 2, playState: 'finished' })],
     });
     expect(above.pass).toBe(false);
+  });
+});
+
+describe('S12 native-entry gate (R3: a deliberately blocked native trigger must fail)', () => {
+  /** In-memory page adapter, the same shape as the review's executed
+   * counterexample: locator/keyboard only, because a blocked open fails the
+   * cycle before any in-page probe runs. `nativeClickError` simulates the
+   * browser refusing the pointer - an element covered by another overlay or
+   * with pointer-events:none never becomes clickable and Playwright reports
+   * exactly this actionability-timeout message. */
+  const pageAdapter = ({ nativeClickError = null } = {}) => {
+    const calls = [];
+    const page = {
+      calls,
+      locator(selector) {
+        const handle = {
+          first() { return handle; },
+          isVisible: async () => selector === '.th-tree-node',
+          hover: async () => { calls.push(`hover ${selector}`); },
+          click: async () => {
+            calls.push(`click ${selector}`);
+            if (nativeClickError) throw new Error(nativeClickError);
+          },
+          dispatchEvent: async type => { calls.push(`dispatchEvent ${selector} ${type}`); },
+        };
+        return handle;
+      },
+      waitForSelector: async selector => { calls.push(`wait ${selector}`); },
+      keyboard: { press: async key => { calls.push(`key ${key}`); } },
+    };
+    return page;
+  };
+  const cycleCtx = { scenario: 'S12', theme: 'dark', viewport: { label: '1280x900' }, shotsDir: '/tmp' };
+  const noSyntheticEntry = page => page.calls.filter(call => call.startsWith('dispatchEvent'));
+
+  test('a covered / pointer-events:none trigger rejects the opener - no synthetic fallback', async () => {
+    const page = pageAdapter({ nativeClickError: 'click: Timeout 4000ms exceeded.' });
+    let rejected = null;
+    try { await openNewChatDialogNative(page); } catch (error) { rejected = error; }
+    expect(rejected?.message).toBe('click: Timeout 4000ms exceeded.');
+    expect(page.calls).toContain('hover .th-tree-node');
+    expect(page.calls).toContain('click button[title="Add chat session"]');
+    expect(noSyntheticEntry(page)).toEqual([]);
+  });
+
+  test('the blocked native trigger fails the S12 cycle and the failure is recorded', async () => {
+    const page = pageAdapter({ nativeClickError: 'click: Timeout 4000ms exceeded.' });
+    const cycle = await overlayCycle(page, cycleCtx, NEW_CHAT_DIALOG_SURFACE);
+    expect(cycle.failures).toHaveLength(1);
+    expect(cycle.failures[0]).toContain('new-chat-dialog: overlay did not open through its real entry point');
+    expect(cycle.failures[0]).toContain('click: Timeout 4000ms exceeded.');
+    expect(cycle.record.surface).toBe('new-chat-dialog');
+    expect(cycle.record.entryMethod).toBe('native');
+    expect(cycle.screenshots).toEqual([]);
+    expect(noSyntheticEntry(page)).toEqual([]);
+  });
+
+  test('a healthy native click needs no synthetic entry either', async () => {
+    const page = pageAdapter();
+    await openNewChatDialogNative(page);
+    expect(page.calls).toContain('click button[title="Add chat session"]');
+    expect(page.calls).toContain('wait .th-modal-overlay');
+    expect(noSyntheticEntry(page)).toEqual([]);
+  });
+
+  test('the new-chat surface opens through the native-only opener', () => {
+    expect(NEW_CHAT_DIALOG_SURFACE.entryMethod).toBe('native');
+    expect(NEW_CHAT_DIALOG_SURFACE.open).toBe(openNewChatDialogNative);
+  });
+
+  test('the harness source carries no synthetic click fallback anywhere', async () => {
+    const source = await Bun.file(new URL('./visual-redesign.mjs', import.meta.url).pathname).text();
+    // Call-site shape only: the method invocation `.dispatchEvent(`. Prose
+    // (comments naming the removed fallback) must not trip the pin.
+    expect(source).not.toContain('.dispatchEvent(');
+    // R3 also pins that the file-editor entry stays a native click.
+    expect(source).toContain("locator('.th-files-name--link').first().click()");
   });
 });
 

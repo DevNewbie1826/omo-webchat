@@ -61,7 +61,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 
-import { designSeed, installSignals, seedLive, setupDesign } from './design-workbench-fixture.mjs';
+import { designSeed, fileContent, installSignals, seedLive, setupDesign } from './design-workbench-fixture.mjs';
 import { startFixture } from './pane-workspace-ui.mjs';
 import { startTaskFixture } from './task-state-fixture.mjs';
 import { summaryFrame } from './dag-summary-fixture.mjs';
@@ -441,9 +441,12 @@ async function driveRunning(browser, ctx) {
  *                              runs between close and re-open so the rapid
  *                              cycle mimics a real user clearing the
  *                              composer (D3). */
-async function overlayCycle(page, ctx, surface) {
+export async function overlayCycle(page, ctx, surface) {
   const failures = [];
-  const record = { surface: surface.name, kind: surface.kind };
+  // entryMethod documents how this cycle entered the surface: native pointer
+  // input by default (R3) - after the synthetic dispatchEvent('click')
+  // removal no other entry method exists anywhere in the harness.
+  const record = { surface: surface.name, kind: surface.kind, entryMethod: surface.entryMethod ?? 'native' };
   const snapshot = () => probe(page, overlaySnapshot, { root: surface.root, controller: surface.controller });
   try {
     await surface.open(page);
@@ -576,12 +579,42 @@ async function overlayCycle(page, ctx, surface) {
   return { record, failures, screenshots: [shot] };
 }
 
+/** R3 (S12): the new-chat dialog opens through NATIVE POINTER ENTRY ONLY.
+ * The tree row reveals its actions on :hover/:focus-within, so hover the
+ * row first and then click the button with a real pointer. A click that
+ * cannot reach the button - covered by an overlay, pointer-events:none, or
+ * a zero-size box - must propagate its failure so S12 records it: the
+ * round-2 review's executed counterexample showed the old
+ * dispatchEvent('click') fallback letting an unreachable trigger still
+ * produce a passing overlay cycle. Exported so the unit tests can prove a
+ * deliberately blocked native trigger fails the scenario. */
+export async function openNewChatDialogNative(page) {
+  if (!(await page.locator('.th-tree-node').first().isVisible().catch(() => false))) {
+    await openMobileDrawer(page);
+  }
+  await page.locator('.th-tree-node').first().hover().catch(() => {});
+  await page.locator('button[title="Add chat session"]').first().click({ timeout: 4000 });
+  await page.waitForSelector('.th-modal-overlay', { timeout: 4000 });
+}
+
+/** The new-chat surface spec, shared with the R3 unit tests (frozen: the
+ * driver only reads it). entryMethod records that every cycle enters through
+ * native pointer input - a synthetic dispatch can no longer stand in. */
+export const NEW_CHAT_DIALOG_SURFACE = Object.freeze({
+  name: 'new-chat-dialog', kind: 'modal', root: '.th-modal',
+  trigger: 'button[title="Add chat session"]', glassGated: true, entryMethod: 'native',
+  open: openNewChatDialogNative,
+  close: async page => { await page.keyboard.press('Escape'); },
+  recover: async page => { await page.keyboard.press('Escape'); },
+});
+
 async function driveOverlays(browser, ctx) {
   const env = await setupOverlays(browser, ctx);
   const surfaces = [
     {
       name: 'settings-menu', kind: 'popover', root: '.th-settings-panel',
       controller: '.th-settings-menu > button', glassGated: true, tabIntoPanel: true,
+      entryMethod: 'native',
       // Desktop: the trigger sits in the sidebar footer. Mobile: the sidebar
       // is the drawer, so clickThroughRealEntry opens it via the hamburger.
       open: async page => {
@@ -594,31 +627,11 @@ async function driveOverlays(browser, ctx) {
         await page.keyboard.press('Escape').catch(() => {});
       },
     },
-    {
-      name: 'new-chat-dialog', kind: 'modal', root: '.th-modal',
-      trigger: 'button[title="Add chat session"]', glassGated: true,
-      // The tree row reveals its actions only on :hover/:focus-within, so the
-      // plain click would wait forever on a zero-box button: hover the row,
-      // click, and fall back to a dispatched click for pointer-less states.
-      open: async page => {
-        if (!(await page.locator('.th-tree-node').first().isVisible().catch(() => false))) {
-          await openMobileDrawer(page);
-        }
-        await page.locator('.th-tree-node').first().hover().catch(() => {});
-        const button = page.locator('button[title="Add chat session"]').first();
-        try {
-          await button.click({ timeout: 4000 });
-        } catch {
-          await button.dispatchEvent('click');
-        }
-        await page.waitForSelector('.th-modal-overlay', { timeout: 4000 });
-      },
-      close: async page => { await page.keyboard.press('Escape'); },
-      recover: async page => { await page.keyboard.press('Escape'); },
-    },
+    NEW_CHAT_DIALOG_SURFACE,
     {
       name: 'slash-palette', kind: 'popover', root: '.th-chat-slash',
       controller: '.th-chat-input textarea', palette: true, glassGated: false,
+      entryMethod: 'keyboard',
       // Palette glass is gated by T2/S9, recorded but not failed here.
       open: async page => {
         // O1: at 390 a mobile drawer left open by an earlier surface occludes
@@ -639,7 +652,7 @@ async function driveOverlays(browser, ctx) {
     {
       name: 'file-palette', kind: 'popover', root: '.th-chat-files',
       controller: '.th-chat-input textarea', palette: true,
-      paletteReady: '.th-chat-files [role="option"]', glassGated: false,
+      paletteReady: '.th-chat-files [role="option"]', glassGated: false, entryMethod: 'keyboard',
       // Same T2/S9 glass carve-out as the slash palette.
       open: async page => {
         await closeMobileDrawer(page);
@@ -656,7 +669,7 @@ async function driveOverlays(browser, ctx) {
     },
     {
       name: 'confirm-dialog', kind: 'modal', root: '.th-modal',
-      trigger: 'button[title="Delete workspace"]', glassGated: true,
+      trigger: 'button[title="Delete workspace"]', glassGated: true, entryMethod: 'native',
       // Real entry: reveal the workspace row actions with a real pointer
       // hover, then click its delete action. While the modal is open the
       // product keeps the recorded action revealed
@@ -675,7 +688,7 @@ async function driveOverlays(browser, ctx) {
     },
     {
       name: 'wizard-modal', kind: 'modal', root: '.th-modal',
-      trigger: '.th-btn-add', glassGated: true,
+      trigger: '.th-btn-add', glassGated: true, entryMethod: 'native',
       open: async page => {
         await clickThroughRealEntry(page, '.th-btn-add');
         await page.waitForSelector('.th-modal-overlay', { timeout: 4000 });
@@ -684,7 +697,7 @@ async function driveOverlays(browser, ctx) {
       recover: async page => { await page.keyboard.press('Escape'); },
     },
     {
-      name: 'question-window', kind: 'modal', root: '.th-modal', glassGated: true,
+      name: 'question-window', kind: 'modal', root: '.th-modal', glassGated: true, entryMethod: 'native',
       // System-initiated modal: the provider delivers a question frame, the
       // notice band carries it, and the band's Open button is the real user
       // entry. Escape folds the window back to the band and hands focus to
@@ -1013,6 +1026,24 @@ async function wizardPrimaryFacts(page, selector) {
   }, selector);
 }
 
+/** R2 (S19): readiness for the file-editor capture - measure the LOADED
+ * editor, never its loading placeholder. `.th-editor` mounts while fsRead
+ * is still pending and its body then holds only the header plus the
+ * Loading… status (the round-2 review directly observed five of six
+ * captures in exactly that state). Readiness is the real textarea carrying
+ * the seeded /fixture/session.ts content with no loading/error status
+ * left, so a read that never settles - or lands on the error alert -
+ * fails the surface here instead of being captured as if it were the
+ * editor. */
+async function waitForLoadedEditor(page) {
+  await page.waitForFunction(needle => {
+    const editor = document.querySelector('.th-editor');
+    if (!editor || editor.querySelector('.th-editor-status')) return false;
+    const area = editor.querySelector('textarea.th-editor-area');
+    return !!area && area.value === needle;
+  }, fileContent, { timeout: 8000 });
+}
+
 async function driveSurfaces(browser, ctx) {
   const env = await setupSurfaces(browser, ctx);
   const page = env.page;
@@ -1040,7 +1071,10 @@ async function driveSurfaces(browser, ctx) {
     await page.waitForSelector('.th-files-head', { timeout: 4000 });
   });
   // S19: the file EDITOR itself, through its real entry - click the file
-  // row's open-editor link in the still-open browser panel.
+  // row's open-editor link in the still-open browser panel. R2: the contrast
+  // walk and the screenshot run only after the real textarea carries the
+  // seeded file content with the Loading… placeholder gone and the enter
+  // animations settled, so both record the LOADED editor at every width.
   await scan('file-editor', '.th-editor', async () => {
     if (!(await page.locator('.th-files-head').isVisible().catch(() => false))) {
       await clickThroughRealEntry(page, '.th-files-toggle');
@@ -1048,6 +1082,19 @@ async function driveSurfaces(browser, ctx) {
     }
     await page.locator('.th-files-name--link').first().click();
     await page.waitForSelector('.th-editor', { timeout: 4000 });
+    await waitForLoadedEditor(page);
+    await settleAnimations(page, '.th-editor');
+    measurements.fileEditorLoaded = await page.evaluate(() => {
+      const editor = document.querySelector('.th-editor');
+      const area = editor?.querySelector('textarea.th-editor-area') ?? null;
+      return {
+        loaded: !!area && !editor?.querySelector('.th-editor-status'),
+        hasLoadingStatus: !!editor?.querySelector('.th-editor-status'),
+        file: area?.getAttribute('aria-label') ?? null,
+        contentLength: area?.value.length ?? 0,
+        contentPreview: area?.value.slice(0, 48) ?? null,
+      };
+    });
   });
   await page.click('button[title="Close editor"]').catch(() => {});
   await page.waitForSelector('.th-editor', { state: 'detached', timeout: 3000 }).catch(() => {});
