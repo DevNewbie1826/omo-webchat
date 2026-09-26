@@ -87,6 +87,9 @@ func TestSetSessionNamePersistsAndFramesUserTitle(t *testing.T) {
 	sub := newRecorder(16)
 	sess, _, _ := acquire(t, mgr, testChat{id: "rename-title", cwd: t.TempDir()}, sub)
 	sub.next(t) // ready
+	updates := make(chan Summary, 1)
+	unsubscribe := mgr.SubscribeOverview(func(snapshot Summary) { updates <- snapshot })
+	defer unsubscribe()
 
 	if err := sess.SetSessionName(context.Background(), "User title"); err != nil {
 		t.Fatal(err)
@@ -101,6 +104,14 @@ func TestSetSessionNamePersistsAndFramesUserTitle(t *testing.T) {
 	}
 	if cur := store.stored(sess.ChatID()); cur.Name != "User title" || cur.NameSource != NameSourceUser {
 		t.Fatalf("stored name = %+v", cur)
+	}
+	if snapshot := awaitOverview(t, updates); snapshot.ChatID != sess.ChatID() || snapshot.Title != "User title" {
+		t.Fatalf("overview rename = %+v", snapshot)
+	}
+	initial, stop := mgr.SubscribeActivity(false, []string{sess.ChatID()}, func(Summary, bool) {})
+	defer stop()
+	if len(initial) != 1 || initial[0].Title != "User title" {
+		t.Fatalf("initial overview after rename = %+v", initial)
 	}
 }
 
