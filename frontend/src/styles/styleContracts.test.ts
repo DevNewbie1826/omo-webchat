@@ -956,7 +956,7 @@ describe("main-screen running-sessions contracts", () => {
     expect(declarationValue(block, "overflow-x")).toBe("hidden");
   });
 
-  it("styles the header as an uppercase micro label with the count at the far edge", () => {
+  it("styles the header as a sentence-case micro label with the count at the far edge", () => {
     const label = ruleBody(homeLive, ".th-home-live-label");
     expect(declarationValue(label, "display")).toBe("flex");
     expect(declarationValue(label, "align-items")).toBe("center");
@@ -964,8 +964,8 @@ describe("main-screen running-sessions contracts", () => {
     expect(declarationValue(label, "font-weight")).toBe("var(--th-weight-emphasize)");
     expect(declarationValue(label, "line-height")).toBe("var(--th-type-micro-line)");
     expect(declarationValue(label, "letter-spacing")).toBe("var(--th-type-micro-tracking)");
-    expect(declarationValue(label, "text-transform")).toBe("uppercase");
-    expect(declarationValue(label, "color")).toBe("var(--th-faint)");
+    expect(declarationValue(label, "text-transform")).not.toBe("uppercase");
+    expect(declarationValue(label, "color")).toBe("var(--th-muted)");
     const count = ruleBody(homeLive, ".th-home-live-count");
     expect(declarationValue(count, "margin-left")).toBe("auto");
     expect(declarationValue(count, "color")).toBe("var(--th-muted)");
@@ -1260,5 +1260,98 @@ describe("pinned live-session section contracts", () => {
     expect(minHeight).toContain("2px");
     const pillHeight = numericToken("--th-type-micro-size") * numericToken("--th-type-micro-line") + 2;
     expect(evaluateCalc(minHeight)).toBe(pillHeight);
+  });
+});
+
+describe("sidebar collapse motion contracts", () => {
+  // DESIGN.md Motion: "Nothing animates width, height, top, left, margin, or
+  // padding." Desktop collapse/reopen swaps the shell width between
+  // --th-sidebar-w and the 44px rail instantly; a restored width transition
+  // here must fail. The only transition scope a sidebar rule may carry is the
+  // mobile drawer (transform/visibility, documented in the Motion section),
+  // so declarations inside the max-width: 768px media query are exempt.
+  it("never transitions a layout property in the desktop sidebar scope", () => {
+    const LAYOUT_PROPERTIES = new Set(["width", "min-width", "max-width", "flex-basis", "all"]);
+    // Split a transition list on top-level commas only: an easing such as
+    // cubic-bezier() or linear() carries commas of its own inside parens.
+    const segments = (value: string): string[] => {
+      const parts: string[] = [];
+      let depth = 0;
+      let current = "";
+      for (const char of value) {
+        if (char === "(") depth += 1;
+        else if (char === ")") depth -= 1;
+        if (char === "," && depth === 0) {
+          parts.push(current);
+          current = "";
+          continue;
+        }
+        current += char;
+      }
+      parts.push(current);
+      return parts;
+    };
+    // The animated property is the first identifier of each segment; the
+    // none keyword animates nothing.
+    const animatedProperties = (value: string): string[] =>
+      segments(value)
+        .map((segment) => (/^\s*none\s*$/i.test(segment) ? "" : (segment.trim().match(/^[a-z-]+/i)?.[0]?.toLowerCase() ?? "")))
+        .filter((property) => property !== "");
+    const violations: string[] = [];
+    for (const [file, css] of [["sidebar.css", sidebar], ["sidebar-toggle.css", sidebarToggle]] as const) {
+      postcss.parse(css, { from: file }).walkDecls((declaration) => {
+        const prop = declaration.prop.toLowerCase();
+        if (prop !== "transition" && prop !== "transition-property") return;
+        let inDrawerMedia = false;
+        let ancestor: { type: string; params?: string; parent?: unknown } | undefined =
+          declaration.parent as { type: string; params?: string; parent?: unknown } | undefined;
+        while (ancestor !== undefined) {
+          if (ancestor.type === "atrule" && /\(\s*max-width\s*:\s*768px\s*\)/.test(ancestor.params ?? "")) {
+            inDrawerMedia = true;
+            break;
+          }
+          ancestor = ancestor.parent as typeof ancestor;
+        }
+        if (inDrawerMedia) return;
+        for (const property of animatedProperties(declaration.value)) {
+          if (LAYOUT_PROPERTIES.has(property)) {
+            violations.push(
+              `${file}:${declaration.source?.start?.line ?? "?"}: ${prop} must not animate '${property}' on the desktop sidebar (${declaration.value.trim()})`,
+            );
+          }
+        }
+      });
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("keeps the drawer transform/visibility transition inside the mobile media query", () => {
+    // Positive control: the drawer still animates transform (and the discrete
+    // visibility flip paired with it) below 768px. If that motion moves out of
+    // the media query or loses its scope, this fails alongside the probe.
+    const drawerMedia = sidebar.match(/@media \(max-width: 768px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+    // Prose comments between declarations carry no semicolons, so strip them
+    // before declarationValue's (^|;) anchor runs.
+    const stripComments = (body: string): string => body.replace(/\/\*[\s\S]*?\*\//g, "");
+    const drawer = stripComments(ruleBody(drawerMedia, ".th-sidebar"));
+    expect(declarationValue(drawer, "transition")).toContain("transform");
+    const drawerCollapsed = stripComments(ruleBody(drawerMedia, ".th-sidebar--collapsed"));
+    expect(declarationValue(drawerCollapsed, "transition")).toContain("transform");
+    expect(declarationValue(drawerCollapsed, "transition")).toContain("visibility");
+    expect(declarationValue(drawerCollapsed, "visibility")).toBe("hidden");
+    expect(declarationValue(drawerCollapsed, "transform")).toBe("translateX(-100%)");
+  });
+
+  it("softens the instant desktop width swap with a content crossfade, desktop-scoped only", () => {
+    // The shell no longer carries any transition; the feel comes from the
+    // content column's opacity fade, declared only at >=769px so the drawer's
+    // content never fades during its slide.
+    expect(declarationValue(ruleBody(sidebar, ".th-sidebar"), "transition")).toBe("");
+    const desktopScope = sidebar.match(/@media \(min-width: 769px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+    expect(desktopScope, "desktop crossfade block").not.toBe("");
+    expect(declarationValue(ruleBody(desktopScope, ".th-sidebar-inner"), "transition")).toBe(
+      "opacity var(--th-dur) var(--th-ease)",
+    );
+    expect(declarationValue(ruleBody(desktopScope, ".th-sidebar--collapsed .th-sidebar-inner"), "opacity")).toBe("0");
   });
 });

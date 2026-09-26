@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { IconMenu } from "./icons";
+import { IconMenu, IconPlus } from "./icons";
+import { PresenceHero } from "./PresenceHero";
 import { useT } from "../i18n";
 import type { Workspace } from "../features/workspace/workspace";
 
@@ -13,6 +14,34 @@ export interface ChatEmptyStateProps {
   readonly onNewChat: () => void;
 }
 
+export interface ChatEmptyHeroProps {
+  readonly hasWorkspaces: boolean;
+  readonly onNewWorkspace: () => void;
+  readonly onNewChat: () => void;
+}
+
+/** The action slot carries the mobile hero's CTA; the desktop picker omits
+ * it and keeps its own create action at the foot of the list. */
+export function ChatEmptyHero({ hasWorkspaces, onNewWorkspace, onNewChat }: ChatEmptyHeroProps) {
+  const { t } = useT();
+  return (
+    <PresenceHero
+      greeting={t("empty.greeting")}
+      hint={t(hasWorkspaces ? "empty.hintResume" : "empty.hintStart")}
+      action={(
+        <button
+          type="button"
+          className="th-btn th-btn--primary th-empty-cta"
+          onClick={hasWorkspaces ? onNewChat : onNewWorkspace}
+        >
+          <IconPlus size={16} />
+          {t(hasWorkspaces ? "empty.newChat" : "empty.newWorkspace")}
+        </button>
+      )}
+    />
+  );
+}
+
 export function ChatEmptyState({
   mobile,
   sessionPicker,
@@ -23,7 +52,6 @@ export function ChatEmptyState({
   onNewChat,
 }: ChatEmptyStateProps) {
   const { t } = useT();
-  const hasWorkspaces = workspaces.length > 0;
 
   return (
     <div className="th-empty">
@@ -38,19 +66,9 @@ export function ChatEmptyState({
           <IconMenu size={18} />
         </button>
       )}
+      <ChatEmptyHero hasWorkspaces={workspaces.length > 0} onNewWorkspace={onNewWorkspace} onNewChat={onNewChat} />
       {runningSessions}
-      {sessionPicker ?? <>
-      <div className="th-empty-glyph">{t("app.title")}</div>
-      <h2 className="th-empty-title">{t("empty.title")}</h2>
-      <p className="th-empty-hint">{t("empty.hint")}</p>
-      <button
-        type="button"
-        className="th-btn th-btn--primary"
-        onClick={hasWorkspaces ? onNewChat : onNewWorkspace}
-      >
-        {t(hasWorkspaces ? "empty.newChat" : "empty.newWorkspace")}
-      </button>
-      </>}
+      {sessionPicker}
     </div>
   );
 }

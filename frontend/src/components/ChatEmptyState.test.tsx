@@ -104,9 +104,47 @@ describe("ChatEmptyState", () => {
       sessionPicker: <div data-testid="session-picker">picker</div>,
     });
 
-    const empty = container.querySelector(".th-empty");
-    expect(empty?.childElementCount).toBe(1);
-    expect(empty?.firstElementChild?.getAttribute("data-testid")).toBe("session-picker");
+    const children = Array.from(container.querySelector(".th-empty")?.children ?? []);
+    expect(children).toHaveLength(2);
+    expect(children[0]?.className).toBe("th-empty-hero");
+    expect(children[1]?.getAttribute("data-testid")).toBe("session-picker");
+  });
+
+  it("leads with the presence hero and keeps its nodes mounted across re-renders", () => {
+    renderState({ mobile: false, workspaces: [] });
+
+    const hero = container.querySelector(".th-empty > .th-empty-hero");
+    const orb = hero?.querySelector(".th-empty-orb");
+    const greeting = hero?.querySelector("h2.th-empty-title");
+    const hint = hero?.querySelector(".th-empty-hint");
+    const cta = hero?.querySelector<HTMLButtonElement>("button.th-empty-cta");
+    expect(orb?.getAttribute("aria-hidden")).toBe("true");
+    expect(greeting?.textContent).toBe("empty.greeting");
+    expect(hint?.textContent).toBe("empty.hintStart");
+    expect(cta?.textContent).toBe("empty.newWorkspace");
+
+    renderState({
+      mobile: false,
+      workspaces: [workspace("ws-1")],
+      runningSessions: <div data-testid="running-sessions">running</div>,
+      sessionPicker: <div data-testid="session-picker">picker</div>,
+    });
+
+    // The CSS entrance plays on mount only: re-rendering must reuse, not
+    // remount, every hero node.
+    const rerendered = container.querySelector(".th-empty > .th-empty-hero");
+    expect(rerendered).toBe(hero);
+    expect(rerendered?.querySelector(".th-empty-orb")).toBe(orb);
+    expect(rerendered?.querySelector("h2.th-empty-title")).toBe(greeting);
+    expect(rerendered?.querySelector(".th-empty-hint")).toBe(hint);
+    expect(rerendered?.querySelector("button.th-empty-cta")).toBe(cta);
+    expect(hint?.textContent).toBe("empty.hintResume");
+    expect(cta?.textContent).toBe("empty.newChat");
+
+    const running = container.querySelector('[data-testid="running-sessions"]');
+    expect(
+      (hero as Node).compareDocumentPosition(running as Node) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("switches the primary action to New chat when workspaces exist", () => {

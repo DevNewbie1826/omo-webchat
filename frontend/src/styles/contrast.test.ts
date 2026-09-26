@@ -517,23 +517,16 @@ describe("token contrast contracts (WCAG 2.1)", () => {
   // list cannot silently rot. Readable prose, including expanded reasoning,
   // is not metadata and is not listed.
   const FAINT_METADATA_ALLOWLIST: Readonly<Record<string, string>> = {
-    ".th-empty": "empty-state container default; every rendered child carries its own tier",
     ".th-settings-label": "settings section label",
-    ".th-overview-card-line": "running-session last-output identification line (micro, one ellipsized line)",
-    ".th-sidebar-live-label": "sidebar running-sessions section label",
     ".th-login-foot": "login footer hint line",
     ".th-input::placeholder": "input placeholder hint",
-    ".th-home-live-label": "empty-state running-sessions section label",
     ".th-activity-bar-sep": "activity bar middot separator glyph",
     ".th-activity-resize::after": "activity panel resize grip pill (non-text affordance, >=3:1 at rest)",
     ".th-tree-chevron": "session-tree disclosure chevron icon",
-    ".th-tree-placed": "session-tree placed-marker dot border",
     ".th-tree-source": "session-tree source badge",
-    ".th-tree-count": "session-tree pending count pill",
     ".th-files-chevron": "file-tree disclosure chevron icon",
     ".th-files-childstatus": "file-tree child status metadata",
     ".th-files-meta--dim": "file-row dim metadata",
-    ".th-sidebar-section-label": "sidebar section label",
     ".th-tool-chevron": "tool record disclosure chevron icon",
     ".th-tool-sep": "tool record separator glyph",
     ".th-tool-caption": "tool record caption (timings/metadata)",
@@ -629,18 +622,18 @@ describe("token contrast contracts (WCAG 2.1)", () => {
   it("allows enumerated metadata selectors to use --th-faint", () => {
     const usages = collectFaintUsages(
       [
-        ".th-sidebar-section-label { color: var(--th-faint); }",
-        ".th-tree-placed { border: 1px solid var(--th-faint); }",
+        ".th-tree-source { color: var(--th-faint); }",
+        ".th-tree-chevron { border: 1px solid var(--th-faint); }",
         ".th-login-foot { color: var( --th-faint ); }",
-        ".th-tree-count { color: var(--th-faint, currentColor); }",
+        ".th-input::placeholder { color: var(--th-faint, currentColor); }",
       ].join("\n"),
       "metadata.css",
     );
     expect(usages.map((usage) => usage.selector)).toEqual([
-      ".th-sidebar-section-label",
-      ".th-tree-placed",
+      ".th-tree-source",
+      ".th-tree-chevron",
       ".th-login-foot",
-      ".th-tree-count",
+      ".th-input::placeholder",
     ]);
     expect(faintUsageViolations(usages)).toEqual([]);
   });

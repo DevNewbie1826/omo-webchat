@@ -8,21 +8,24 @@
   gap: var(--th-space-2);
 }
 
+/* Raised level. State is a fill change only, never a border colour. */
 .th-overview-card {
   display: flex;
   flex-direction: column;
   gap: var(--th-space-1);
-  background: var(--th-surface);
-  border: 1px solid var(--th-border-surface);
-  border-radius: var(--th-radius-sm);
-  transition: background var(--th-dur-fast) var(--th-ease),
-    border-color var(--th-dur-fast) var(--th-ease);
+  background: var(--th-surface-raised);
+  border: 1px solid var(--th-border-raised);
+  border-radius: var(--th-radius);
+  box-shadow: var(--th-shadow-raised), var(--th-highlight);
+  transition: background-color var(--th-dur-fast) var(--th-ease);
 }
 
-.th-overview-card:hover,
-.th-overview-card--focused {
+.th-overview-card:hover {
   background: var(--th-hover);
-  border-color: var(--th-border-strong);
+}
+
+.th-overview-card--focused {
+  background: var(--th-active);
 }
 
 .th-overview-card-open {
@@ -35,6 +38,7 @@
   color: inherit;
   background: transparent;
   border: 0;
+  border-radius: inherit;
 }
 
 .th-overview-card-open:focus-visible {
@@ -71,21 +75,21 @@
   text-overflow: ellipsis;
 }
 
-/* Alive pulse treatment, shared with the tree badge: success-hued pill whose
-   dot breathes while agents run (disabled globally under reduced motion). The
-   min-height matches the text chip's full height (micro line box + border) so a
-   dot-only chip (main session running, no agents) keeps the same size as `● N`. */
+/* Agent-alive pill: violet dot + count on the accent wash. The transparent
+   1px border keeps the micro line box + 2px height the sidebar head-row floor
+   is built on, so a dot-only pill (main session only) matches `● N`. */
 .th-overview-card-running {
   display: inline-flex;
   flex: none;
   align-items: center;
-  gap: var(--th-space-0-5);
+  gap: var(--th-space-1);
   min-height: calc(var(--th-type-micro-size) * var(--th-type-micro-line) + 2px);
-  font-family: var(--th-font-mono);
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
-  color: var(--th-success);
-  border: 1px solid var(--th-success);
+  font-variant-numeric: tabular-nums;
+  color: var(--th-text-dim);
+  background: var(--th-accent-soft);
+  border: 1px solid transparent;
   border-radius: var(--th-radius-pill);
   padding: 0 var(--th-space-1);
   line-height: var(--th-type-micro-line);
@@ -93,11 +97,12 @@
 }
 
 .th-overview-card-running-dot {
-  width: 5px;
-  height: 5px;
+  flex: none;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: var(--th-success);
-  animation: th-overview-running-blink calc(var(--th-dur-slow) * 4) var(--th-ease) infinite alternate;
+  background: var(--th-accent);
+  animation: th-overview-running-blink calc(var(--th-dur-slow) * 4) var(--th-ease-in-out) infinite alternate;
 }
 
 @keyframes th-overview-running-blink {
@@ -109,12 +114,14 @@
   }
 }
 
+/* Last output line: output text, so mono stays; it is the card's content
+   preview, not metadata, so it reads at the muted tier. */
 .th-overview-card-line {
   font-family: var(--th-font-mono);
   font-size: var(--th-type-micro-size);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
-  color: var(--th-faint);
+  color: var(--th-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

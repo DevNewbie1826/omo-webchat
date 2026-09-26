@@ -228,6 +228,24 @@ async function closeMobileDrawer(page) {
     const sidebar = document.querySelector('.th-sidebar');
     return !sidebar || sidebar.hasAttribute('inert') || sidebar.getAttribute('aria-hidden') === 'true';
   }, undefined, { timeout: 4000 }).catch(() => {});
+  // G29: the React inert/aria flip above lands immediately, but the drawer
+  // keeps sliding out for --th-dur-slow and flips visibility only at the end
+  // of its delayed transition - captures fired in that window show a drawer
+  // strip. Wait for the drawer's FINITE exit animations (the transform slide
+  // plus the visibility flip) to finish, event-based and bounded; infinite
+  // progress glyphs are excluded so an idle open drawer cannot stall the
+  // bound, and the timeout remains a failure bound, never a readiness delay.
+  await page.evaluate(() => {
+    const sidebar = document.querySelector('.th-sidebar');
+    if (!sidebar) return Promise.resolve();
+    const finite = sidebar.getAnimations({ subtree: true }).filter(animation => {
+      try { return animation.effect?.getComputedTiming()?.iterations !== Infinity; } catch { return false; }
+    });
+    return Promise.race([
+      Promise.allSettled(finite.map(animation => animation.finished)),
+      new Promise(done => setTimeout(done, 2500)),
+    ]);
+  }).catch(() => {});
 }
 
 /** D5 - click `selector` through its real entry point. On narrow viewports
@@ -1354,7 +1372,10 @@ const PLUGIN_GLOB = 'visual-redesign-scenarios-*.mjs';
  * ones and everything overrides built-in stubs). Returns one entry per file
  * that exports a `scenarios` object. Exported for unit tests. */
 export async function loadScenarioPlugins(dir) {
-  const files = Array.from(new Bun.Glob(PLUGIN_GLOB).scanSync({ cwd: dir })).sort();
+  // Colocated unit-test modules (`*.test.mjs`) match the glob too; importing
+  // them registers bun:test suites, so they are never plugins.
+  const files = Array.from(new Bun.Glob(PLUGIN_GLOB).scanSync({ cwd: dir }))
+    .filter(file => !file.endsWith('.test.mjs')).sort();
   const plugins = [];
   for (const file of files) {
     try {
