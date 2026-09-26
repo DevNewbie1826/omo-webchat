@@ -262,6 +262,13 @@
   "chat.model": "Model",
   "chat.searchModels": "Search models",
   "chat.files": "Files",
+  "chat.header.files": "Files",
+  "chat.header.resync": "Resync",
+  "chat.header.resyncBusy": "Resyncing…",
+  "chat.header.disconnect": "Disconnect",
+  "chat.header.splitRight": "Split right",
+  "chat.header.splitDown": "Split down",
+  "chat.header.closePane": "Close pane",
   "chat.attach": "Attach",
   "chat.attachUnsupported": "This model does not support images",
   "chat.dropImage": "Drop image here",
@@ -368,5 +375,8 @@
   "approval.question.next": "Next",
   "approval.question.unanswered": "{count} unanswered",
   "approval.question.answerOptionPlaceholder": "Or type your own answer",
-  "approval.question.commentLabel": "Overall comment"
+  "approval.question.commentLabel": "Overall comment",
+  "chat.composer.paletteHintNavigate": "to navigate",
+  "chat.composer.paletteHintSelect": "to select",
+  "chat.composer.paletteHintClose": "to close"
 }

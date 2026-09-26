@@ -34,14 +34,22 @@
   letter-spacing: var(--th-type-title-tracking);
 }
 
+/* Countdown: sans tabular-nums in the warning tier, plain text with no pill
+   chrome — urgency reads through colour and the label, never a border
+   (state is never encoded by a coloured outline). */
 .th-question-window-countdown {
   flex: none;
-  padding: 0 var(--th-space-1);
-  border: 1px solid var(--th-border-raised);
-  border-radius: var(--th-radius-pill);
   color: var(--th-warning);
-  font-family: var(--th-font-mono);
   font-variant-numeric: tabular-nums;
+}
+
+/* In the window head the countdown sits beside the Title tier, so it takes
+   the Label tier as a complete style. */
+.th-question-window-head .th-question-window-countdown {
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
 }
 
 /* Bounded scrollport: a long message, many options, or several questions
@@ -73,24 +81,53 @@
   background: var(--th-surface-overlay);
 }
 
-/* One-line notice band: the pending request's anchor in the chat column
-   where the inline dock lived. A fixed single-line band with no layout
-   machinery: it never grows (nowrap + clipped title), never scrolls, and
-   never takes over the composer — the window, opened from here, is the
-   answering surface. */
+/* One-line notice band: the pending request's calm floating chip above the
+   composer, in the chat column where the inline dock lived. It still never
+   grows (nowrap + clipped title), never scrolls, and never takes over the
+   composer — the window, opened from here, is the answering surface. The
+   fill is the floating-glass layer: Overlay solid as the fallback, the
+   glass recipe under @supports, with the overlay shadow and top-edge
+   highlight selling the lift. */
 .th-question-band {
   flex: none;
   display: flex;
   align-items: center;
   gap: var(--th-space-2);
   width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
-  margin: var(--th-space-1) auto 0;
-  padding: var(--th-space-1) var(--th-space-2);
-  border: 1px solid var(--th-border);
-  border-radius: var(--th-radius-sm);
-  background: var(--th-surface);
+  margin: var(--th-space-2) auto;
+  padding: var(--th-space-1) var(--th-space-1) var(--th-space-1) var(--th-space-3);
+  border: 1px solid var(--th-border-overlay);
+  border-radius: var(--th-radius-pill);
+  background: var(--th-surface-overlay);
+  box-shadow: var(--th-shadow-overlay), var(--th-highlight);
   font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
   white-space: nowrap;
+  animation: th-question-band-in var(--th-dur) var(--th-ease-spring);
+}
+
+/* Floating layer: glass above the transcript where backdrop-filter is
+   available; the solid Overlay fill above stands as the fallback. */
+@supports (backdrop-filter: blur(1px)) {
+  .th-question-band {
+    background: var(--th-glass);
+    backdrop-filter: var(--th-glass-filter);
+  }
+}
+
+/* Band entrance: a small 8px rise plus fade on the small-pop spring, a
+   guidance-class motion over --th-dur. The global reduced-motion policy
+   collapses it to the band's final state; the pending request is already
+   conveyed by the chip's text. */
+@keyframes th-question-band-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .th-question-band-title {

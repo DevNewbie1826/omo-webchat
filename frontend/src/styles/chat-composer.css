@@ -18,8 +18,12 @@
   }
 }
 
-/* Unified capsule: one bordered pill owns the attachment action, the
-   multiline input, and the send/stop slot. */
+/* Unified capsule: one pill owns the attachment action, the multiline
+   input, and the send/stop slot. Dark separates the capsule from the
+   canvas by the composer fill plus its shadow and top-edge highlight; the
+   light capsule is pure white on the white canvas, so a single hairline
+   does the separation there (v2: no stacked border, no border-colour
+   state encoding). */
 .th-chat-input-inner {
   position: relative;
   display: flex;
@@ -30,24 +34,22 @@
   min-width: 0;
   margin: 0 auto;
   padding: var(--th-space-1);
-  border: 1px solid var(--th-border);
-  border-color: var(--th-border-surface);
-  /* Bounded radius: clamps to a 25px half-height pill at the 50px one-line
-     shell, but stops growing with multiline height. */
-  border-radius: 26px;
-  /* The composer's own measured surface role (an opaque approximation of the
-     native material), not the shared elevated-chrome Surface. */
+  border: 1px solid transparent;
+  border-radius: var(--th-radius-xl);
   background: var(--th-surface-composer);
-  box-shadow: var(--th-shadow-surface);
-  transition:
-    border-color var(--th-dur-fast) var(--th-ease),
-    box-shadow var(--th-dur-fast) var(--th-ease);
+  box-shadow: var(--th-shadow-surface), var(--th-highlight);
+  transition: box-shadow var(--th-dur-fast) var(--th-ease);
 }
 
-/* The capsule is the single focus surface; the bare textarea has no ring. */
+[data-theme="light"] .th-chat-input-inner {
+  border-color: var(--th-border-surface);
+}
+
+/* The capsule is the single focus surface: a soft violet ring appears on
+   :focus-within while the border stays put (focus is never a border-colour
+   change), and the elevation shadow is kept so the ring layers over it. */
 .th-chat-input-inner:focus-within {
-  border-color: var(--th-border-strong);
-  box-shadow: 0 0 0 3px var(--th-ring);
+  box-shadow: var(--th-shadow-surface), var(--th-highlight), 0 0 0 3px var(--th-ring);
 }
 
 .th-chat-input textarea {
@@ -175,21 +177,21 @@
   display: inline-flex;
 }
 
-/* A pending attachment is a compact chip on its own row above the capsule;
-   it hugs its content instead of stretching full width. */
+/* A pending attachment is a pill chip in the capsule's top context strip:
+   it takes its own full-width row above the input row (the capsule wraps),
+   hugging the same padding rhythm as the input row. */
 .th-chat-attach-chip {
+  flex: 1 1 100%;
   align-self: center;
   display: inline-flex;
   align-items: center;
   gap: var(--th-space-1);
   min-width: 0;
-  max-width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
   height: 32px;
-  margin-bottom: var(--th-space-1);
+  margin: var(--th-space-0-5) var(--th-space-1);
   padding: var(--th-space-0-5) var(--th-space-1) var(--th-space-0-5) var(--th-space-0-5);
-  border: 1px solid var(--th-border);
-  border-radius: var(--th-radius);
-  background: var(--th-surface-raised);
+  border-radius: var(--th-radius-pill);
+  background: var(--th-hover);
 }
 
 .th-chat-attach-thumb {
@@ -197,7 +199,7 @@
   width: 24px;
   height: 24px;
   object-fit: cover;
-  border-radius: calc(var(--th-radius-sm) - 2px);
+  border-radius: var(--th-radius-xs);
 }
 
 .th-chat-attach-name {
@@ -222,7 +224,7 @@
   height: 24px;
   padding: 0;
   border: 0;
-  border-radius: calc(var(--th-radius-sm) - 2px);
+  border-radius: var(--th-radius-xs);
   background: transparent;
   color: var(--th-muted);
 }
@@ -259,7 +261,7 @@
   width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
   margin: 0 auto var(--th-space-1);
   overflow: hidden;
-  color: var(--th-accent);
+  color: var(--th-muted);
   font-size: var(--th-type-label-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-label-line);
@@ -268,21 +270,87 @@
   white-space: nowrap;
 }
 
+/* The slash and file palettes are one floating glass layer above the
+   capsule: Overlay shadow and top-edge highlight, a strong hairline, and
+   the translucent glass fill where backdrop-filter is supported (the solid
+   Overlay fill stands as the fallback). The panel enters per the overlay
+   motion rule: opacity + translateY + scale over --th-dur with the enter
+   easing, driven by @starting-style so an exit can stay instant. */
 .th-chat-slash {
   position: absolute;
   right: 0;
   bottom: calc(100% + 8px);
   left: 0;
   z-index: 20;
-  max-height: min(240px, 40dvh);
+  max-height: min(260px, 44dvh);
   margin: 0;
   padding: var(--th-space-1);
   overflow-y: auto;
-  border: 1px solid var(--th-border-raised);
-  border-radius: var(--th-radius-sm);
-  background: var(--th-surface-raised);
-  box-shadow: var(--th-shadow-raised);
+  border: 1px solid var(--th-border-overlay);
+  border-radius: var(--th-radius-lg);
+  background: var(--th-surface-overlay);
+  box-shadow: var(--th-shadow-overlay), var(--th-highlight);
   list-style: none;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition: opacity var(--th-dur) var(--th-ease-out),
+    transform var(--th-dur) var(--th-ease-out);
+}
+
+@supports (backdrop-filter: blur(1px)) {
+  .th-chat-slash {
+    background: var(--th-glass);
+    backdrop-filter: var(--th-glass-filter);
+  }
+}
+
+@starting-style {
+  .th-chat-slash {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
+/* Keyboard hint row: every key is a styled chip and the copy stays at the
+   metadata tier, pinned to the same hairline rhythm as the option rows. */
+.th-chat-slash-hints {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  padding: var(--th-space-1) var(--th-space-2);
+  border-bottom: 1px solid var(--th-border-surface);
+  color: var(--th-muted);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-chat-slash-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--th-space-0-5);
+}
+
+.th-chat-slash-hint--end {
+  margin-left: auto;
+}
+
+.th-chat-slash-hints kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--th-space-4);
+  height: var(--th-space-4);
+  padding: 0 var(--th-space-0-5);
+  border-radius: var(--th-radius-xs);
+  background: var(--th-hover);
+  color: var(--th-text-dim);
+  font-family: var(--th-font-sans);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
 }
 
 .th-chat-slash > button {
@@ -303,13 +371,20 @@
   white-space: nowrap;
 }
 
-.th-chat-slash > button:hover,
-.th-chat-slash > button[aria-selected="true"] {
+.th-chat-slash > button:hover {
   background: var(--th-hover);
 }
 
+/* The active option takes the accent-soft selection wash (a list selection,
+   never bold accent text); the trailing chevron glyph is the check cue. */
+.th-chat-slash > button[aria-selected="true"] {
+  background: var(--th-accent-soft);
+}
+
+/* Command names are identifiers and keep the mono stack; descriptions stay
+   sans at the muted tier. */
 .th-chat-slash strong {
-  color: var(--th-accent);
+  color: var(--th-text);
   font-family: var(--th-font-mono);
 }
 

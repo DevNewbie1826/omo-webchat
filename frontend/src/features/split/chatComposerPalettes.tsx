@@ -30,6 +30,9 @@ interface PaletteLabels {
   readonly folderEmpty: string;
   readonly searchingFiles: string;
   readonly browseCapped: string;
+  readonly hintNavigate: string;
+  readonly hintSelect: string;
+  readonly hintClose: string;
 }
 
 interface ChatComposerPalettesProps {
@@ -65,6 +68,9 @@ export function ChatComposerPalettes({ command, file, labels }: ChatComposerPale
           activeIndex={command.selectedIndex}
           onActiveIndex={command.onActiveIndex}
           onSelect={command.onSelect}
+          hintNavigate={labels.hintNavigate}
+          hintSelect={labels.hintSelect}
+          hintClose={labels.hintClose}
         />
       )}
       {file.open && (
@@ -82,6 +88,9 @@ export function ChatComposerPalettes({ command, file, labels }: ChatComposerPale
           cappedLabel={labels.browseCapped}
           onActiveIndex={file.mention.setActiveIndex}
           onSelect={file.onSelect}
+          hintNavigate={labels.hintNavigate}
+          hintSelect={labels.hintSelect}
+          hintClose={labels.hintClose}
         />
       )}
     </>

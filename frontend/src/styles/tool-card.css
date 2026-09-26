@@ -1,28 +1,72 @@
-/* Tool-execution block (DESIGN.md "Tool-execution block anatomy"): one
-   disclosure per invocation. Every record - collapsed and expanded alike -
-   sits on the scoped tool material behind a persistent hairline boundary,
-   so executions read as one visibly distinct material next to transparent
-   prose on Canvas in both themes (P4) without heavier chrome or a whole-card
-   status glow. The expanded body insets Canvas, bounding running output.
-   Spacing uses --th-space-* tokens; the px fallbacks are the contract values,
-   in effect only until tokens.css declares them. */
+/* Tool-execution record — v2 Golo timeline grammar (governing plan:
+   .omo/plans/visual-redesign.md G7; task spec "transcript timeline"):
+   one addressable transcript block per tool invocation, keyed by
+   toolCallId. A collapsed record is a transparent timeline row — a status
+   glyph on a 1px rail, a Label operation title with a concise invocation
+   summary, and a round collapse chevron — so executions recede behind the
+   transparent Body-tier prose around them through smaller type and dimmer
+   tiers, never whole-record opacity. The expanded body alone carries the
+   scoped tool material (--th-tool-surface at the 12px radius), with the
+   output well insetting Canvas inside it. Status is never colour alone:
+   a violet dotted spinner beside the Running word while live, a muted check
+   beside Done on success, an error-hued exclamation beside Failed on
+   failure. No state is encoded by a coloured border: the only accent in a
+   record is the agent-alive running glyph/label. Spacing uses the
+   --th-space-* scale; the px values below are the record's fixed glyph
+   geometry, not spacing. */
 
 .th-tool {
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  overflow: hidden;
-  /* Persistent scoped material: the boundary and fill never depend on the
-     disclosure state; the radius rounds the record and the header's
-     hover/focus treatment. Outline and fill only, no independent shadow. */
-  border: 1px solid var(--th-tool-border);
-  border-radius: var(--th-radius-sm);
-  background: var(--th-tool-surface);
 }
 
-/* The entire header is the disclosure button: 48px minimum, 8px block / 12px
-   inline padding, 2px between its two text lines, identical in both states. */
+/* The rail is a real, aria-hidden element so transcript tooling can find it
+   (QA S7 "a rail element"): a 1px hairline at the status glyph's center
+   running the record's full height. Records whose previous sibling is also
+   a record carry th-chat-record--continue and extend the rail up across
+   the 8px block rhythm, meeting the previous record's rail so consecutive
+   records within a turn read as one connected timeline. */
+.th-chat-record {
+  position: relative;
+}
+
+.th-chat-record-rail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  /* 12px head inset - 4px chevron pull + 20px chip + 8px gap
+     + half the 12px status glyph, minus half the 1px stroke. */
+  left: calc(var(--th-space-3) - var(--th-space-1) + var(--th-space-5) + var(--th-space-2) + 5.5px);
+  width: 1px;
+  background: var(--th-border-surface);
+  pointer-events: none;
+}
+
+.th-chat-record--continue .th-chat-record-rail {
+  top: calc(-1 * var(--th-space-2));
+}
+
+/* Separate virtual rows contribute 8px of padding on each side of their
+   boundary; within one message the existing 8px block gap applies. */
+.th-chat-row .th-chat-msg > :first-child.th-chat-record--continue .th-chat-record-rail,
+.th-chat-row .th-chat-msg > :first-child.th-chat-tool-media > .th-chat-record--continue .th-chat-record-rail {
+  top: calc(-2 * var(--th-space-2));
+}
+
+/* Thinking's dot is its first header child; reserve the same leading lane
+   as the tool's chevron without changing thinking's accessible markup. */
+.th-chat-thinking-head {
+  padding-left: var(--th-space-9);
+}
+
+/* The entire header is the disclosure button: 48px minimum, 8px block /
+   12px inline padding, 2px between its two text lines, identical in both
+   states. Transparent so the timeline rail reads through it; positioned so
+   both the rail (earlier sibling) and the expanded body (later sibling)
+   stack beneath it and the glyph above it. */
 .th-tool-head {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -32,8 +76,8 @@
   min-height: var(--th-space-12);
   gap: var(--th-space-0-5);
   padding: var(--th-space-2) var(--th-space-3);
-  overflow: hidden;
   border: 0;
+  border-radius: var(--th-radius-sm);
   background: transparent;
   color: var(--th-text-dim);
   font-size: var(--th-type-label-size);
@@ -42,16 +86,11 @@
   letter-spacing: var(--th-type-label-tracking);
   text-align: left;
   cursor: pointer;
-  transition: background var(--th-dur-fast) var(--th-ease);
 }
 
-.th-tool-head:hover {
-  background: var(--th-hover);
-}
-
-/* The block clips its outline, so draw the keyboard focus ring inside it. */
 .th-tool-head:focus-visible {
-  outline-offset: -2px;
+  outline: none;
+  box-shadow: 0 0 0 3px var(--th-ring);
 }
 
 .th-tool-line {
@@ -61,38 +100,67 @@
   min-width: 0;
 }
 
+/* Round collapse chip; hover/focus treatment lives on the chip rather than
+   the whole header, keeping the record visually quiet. */
 .th-tool-chevron {
   display: inline-flex;
   flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-left: calc(-1 * var(--th-space-1));
+  border-radius: 50%;
   color: var(--th-faint);
-  transition: transform var(--th-dur) var(--th-ease);
+  transform: rotate(-90deg);
+  transition:
+    transform var(--th-dur) var(--th-ease),
+    background-color var(--th-dur-fast) var(--th-ease),
+    color var(--th-dur-fast) var(--th-ease);
+}
+
+.th-tool-head:hover .th-tool-chevron,
+.th-tool-head:focus-visible .th-tool-chevron {
+  background: var(--th-hover);
+  color: var(--th-text-dim);
 }
 
 .th-tool-chevron--open {
   transform: rotate(90deg);
 }
 
-/* Status glyph: the non-colour signal beside the localized status word. */
+/* Status glyph: the non-colour signal beside the localized status word.
+   The canvas-coloured disc knocks the rail so the glyph reads as a dot ON
+   the line. */
 .th-tool-glyph {
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   flex: none;
   align-items: center;
   justify-content: center;
   width: 12px;
   height: 12px;
+  border-radius: 50%;
+  background: var(--th-bg);
 }
 
-/* Running: a spinner ring. Reduced motion stops the spin globally; the open
-   segment keeps the static ring distinct from the check and exclamation. */
+/* Running: a violet dotted spinner. The accent fill is the agent-alive
+   hue; the conic mask cuts it into eight wedges so it reads as
+   indeterminate progress. Under reduced motion the global policy stops
+   the spin and the static dashed disc plus the Running word carry the
+   state. The mask reads only alpha, so the accent stop is a visibility
+   switch, not a palette choice. */
 .th-tool-glyph--running {
-  border: 1.5px solid var(--th-warning);
-  border-top-color: transparent;
   border-radius: 50%;
-  animation: th-tool-spin 700ms linear infinite;
+  background-color: var(--th-accent);
+  -webkit-mask-image: repeating-conic-gradient(var(--th-accent) 0deg 22deg, transparent 22deg 45deg);
+  mask-image: repeating-conic-gradient(var(--th-accent) 0deg 22deg, transparent 22deg 45deg);
+  animation: th-tool-spin var(--th-dur-spin) var(--th-ease-linear) infinite;
 }
 
 .th-tool-glyph--ok {
-  color: var(--th-success);
+  color: var(--th-muted);
 }
 
 .th-tool-glyph--error {
@@ -118,7 +186,8 @@
   white-space: nowrap;
 }
 
-/* Localized status word: Micro tier, trailing, colour only as a third cue. */
+/* Localized status word: Micro tier, trailing. Colour is a redundant third
+   cue; the glyph and word carry the state. */
 .th-tool-status {
   flex: none;
   margin-left: auto;
@@ -129,12 +198,43 @@
   white-space: nowrap;
 }
 
-.th-tool-status--running { color: var(--th-warning); }
-.th-tool-status--ok { color: var(--th-success); }
-.th-tool-status--error { color: var(--th-error); }
+/* Running: the accent family carries the agent-alive state, with a slow
+   shimmer sweeping the lighter family member across the label via
+   background-position (an allowed animated property). Motion is a bonus,
+   never the only signal: the gradient's dominant stop is the accent
+   itself, so a static frame still reads as the violet Running word. */
+.th-tool-status--running {
+  background-image: linear-gradient(100deg, var(--th-accent) 42%, var(--th-accent-hover) 50%, var(--th-accent) 58%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: var(--th-accent);
+  -webkit-text-fill-color: transparent;
+  animation: th-tool-shimmer var(--th-dur-shimmer) var(--th-ease-linear) infinite;
+}
+
+.th-tool-status--ok {
+  color: var(--th-muted);
+}
+
+.th-tool-status--error {
+  color: var(--th-error);
+}
+
+@keyframes th-tool-shimmer {
+  from {
+    background-position: 120% 0;
+  }
+
+  to {
+    background-position: -120% 0;
+  }
+}
 
 /* Second header line: single-line mono invocation summary plus the first
-   non-empty output line. The invocation is preserved; the preview truncates. */
+   non-empty output line. The invocation (command/path) stays mono; the
+   appended preview is sans — mono is reserved for the command/path part
+   of the summary. The invocation is preserved; the preview truncates. */
 .th-tool-summary {
   display: flex;
   align-items: baseline;
@@ -162,13 +262,20 @@
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
+  font-family: var(--th-font-sans);
   font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* Expanded body: inset Canvas well, 12px padding, 12px between sections. */
+/* Expanded body: the scoped tool material at the 12px radius behind the
+   tool hairline, inset below the transparent header. The fill step and the
+   hairline together separate it from the canvas; no shadow. The position
+   stacks it above the rail, which stops at the material's edge. */
 .th-tool-body {
+  position: relative;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -176,8 +283,9 @@
   min-width: 0;
   gap: var(--th-space-3);
   padding: var(--th-space-3);
-  border-top: 1px solid var(--th-border);
-  background: var(--th-bg);
+  border: 1px solid var(--th-tool-border);
+  border-radius: var(--th-radius);
+  background: var(--th-tool-surface);
   color: var(--th-text-dim);
   font-family: var(--th-font-mono);
   font-size: var(--th-type-secondary-size);
@@ -206,6 +314,7 @@
 
 .th-tool-io {
   min-width: 0;
+  margin: 0;
   color: var(--th-text-dim);
   font-family: var(--th-font-mono);
   font-size: var(--th-type-secondary-size);
@@ -218,9 +327,22 @@
   overflow-wrap: anywhere;
 }
 
-/* Internally scrollable output region: a long execution cannot take over the
-   conversation scrollport. */
+/* Output well: Canvas insets inside the tool material so streamed output is
+   visibly bounded. Internally scrollable and capped at min(360px, 45dvh),
+   so a long execution cannot take over the conversation scrollport. When
+   the content truly overflows the cap (ToolCard sets data-clipped from a
+   real overflow measure and clears it at the scroll bottom), a bottom
+   fade — mask-image, an alpha-only gradient — signals that more output
+   sits below. */
 .th-tool-output {
   max-height: min(360px, 45dvh);
   overflow: auto;
+  padding: var(--th-space-2) var(--th-space-3);
+  border-radius: var(--th-radius-xs);
+  background: var(--th-bg);
+}
+
+.th-tool-output[data-clipped="true"] {
+  -webkit-mask-image: linear-gradient(to bottom, var(--th-accent) 0, var(--th-accent) calc(100% - 20px), transparent 100%);
+  mask-image: linear-gradient(to bottom, var(--th-accent) 0, var(--th-accent) calc(100% - 20px), transparent 100%);
 }

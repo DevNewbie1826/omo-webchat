@@ -262,6 +262,13 @@
   "chat.model": "모델",
   "chat.searchModels": "모델 검색",
   "chat.files": "파일",
+  "chat.header.files": "파일",
+  "chat.header.resync": "다시 불러오기",
+  "chat.header.resyncBusy": "다시 불러오는 중…",
+  "chat.header.disconnect": "세션 종료",
+  "chat.header.splitRight": "오른쪽으로 분할",
+  "chat.header.splitDown": "아래로 분할",
+  "chat.header.closePane": "페인 닫기",
   "chat.attach": "첨부",
   "chat.attachUnsupported": "이 모델은 이미지를 지원하지 않습니다",
   "chat.dropImage": "이미지를 여기에 드롭",
@@ -368,5 +375,8 @@
   "approval.question.next": "다음",
   "approval.question.unanswered": "미답변 {count}개",
   "approval.question.answerOptionPlaceholder": "또는 직접 입력",
-  "approval.question.commentLabel": "전체 코멘트"
+  "approval.question.commentLabel": "전체 코멘트",
+  "chat.composer.paletteHintNavigate": "이동",
+  "chat.composer.paletteHintSelect": "선택",
+  "chat.composer.paletteHintClose": "닫기"
 }

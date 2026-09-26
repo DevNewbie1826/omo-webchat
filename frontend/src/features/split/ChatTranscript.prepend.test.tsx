@@ -686,12 +686,13 @@ it.each([false, true])("fresh app writes cannot retire a new warm anchor (reader
     expect(h.getTop()).toBe(11160);
     vi.mocked(performance.now).mockReturnValue(400.001);
     h.render([...rows("head", 2), ...tail]);
-    expect(h.getTop()).toBe(11294);
+    // Two prepended head rows at their estimated heights (borderless user bubbles).
+    expect(h.getTop()).toBe(11290);
     await scroll();
     const row = h.instance.measurementsCache[0];
     if (!row) throw new Error("missing warm row");
     await act(async () => h.instance.resizeItem(0, row.size + 30));
-    expect(h.getTop()).toBe(11324);
+    expect(h.getTop()).toBe(11320);
   } finally {
     unmount(h);
   }

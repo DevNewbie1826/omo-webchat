@@ -70,7 +70,7 @@ import {
   SCENARIOS, THEME_EXPECTATIONS, colorEquals, modalFocusRestoreDecision, modalFocusRestoreFacts, motionViolations,
   overlaySnapshot, pageKit, parseColor, probeChromeTheme,
   probeContrastSurface, probeHeader, probeHierarchy, probeMotion, probeReducedMotion, probeRunningGlyphs,
-  probeRunningReducedMotion, probeSeparation, probeStateColors, probeTokens,
+  probeRunningReducedMotion, probeSeparation, probeStateColors, probeTokens, probePagePan, pagePanVerdict,
 } from './visual-redesign-probes.mjs';
 
 const SEED_CWD = '/fixture';
@@ -1443,6 +1443,32 @@ export function selectScenarioIds(registry, requested = null) {
 
 async function screenshot(page, ctx, suffix) {
   const name = `${ctx.scenario}-${ctx.theme}-${ctx.viewport.label}${suffix}.png`;
+  // The plugin's mobile drawer close returns when React flips inert, before
+  // CSS finishes sliding the 264px drawer offscreen. Every capture waits for
+  // that finite exit; an open drawer (e.g. modal-churn) remains untouched.
+  if (ctx.viewport.width <= 768) {
+    await page.evaluate(async () => {
+      const sidebar = document.querySelector('.th-sidebar');
+      if (!sidebar?.hasAttribute('inert')) return;
+      const finite = sidebar.getAnimations({ subtree: true }).filter(animation =>
+        animation.effect?.getComputedTiming()?.iterations !== Infinity);
+      let timer;
+      try {
+        await Promise.race([
+          Promise.allSettled(finite.map(animation => animation.finished)),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('mobile drawer exit did not settle')), 2500); }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+      if (getComputedStyle(sidebar).visibility !== 'hidden') {
+        throw new Error('mobile drawer is inert but still visible after its exit animations');
+      }
+    });
+  }
+  const pan = await probe(page, probePagePan);
+  const failures = pagePanVerdict(pan);
+  if (failures.length > 0) throw new Error(`capture ${name}: ${failures.join('; ')}`);
   await page.screenshot({ path: join(ctx.shotsDir, name), fullPage: false });
   return `screenshots/${name}`;
 }

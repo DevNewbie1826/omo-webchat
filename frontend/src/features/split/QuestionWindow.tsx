@@ -286,7 +286,7 @@ export function QuestionWindow({
 								<button
 									key={opt}
 									type="button"
-									className="th-btn"
+									className="th-btn th-btn--primary"
 									data-approval-primary={index === 0 ? "" : undefined}
 									onClick={() => submitValue(opt)}
 								>
@@ -310,7 +310,7 @@ export function QuestionWindow({
 						<div className="th-approval-options">
 							<button
 								type="button"
-								className="th-btn"
+								className="th-btn th-btn--primary"
 								data-approval-primary
 								onClick={() => submitConfirm(true)}
 							>
@@ -359,7 +359,7 @@ export function QuestionWindow({
 									onChange={(event) => setText(event.target.value)}
 								/>
 							)}
-							<button type="submit" className="th-btn">
+							<button type="submit" className="th-btn th-btn--primary">
 								{t("approval.submit")}
 							</button>
 							<button

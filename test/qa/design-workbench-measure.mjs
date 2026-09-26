@@ -1,20 +1,52 @@
 import assert from 'node:assert/strict';
 
+/** Computed-style form of a semantic token. Hex and rgb()/rgba() spellings of
+ * the same colour compare equal (custom properties serialize alpha `.72`
+ * while used values keep `0.72`). Anything else is returned unchanged. */
+export function semanticColor(value) {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  const hex = /^#([\da-f]{6})$/i.exec(trimmed);
+  if (hex) return `rgb(${[0, 2, 4].map(i => parseInt(hex[1].slice(i, i + 2), 16)).join(', ')})`;
+  const functional = /^rgba?\(([^)]+)\)$/i.exec(trimmed);
+  if (!functional) return trimmed;
+  const parts = functional[1].split(/[\s,/]+/).filter(Boolean);
+  if (parts.length < 3) return trimmed;
+  const channel = part => Math.round(part.endsWith('%') ? parseFloat(part) / 100 * 255 : parseFloat(part));
+  const rgb = parts.slice(0, 3).map(channel);
+  if (rgb.some(part => !Number.isFinite(part))) return trimmed;
+  if (parts.length < 4) return `rgb(${rgb.join(', ')})`;
+  const alpha = parts[3].endsWith('%') ? parseFloat(parts[3]) / 100 : parseFloat(parts[3]);
+  if (!Number.isFinite(alpha) || alpha === 1) return `rgb(${rgb.join(', ')})`;
+  return `rgba(${rgb.join(', ')}, ${alpha})`;
+}
+
 /** Read computed styles/geometry only. Semantic colors are resolved without DOM/style mutation. */
 export async function measure(page) {
-  return page.evaluate(() => {
+  const sample = await page.evaluate(() => {
     const pane = document.querySelector('.th-chat-pane');
     const box = element => element?.getBoundingClientRect().toJSON();
     const rect = selector => box(pane.querySelector(selector));
     const root = getComputedStyle(document.documentElement);
     const token = name => root.getPropertyValue(name).trim();
-    const color = value => /^#[\da-f]{6}$/i.test(value)
-      ? `rgb(${[1, 3, 5].map(i => parseInt(value.slice(i, i + 2), 16)).join(', ')})` : value;
+    const popover = document.querySelector('.th-model-picker-popover');
+    const sheet = !!popover?.classList.contains('th-model-picker-popover--sheet');
+    // Floating layers use --th-glass where backdrop-filter is supported.
+    // The narrow sheet and browsers without that support stay on the solid
+    // --th-surface-overlay fallback (same query as the stylesheet @supports).
+    const backdropSupported = CSS.supports('(backdrop-filter: blur(1px))');
+    const modelToken = sheet || !backdropSupported ? '--th-surface-overlay' : '--th-glass';
     const roles = [['.th-chat-pane', '--th-bg'], ['.th-termhead', '--th-surface'],
       ['.th-chat-input-inner', '--th-surface-composer'], ['.th-sidebar', innerWidth <= 768 ? '--th-surface-overlay' : '--th-surface'],
-      ['.th-model-picker-popover', document.querySelector('.th-model-picker-popover--sheet') ? '--th-surface-overlay' : '--th-surface-raised']]
+      ['.th-model-picker-popover', modelToken]]
       .map(([selector, name]) => { const element = document.querySelector(selector);
-        return { selector, token: name, expected: color(token(name)), actual: element && getComputedStyle(element).backgroundColor }; });
+        const style = element && getComputedStyle(element);
+        const role = { selector, token: name, expected: token(name), actual: style && style.backgroundColor };
+        if (selector === '.th-model-picker-popover') {
+          role.sheet = sheet; role.backdropSupported = backdropSupported;
+          role.backdropFilter = style ? [style.backdropFilter, style.webkitBackdropFilter].find(value => value && value !== 'none') ?? 'none' : null;
+        }
+        return role; });
     const rows = [...pane.querySelectorAll('.th-chat-row')].map(element => {
       const css = getComputedStyle(element);
       return { index: Number(element.dataset.index), className: element.className, rect: box(element), content: box(element.querySelector('.th-chat-msg')),
@@ -48,6 +80,11 @@ export async function measure(page) {
       send: rect('.th-chat-send-btn'), composer: rect('.th-chat-input'), trigger: rect('.th-model-picker-btn'),
     };
   });
+  for (const role of sample.roles) {
+    role.expected = semanticColor(role.expected);
+    if (role.actual) role.actual = semanticColor(role.actual);
+  }
+  return sample;
 }
 
 export function preservedGeometry(sample) {
@@ -99,7 +136,7 @@ export function designAssertions(sample) {
       actual: { leftDelta: gutterDelta, rightDelta, edges: sample.edges, readingColumn: sample.readingColumn, beforeEdgeDelta } },
     { id: 'live-history-axis', pass: Math.abs(sample.historyAxis - sample.liveAxis) <= 1, expectedBefore: false,
       actual: { history: sample.historyAxis, live: sample.liveAxis } },
-    { id: 'semantic-surfaces', pass: sample.roles.filter(role => role.actual).every(role => role.actual === role.expected), expectedBefore: false,
+    { id: 'semantic-surfaces', pass: sample.roles.filter(role => role.actual).every(role => semanticColor(role.actual) === semanticColor(role.expected)), expectedBefore: false,
       actual: sample.roles },
   ];
 }

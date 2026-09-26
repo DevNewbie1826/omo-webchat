@@ -19,12 +19,12 @@ const USER_MSG_MAX_WIDTH_RATIO = 0.8;
 // .th-chat-msg padding: var(--th-space-2) var(--th-space-3) → 8px vertical, 12px horizontal
 const MSG_PAD_Y = 8;
 const MSG_PAD_X = 12;
-// .th-chat-msg--user border: 1px solid → 1px top + 1px bottom
-const USER_MSG_BORDER_Y = 1 + 1;
+// .th-chat-msg--user border: 0 (tonal pill bubble) → no vertical border
+const USER_MSG_BORDER_Y = 0;
 // .th-chat-markdown p margin-bottom 12px
 const PARAGRAPH_GAP = 12;
-// .th-chat-markdown pre padding 8px/12px plus a 1px border
-const CODE_FENCE_CHROME = 8 + 8 + 1 + 1;
+// .th-chat-markdown pre padding 8px/12px, borderless tonal well
+const CODE_FENCE_CHROME = 8 + 8;
 // .th-chat-image has max-height 320px plus 8px margin-block-start
 const IMAGE_BLOCK_HEIGHT = 320 + 8;
 

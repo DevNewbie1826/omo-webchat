@@ -205,12 +205,25 @@ function OptionButton({
 			onPointerDown={(event) => event.preventDefault()}
 			onMouseDown={(event) => event.preventDefault()}
 		>
-			<span className="th-approval-question-option-label">{label}</span>
-			{description && (
-				<span className="th-approval-question-option-description">
-					{description}
-				</span>
-			)}
+			<span className="th-approval-question-option-check" aria-hidden="true">
+				<svg viewBox="0 0 16 16" width="16" height="16" fill="none">
+					<path
+						d="M3.5 8.5l3 3 6-6.5"
+						stroke="currentColor"
+						strokeWidth="1.8"
+						strokeLinecap="round"
+						strokeLinejoin="round"
+					/>
+				</svg>
+			</span>
+			<span className="th-approval-question-option-main">
+				<span className="th-approval-question-option-label">{label}</span>
+				{description && (
+					<span className="th-approval-question-option-description">
+						{description}
+					</span>
+				)}
+			</span>
 		</button>
 	);
 }
@@ -276,11 +289,33 @@ export function ApprovalQuestionPanel({
 	const { t } = useT();
 	const commentId = useId();
 	const answerInputRef = useRef<HTMLInputElement>(null);
+	const tabsRef = useRef<HTMLDivElement>(null);
 	const draft = reconcileDraft(storedDraft, questions);
 	useLayoutEffect(() => {
 		if (draft !== storedDraft) setDraft(draft);
 	}, [draft, storedDraft, setDraft]);
 	const activeIndex = Math.min(draft.activeIndex, Math.max(questions.length - 1, 0));
+
+	// The active indicator is one thumb sliding between tabs on transform
+	// alone (the motion contract forbids animating geometry), so its target
+	// comes from the active tab's measured offset and width. Re-measure on
+	// activation, question-set change, and any resize of the strip or a tab
+	// (a font load or a locale switch re-flows label widths).
+	const [tabThumb, setTabThumb] = useState<{ x: number; w: number }>({ x: 0, w: 0 });
+	useLayoutEffect(() => {
+		const strip = tabsRef.current;
+		if (!strip) return;
+		const measure = (): void => {
+			const active = strip.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
+			setTabThumb(active ? { x: active.offsetLeft, w: active.offsetWidth } : { x: 0, w: 0 });
+		};
+		measure();
+		if (typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(measure);
+		observer.observe(strip);
+		strip.querySelectorAll<HTMLElement>('[role="tab"]').forEach((tab) => observer.observe(tab));
+		return () => observer.disconnect();
+	}, [activeIndex, questions]);
 
 	// An IME can update the editor before notifying React. Snapshot that
 	// live value before an option re-render, tab unmount, or submission;
@@ -350,7 +385,7 @@ export function ApprovalQuestionPanel({
 	return (
 		<div className="th-approval-question">
 			<QuestionDraftNotice answers={draft.answers} questions={questions} removedQuestions={draft.removedQuestions} />
-			<div className="th-approval-question-tabs" role="tablist">
+			<div ref={tabsRef} className="th-approval-question-tabs" role="tablist">
 				{questions.map((question, index) => (
 					<button
 						key={questionKey(question, index)}
@@ -366,6 +401,11 @@ export function ApprovalQuestionPanel({
 							t("approval.question.tab", { index: index + 1 })}
 					</button>
 				))}
+				<span
+					className="th-approval-question-tab-thumb"
+					aria-hidden="true"
+					style={{ transform: `translateX(${tabThumb.x}px) scaleX(${tabThumb.w})` }}
+				/>
 			</div>
 			{questions.map((question, index) => {
 				if (index !== activeIndex) return null;
@@ -446,13 +486,13 @@ export function ApprovalQuestionPanel({
 					</span>
 				)}
 				{isLastQuestion ? (
-					<button type="button" className="th-btn" onClick={submit}>
+					<button type="button" className="th-btn th-btn--primary" onClick={submit}>
 						{t("approval.submit")}
 				</button>
 				) : (
 					<button
 						type="button"
-						className="th-btn"
+						className="th-btn th-btn--primary"
 						onClick={() => setDraft({ ...readLiveDraft(), activeIndex: activeIndex + 1 })}
 					>
 						{t("approval.question.next")}

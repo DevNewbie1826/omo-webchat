@@ -13,6 +13,7 @@ import {
 } from "./paneTree";
 import type { PaneNode, SplitDir } from "./paneTree";
 import { getLayout, putLayout } from "./layout";
+import { applyPaneSessionTransition } from "./paneSessionTransition";
 
 export interface LayoutApi {
   readonly root: PaneNode;
@@ -46,6 +47,7 @@ export function useLayout(authed: boolean): LayoutApi {
   const [focusedPaneId, setFocusedPaneId] = useState<string>(() => firstLeafId(root));
   const [placed, setPlaced] = useState<ReadonlySet<string>>(() => new Set());
   const rootRef = useRef(root);
+  const pendingAssignments = useRef(new Map<string, { readonly paneId: string; readonly ticket: symbol }>());
   const saveTimer = useRef(0);
   const mutationGeneration = useRef(0);
   useEffect(() => () => window.clearTimeout(saveTimer.current), []);
@@ -106,9 +108,24 @@ export function useLayout(authed: boolean): LayoutApi {
       // The pane may have closed while an async terminal creation was pending.
       // Do not unplace the session or move focus when its target no longer exists.
       if (!findLeaf(rootRef.current, paneId)) return;
-      // A session lives in exactly one pane; unplace it elsewhere first.
-      const cleared = removeSession(rootRef.current, tmId);
-      commit(setLeafSession(cleared, paneId, tmId));
+      // An explicit unplacement or a later move of this session must win
+      // even if an earlier pane's transition callback runs last.
+      for (const [sessionId, pending] of pendingAssignments.current) {
+        if (pending.paneId === paneId) pendingAssignments.current.delete(sessionId);
+      }
+      const ticket = Symbol("pane-assignment");
+      pendingAssignments.current.set(tmId, { paneId, ticket });
+      // Session-switch continuity (G15/S22): crossfade this pane's transcript;
+      // the commit still runs exactly once on every path.
+      applyPaneSessionTransition(paneId, () => {
+        if (pendingAssignments.current.get(tmId)?.ticket !== ticket) return;
+        pendingAssignments.current.delete(tmId);
+        // Other panes can split, close, resize, or move sessions while the
+        // transition waits. Revalidate and mutate the current tree only.
+        const current = rootRef.current;
+        if (!findLeaf(current, paneId)) return;
+        commit(setLeafSession(removeSession(current, tmId), paneId, tmId));
+      });
       if (focus) setFocusedPaneId(paneId);
     },
     [commit],
@@ -139,6 +156,7 @@ export function useLayout(authed: boolean): LayoutApi {
 
   const unplaceSession = useCallback(
     (tmId: string) => {
+      pendingAssignments.current.delete(tmId);
       commit(removeSession(rootRef.current, tmId));
     },
     [commit],

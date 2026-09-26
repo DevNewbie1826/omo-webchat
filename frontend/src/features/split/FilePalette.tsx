@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { IconFile, IconFolder } from "../../components/icons";
+import { PaletteHints } from "./chatComposerPaletteHints";
 import type { FileMatch } from "./fileSearch";
 
 interface FilePaletteProps {
@@ -16,6 +17,9 @@ interface FilePaletteProps {
   readonly cappedLabel: string;
   readonly onActiveIndex: (index: number) => void;
   readonly onSelect: (file: FileMatch) => void;
+  readonly hintNavigate: string;
+  readonly hintSelect: string;
+  readonly hintClose: string;
 }
 
 export function FilePalette({
@@ -32,6 +36,9 @@ export function FilePalette({
   cappedLabel,
   onActiveIndex,
   onSelect,
+  hintNavigate,
+  hintSelect,
+  hintClose,
 }: FilePaletteProps) {
   const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
@@ -47,6 +54,7 @@ export function FilePalette({
 
   return (
     <div className="th-chat-slash th-chat-files" id={id} role="listbox">
+      <PaletteHints navigateLabel={hintNavigate} selectLabel={hintSelect} closeLabel={hintClose} />
       {showStatus ? (
         <div className="th-chat-files-status" role="status">
           {statusText}

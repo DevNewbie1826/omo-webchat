@@ -19,6 +19,7 @@
 .th-btn:disabled {
   background: var(--th-disabled-bg);
   color: var(--th-disabled-fg);
+  border: 1px solid var(--th-border-surface);
   cursor: not-allowed;
 }
 

@@ -10,6 +10,7 @@ const chatTranscript = readStyle("chat-transcript");
 const toolCard = readStyle("tool-card");
 const sessionTree = readStyle("session-tree");
 const termhead = readStyle("terminal-header");
+const iconButtonStyles = readStyle("icon-button");
 const math = readStyle("math");
 const modal = readStyle("modal-dialog");
 const activityShelf = readStyle("activity-shelf");
@@ -271,7 +272,10 @@ describe("spacing and elevation contracts", () => {
       if (wholeVarToken(declarationValue(body, "background")) !== fillToken) {
         violations.push(`${file} ${selector} is missing background: var(${fillToken})`);
       }
-      if (!containsVarToken(body, borderToken)) {
+      // The pane header separates from the Canvas transcript by tone plus the
+      // surface shadow alone (v2 header: no bottom hairline); floating levels
+      // keep their hairline border token.
+      if (level !== "surface" && !containsVarToken(body, borderToken)) {
         violations.push(`${file} ${selector} is missing var(${borderToken})`);
       }
       if (level === "surface") {
@@ -319,19 +323,21 @@ describe("spacing and elevation contracts", () => {
     );
   });
 
-  it("consumes the dedicated user surface pair for the user bubble", () => {
+  it("consumes the dedicated user surface for the borderless pill bubble", () => {
     // The user bubble separates authorship by its OWN surface step - one
-    // above Raised - defined as --th-surface-user / --th-border-user per
-    // theme. The shadow declaration stays the Raised level, which resolves
-    // to none in both themes (the measured menu carries none); the strong
-    // border does the separating.
+    // above Raised - per theme. The v2 Golo grammar (QA S4 probe) makes it a
+    // borderless pill: no hairline at all, every corner at --th-radius-lg,
+    // with the Raised shadow and the surface step doing the separation.
     const body = ruleBody(chatTranscript, ".th-chat-msg--user");
     const userViolations: string[] = [];
     if (wholeVarToken(declarationValue(body, "background")) !== "--th-surface-user") {
       userViolations.push("chat-transcript.css .th-chat-msg--user is missing background: var(--th-surface-user)");
     }
-    if (!containsVarToken(body, "--th-border-user")) {
-      userViolations.push("chat-transcript.css .th-chat-msg--user is missing var(--th-border-user)");
+    if (declarationValue(body, "border") !== "0") {
+      userViolations.push("chat-transcript.css .th-chat-msg--user must stay borderless (QA S4: border-style none)");
+    }
+    if (wholeVarToken(declarationValue(body, "border-radius")) !== "--th-radius-lg") {
+      userViolations.push("chat-transcript.css .th-chat-msg--user is missing border-radius: var(--th-radius-lg)");
     }
     if (wholeVarToken(declarationValue(body, "box-shadow")) !== "--th-shadow-raised") {
       userViolations.push("chat-transcript.css .th-chat-msg--user is missing box-shadow: var(--th-shadow-raised)");
@@ -344,15 +350,27 @@ describe("spacing and elevation contracts", () => {
 });
 
 describe("visual accessibility contracts", () => {
-  it("keeps every design duration token between 120ms and 480ms with the full easing set", () => {
+  it("keeps every state duration token between 120ms and 480ms with the full easing set", () => {
     // v2 motion contract: 120 (hover/press) - 200 (state/popover) - 320
-    // (enter/disclosure) - 480ms (one-time choreography only), plus the four
-    // easings (standard, enter, move, small-pop spring).
-    const durations = Array.from(tokens.matchAll(/--th-dur(?:-[\w-]+)?:\s*(\d+)ms/g), (match) => Number(match[1]));
+    // (enter/disclosure) - 480ms (one-time choreography only), plus the
+    // easings (standard, enter, move, small-pop spring, linear). The
+    // progress clocks (--th-dur-spin/--th-dur-shimmer) run continuous
+    // agent-alive loops rather than state transitions, so they sit outside
+    // the 120-480ms census by design and are pinned to their own values.
+    const durations = Array.from(tokens.matchAll(/--th-dur(?:-[\w-]+)?:\s*(\d+)ms/g), (match) => ({
+      name: match[0].slice(0, match[0].indexOf(":")),
+      ms: Number(match[1]),
+    }));
     expect(durations.length).toBeGreaterThan(0);
-    expect(durations.every((duration) => duration >= 120 && duration <= 480)).toBe(true);
+    for (const duration of durations) {
+      if (duration.name === "--th-dur-spin" || duration.name === "--th-dur-shimmer") continue;
+      expect(duration.ms >= 120 && duration.ms <= 480, `${duration.name} must stay on the state-transition scale`).toBe(true);
+    }
     expect(tokenValue("--th-dur-emph")).toBe("480ms");
-    for (const name of ["--th-ease", "--th-ease-out", "--th-ease-in-out", "--th-ease-spring"]) {
+    expect(tokenValue("--th-dur-spin")).toBe("700ms");
+    expect(tokenValue("--th-dur-shimmer")).toBe("1600ms");
+    expect(tokenValue("--th-ease-linear")).toBe("linear");
+    for (const name of ["--th-ease", "--th-ease-out", "--th-ease-in-out", "--th-ease-spring", "--th-ease-linear"]) {
       expect(tokenValue(name), `${name} must exist`).not.toBe("");
     }
   });
@@ -425,7 +443,7 @@ describe("visual accessibility contracts", () => {
       });
     });
     expect(hiddenResponsiveFilesRules).toEqual([]);
-    expect(wide).toMatch(/\.th-chat-pane \.th-files-toggle,[\s\S]*?\{[^}]*width:\s*44px[^}]*min-width:\s*44px[^}]*height:\s*44px/);
+    expect(chatPane).toMatch(/@media \(pointer: coarse\)[\s\S]*?\.th-chat-pane \.th-files-toggle,[\s\S]*?height:\s*var\(--th-space-11\)/);
   });
 
   it("anchors the model control in the shared status row with an upward bounded desktop popup", () => {
@@ -563,18 +581,19 @@ describe("visual accessibility contracts", () => {
     expect(declarationValue(identity, "text-overflow")).toBe("ellipsis");
   });
 
-  it("keeps resync compact with a 44px header target on narrow panes", () => {
+  it("keeps resync an icon-only header control at every width", () => {
+    // Resync lost its visible text label: no narrow-only compact rule and no
+    // label to clip. Coarse pointers grow it to the 44px touch box.
     const narrow = chatPane.match(/@container chat-pane \(max-width: 600px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
-    expect(narrow).toMatch(/\.th-chat-pane \.th-chat-resync-btn\s*\{[^}]*width:\s*44px[^}]*min-width:\s*44px[^}]*height:\s*44px/);
-    expect(narrow).toMatch(/\.th-chat-pane \.th-chat-resync-icon\s*\{[^}]*display:\s*inline-flex/);
-    expect(narrow).toMatch(/\.th-chat-pane \.th-chat-resync-label\s*\{[^}]*display:\s*none/);
+    expect(ruleBody(narrow, ".th-chat-pane .th-chat-resync-btn")).toBe("");
+    expect(chatPane).not.toMatch(/\.th-chat-resync-label/);
+    expect(chatPane).toMatch(/@media \(pointer: coarse\)[\s\S]*?\.th-chat-pane \.th-chat-resync-btn,[\s\S]*?height:\s*var\(--th-space-11\)/);
   });
 
   it("makes every prose-bearing chat header item shrink and ellipsize", () => {
     const proseRules = [
       [".th-provider-badge", chatPane],
       [".th-model-picker-label", chatPane],
-      [".th-chat-resync-label", chatPane],
     ] as const;
     for (const [selector, css] of proseRules) {
       const body = ruleBody(css, selector);
@@ -582,30 +601,25 @@ describe("visual accessibility contracts", () => {
       expect(declarationValue(body, "overflow"), `${selector} overflow`).toBe("hidden");
       expect(declarationValue(body, "text-overflow"), `${selector} text-overflow`).toBe("ellipsis");
     }
-    const files = ruleBody(chatPane, ".th-files-toggle");
-    expect(declarationValue(files, "overflow")).toBe("hidden");
-    expect(declarationValue(files, "text-overflow")).toBe("ellipsis");
 
-    for (const selector of [".th-termhead-name", ".th-termhead-path"]) {
-      const body = ruleBody(termhead, selector);
-      expect(declarationValue(body, "overflow"), `${selector} overflow`).toBe("hidden");
-      expect(declarationValue(body, "text-overflow"), `${selector} text-overflow`).toBe("ellipsis");
-    }
-    expect(declarationValue(ruleBody(chatPane, ".th-chat-pane .th-termhead-path"), "min-width")).toBe("0");
+    const name = ruleBody(termhead, ".th-termhead-name");
+    expect(declarationValue(name, "overflow"), ".th-termhead-name overflow").toBe("hidden");
+    expect(declarationValue(name, "text-overflow"), ".th-termhead-name text-overflow").toBe("ellipsis");
+
+    // Icon-only header controls (Files, Resync, disconnect, split, close)
+    // carry no clipped text labels at any width, and the removed cwd/path
+    // and resync-label selectors stay gone.
+    expect(chatPane).not.toMatch(/\.th-files-toggle\s*\{[^}]*text-overflow/);
+    expect(chatPane).not.toMatch(/\.th-chat-resync-label|\.th-termhead-path/);
 
     // Ellipsis on the label is effective only when each outer flex item can
-    // shrink. Model prose has no intrinsic minimum; resync retains one 44px
-    // control target while its long copy contributes no unbounded minimum.
+    // shrink. Model prose has no intrinsic minimum.
     const provider = ruleBody(chatPane, ".th-provider-badge");
     const modelButton = ruleBody(chatPane, ".th-model-picker-btn");
-    const resync = ruleBody(chatPane, ".th-chat-pane .th-chat-resync-btn");
     expect(declarationValue(provider, "flex")).toMatch(/^0 1 /);
     expect(declarationValue(ruleBody(chatPane, ".th-model-picker-thinking"), "flex")).toBe("none");
     expect(declarationValue(modelButton, "min-width")).toBe("0");
     expect(declarationValue(modelButton, "overflow")).toBe("hidden");
-    expect(declarationValue(resync, "flex")).toMatch(/^0 1 /);
-    expect(declarationValue(resync, "min-width")).toBe("44px");
-    expect(declarationValue(resync, "max-width")).toBe("120px");
   });
 
   it("fits the header minimum on both sides of the 600px breakpoint", () => {
@@ -613,14 +627,10 @@ describe("visual accessibility contracts", () => {
     expect(compact).toMatch(
       /\.th-chat-pane \.th-provider-badge\s*\{[^}]*display:\s*none/,
     );
+    expect(compact).toMatch(/\.th-chat-pane \.th-termhead-split-btn\s*\{[^}]*display:\s*none/);
 
     const header = ruleBody(chatPane, ".th-chat-pane .th-termhead");
     const title = ruleBody(chatPane, ".th-chat-pane .th-termhead-name");
-    const iconControls = chatPane.match(
-      /\.th-chat-pane \.th-mobile-menu,[\s\S]*?\.th-chat-pane \.th-termhead-actions \.th-btn-icon\s*\{([^}]*)\}/,
-    )?.[1] ?? "";
-    const compactResync = ruleBody(compact, ".th-chat-pane .th-chat-resync-btn");
-    const expandedResync = ruleBody(chatPane, ".th-chat-pane .th-chat-resync-btn");
     const pixels = (value: string): number => {
       const token = wholeVarToken(value);
       return Number.parseFloat((token ? tokenValue(token) : value).replace("px", ""));
@@ -632,27 +642,35 @@ describe("visual accessibility contracts", () => {
     const horizontalPadding = paddingTokens.reduce((sum, token) => sum + pixels(`var(${token})`), 0);
     const gap = pixels(declarationValue(header, "gap"));
     const titleMinimum = pixels(declarationValue(title, "min-width"));
-    const iconWidth = pixels(declarationValue(iconControls, "width"));
+    // Icon buttons resolve to the primitive 32px box; coarse pointers raise
+    // them to the 44px touch target (icon-button.css / coarse media query).
+    const iconWidth = pixels(declarationValue(ruleBody(iconButtonStyles, ".th-btn-icon"), "width"));
+    const coarseIcon = pixels("var(--th-space-11)");
+    const dividerWidth = pixels(declarationValue(ruleBody(termhead, ".th-termhead-divider"), "width"));
+    const menuWidth = pixels(declarationValue(ruleBody(chatPane, ".th-chat-pane .th-mobile-menu"), "width"));
 
-    // Compact has one edge action (the viewport menu or split close), Files,
-    // resync, and disconnect. The model control belongs to the composer.
-    const compactWidths =
-      titleMinimum + iconWidth * 3 +
-      pixels(declarationValue(compactResync, "width"));
-    const compactAggregate = horizontalPadding + compactWidths + gap * 4;
-    for (const paneWidth of [320, 600]) expect(compactAggregate).toBeLessThanOrEqual(paneWidth);
+    // Compact keeps the edge menu, Files, Resync, the divider, and disconnect
+    // plus close: five icon targets across two groups. The model control
+    // belongs to the composer. Group-internal gaps add two more tracks.
+    const compactTracks = gap * 7;
+    const compactFine = horizontalPadding + titleMinimum + menuWidth + iconWidth * 4 + dividerWidth + compactTracks;
+    const compactCoarse = horizontalPadding + titleMinimum + menuWidth + coarseIcon * 4 + dividerWidth + compactTracks;
+    for (const paneWidth of [320, 600]) {
+      expect(compactFine).toBeLessThanOrEqual(paneWidth);
+      expect(compactCoarse).toBeLessThanOrEqual(paneWidth);
+    }
 
-    // Expanded mode may show all three split actions plus the viewport edge
-    // action. Count that conservative combination even though the app normally
-    // makes the mobile menu and desktop split chrome mutually exclusive. Long
-    // provider/path/resync text contributes only its CSS minimum;
+    // Expanded mode shows every header action: menu, Files, Resync,
+    // disconnect, split horizontal/vertical, and close, plus the divider.
+    // Long provider text contributes only its CSS minimum; the name's
     // ellipsis absorbs the remaining width rather than increasing this sum.
-    // The model control lives in the composer band, not the header.
-    const expandedWidths =
-      titleMinimum + iconWidth * 6 +
-      pixels(declarationValue(expandedResync, "min-width"));
-    const expandedAggregate = horizontalPadding + expandedWidths + gap * 9;
-    for (const paneWidth of [601, 640, 680]) expect(expandedAggregate).toBeLessThanOrEqual(paneWidth);
+    const expandedTracks = gap * 7;
+    const expandedFine = horizontalPadding + titleMinimum + menuWidth + iconWidth * 6 + dividerWidth + expandedTracks;
+    const expandedCoarse = horizontalPadding + titleMinimum + menuWidth + coarseIcon * 6 + dividerWidth + expandedTracks;
+    for (const paneWidth of [601, 640, 680]) {
+      expect(expandedFine).toBeLessThanOrEqual(paneWidth);
+      expect(expandedCoarse).toBeLessThanOrEqual(paneWidth);
+    }
   });
 
   it("keeps the mobile empty-state menu below the safe area at 44px", () => {
@@ -780,23 +798,27 @@ describe("chat reading rhythm and tool width contracts", () => {
     expect(io).toMatch(/font-family:\s*var\(--th-font-mono\)/);
   });
 
-  it("gives every tool record the scoped persistent material and subtle boundary", () => {
-    // DESIGN.md "Tool-execution block anatomy" (P4): collapsed and expanded
-    // records share one scoped tool material behind a 1px hairline, visibly
-    // distinct from transparent prose on Canvas, with no independent shadow
-    // or whole-card status glow; the expanded body insets Canvas.
+  it("gives collapsed tool records a transparent row and the expanded body the scoped material", () => {
+    // T2 timeline grammar (design-workbench 'collapsed-enclosure' predicate):
+    // a collapsed record is a transparent, borderless timeline row — the
+    // design-workbench harness measures background rgba(0,0,0,0) and no full
+    // box border on collapsed records. The scoped tool material lives on the
+    // expanded body alone, at the 12px radius and without a border or
+    // shadow; the output well insets Canvas inside that material.
     const block = toolCard.match(/\.th-tool\s*\{([^}]*)\}/)?.[1] ?? "";
-    expect(block).toMatch(/overflow:\s*hidden/);
-    expect(block).toMatch(/border-radius:\s*var\(--th-radius-sm\)/);
-    expect(block).toMatch(/border:\s*1px solid var\(--th-tool-border\)/);
-    expect(block).toMatch(/background:\s*var\(--th-tool-surface\)/);
-    expect(block).not.toMatch(/box-shadow/);
-    // The scoped material replaces the global Surface role on tool records.
-    expect(toolCard).not.toMatch(/\.th-tool[^{]*\{[^}]*background:\s*var\(--th-surface\)/);
+    expect(block).not.toMatch(/background\s*:/);
+    expect(block).not.toMatch(/border\s*:/);
     const body = toolCard.match(/\.th-tool-body\s*\{([^}]*)\}/)?.[1] ?? "";
-    expect(body).toMatch(/background:\s*var\(--th-bg\)/);
+    expect(body).toMatch(/background:\s*var\(--th-tool-surface\)/);
+    expect(body).toMatch(/border:\s*1px solid var\(--th-tool-border\)/);
+    expect(body).toMatch(/border-radius:\s*var\(--th-radius\)/);
+    expect(body).not.toMatch(/box-shadow/);
     expect(body).toMatch(/padding:\s*var\(--th-space-3/);
     expect(body).toMatch(/gap:\s*var\(--th-space-3/);
+    // The scoped material replaces the global Surface role on tool records.
+    expect(toolCard).not.toMatch(/\.th-tool[^{]*\{[^}]*background:\s*var\(--th-surface\)/);
+    const output = toolCard.match(/\.th-tool-output\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(output).toMatch(/background:\s*var\(--th-bg\)/);
   });
 
   it("declares the scoped tool material tokens in both theme scopes", () => {
@@ -897,13 +919,16 @@ describe("sidebar density and top-bar hierarchy contracts", () => {
     const name = termhead.match(/\.th-termhead-name\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(name).toMatch(/font-size:\s*var\(--th-type-secondary-size\)/);
     expect(name).toMatch(/font-weight:\s*var\(--th-weight-emphasize\)/);
-    const path = termhead.match(/\.th-termhead-path\s*\{([^}]*)\}/)?.[1] ?? "";
-    expect(path).toMatch(/font-size:\s*var\(--th-type-label-size\)/);
-    // Provider metadata joins the path/model tier as quiet Label text, never
-    // an uppercase pill that outranks the session name.
+    // The cwd is no longer rendered as visible header text (G6); it travels
+    // with the session name as its title tooltip.
+    expect(termhead).not.toMatch(/\.th-termhead-path/);
+    // Provider metadata joins the header as quiet Label text: sans, never an
+    // uppercase mono pill that outranks the session name (G16).
     const provider = termhead.match(/\.th-termhead \.th-provider-badge\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(provider).toMatch(/text-transform:\s*none/);
     expect(provider).not.toMatch(/text-transform:\s*uppercase/);
+    expect(provider).toMatch(/font-family:\s*var\(--th-font-sans\)/);
+    expect(provider).not.toMatch(/font-family:\s*var\(--th-font-mono\)/);
   });
 
   it("scopes KaTeX output to the surrounding tier and theme tokens", () => {
@@ -1086,7 +1111,7 @@ describe("question window and notice band contracts", () => {
     expect(declarationValue(band, "width")).toBe(
       "min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)))",
     );
-    expect(declarationValue(band, "margin")).toBe("var(--th-space-1) auto 0");
+    expect(declarationValue(band, "margin")).toBe("var(--th-space-2) auto");
     // The title absorbs the squeeze: one clipped line, never a wrapped band.
     const title = ruleBody(questionWindow, ".th-question-band-title");
     expect(declarationValue(title, "min-width")).toBe("0");
@@ -1108,12 +1133,15 @@ describe("question window and notice band contracts", () => {
     expect(declarationValue(title, "overflow")).toBe("hidden");
     expect(declarationValue(title, "text-overflow")).toBe("ellipsis");
     expect(declarationValue(title, "white-space")).toBe("nowrap");
-    // The deadline pill keeps the countdown's urgency styling (warning tone,
-    // mono, tabular numerals) in both the window head and the band.
+    // The v2 countdown is sans tabular-nums warning TEXT — no pill chrome:
+    // urgency reads through colour and the label, never a border (state is
+    // never encoded by a coloured outline). The mono pill is retired, in
+    // both the window head and the band.
     const countdown = ruleBody(questionWindow, ".th-question-window-countdown");
     expect(declarationValue(countdown, "color")).toBe("var(--th-warning)");
-    expect(declarationValue(countdown, "font-family")).toBe("var(--th-font-mono)");
+    expect(declarationValue(countdown, "font-family")).not.toBe("var(--th-font-mono)");
     expect(declarationValue(countdown, "font-variant-numeric")).toBe("tabular-nums");
+    expect(declarationValue(countdown, "border")).toBe("");
   });
 
   it("declares the band strings in both locales", () => {
@@ -1127,6 +1155,56 @@ describe("question window and notice band contracts", () => {
     // the band count is a parameterized key, not a composed literal.
     expect(en["approval.band.questions"]).toContain("{count}");
     expect(ko["approval.band.questions"]).toContain("{count}");
+  });
+});
+
+describe("question/approval v2 state encoding and elevation", () => {
+  // G5/G11/G17 for the question surfaces: selection is a wash plus glyph,
+  // the active tab is a sliding text-coloured thumb, the band is a floating
+  // glass chip, and the primary actions answer with the accent-solid pill.
+  it("encodes an option selection as the accent wash plus check glyph, never a coloured border", () => {
+    const selected = ruleBody(approvalDock, '.th-approval-question-option[aria-pressed="true"]');
+    expect(wholeVarToken(declarationValue(selected, "background"))).toBe("--th-accent-soft");
+    // The selected rule must not touch the border: the hairline keeps its
+    // default colour in every state.
+    expect(declarationValue(selected, "border")).toBe("");
+    expect(declarationValue(selected, "border-color")).toBe("");
+    const check = ruleBody(approvalDock, ".th-approval-question-option-check");
+    expect(wholeVarToken(declarationValue(check, "color"))).toBe("--th-accent");
+  });
+
+  it("marks the active tab with one sliding thumb in --th-text, not an accent underline", () => {
+    const selectedTab = ruleBody(approvalDock, '.th-approval-question-tab[aria-selected="true"]');
+    expect(declarationValue(selectedTab, "border")).toBe("");
+    expect(declarationValue(selectedTab, "border-bottom")).toBe("");
+    const thumb = ruleBody(approvalDock, ".th-approval-question-tab-thumb");
+    expect(wholeVarToken(declarationValue(thumb, "background"))).toBe("--th-text");
+    expect(declarationValue(thumb, "transition")).toContain("transform");
+    expect(declarationValue(thumb, "transition")).toContain("var(--th-dur)");
+  });
+
+  it("renders the notice band as a floating glass chip with a small-pop entrance", () => {
+    const band = ruleBody(questionWindow, ".th-question-band");
+    expect(declarationValue(band, "border-radius")).toBe("var(--th-radius-pill)");
+    expect(wholeVarToken(declarationValue(band, "background"))).toBe("--th-surface-overlay");
+    expect(containsVarToken(band, "--th-border-overlay")).toBe(true);
+    expect(containsVarToken(band, "--th-shadow-overlay")).toBe(true);
+    expect(containsVarToken(band, "--th-highlight")).toBe(true);
+    expect(declarationValue(band, "animation")).toContain("th-question-band-in");
+    expect(declarationValue(band, "animation")).toContain("var(--th-ease-spring)");
+    // Glass floats over the transcript only where backdrop-filter exists.
+    expect(questionWindow).toContain("@supports (backdrop-filter: blur(1px))");
+  });
+
+  it("keeps raw accent fills and case transforms out of the question sheets", () => {
+    // The primary idiom is the .th-btn--primary primitive (accent-solid);
+    // the sheets must not reintroduce the retired --th-accent button FILL
+    // (the bare accent remains lawful only as the selected option's check
+    // glyph colour) or any uppercase label transform.
+    expect(approvalDock).not.toMatch(/background:\s*var\(\s*--th-accent\s*\)/);
+    expect(questionWindow).not.toMatch(/background:\s*var\(\s*--th-accent\s*\)/);
+    expect(approvalDock).not.toContain("text-transform");
+    expect(questionWindow).not.toContain("text-transform");
   });
 });
 
@@ -1260,6 +1338,62 @@ describe("pinned live-session section contracts", () => {
     expect(minHeight).toContain("2px");
     const pillHeight = numericToken("--th-type-micro-size") * numericToken("--th-type-micro-line") + 2;
     expect(evaluateCalc(minHeight)).toBe(pillHeight);
+  });
+});
+
+describe("scroll-to-bottom narrow placement contracts", () => {
+  // D1 (s17 critique, QA S22 at 390): at narrow panes the reading column
+  // fills the pane, and the inline-end anchored circle covered a collapsed
+  // record's status word. Inside the chat pane's 600px container breakpoint
+  // the button centres in a reserved strip below the scroll body; the wide
+  // inline-end placement must stay unchanged.
+  const narrowBlock =
+    chatTranscript.match(/@container chat-pane \(max-width: 600px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+
+  // Resolve any --th-* token to a number: plain px values parse directly,
+  // calc() expressions are substituted recursively and evaluated (same
+  // pattern as the pinned live-session contracts above).
+  const numericToken = (name: string): number => {
+    const raw = tokenValue(name);
+    const expression = raw
+      .replace(/var\(\s*(--[\w-]+)\s*\)/g, (_match, ref: string) => String(numericToken(ref)))
+      .replace(/calc|px/g, "");
+    return Function(`"use strict"; return (${expression});`)() as number;
+  };
+  const evaluateCalc = (value: string): number =>
+    Function(
+      `"use strict"; return (${value
+        .replace(/var\(\s*(--[\w-]+)\s*\)/g, (_match, ref: string) => String(numericToken(ref)))
+        .replace(/calc|px/g, "")});`,
+    )() as number;
+
+  it("keeps the 44px hit area and the wide inline-end placement", () => {
+    const base = ruleBody(chatTranscript, ".th-chat-scroll-bottom");
+    expect(declarationValue(base, "width")).toBe("var(--th-space-11)");
+    expect(declarationValue(base, "height")).toBe("var(--th-space-11)");
+    expect(containsVarToken(declarationValue(base, "right"), "--th-chat-gutter")).toBe(true);
+    expect(declarationValue(base, "bottom")).toBe("var(--th-space-4)");
+    expect(declarationValue(base, "left"), "wide placement must not centre").toBe("");
+  });
+
+  it("reserves a bottom strip that fits the button whenever it is mounted", () => {
+    expect(narrowBlock, "narrow container block").not.toBe("");
+    const strip = ruleBody(narrowBlock, ".th-chat-scrollport:has(> .th-chat-scroll-bottom)");
+    expect(strip, "reserved strip rule").not.toBe("");
+    const paddingBottom = declarationValue(strip, "padding-bottom");
+    expect(containsVarToken(paddingBottom, "--th-space-11")).toBe(true);
+    const button = ruleBody(narrowBlock, ".th-chat-pane .th-chat-scroll-bottom");
+    const bottomOffset = evaluateCalc(declarationValue(button, "bottom"));
+    expect(evaluateCalc(paddingBottom)).toBeGreaterThanOrEqual(
+      numericToken("--th-space-11") + bottomOffset,
+    );
+  });
+
+  it("centres the button in the strip at narrow panes", () => {
+    const button = ruleBody(narrowBlock, ".th-chat-pane .th-chat-scroll-bottom");
+    expect(declarationValue(button, "left")).toBe("50%");
+    expect(declarationValue(button, "right")).toBe("auto");
+    expect(declarationValue(button, "translate")).toMatch(/^-50%/);
   });
 });
 

@@ -136,17 +136,17 @@ describe("ChatPane resync control", () => {
       "resync control",
     );
 
-  it("renders the icon-only narrow variant with a localized accessible name", () => {
+  it("renders the icon-only variant with a localized accessible name", () => {
     container.style.width = "320px";
     renderKoreanPane();
 
     const button = resyncButton();
-    const accessibleName = translate("ko", "chat.resync");
+    const accessibleName = translate("ko", "chat.header.resync");
     expect(button.classList.contains("th-btn-icon")).toBe(true);
     expect(button.getAttribute("aria-label")).toBe(accessibleName);
     expect(button.title).toBe(accessibleName);
     expect(button.querySelector(".th-chat-resync-icon")?.getAttribute("aria-hidden")).toBe("true");
-    expect(button.querySelector(".th-chat-resync-label")).not.toBeNull();
+    expect(button.querySelector(".th-chat-resync-label")).toBeNull();
   });
 
   it("presents only a manual resync as busy", () => {
@@ -162,19 +162,18 @@ describe("ChatPane resync control", () => {
 
     expect(button.disabled).toBe(true);
     expect(button.getAttribute("aria-busy")).toBe("true");
-    expect(button.querySelector(".th-chat-resync-label")?.textContent).toBe(
-      translate("ko", "chat.resyncBusy"),
-    );
+    expect(button.getAttribute("aria-label")).toBe(translate("ko", "chat.header.resyncBusy"));
+    expect(button.title).toBe(translate("ko", "chat.header.resyncBusy"));
   });
 
   it("stays disabled but not busy during attach and after disconnect", () => {
     const { deliver, disconnect } = renderKoreanPane();
     const button = resyncButton();
-    const idleLabel = translate("ko", "chat.resync");
+    const idleLabel = translate("ko", "chat.header.resync");
 
     expect(button.disabled).toBe(true);
     expect(button.getAttribute("aria-busy")).toBe("false");
-    expect(button.querySelector(".th-chat-resync-label")?.textContent).toBe(idleLabel);
+    expect(button.getAttribute("aria-label")).toBe(idleLabel);
 
     act(() => {
       deliver({ type: "entries", sessionId: chatSession.id, entries: [], final: true });
@@ -185,7 +184,7 @@ describe("ChatPane resync control", () => {
 
     expect(button.disabled).toBe(true);
     expect(button.getAttribute("aria-busy")).toBe("false");
-    expect(button.querySelector(".th-chat-resync-label")?.textContent).toBe(idleLabel);
+    expect(button.getAttribute("aria-label")).toBe(idleLabel);
   });
 
   it.each([

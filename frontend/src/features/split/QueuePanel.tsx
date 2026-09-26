@@ -5,6 +5,30 @@ import type { QueueEngineSummary, QueuePlaceholder, QueueSlotItem } from "./chat
 
 type QueueClearScope = "webchat" | "engine" | "all";
 
+/** Waiting-state glyph: a small clock, aria-hidden (the row text and title
+ *  carry the state). Local to the queue: no other surface clocks yet, so
+ *  the shared icon inventory does not need one. */
+function IconClock(props: { readonly size?: number | undefined; readonly className?: string | undefined }) {
+  const size = props.size ?? 12;
+  return (
+    <svg
+      width={size}
+      height={size}
+      className={props.className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
 interface QueuePanelProps {
   /** Webchat-owned queued sends, head-first (server queue snapshot order). */
   readonly items: readonly QueueSlotItem[];
@@ -21,8 +45,8 @@ interface QueuePanelProps {
  * Fixed queue slot between the shelves and the composer: run-time pending
  * feedback lives here, never inside the transcript scrollport. The header
  * stays visible as a compact count; the list expands on demand. Queued items
- * carry a distinct waiting style so they cannot be mistaken for sent
- * messages; engine-queue rows are a read-only mirror.
+ * carry a clock glyph and the waiting style so they cannot be mistaken for
+ * sent messages; engine-queue rows are a read-only mirror.
  */
 export function QueuePanel({ items, engine, placeholders, onRemove, onMove, onClear }: QueuePanelProps) {
   const { t } = useT();
@@ -63,6 +87,7 @@ export function QueuePanel({ items, engine, placeholders, onRemove, onMove, onCl
           <ul className="th-queue-list">
             {items.map((item, index) => (
               <li key={item.id} className="th-queue-row th-queue-row--waiting">
+                <IconClock size={12} className="th-queue-wait-glyph" />
                 <span className="th-queue-pos">{index + 1}</span>
                 <span className="th-queue-text" title={item.text}>{item.text}</span>
                 <span className="th-queue-actions">
@@ -100,6 +125,7 @@ export function QueuePanel({ items, engine, placeholders, onRemove, onMove, onCl
                 key={placeholder.requestId}
                 className="th-queue-row th-queue-row--waiting th-queue-row--placeholder"
               >
+                <IconClock size={12} className="th-queue-wait-glyph" />
                 <span className="th-queue-text" title={placeholder.text}>
                   {t("queue.waiting")}
                   {placeholder.text ? `: ${placeholder.text}` : ""}

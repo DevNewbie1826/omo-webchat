@@ -53,35 +53,21 @@
 }
 
 .th-chat-pane .th-termhead-name {
-  flex: 0 1 auto;
-  min-width: 42px;
-  max-width: 240px;
-  overflow: hidden;
-  font-family: var(--th-font-sans);
-  font-size: var(--th-type-secondary-size);
-  text-overflow: ellipsis;
-}
-
-.th-chat-pane .th-termhead-path {
   flex: 1 1 auto;
-  min-width: 0;
-  font-size: var(--th-type-label-size);
+  min-width: 42px;
+  max-width: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .th-chat-pane .th-termhead-actions {
   flex: none;
   margin-left: 0;
-  gap: 0;
+  gap: var(--th-space-1);
 }
 
 .th-chat-pane .th-chat-resync-btn {
-  flex: 0 1 auto;
-  width: auto;
-  min-width: 44px;
-  max-width: 120px;
-  height: 34px;
-  padding: 0 var(--th-space-3);
-  overflow: hidden;
+  flex: none;
 }
 
 .th-chat-resync-icon {
@@ -89,38 +75,37 @@
   flex: none;
 }
 
-.th-chat-resync-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.th-chat-pane .th-mobile-menu,
-.th-chat-pane .th-files-toggle,
-.th-chat-pane .th-disconnect-btn,
-.th-chat-pane .th-termhead-actions .th-btn-icon {
+.th-chat-pane .th-mobile-menu {
   flex: none;
   width: 44px;
   min-width: 44px;
   height: 44px;
 }
 
+/* Coarse pointers grow the pane-header icon buttons to the 44px touch
+   target (icon-button primitive: 32px, 44px coarse); fine pointers keep the
+   primitive 32px box from icon-button.css. */
+@media (pointer: coarse) {
+  .th-chat-pane .th-files-toggle,
+  .th-chat-pane .th-chat-resync-btn,
+  .th-chat-pane .th-disconnect-btn,
+  .th-chat-pane .th-termhead-actions .th-btn-icon {
+    width: var(--th-space-11);
+    min-width: var(--th-space-11);
+    height: var(--th-space-11);
+  }
+}
+
 .th-provider-badge {
-  flex: 0 1 72px;
+  flex: 0 1 auto;
   min-width: 0;
-  max-width: 72px;
   overflow: hidden;
-  padding: var(--th-space-0-5) var(--th-space-2);
-  border-radius: 999px;
-  background: var(--th-hover);
   color: var(--th-text-dim);
   font-size: var(--th-type-label-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
   text-overflow: ellipsis;
-  text-transform: uppercase;
   white-space: nowrap;
 }
 
@@ -249,7 +234,7 @@
 }
 
 .th-chat-status-num {
-  font-family: var(--th-font-mono);
+  font-family: var(--th-font-sans);
   color: var(--th-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -279,19 +264,27 @@
   }
 }
 
-/* Queue slot: run-time pending feedback lives here, fixed between the shelves
-   and the composer — never inside the transcript scrollport. Queued rows carry
-   a dashed waiting edge so they cannot be mistaken for sent messages. */
+/* Queue slot: run-time pending feedback lives here, fixed between the
+   shelves and the composer — never inside the transcript scrollport. The
+   panel is a tonal surface, not a bordered box: the Surface fill separates
+   it from the Canvas at the 16px radius, and the light theme alone keeps
+   one --th-border-surface hairline because white-on-white carries no tone.
+   No child of the panel is ever bordered (QA S4: zero nested bordered
+   boxes): the engine summary is a status wash chip, and waiting rows carry
+   a clock glyph with muted text instead of the retired dashed edge. */
 .th-queue {
   flex: none;
   display: flex;
   flex-direction: column;
   width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
   margin: var(--th-space-1) auto 0;
-  border: 1px solid var(--th-border);
-  border-radius: var(--th-radius-sm);
+  border-radius: var(--th-radius-lg);
   background: var(--th-surface);
   font-size: var(--th-type-micro-size);
+}
+
+[data-theme="light"] .th-queue {
+  border: 1px solid var(--th-border-surface);
 }
 
 .th-queue-header {
@@ -316,10 +309,13 @@
   color: var(--th-text);
 }
 
+/* Engine summary: a status wash chip (warning text on the warning
+   background wash at the pill radius), never a bordered pill inside the
+   panel. */
 .th-queue-engine {
   padding: 0 var(--th-space-1);
-  border: 1px solid var(--th-border-raised);
   border-radius: var(--th-radius-pill);
+  background: var(--th-warning-bg);
   color: var(--th-warning);
   font-variant-numeric: tabular-nums;
 }
@@ -362,12 +358,16 @@
   color: var(--th-text-dim);
 }
 
-.th-queue-row--waiting {
-  border-left: 2px dashed var(--th-border-user);
+/* Waiting rows keep their not-yet-sent semantics without a border: a
+   leading clock glyph in the muted tier, ahead of the position number. */
+.th-queue-row--waiting .th-queue-wait-glyph {
+  flex: none;
+  color: var(--th-muted);
 }
 
+/* Engine mirror rows stay one tier quieter than the webchat-owned waiting
+   rows (muted vs dim); no left border anywhere in the panel. */
 .th-queue-row--engine {
-  border-left: 2px solid var(--th-border-raised);
   color: var(--th-muted);
 }
 
@@ -375,7 +375,7 @@
   flex: none;
   min-width: var(--th-space-4);
   color: var(--th-muted);
-  font-family: var(--th-font-mono);
+  font-family: var(--th-font-sans);
   font-variant-numeric: tabular-nums;
 }
 
@@ -450,18 +450,22 @@
   max-width: 100%;
   min-width: 0;
   overflow: hidden;
-  padding: var(--th-space-0-5) var(--th-space-1);
+  padding: var(--th-space-0-5) var(--th-space-2);
   border: 0;
+  border-radius: var(--th-radius-pill);
   background: transparent;
   color: var(--th-muted);
   font-size: var(--th-type-label-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
+  transition: background var(--th-dur-fast) var(--th-ease),
+    color var(--th-dur-fast) var(--th-ease);
   cursor: pointer;
 }
 
 .th-model-picker-btn:hover {
+  background: var(--th-hover);
   color: var(--th-text-dim);
 }
 
@@ -481,7 +485,10 @@
 /* The control lives in the composer band, so the desktop popup opens
    upward and never covers the composer or send action. Short panes clamp the
    popup further with a measured inline max-height (ModelPicker), so the whole
-   popup stays inside the clipping .th-chat-main band. */
+   popup stays inside the clipping .th-chat-main band. The popup is a floating
+   layer: glass over content where backdrop-filter is available (solid Overlay
+   fallback), the Overlay shadow and top-edge highlight, and the overlay
+   enter motion via @starting-style. */
 .th-model-picker-popover {
   position: absolute;
   bottom: calc(100% + var(--th-space-1));
@@ -491,10 +498,10 @@
   max-height: min(480px, 70dvh);
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--th-border-raised);
-  border-radius: var(--th-radius-sm);
-  background: var(--th-surface-raised);
-  box-shadow: var(--th-shadow-raised);
+  border: 1px solid var(--th-border-overlay);
+  border-radius: var(--th-radius-lg);
+  background: var(--th-surface-overlay);
+  box-shadow: var(--th-shadow-overlay), var(--th-highlight);
 }
 
 .th-model-picker-search {
@@ -574,6 +581,31 @@
   overscroll-behavior: contain;
 }
 
+/* Floating layer enter motion: opacity + translateY + scale over --th-dur
+   with the enter easing, driven by @starting-style; the solid Overlay fill
+   above stands as the fallback where backdrop-filter is unavailable. The
+   narrow sheet keeps its own pinned solid fill and shadow below. */
+@supports (backdrop-filter: blur(1px)) {
+  .th-model-picker-popover:not(.th-model-picker-popover--sheet) {
+    background: var(--th-glass);
+    backdrop-filter: var(--th-glass-filter);
+  }
+}
+
+.th-model-picker-popover {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition: opacity var(--th-dur) var(--th-ease-out),
+    transform var(--th-dur) var(--th-ease-out);
+}
+
+@starting-style {
+  .th-model-picker-popover {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
 .th-model-picker-popover--panel {
   position: fixed;
   z-index: 60;
@@ -585,18 +617,7 @@
 }
 
 .th-files-toggle {
-  padding: 0 var(--th-space-2);
-  border: 0;
-  border-radius: var(--th-radius-sm);
-  background: transparent;
   color: var(--th-muted);
-  font-size: var(--th-type-label-size);
-  font-weight: var(--th-weight-emphasize);
-  line-height: var(--th-type-label-line);
-  letter-spacing: var(--th-type-label-tracking);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .th-files-toggle:hover {
@@ -604,7 +625,7 @@
 }
 
 .th-files-toggle--on {
-  background: var(--th-hover);
+  background: var(--th-active);
   color: var(--th-text);
 }
 
@@ -820,10 +841,6 @@
 }
 
 @container chat-pane (max-width: 600px) {
-  .th-chat-pane .th-termhead-path {
-    display: none;
-  }
-
   .th-chat-pane .th-thinking-in-picker {
     display: flex;
   }
@@ -844,27 +861,9 @@
     min-height: var(--th-space-11);
   }
 
-  .th-chat-pane .th-chat-resync-btn {
-    width: 44px;
-    min-width: 44px;
-    height: 44px;
-    padding: 0;
-  }
-
-  .th-chat-pane .th-chat-resync-icon {
-    display: inline-flex;
-  }
-
-  .th-chat-pane .th-chat-resync-label {
-    display: none;
-  }
-
-  .th-chat-pane .th-termhead-name {
-    flex: 1 1 auto;
-    max-width: none;
-  }
-
-  .th-chat-pane .th-termhead-actions > :nth-child(-n + 2) {
+  /* Overflow actions collapse gracefully: the split buttons hide, keeping
+     disconnect and close reachable. */
+  .th-chat-pane .th-termhead-split-btn {
     display: none;
   }
 }

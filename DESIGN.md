@@ -86,7 +86,7 @@ contrast rules in the theme contract. `--th-bg` and `--th-accent` are pinned.
 | `--th-ring` | `color-mix(in srgb, var(--th-accent) 55%, transparent)` | same | Focus ring |
 | `--th-error`, `--th-success`, `--th-warning` (+ `-bg`, `-fg`) | theme-scoped, hue identity kept | same names | Status hues, lightness adjusted to the contrast matrix |
 | `--th-shadow-surface` | `0 1px 2px rgba(0,0,0,.28), 0 4px 12px rgba(0,0,0,.16)` | `0 1px 2px rgba(24,24,27,.04), 0 4px 12px rgba(24,24,27,.05)` | Persistent chrome |
-| `--th-shadow-raised` | `0 2px 6px rgba(0,0,0,.24), 0 10px 28px -8px rgba(0,0,0,.45)` | `0 1px 3px rgba(24,24,27,.06), 0 10px 28px -10px rgba(24,24,27,.14)` | Cards, composer, user bubble |
+| `--th-shadow-raised` | `0 2px 6px rgba(0,0,0,.24), 0 10px 28px -8px rgba(0,0,0,.45)` | `0 1px 3px rgba(24,24,27,.06), 0 10px 28px -10px rgba(24,24,27,.14)` | Cards, user bubble |
 | `--th-shadow-overlay` | `0 8px 20px rgba(0,0,0,.30), 0 28px 64px -16px rgba(0,0,0,.60)` | `0 8px 20px rgba(24,24,27,.08), 0 28px 64px -16px rgba(24,24,27,.22)` | Floating layers, modals |
 | `--th-highlight` | `inset 0 1px 0 rgba(255,255,255,.05)` | `inset 0 1px 0 rgba(255,255,255,.7)` | Top edge light on raised and overlay surfaces |
 | `--th-backdrop` | `rgba(10,10,12,.55)` | `rgba(24,24,27,.24)` | Overlay scrim |
@@ -264,11 +264,11 @@ levels.
 | --- | --- | --- |
 | Canvas / `--th-bg` | Base application and transcript; also an inset output well inside a tool block | No border or shadow |
 | Surface / `--th-surface`, `--th-shadow-surface` | Persistent elevated chrome: sidebar, top bar, activity shelf | One luminance step above canvas, `--th-shadow-surface` |
-| Tool block / `--th-tool-surface`, `--th-tool-border` | Executed tool records in both disclosure states; the expanded body insets Canvas | Scoped fill behind a hairline, no shadow; the output well inside reads as a canvas inset |
-| Composer / `--th-surface-composer`, `--th-shadow-raised`, `--th-highlight` | The composer capsule only | Separates from the canvas by shadow and top-edge highlight; the light fill is white so the shadow and highlight carry the separation alone |
+| Tool block / `--th-tool-surface`, `--th-tool-border` | The expanded tool-execution body only; a collapsed record is a transparent timeline row on the rail | Scoped fill behind the tool hairline, no shadow; the output well inside the body insets Canvas |
+| Composer / `--th-surface-composer`, `--th-shadow-surface`, `--th-highlight` | The composer capsule only | Separates from the canvas by its one-step fill, the surface shadow, and the top-edge highlight; the light fill is white, so the shadow, highlight, and a single `--th-border-surface` hairline carry the separation |
 | Raised / `--th-surface-raised`, `--th-shadow-raised`, `--th-highlight` | Cards, file panels, and floating controls that sit above the canvas | Solid fill with the raised shadow and top-edge highlight |
 | Floating glass / `--th-glass`, `--th-glass-filter`, `--th-border-overlay`, `--th-shadow-overlay`, `--th-highlight` | Popovers, palettes, menus, and the modal panel: surfaces that read as material floating above whatever is behind them | Glass fill plus backdrop filter under `@supports (backdrop-filter: blur(1px))`, with `--th-surface-overlay` as the solid fallback; the overlay shadow and highlight sell the lift. Glass is confined to floating layers; nothing structural is ever glass. Radius is `--th-radius-lg` for menus and palettes and `--th-radius-xl` for the modal panel |
-| User / `--th-surface-user`, `--th-border-user`, `--th-shadow-raised` | The user chat bubble only: an authorship surface one visible step above Raised | Strong hairline plus the raised shadow, so the bubble separates at a glance without accent decoration |
+| User / `--th-surface-user`, `--th-shadow-raised` | The user chat bubble only: an authorship surface one visible step above Raised | The dedicated user fill plus the raised shadow at `--th-radius-lg` corners; borderless (styleContracts pins border-style none), so the bubble separates at a glance without accent decoration |
 | Overlay / `--th-surface-overlay` (or glass), `--th-shadow-overlay`, `--th-highlight`, `--th-backdrop` | Modal dialogs and blocking drawers that must separate from every pane | Solid or glass panel with the overlay shadow, top-edge highlight, and the theme-scoped scrim |
 
 Hover, selection, focus, and status stay state treatments on a level.
@@ -390,7 +390,14 @@ Choose a tested foreground/background token pair instead.
   existing dialog and Settings consumers, and ordinary browsers keep the
   dynamic-viewport policy.
 - Chat pane: fills all remaining width and height with no horizontal overflow.
-- Header: full pane width, `--th-header-h`, one border at its bottom.
+- Header: full pane width at `--th-header-h`, Surface fill. It separates from
+  the Canvas transcript by tone plus `--th-shadow-surface` — no border-bottom
+  hairline. The session name is Secondary at emphasize weight (truncating,
+  full path on `title`); provider identity beside it is quiet Label-tier
+  muted text — never mono, never uppercase, no pill. Trailing actions are
+  icon buttons (32px, 44px on coarse pointers): file panel toggle, icon-only
+  Resync, split, disconnect, close; in narrow panes the provider badge yields
+  and the split buttons hide before controls overflow.
 - Conversation scrollport: fills all space between header and composer.
 - Goal and activity panels share one column allocator. Fixed bands include
   dynamically mounted queue, recovery/error banners, status and composer.
@@ -465,11 +472,16 @@ Choose a tested foreground/background token pair instead.
   `100dvh` height policy. While the keyboard is open the slot is absent and
   only the base padding remains, because the keyboard covers the gesture
   zone.
-- The composer is one unified capsule: a single `--th-surface-composer` pill
-  (`--th-radius-pill`, one `--th-border-surface` outline) that owns the plus
-  attachment action, the multiline input, and the send/stop slot. The capsule
-  is the only focus surface — its border strengthens and a ring appears on
-  `:focus-within`; the textarea itself is bare and borderless.
+- The composer is one unified capsule: a single `--th-surface-composer`
+  capsule cornered at `--th-radius-xl` (QA S4 pins the computed 24px) that
+  owns the plus attachment action, the multiline input, and the send/stop
+  slot. The dark capsule separates from the Canvas by its fill,
+  `--th-shadow-surface`, and `--th-highlight` alone (the border paints
+  transparent); the light capsule is white on white, so the light theme
+  alone keeps one `--th-border-surface` hairline. The capsule is the only
+  focus surface — `:focus-within` layers the accent ring over the unchanged
+  shadow, never a border-colour change; the textarea itself is bare and
+  borderless.
 - The input grows from one line to a 160px cap; controls stay bottom-anchored
   while it grows. The actual column further bounds the editor to its height
   minus 200px, with a 44px usable floor. This leaves room for composer chrome
@@ -648,7 +660,8 @@ The column is the fixed Surface shell in Geometry. Its chrome:
   changes send a request; confirmation and rollback retain the existing session
   transaction contract.
 - On desktop the picker opens as an upward popup anchored above the control
-  (Raised elevation, bounded to `min(480px, 70dvh)`), so the list never
+  (floating glass: `--th-glass` with the overlay shadow and highlight,
+  bounded to `min(480px, 70dvh)`), so the list never
   covers the composer or send action. On narrow screens the existing
   viewport-contained sheet behavior is retained.
   Current identity, thinking controls and search stay fixed; only the list
@@ -703,11 +716,15 @@ The column is the fixed Surface shell in Geometry. Its chrome:
   hook) pads its top with `--th-space-5`, so spacing before a user turn
   (28px total) visibly exceeds the 16px within-assistant rhythm without
   reordering the transcript.
-- Tool calls use one compact disclosure per tool: both collapsed and expanded
-  records share one persistent scoped tool material behind a subtle hairline
-  boundary, visibly distinct from transparent prose on Canvas. Status color
-  is secondary to the label and never the only signal.
-- Thinking uses a collapsed disclosure with a subtle left rule.
+- Tool calls render as timeline records on a shared rail: a collapsed record
+  is a transparent row (status glyph, Label title, trailing status word,
+  round collapse chevron) so executions recede behind the transparent
+  assistant prose; only the expanded body carries the scoped tool material
+  behind its hairline, with the output well insetting Canvas. Status colour
+  is secondary to the glyph and word and never the only signal.
+- Thinking records share the tool-record timeline grammar — a status dot on
+  the rail, the Thinking label, and a round collapse chevron over a body that
+  discloses with the documented grid-rows interpolation — never a left rule.
 - The completion status is metadata, not a separate message.
 - Long words, URLs, code, Korean, and mixed-width text wrap without causing
   horizontal page overflow.
@@ -719,31 +736,45 @@ addressable transcript block keyed by `toolCallId`. Invocation and result must
 never render as detached rows or neighboring cards, and restored history and
 live execution must converge on the same structure. The block spans the
 available reading-column width and uses one disclosure control and one shared
-state. Every record carries one persistent enclosure of its own -- the scoped
-`--th-tool-surface` fill behind a `--th-tool-border` hairline -- so collapsed
-and expanded tools alike read as a material visibly distinct from the
-transparent prose around them in both themes, without becoming a wall of
-heavy cards; hover and keyboard focus keep a rounded treatment on the header
-itself. The expanded body insets Canvas inside that enclosure, so running
-output is visibly bounded.
+state. Every record sits on a real timeline rail: an aria-hidden 1px element
+at `--th-border-surface` strength, centered on the status glyph and running
+the record's full height; a record whose previous sibling is also a record
+extends the rail up across the 8px block rhythm, so consecutive records
+within a turn read as one connected timeline. A collapsed record is
+transparent — no fill, no hairline, no enclosure — and recedes behind the
+transparent prose around it; only the expanded body carries the scoped tool
+material, so a dense run of tools never becomes a wall of heavy cards.
 
-Collapsed blocks show two compact lines inside the 48px disclosure header:
+The 48px-minimum disclosure header (8px block / 12px inline padding, 2px
+between its two text lines, transparent so the rail reads through it) is the
+entire button and shows two compact lines:
 
-1. The first line contains the disclosure chevron, a status glyph, the operation
-   title (a task summary when present, otherwise the tool name), and a trailing
-   localized status word.
-2. The second line is a single-line mono invocation summary. When output exists,
-   append the first non-empty output line after a ` · ` separator; preserve the
-   invocation before truncating the output preview. When no arguments are
-   available, use the output preview alone rather than fabricating a command.
+1. The first line leads with the round collapse chevron — a 20px chip that
+   rotates -90deg closed to 90deg open and takes the hover and focus-visible
+   background, so the record itself stays quiet — then a status glyph, the
+   operation title (a task summary when present, otherwise the tool name; a
+   read of SKILL.md names the skill), and a trailing localized status word.
+2. The second line is a single-line invocation summary: the command (or the
+   serialized arguments) in the mono stack, then the latest non-empty output
+   line after a ` · ` separator set in sans. The invocation is preserved
+   before the preview truncates. When no arguments are available, the output
+   preview alone carries the line.
 
-Completed blocks restored from history start collapsed. A newly started block
-starts expanded so current work is observable; once the user toggles it, phase
-updates and completion must not override that choice. The entire header is the
-button, exposes `aria-expanded`, keeps its geometry while state changes, and
-retains the visible status in either disclosure state.
+Completed blocks restored from history start collapsed. An untouched block
+stays collapsed in every phase — running included — so current work never
+re-flows the transcript; only a failed block auto-opens, so errors are
+impossible to miss. The first user toggle freezes that block's disclosure
+choice (the transcript remembers it per `toolCallId`, surviving virtualizer
+remounts); later phase updates and completion must not override that choice.
+The entire header is the button, exposes `aria-expanded`, keeps its geometry
+while state changes, and retains the visible status in either disclosure
+state.
 
-Expanded blocks keep the identical header and add one inset body containing:
+Expanded blocks keep the identical header and add one inset body — the only
+scoped tool material in the record: `--th-tool-surface` behind a
+`--th-tool-border` hairline at `--th-radius` (12px), no shadow, inset below
+the transparent header so the rail appears to stop at the material's edge.
+The body contains:
 
 - a Command section when arguments contain a non-empty string `command`, shown
   verbatim, otherwise an Input section that renders arguments as two-space
@@ -751,21 +782,32 @@ Expanded blocks keep the identical header and add one inset body containing:
 - an Output section when output exists, with a Micro caption and streamed or
   final Secondary mono text that preserves whitespace and wraps long unbroken
   values; and
-- an internally scrollable output region capped at `min(360px, 45dvh)`, so a
-  long execution cannot take over the conversation scrollport.
+- an internally scrollable output well insetting Canvas (`--th-bg`) inside the
+  tool material, capped at `min(360px, 45dvh)`, so a long execution cannot
+  take over the conversation scrollport. The well reports its real overflow
+  state from a layout measure (ResizeObserver and scroll events, never
+  timers); while clipped, a 20px bottom fade — an alpha-only `mask-image`
+  gradient — signals more output below, and it clears once the reader reaches
+  the bottom.
 
 Do not render an empty body merely to fill space. Failure output remains
-available and is never replaced by a generic error label. Running, successful,
-and failed states use a distinct glyph plus a visible localized word -- spinner
-ring and Running, check mark and Done, exclamation mark and Failed -- with color
-only as a third, redundant cue. Under reduced motion the running ring remains
-distinct but static.
+available and is never replaced by a generic error label. Status is never a
+coloured border. The status glyph is a canvas-backed disc that knocks the
+rail so it reads as a dot on the line: while running it is a violet dotted
+spinner (the accent fill cut into wedges by a repeating-conic mask, rotating
+over 700ms), on success a muted check mark, on failure an error-hued
+exclamation mark — each beside a visible localized word (Running / Done /
+Failed), with colour only as a third, redundant cue. The running word carries
+the accent family with a slow `background-position` shimmer sweeping the
+lighter accent-hover stop across the text (an allowed animated property);
+the static frame still reads as the violet word. Under reduced motion the
+spin and shimmer stop and the static glyph plus word carry the state.
 
 Colour roles come from the measured reference mapping, not from the captured
-tool chooser (a menu, not an executed output card): both disclosure states
-share one scoped tool material, `--th-tool-surface` behind `--th-tool-border`,
-and the expanded body insets Canvas, so the boundary and material never
-depend on the disclosure state. The dark tool fill reuses the measured
+tool chooser (a menu, not an executed output card): the scoped tool material
+is confined to the expanded body, where `--th-tool-surface` sits behind
+`--th-tool-border` and the output well insets Canvas, so the boundary and
+material depend only on the disclosure state. The dark tool fill reuses the measured
 elevated-chrome role; the light tool fill's light gray step is an
 app-specific distinction requested for P4, not a measured native output-card
 value. Both stay inside the app's fill/border idiom and do not move the
@@ -774,20 +816,54 @@ and keep the contrast matrix below on the tool fill.
 
 The operation title and invocation preview use Label, status uses Micro, and
 expanded command and output use Secondary with `--th-font-mono`; section
-captions use Micro. Every block sits on the scoped tool material with a
-`--th-tool-border` outline, `--th-radius-sm`, and no independent shadow or
-whole-card status glow, while its expanded body uses Canvas as an inset, so
-the output boundary is unmistakable without re-enclosing the rows above it. It
-recedes behind transparent Body-tier assistant prose through smaller type,
-compact spacing, and dim or muted text tokens --
-never whole-block opacity -- but stays scannable through fixed alignment,
-monospace command text, the persistent status glyph and word, and one block per
-invocation.
+captions use Micro. The expanded body carries the `--th-tool-border` outline
+at `--th-radius` with no independent shadow and no whole-card status glow; a
+collapsed record carries no outline at all. A record recedes behind
+transparent Body-tier assistant prose through smaller type, compact spacing,
+and dim or muted text tokens -- never whole-record opacity -- but stays
+scannable through the rail, the fixed alignment, the monospace command text,
+the persistent status glyph and word, and one block per invocation.
+
+## Queue slot
+
+Run-time pending feedback lives in one fixed band between the activity
+shelves and the composer — never inside the transcript scrollport — in the
+same reading-column lane as the capsule. The panel is a tonal surface, not a
+bordered box: `--th-surface` at `--th-radius-lg`, with the light theme alone
+keeping one `--th-border-surface` hairline because white-on-white carries no
+tone. Nothing inside the panel is ever bordered.
+
+The header is one button: the webchat-owned pending count, an optional engine
+summary, and the disclosure chevron. The engine summary — how many steers and
+follow-ups the engine has parked — is a status wash chip, not a bordered
+pill: `--th-warning` text on the `--th-warning-bg` wash at the pill radius.
+
+The expanded list is a capped scrollport (`--th-queue-body-max`, 240px) of
+rows. Webchat-owned rows lead with a clock glyph and their position number,
+keep the full text on one ellipsized line, and carry reorder/remove icon
+actions; local submissions awaiting their confirming frame render as waiting
+rows with the localized Waiting label. Engine mirror rows are read-only and
+one tier quieter (muted vs dim); because the expanded panel is the record for
+a parked steer, their text wraps over as many lines as it needs and breaks
+long unbroken strings instead of clipping. A ghost Clear all closes the band.
+Waiting semantics ride the clock glyph and the dim/muted tiers — never a
+dashed or coloured border.
 
 ## Composer commands and skills
 
 - Typing `/` opens the slash-command list; typing `$` opens the dollar-skill list for `skill:<name>` entries. Both lists are attached immediately above the composer.
 - The list is bounded to the reading column, never the viewport or sidebar.
+- Both palettes are one floating glass layer directly above the capsule:
+  `--th-glass` with `--th-glass-filter` under `@supports (backdrop-filter:
+  blur(1px))` (solid `--th-surface-overlay` fallback), a
+  `--th-border-overlay` hairline, `--th-shadow-overlay` with
+  `--th-highlight`, and `--th-radius-lg` corners. They enter per the overlay
+  motion rule — opacity + translateY + scale over `--th-dur` with
+  `--th-ease-out` via `@starting-style`. A keyboard hint row rides the top:
+  key caps as small `--th-hover` chips at `--th-radius-xs` with Micro copy,
+  separated from the options by the surface hairline. The active option
+  takes the `--th-accent-soft` selection wash; command names keep the mono
+  stack and descriptions stay sans at the muted tier.
 - Arrow Up/Down changes the active option; Enter/Tab selects; Escape closes.
 - The active option uses `aria-selected`, visible focus/active styling, and is
   kept in view.
@@ -814,6 +890,32 @@ invocation.
   edge. A pending image renders as a thumbnail chip in its own row above the
   input row, inside the capsule; drag-and-drop and queued drafts keep working
   unchanged.
+
+## Question band
+
+Pending questions and approvals surface in fixed bands above the composer;
+the transcript scrolls underneath and the composer keeps its band and its
+focus.
+
+The notice band stands in for a pending approval or question while its
+question window is closed (and carries a non-blocking question until the user
+opens the window): one line in a glass pill — title, question count, deadline
+countdown, and an Open action pinned to the row's end. It is a floating
+layer (`--th-glass` under `@supports`, solid Overlay fallback,
+`--th-border-overlay` hairline, overlay shadow and highlight, pill radius)
+and enters once with a small 8px rise on the small-pop spring; under reduced
+motion it renders in its final state, with the text carrying the state.
+
+The question bar hosts a non-blocking question in place: a one-line band on
+the Surface fill behind a default hairline at the small radius, in the same
+reading-column lane as the controls row. The question text truncates with an
+ellipsis; the option chips are the answer values — they scroll horizontally
+in their own lane with a visible thin scrollbar, never shrink, and never wrap
+— while Send stays pinned outside the lane so it cannot be the control that
+leaves the row. Wrapping onto a second line is the last resort, reserved for
+when the pinned Send and the text floor genuinely cannot fit; clipping the
+row is never allowed to push Send out of reach. The question window remains
+the answering surface for multi-question requests and approvals.
 
 ## 세션 실행 표시
 
@@ -983,9 +1085,15 @@ Under reduced motion the helper does not call the API. The global policy
 it is. View-transition pseudos sit outside that selector, so the same media
 query sets their animation duration to zero and keeps the fade's end state.
 
-T2 owns session-switch choreography: which elements move, and how the
-transcript, composer, and session tree take part. This helper is the shared
-foundation only.
+Session-switch continuity rides this helper. SplitView renders each leaf as
+`.th-pane-wrap[data-pane-id]`; on a session change the pane's transcript
+region (`.th-chat-scrollport`) crossfades to the new session while the rest
+of the shell — header, shelves, queue, composer — holds still. The outgoing
+and incoming snapshots carry one shared `view-transition-name` (plus the
+`th-pane-session` class, which `view-transitions.css` clocks with `--th-dur`
+and `--th-ease-out`), and the helper's opt-in latest-wins lane coalesces a
+burst of clicks into one final state: the last session wins. Reduced motion
+or a missing View Transitions API applies the update directly.
 
 ## Accessibility
 
@@ -1003,21 +1111,14 @@ foundation only.
 
 ## Accepted debt
 
-This document is the contract for the T1 foundation: palette, tokens,
+This document is the contract for the foundation: palette, tokens,
 typography, radius, elevation, glass, motion, state encoding, spatial
 structure, and the global and secondary surfaces listed in the governing
-plan. Surfaces not yet redesigned, tracked as follow-up PRs:
-
-- T2 chat surface: pane header, transcript rows (user bubble, tool timeline,
-  thinking, subagent records), composer and palettes, queue, status row,
-  question and approval surfaces, session-switch continuity.
-- T4 activity and DAG: shelf segmented tabs, todo and agents lists, goal
-  bar, DAG graph visuals (cards, left status glyph, bezier edges, comet,
-  halo, progress bar, fade masks), DAG list timeline, chips.
-
-Until those nodes land, their legacy styling may deviate from this contract
-in accent usage, borders, and motion durations. Those deviations are debt
-with a closing PR, not precedent.
+plan. The T2 chat surface — pane header, transcript rows (user bubble, tool
+and thinking timeline records, subagent records), queue, composer and
+palettes, status row, question band, and session-switch continuity — is
+redesigned and described in the sections above. The T3 shell and T4
+activity/DAG surfaces have also shipped; their styling follows this contract.
 
 ## Release checks
 

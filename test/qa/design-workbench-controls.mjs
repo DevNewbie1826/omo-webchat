@@ -1,6 +1,21 @@
 import assert from 'node:assert/strict';
 import { arm, armShelf, complete, wheel, output, fileContent } from './design-workbench-fixture.mjs';
-import { measure, preservedGeometry, modelRows, contentAnchor, assertAnchor } from './design-workbench-measure.mjs';
+import { measure, preservedGeometry, modelRows, contentAnchor, assertAnchor, semanticColor } from './design-workbench-measure.mjs';
+
+/** Open model popover must follow the floating-layer token, not an arbitrary
+ * colour: resolved --th-glass (and a real backdrop-filter) where that filter
+ * is supported, otherwise the solid --th-surface-overlay fallback. The narrow
+ * sheet keeps the solid fallback even when the filter is supported. Every
+ * other measured surface must still match its own semantic token. */
+export function assertModelOverlayFollowsToken(measurement) {
+  const roles = measurement.roles.filter(role => role.actual);
+  assert(roles.every(role => semanticColor(role.actual) === semanticColor(role.expected)), 'model overlay follows semantic token');
+  const overlay = measurement.roles.find(role => role.selector === '.th-model-picker-popover');
+  assert(overlay?.actual, 'model overlay follows semantic token');
+  if (overlay.backdropSupported && !overlay.sheet) {
+    assert(overlay.backdropFilter && overlay.backdropFilter !== 'none', 'model overlay follows semantic token');
+  }
+}
 
 export async function exerciseControls(q, shot) {
   const { page, fixture } = q, actions = [];
@@ -44,7 +59,7 @@ export async function exerciseControls(q, shot) {
   const rows = await modelRows(page);
   assert.equal(rows.length, 53); assert(rows.some(row => row.complete && row.hit), 'complete model row reachable on open');
   const open = await measure(page);
-  assert(open.roles.filter(role => role.actual).every(role => role.actual === role.expected), 'model overlay follows semantic token');
+  assertModelOverlayFollowsToken(open);
   await shot('model-open');
   // Only the model list owns wheel scrolling in every placement (anchored,
   // fixed panel, sheet): outside sheet mode the popover is overflow:hidden,

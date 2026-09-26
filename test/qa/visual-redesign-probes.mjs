@@ -248,6 +248,20 @@ export function maxDurationMs(list) {
   return max;
 }
 
+/** A viewport capture is valid only at the document's left edge with no
+ * document-level horizontal overflow. Internal scrollports do not count. */
+export function pagePanVerdict(facts) {
+  const failures = [];
+  const where = facts.offender ?? 'document.scrollingElement';
+  if (facts.scrollX !== 0 || facts.scrollLeft !== 0) {
+    failures.push(`horizontal document pan at ${where}: window.scrollX=${facts.scrollX}, scrollingElement.scrollLeft=${facts.scrollLeft} (active: ${facts.active})`);
+  }
+  if (facts.scrollWidth > facts.innerWidth + 1) {
+    failures.push(`horizontal document overflow at ${where}: scrollWidth=${facts.scrollWidth} > innerWidth=${facts.innerWidth} + 1`);
+  }
+  return failures;
+}
+
 // ---------------------------------------------------------------------------
 // 2. Page kit
 // ---------------------------------------------------------------------------
@@ -275,6 +289,32 @@ export function isVisibleElement(element) {
   const style = getComputedStyle(element);
   if (style.display === 'none' || style.visibility === 'hidden') return false;
   return element.getClientRects().length > 0;
+}
+
+/** The real DOM facts checked immediately before every screenshot. Identify
+ * the widest visible element if an overflow is present, and name the active
+ * element when focus has caused the document itself to pan. */
+export function probePagePan() {
+  const innerWidth = window.innerWidth;
+  const scrollWidth = document.documentElement.scrollWidth;
+  let offender = null;
+  if (scrollWidth > innerWidth + 1) {
+    let maxRight = innerWidth + 1;
+    for (const element of document.querySelectorAll('body *')) {
+      if (!isVisibleElement(element)) continue;
+      const right = element.getBoundingClientRect().right;
+      if (right > maxRight) {
+        maxRight = right;
+        offender = `${describeElement(element)} (right=${Math.round(right)}px)`;
+      }
+    }
+  }
+  return {
+    scrollX: window.scrollX,
+    scrollLeft: document.scrollingElement.scrollLeft,
+    scrollWidth, innerWidth, offender,
+    active: describeElement(document.activeElement),
+  };
 }
 
 export function tokenColor(name) {

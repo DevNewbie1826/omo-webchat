@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -231,15 +232,44 @@ describe("ChatPane thinking disclosure", () => {
     vi.unstubAllGlobals();
   });
 
-  function liveThinking(): HTMLDetailsElement {
-    const details = container.querySelector<HTMLDetailsElement>(
+  function liveThinking(): HTMLElement {
+    const record = container.querySelector<HTMLElement>(
       ".th-chat-live .th-chat-thinking",
     );
-    if (!details) throw new Error("live thinking disclosure missing");
-    return details;
+    if (!record) throw new Error("live thinking disclosure missing");
+    return record;
   }
 
-  it("keeps the live thinking disclosure collapsed while reasoning streams", () => {
+  function liveThinkingHead(record: HTMLElement): HTMLButtonElement {
+    const head = record.querySelector<HTMLButtonElement>(".th-chat-thinking-head");
+    if (!head) throw new Error("live thinking disclosure head missing");
+    return head;
+  }
+
+  function liveThinkingBody(record: HTMLElement): HTMLElement {
+    const body = record.querySelector<HTMLElement>(".th-chat-thinking-body");
+    if (!body) throw new Error("live thinking disclosure body missing");
+    return body;
+  }
+
+  function liveThinkingChevron(record: HTMLElement): HTMLElement {
+    const chevron = record.querySelector<HTMLElement>(".th-chat-thinking-chevron");
+    if (!chevron) throw new Error("live thinking disclosure chevron missing");
+    return chevron;
+  }
+
+  // jsdom applies no external stylesheet, so the body's visible-height
+  // contract is read from the stylesheet itself (same node:fs convention as
+  // styles/styleContracts.test.ts, which assumes the frontend cwd): the open
+  // class is the only selector lifting the track from 0fr to 1fr, so this
+  // fails the moment the open-state connection is removed.
+  function expectBodyRowsContract(): void {
+    const css = readFileSync("src/styles/chat-transcript.css", "utf8");
+    expect(css).toMatch(/\.th-chat-thinking--open\s+\.th-chat-thinking-body\s*\{[^}]*grid-template-rows:\s*1fr/);
+    expect(css).toMatch(/\n\.th-chat-thinking-body\s*\{[^}]*grid-template-rows:\s*0fr/);
+  }
+
+  it("keeps the live thinking disclosure collapsed and out of the accessibility tree while reasoning streams", () => {
     const { deliver } = renderChatPane(root, chatSession);
     act(() => {
       deliver({
@@ -249,10 +279,16 @@ describe("ChatPane thinking disclosure", () => {
       });
     });
 
-    const details = liveThinking();
-    expect(details.open).toBe(false);
-    expect(details.querySelector("summary")?.textContent).toBe("chat.thinking");
-    expect(details.querySelector("pre")?.textContent).toBe("Deep thought in progress");
+    const record = liveThinking();
+    const head = liveThinkingHead(record);
+    const body = liveThinkingBody(record);
+    expect(head.getAttribute("aria-expanded")).toBe("false");
+    expect(record.classList.contains("th-chat-thinking--open")).toBe(false);
+    expect(body.hasAttribute("inert")).toBe(true);
+    expect(body.getAttribute("aria-hidden")).toBe("true");
+    expect(liveThinkingChevron(record).classList.contains("th-chat-thinking-chevron--open")).toBe(false);
+    expect(record.querySelector(".th-chat-thinking-label")?.textContent).toBe("chat.thinking");
+    expect(record.querySelector("pre")?.textContent).toBe("Deep thought in progress");
   });
 
   it("reveals the streamed reasoning from the collapsed disclosure", () => {
@@ -265,14 +301,97 @@ describe("ChatPane thinking disclosure", () => {
       });
     });
 
-    const details = liveThinking();
-    const summary = details.querySelector("summary");
-    if (!summary) throw new Error("thinking summary missing");
+    const record = liveThinking();
+    const head = liveThinkingHead(record);
     act(() => {
-      summary.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      head.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(details.open).toBe(true);
-    expect(details.querySelector("pre")?.textContent).toBe("Deep thought in progress");
+    expect(head.getAttribute("aria-expanded")).toBe("true");
+    expect(record.classList.contains("th-chat-thinking--open")).toBe(true);
+    const body = liveThinkingBody(record);
+    expect(body.hasAttribute("inert")).toBe(false);
+    expect(body.getAttribute("aria-hidden")).toBeNull();
+    expect(liveThinkingChevron(record).classList.contains("th-chat-thinking-chevron--open")).toBe(true);
+    expect(record.querySelector("pre")?.textContent).toBe("Deep thought in progress");
+  });
+
+  it("keeps the expanded attribute, body visibility, and chevron in agreement across pointer, Enter, and Space", () => {
+    const { deliver } = renderChatPane(root, chatSession);
+    act(() => {
+      deliver({
+        type: "messageDelta",
+        sessionId: "chat-1",
+        delta: { kind: "thinking_delta", delta: "Deep thought in progress" },
+      });
+    });
+
+    const record = liveThinking();
+    const head = liveThinkingHead(record);
+    const body = liveThinkingBody(record);
+    const chevron = liveThinkingChevron(record);
+    const expectAgreement = (open: boolean): void => {
+      expect(head.getAttribute("aria-expanded")).toBe(String(open));
+      expect(head.getAttribute("aria-controls")).toBe(body.id);
+      expect(record.classList.contains("th-chat-thinking--open")).toBe(open);
+      expect(chevron.classList.contains("th-chat-thinking-chevron--open")).toBe(open);
+      expect(body.hasAttribute("inert")).toBe(!open);
+      expect(body.getAttribute("aria-hidden")).toBe(open ? null : "true");
+      expect(body.querySelector("pre")?.textContent).toBe("Deep thought in progress");
+    };
+
+    // Pointer opens.
+    act(() => {
+      head.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expectAgreement(true);
+
+    // Enter closes. jsdom does not synthesize native key activation, so the
+    // press is followed by the click a browser would dispatch.
+    act(() => {
+      pressKey(head, "Enter");
+      head.click();
+    });
+    expectAgreement(false);
+
+    // Space reopens.
+    act(() => {
+      pressKey(head, " ");
+      head.click();
+    });
+    expectAgreement(true);
+  });
+
+  it("keeps state coherent through rapid open-close reversal", () => {
+    const { deliver } = renderChatPane(root, chatSession);
+    act(() => {
+      deliver({
+        type: "messageDelta",
+        sessionId: "chat-1",
+        delta: { kind: "thinking_delta", delta: "Deep thought in progress" },
+      });
+    });
+
+    const record = liveThinking();
+    const head = liveThinkingHead(record);
+    const body = liveThinkingBody(record);
+    const chevron = liveThinkingChevron(record);
+    // Reduced motion only collapses the transition duration (global.css);
+    // the state encoding below is media-independent, so these agreement
+    // assertions are the reduced-motion behavior as well.
+    for (const expected of [true, false, true, false]) {
+      act(() => {
+        head.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(head.getAttribute("aria-expanded")).toBe(String(expected));
+      expect(record.classList.contains("th-chat-thinking--open")).toBe(expected);
+      expect(chevron.classList.contains("th-chat-thinking-chevron--open")).toBe(expected);
+      expect(body.hasAttribute("inert")).toBe(!expected);
+      expect(body.getAttribute("aria-hidden")).toBe(expected ? null : "true");
+    }
+  });
+
+  it("keeps the open state as the only selector lifting the body track to 1fr", () => {
+    expectBodyRowsContract();
   });
 });
