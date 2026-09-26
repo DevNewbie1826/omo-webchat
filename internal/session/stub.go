@@ -237,6 +237,8 @@ type CompactionInfo struct{ Phase, Error string }
 type Frame struct {
 	Kind       FrameKind
 	SessionID  string
+	BindingID  string
+	Revision   int64
 	Resumed    bool
 	Command    string
 	RequestID  string

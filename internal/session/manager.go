@@ -6,6 +6,7 @@ package session
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -177,7 +178,8 @@ type durableTombstoneRecord struct {
 }
 
 type Manager struct {
-	cfg Config
+	cfg        Config
+	instanceID string
 
 	durableChatResolver DurableChatResolver
 	chats               keyedFlight
@@ -279,7 +281,7 @@ func NewManager(cfg Config) *Manager {
 		cfg.RetiredRouteLimit = DefaultRetiredRouteLimit
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-	m := &Manager{cfg: cfg, nidGeneration: time.Now().UnixNano(), byChat: make(map[string]*Session), byRoute: make(map[string]*Session), routeCleanup: make(map[string]chan struct{}), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[retiringRoute]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), retiredRoutes: make(map[retiringRoute]struct{}), noticeJournals: make(map[string]*noticeJournal), pendingOpen: make(map[string]chan struct{}), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), openSettled: make(chan struct{}), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
+	m := &Manager{cfg: cfg, instanceID: rand.Text(), nidGeneration: time.Now().UnixNano(), byChat: make(map[string]*Session), byRoute: make(map[string]*Session), routeCleanup: make(map[string]chan struct{}), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[retiringRoute]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), retiredRoutes: make(map[retiringRoute]struct{}), noticeJournals: make(map[string]*noticeJournal), pendingOpen: make(map[string]chan struct{}), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), openSettled: make(chan struct{}), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
 	m.retirement = newResidencyLRU[struct{}](maxIdentityTombstones)
 	m.retiredDurable = m.retirement.values
 	m.overviewOwners = newResidencyLRU[string](maxIdentityTombstones)
@@ -293,6 +295,9 @@ func NewManager(cfg Config) *Manager {
 	}
 	return m
 }
+
+// InstanceID identifies this manager for its lifetime.
+func (m *Manager) InstanceID() string { return m.instanceID }
 
 func (m *Manager) eventLoop() {
 	defer m.eventWG.Done()

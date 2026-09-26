@@ -18,6 +18,9 @@ func TestPR197R9ReversePublicationHistoryReleasesStoppedResidents(t *testing.T) 
 		chats[i] = fmt.Sprintf("r9-bound-%04d", i)
 		s, _, detach := acquire(t, mgr, testChat{id: chats[i], cwd: t.TempDir()}, nil)
 		detach()
+		if got := awaitOverview(t, updates); got.ChatID != chats[i] || got.BindingID != s.BindingID() || got.Active {
+			t.Fatalf("fixture did not announce an idle binding: %+v", got)
+		}
 		emitUnboundActivity(d, s.ID(), activitySnapshotOrder[0], map[string]any{"tasks": []any{}})
 		if got := awaitOverview(t, updates); got.ChatID != chats[i] || got.Active {
 			t.Fatalf("fixture did not publish an inactive bound row: %+v", got)

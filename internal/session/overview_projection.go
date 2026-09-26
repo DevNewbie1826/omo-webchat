@@ -10,6 +10,7 @@ const maxOverviewPublications = maxIdentityTombstones
 
 type overviewExposure struct {
 	durable  string
+	binding  string
 	title    string
 	active   bool
 	values   LiveValues
@@ -127,6 +128,11 @@ func (m *Manager) projectOverviewLocked(snapshot Summary) Summary {
 		snapshot = entry.summary(chatID, durable, title)
 	} else {
 		snapshot.ChatID, snapshot.Title = chatID, title
+		// A retained inactive row no longer describes an established binding.
+		// Never relabel a buffered old snapshot with a replacement route's ID.
+		if s := m.byChat[chatID]; s == nil || s.durableID != durable || m.byRoute[s.routingID] != s {
+			snapshot.BindingID = ""
+		}
 	}
 	return m.exposeOverviewRevisionLocked(snapshot)
 }
@@ -144,7 +150,7 @@ func (m *Manager) exposeOverviewRevisionLocked(snapshot Summary) Summary {
 	if current != nil {
 		revision = *current
 	}
-	if !known || previous.durable != durable || previous.title != snapshot.Title ||
+	if !known || previous.durable != durable || previous.binding != snapshot.BindingID || previous.title != snapshot.Title ||
 		previous.active != snapshot.Active || !reflect.DeepEqual(previous.values, values) {
 		revision = max(revision, min(maxLiveInteger, previous.revision+1), m.issueOverviewRevisionLocked())
 	} else {
@@ -163,7 +169,7 @@ func (m *Manager) exposeOverviewRevisionLocked(snapshot Summary) Summary {
 		m.overviewExposed.Pin(snapshot.ChatID)
 	}
 	m.overviewExposed.Put(snapshot.ChatID, overviewExposure{
-		durable: durable, title: snapshot.Title, active: snapshot.Active,
+		durable: durable, binding: snapshot.BindingID, title: snapshot.Title, active: snapshot.Active,
 		values:   visible,
 		revision: revision,
 	})

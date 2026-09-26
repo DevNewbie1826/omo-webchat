@@ -160,7 +160,9 @@ func (w *todoWatch) run() {
 			}
 			initial := claim != previous
 			if initial {
-				previous, signature, acknowledged, generation = claim, nil, false, 0
+				// Reattaching the same provider binding retains its wire ID.
+				// Keep acquisitions monotonic across socket-local claim changes.
+				previous, signature, acknowledged = claim, nil, false
 			}
 			observed, statErr := statTodo(claim.session.SessionFile())
 			run := claim.session.RunSnapshot()
@@ -207,7 +209,7 @@ func (w *todoWatch) run() {
 }
 
 func todoToWire(claim queryBinding, projection session.TodoProjection, err error) wscontract.ChatTodoFrame {
-	frame := wscontract.ChatTodoFrame{Type: "chat.todo", SessionID: claim.chatID, DurableSessionID: claim.session.ID(), BindingID: claim.bindingID, Status: "ready"}
+	frame := wscontract.ChatTodoFrame{Type: "chat.todo", SessionID: claim.chatID, DurableSessionID: claim.session.ID(), BindingID: claim.session.BindingID(), Status: "ready"}
 	if err != nil {
 		code := session.TodoProjectionErrorCode(err)
 		frame.Status, frame.Error = "unavailable", &code

@@ -353,7 +353,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	go c.run()
 	go c.runQueuePublications()
-	if err := c.write(wscontract.HelloFrame{Type: "hello", Version: ContractVersion, ServerVersion: h.serverVersion()}); err != nil {
+	if err := c.write(struct {
+		Type          string `json:"type"`
+		Version       int64  `json:"version"`
+		ServerVersion string `json:"serverVersion"`
+		InstanceID    string `json:"instanceId"`
+	}{
+		Type: "hello", Version: ContractVersion,
+		ServerVersion: h.serverVersion(), InstanceID: h.cfg.Manager.InstanceID(),
+	}); err != nil {
 		c.shutdown()
 		return
 	}

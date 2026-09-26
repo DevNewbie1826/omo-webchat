@@ -284,10 +284,6 @@ func (s *subscriber) deliver(f session.Frame) error {
 	if wire == nil {
 		return nil
 	}
-	if ready, ok := wire.(wscontract.ReadyFrame); ok {
-		ready.BindingID = &s.claim.bindingID
-		wire = ready
-	}
 	if err := s.conn.writeIfCurrent(s.claim, wire); err != nil {
 		return err
 	}
@@ -322,7 +318,22 @@ func mapFrame(f session.Frame, chatID string, reattach bool) (any, error) {
 	switch f.Kind {
 	case session.FrameReady:
 		piSessionID := f.SessionID
-		return wscontract.ReadyFrame{Type: typ, SessionID: chatID, PISessionID: &piSessionID, Resumed: f.Resumed || reattach}, nil
+		out := wscontract.ReadyFrame{Type: typ, SessionID: chatID, PISessionID: &piSessionID, Resumed: f.Resumed || reattach}
+		if f.BindingID != "" {
+			out.BindingID = &f.BindingID
+		}
+		return out, nil
+	case session.FrameExtensionEvent:
+		out := mergeMap(typ, chatID, dataMap(f.Data))
+		delete(out, "bindingId")
+		delete(out, "revision")
+		if f.BindingID != "" {
+			out["bindingId"] = f.BindingID
+		}
+		if f.Revision != 0 {
+			out["revision"] = f.Revision
+		}
+		return out, nil
 	case session.FrameEntries:
 		x, ok := f.Data.(session.EntriesFrame)
 		if !ok {

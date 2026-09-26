@@ -8,6 +8,7 @@ import (
 type Summary struct {
 	ChatID            string
 	DurableSessionID  string
+	BindingID         string
 	ReplacesSessionID string
 	SessionFile       string
 	CWD               string
@@ -25,7 +26,7 @@ type Summary struct {
 
 func (s *Session) summaryLocked() Summary {
 	snapshot := Summary{
-		ChatID: s.chatID, DurableSessionID: s.durableID, SessionFile: s.sessionFile,
+		ChatID: s.chatID, DurableSessionID: s.durableID, BindingID: s.bindingID, SessionFile: s.sessionFile,
 		CWD: s.cwd, Active: s.activeLocked(), Attachments: s.broadcast.count(), Title: s.title,
 		ActivityPair: ActivityPair{
 			Task: append(json.RawMessage(nil), s.activitySnapshots[activitySnapshotOrder[0]]...),

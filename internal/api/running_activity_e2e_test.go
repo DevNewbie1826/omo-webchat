@@ -34,6 +34,11 @@ func newRunningActivityFixture(t *testing.T) *runningActivityFixture {
 	}
 	f.chat = chat
 	_, overview := f.connectSubscribe()
+	initial := overview.next(t, "sessions.activity")
+	requireBindingIncarnation(t, initial, "")
+	if initial["active"] != false {
+		t.Fatalf("initial binding should be idle: %v", initial)
+	}
 	return &runningActivityFixture{countsE2EFixture: f, attached: attached, frames: frames, overview: overview}
 }
 
