@@ -54,8 +54,8 @@ const REDESIGNED_SIDEBAR = {
 // ---------------------------------------------------------------------------
 
 describe('T3 plugin contract with the shared harness', () => {
-  test('registers scoped S5 alongside the built-in, de-stubs S10/S11 and extends the S21 stub with G40', () => {
-    expect(Object.keys(scenarios).sort()).toEqual(['S10', 'S11', 'S21', 'S5:shell']);
+  test('registers scoped S5 alongside the built-in, de-stubs S10/S11/S24 without replacing S21', () => {
+    expect(Object.keys(scenarios).sort()).toEqual(['S10', 'S11', 'S24', 'S5:shell']);
     for (const probe of Object.values(scenarios)) expect(typeof probe).toBe('function');
     const registry = buildScenarioRegistry([{ file: 'visual-redesign-scenarios-t3.mjs', scenarios }]);
     const s5 = registry.find(entry => entry.id === 'S5:shell');
@@ -63,13 +63,14 @@ describe('T3 plugin contract with the shared harness', () => {
     expect(s5.stub).toBe(false);
     expect(s5.run).toBe(scenarios['S5:shell']);
     expect(registry.find(entry => entry.id === 'S5').origin).toBe('builtin');
-    for (const id of ['S10', 'S11', 'S21']) {
+    for (const id of ['S10', 'S11', 'S24']) {
       const entry = registry.find(candidate => candidate.id === id);
       expect(entry.stub).toBe(false);
       expect(entry.origin).toBe('plugin:visual-redesign-scenarios-t3.mjs');
     }
     // Untouched ids keep their built-in registration.
     expect(registry.find(entry => entry.id === 'S1').origin).toBe('builtin');
+    expect(registry.find(entry => entry.id === 'S21').stub).toBe(true);
     expect(registry.find(entry => entry.id === 'S13').stub).toBe(true);
   });
 
@@ -602,7 +603,7 @@ async function runSerialized(view, probeFunction, argJson = '{}') {
   return await view.evaluate(`(() => { ${pageKit()}\nreturn (${probeFunction.toString()})(${argJson}); })()`);
 }
 
-describe('serialized S21 coarse shell hit areas', () => {
+describe('serialized S24 coarse shell hit areas', () => {
   test('a 32px button fails the 44px minimum', async () => {
     await withView(page('<aside class="th-sidebar"><button aria-label="Settings" style="width:32px;height:32px"></button></aside>'), async view => {
       const result = await runSerialized(view, probeShellCoarseTargets, '{"root":".th-sidebar","requireCoarse":false}');
@@ -625,6 +626,16 @@ describe('serialized S21 coarse shell hit areas', () => {
     });
   });
 
+  test('five inset points belong to a rounded 44px button', async () => {
+    await withView(page(`<aside class="th-sidebar">
+      <button aria-label="Round" style="width:44px;height:44px;border-radius:50%"></button>
+    </aside>`), async view => {
+      const result = await runSerialized(view, probeShellCoarseTargets, '{"root":".th-sidebar","requireCoarse":false}');
+      expect(result.elements[0].blocked).toEqual([]);
+      expect(result.pass).toBe(true);
+    });
+  });
+
   test('two overlapping 44px hit areas fail even though sizes pass', async () => {
     await withView(page(`<aside class="th-sidebar" style="position:relative">
       <button aria-label="First" style="position:absolute;left:0;top:0;width:44px;height:44px"></button>
@@ -634,6 +645,73 @@ describe('serialized S21 coarse shell hit areas', () => {
       expect(result.elements).toHaveLength(2);
       expect(result.overlaps).toHaveLength(1);
       expect(result.failures.some(failure => failure.includes('hit areas overlap'))).toBe(true);
+      expect(result.pass).toBe(false);
+    });
+  });
+
+  test('a 44px box clipped to a 20px strip fails on its visible region', async () => {
+    await withView(page(`<aside class="th-sidebar" style="height:20px;overflow:hidden">
+      <button aria-label="Clipped" style="width:44px;height:44px"></button>
+    </aside>`), async view => {
+      const result = await runSerialized(view, probeShellCoarseTargets, '{"root":".th-sidebar","requireCoarse":false}');
+      expect(result.elements[0].size).toEqual({ width: 44, height: 44 });
+      expect(result.elements[0].visible.height).toBe(20);
+      expect(result.failures.join(' ')).toContain('visible region');
+      expect(result.pass).toBe(false);
+    });
+  });
+
+  test('pointer-events suppression fails even for a nominally unobstructed 44px box', async () => {
+    await withView(page(`<aside class="th-sidebar">
+      <button aria-label="Disabled hit" style="width:44px;height:44px;pointer-events:none"></button>
+    </aside>`), async view => {
+      const result = await runSerialized(view, probeShellCoarseTargets, '{"root":".th-sidebar","requireCoarse":false}');
+      expect(result.elements[0].size).toEqual({ width: 44, height: 44 });
+      expect(result.failures.join(' ')).toContain('pointer-events: none');
+      expect(result.pass).toBe(false);
+    });
+  });
+
+  test('a covering non-interactive layer fails hit ownership at the center and corners', async () => {
+    await withView(page(`<aside class="th-sidebar" style="position:relative">
+      <button aria-label="Covered" style="width:44px;height:44px"></button>
+      <span style="position:absolute;inset:0;width:44px;height:44px;background:gray"></span>
+    </aside>`), async view => {
+      const result = await runSerialized(view, probeShellCoarseTargets, '{"root":".th-sidebar","requireCoarse":false}');
+      expect(result.elements[0].visible.width).toBe(44);
+      expect(result.elements[0].blocked).toHaveLength(5);
+      expect(result.failures.join(' ')).toContain('occluded');
+      expect(result.pass).toBe(false);
+    });
+  });
+
+  test('the owning scrollport reveals an offscreen target without moving the page', async () => {
+    await withView(page(`<aside class="th-sidebar">
+      <div class="th-sidebar-body" style="height:100px;overflow-y:auto">
+        <div style="height:160px"></div>
+        <button aria-label="Last" style="width:44px;height:44px"></button>
+      </div>
+    </aside>`), async view => {
+      const result = await runSerialized(view, probeShellCoarseTargets,
+        '{"root":".th-sidebar","requireCoarse":false,"scrollOwner":".th-sidebar-body"}');
+      expect(result.scrolls).toHaveLength(1);
+      expect(result.scrolls[0].to).toBeGreaterThan(0);
+      expect(result.elements[0].visible.height).toBe(44);
+      expect(result.pass).toBe(true);
+      expect(await view.evaluate('window.scrollY')).toBe(0);
+    });
+  });
+
+  test('an unreachable target fails when its nominal scroller cannot reveal it', async () => {
+    await withView(page(`<aside class="th-sidebar">
+      <div class="th-sidebar-body" style="height:20px;overflow:hidden">
+        <button aria-label="Trapped" style="width:44px;height:44px"></button>
+      </div>
+    </aside>`), async view => {
+      const result = await runSerialized(view, probeShellCoarseTargets,
+        '{"root":".th-sidebar","requireCoarse":false,"scrollOwner":".th-sidebar-body"}');
+      expect(result.elements[0].visible.height).toBeLessThan(44);
+      expect(result.failures.join(' ')).toContain('visible region');
       expect(result.pass).toBe(false);
     });
   });
