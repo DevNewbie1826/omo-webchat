@@ -29,9 +29,9 @@ const assistant: UiMessage = { role: "assistant", blocks: [{ kind: "text", text:
  * Authorship between user and assistant messages must never flatten back into
  * two identical rows of text. The channels pinned here:
  * - the DOM hook `.th-chat-msg--user` that the transcript CSS keys on;
- * - the Raised fill triple in chat-transcript.css: the user bubble separates
- *   from the canvas by its own surface, not by an accent bar or bold text
- *   (the full elevation triple is separately pinned by styleContracts);
+ * - the dedicated user fill plus a neutral contrast wash in chat-transcript.css:
+ *   the bubble separates from the canvas without an accent bar or bold text
+ *   (the complete style is separately pinned by styleContracts);
  * - the localized accessible group label, declared in BOTH locales.
  */
 describe("ChatTranscript authorship distinction", () => {
@@ -69,7 +69,7 @@ describe("ChatTranscript authorship distinction", () => {
 		expect(container.querySelector(".th-chat-sr-author")).toBeNull();
 	});
 
-	it("separates the user bubble by its Raised surface, without accent bar or emphasized prose", () => {
+	it("separates the user bubble with a neutral wash, without accent bar or emphasized prose", () => {
 		const css = readFileSync("src/styles/chat-transcript.css", "utf8");
 		const body = css.match(/\.th-chat-msg--user\s*\{([^}]*)\}/)?.[1] ?? "";
 		// Authorship is carried by the bubble's own elevated fill, right
@@ -77,6 +77,7 @@ describe("ChatTranscript authorship distinction", () => {
 		expect(body).not.toContain("border-inline-start");
 		expect(body).not.toContain("font-weight");
 		expect(body).toContain("background: var(--th-surface-user)");
+		expect(body).toContain("background-image: linear-gradient(var(--th-border-user), var(--th-border-user))");
 		// The v2 Golo grammar makes the bubble a borderless pill: the shadow and
 		// the surface step separate it from the canvas (QA S4 probe: border-style
 		// none on every side, every corner at --th-radius-lg).

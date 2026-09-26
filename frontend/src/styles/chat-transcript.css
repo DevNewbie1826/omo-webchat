@@ -37,6 +37,10 @@
   min-width: 0;
 }
 
+.th-chat-markdown {
+  white-space: normal;
+}
+
 .th-chat-row,
 .th-chat-live {
   width: min(
@@ -234,16 +238,15 @@
   word-break: keep-all;
 }
 
-/* Authorship rides the dedicated user surface (pinned by styleContracts):
-   the pill bubble lifts one step above Raised so it reads at a glance
-   without decoration - no border, no accent bar, prose keeps the declared
-   read weight above - and a localized accessible group label names the
-   author for assistive tech. Radius: --th-radius-lg on every corner
-   (QA S4: border-style none, min corner radius 16px). */
+/* Authorship rides the dedicated user surface (pinned by styleContracts).
+   A neutral wash over that surface keeps the fill at least 1.3:1 from the
+   pane in either theme without adding an outline or changing the text tier.
+   Radius: --th-radius-lg on every corner (QA S4: border-style none). */
 .th-chat-msg--user {
   border: 0;
   border-radius: var(--th-radius-lg);
   background: var(--th-surface-user);
+  background-image: linear-gradient(var(--th-border-user), var(--th-border-user));
   box-shadow: var(--th-shadow-raised);
 }
 
@@ -351,24 +354,24 @@
 
 .th-chat-thinking--running .th-chat-thinking-dot {
   background-color: var(--th-accent);
-  -webkit-mask-image: repeating-conic-gradient(var(--th-accent) 0deg 22deg, transparent 22deg 45deg);
-  mask-image: repeating-conic-gradient(var(--th-accent) 0deg 22deg, transparent 22deg 45deg);
-  animation: th-tool-spin var(--th-dur-spin) var(--th-ease-linear) infinite;
-}
-
-/* Running label: violet with the same background-position shimmer as the
-   tool status; the static frame still reads as the violet word. */
-.th-chat-thinking--running .th-chat-thinking-label {
-  background-image: linear-gradient(100deg, var(--th-accent) 42%, var(--th-accent-hover) 50%, var(--th-accent) 58%);
-  background-size: 220% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
   color: var(--th-accent);
-  -webkit-text-fill-color: transparent;
-  animation: th-tool-shimmer var(--th-dur-shimmer) var(--th-ease-linear) infinite;
+  -webkit-mask-image: repeating-conic-gradient(var(--th-accent) 0deg 30deg, transparent 30deg 45deg);
+  mask-image: repeating-conic-gradient(var(--th-accent) 0deg 30deg, transparent 30deg 45deg);
+  animation: th-tool-spin var(--th-dur-run) var(--th-ease-linear) infinite;
 }
 
-/* Round collapse chevron, trailing. */
+/* Running thinking matches the tool status: accent ink and its light tint
+   carry state even with motion reduced to a static spinner. */
+.th-chat-thinking--running .th-chat-thinking-label {
+  padding: 0 var(--th-space-1);
+  border-radius: var(--th-radius-sm);
+  background: var(--th-accent-bg);
+  color: var(--th-accent-ink);
+}
+
+/* Round collapse chevron, trailing. IconChevron points RIGHT unrotated, so
+   the chip reads RIGHT collapsed and rotates +90deg to point DOWN when open
+   — the same disclosure idiom as the tool chevron. */
 .th-chat-thinking-chevron {
   display: inline-flex;
   flex: none;
@@ -379,7 +382,6 @@
   margin-left: auto;
   border-radius: 50%;
   color: var(--th-muted);
-  transform: rotate(-90deg);
   transition:
     transform var(--th-dur) var(--th-ease),
     background-color var(--th-dur-fast) var(--th-ease),
@@ -401,12 +403,13 @@
    the transition retargets safely mid-flight (no JS timers); the inner
    overflow clip gives the track a measurable zero height when closed.
    Reduced motion collapses the duration globally, rendering the body
-   open/close instant. The body indents under the label so the rail keeps
-   running beside the reasoning text. */
+   open/close instant. The body indents to the Thinking label column
+   (right of the 1px rail at the status dot), so the rail never crosses
+   the reasoning text. */
 .th-chat-thinking-body {
   display: grid;
   grid-template-rows: 0fr;
-  padding-left: calc(var(--th-space-3) + var(--th-space-3) + var(--th-space-2));
+  padding-left: var(--th-space-6);
   transition: grid-template-rows var(--th-dur-slow) var(--th-ease-out);
 }
 
@@ -424,6 +427,7 @@
   margin: 0;
   padding: var(--th-space-1) 0 var(--th-space-2);
   overflow: auto;
+  font-family: var(--th-font-mono);
   font-size: var(--th-type-secondary-size);
   line-height: var(--th-type-secondary-line);
   letter-spacing: var(--th-type-secondary-tracking);
@@ -507,10 +511,6 @@
   }
 }
 
-.th-chat-markdown {
-  white-space: normal;
-}
-
 .th-chat-markdown > :first-child {
   margin-top: 0;
 }
@@ -562,6 +562,16 @@
   background: var(--th-hover);
 }
 
+.th-chat-markdown code {
+  padding: 0 var(--th-space-1);
+  border-radius: calc(var(--th-radius-sm) - 2px);
+  background: var(--th-hover);
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+}
+
 .th-chat-markdown pre code {
   padding: 0;
   border: 0;
@@ -571,16 +581,6 @@
   line-height: var(--th-type-secondary-line);
   letter-spacing: var(--th-type-secondary-tracking);
   white-space: pre;
-}
-
-.th-chat-markdown code {
-  padding: 0 var(--th-space-1);
-  border-radius: calc(var(--th-radius-sm) - 2px);
-  background: var(--th-hover);
-  font-family: var(--th-font-mono);
-  font-size: var(--th-type-secondary-size);
-  line-height: var(--th-type-secondary-line);
-  letter-spacing: var(--th-type-secondary-tracking);
 }
 
 .th-chat-markdown blockquote {

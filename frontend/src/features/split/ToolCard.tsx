@@ -176,9 +176,6 @@ export function ToolCard(props: ToolCardProps) {
         }}
       >
         <span className="th-tool-line">
-          <span className={`th-tool-chevron${open ? " th-tool-chevron--open" : ""}`} aria-hidden="true">
-            <IconChevron size={12} />
-          </span>
           {status === "running" ? (
             <span className="th-chat-record-glyph th-tool-glyph th-tool-glyph--running" aria-hidden="true" />
           ) : status === "error" ? (
@@ -188,6 +185,9 @@ export function ToolCard(props: ToolCardProps) {
               <IconCheck size={12} />
             </span>
           )}
+          <span className={`th-tool-chevron${open ? " th-tool-chevron--open" : ""}`} aria-hidden="true">
+            <IconChevron size={12} />
+          </span>
           <span className="th-tool-name">{name}</span>
           <span className={`th-tool-status th-tool-status--${status}`}>{label}</span>
         </span>
