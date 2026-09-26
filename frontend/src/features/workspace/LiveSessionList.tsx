@@ -1,6 +1,7 @@
 import { useT } from "../../i18n";
 import type { Terminal, Workspace, WorkspaceSession } from "./workspace";
 import type { LiveSessionSummary } from "./useLiveSessionSummaries";
+import { resolveLiveSummaryTarget, type LiveSummaryTarget } from "./liveSummaryTarget";
 import { sessionOpenAttemptKey, type SessionOpenAttemptResult, type SessionOpenAttemptStatus } from "./useSessionOpenAttempts";
 import "../../styles/overview.css";
 
@@ -15,11 +16,6 @@ export interface LiveSessionListProps {
   readonly showLastLine?: boolean;
   readonly listClassName?: string;
   readonly onActivated?: () => void;
-}
-
-interface SessionTarget {
-  readonly workspace: Workspace;
-  readonly session: WorkspaceSession;
 }
 
 /** The sidebar's pinned running-sessions section renders one read-only live card per running session.
@@ -39,45 +35,34 @@ export function LiveSessionList({
 }: LiveSessionListProps) {
   const { t } = useT();
 
-  // Any already-loaded union row - stored or discovered - is a valid open target,
-  // matching the session picker's activation path. Sessions present in
-  // workspace.chats never reach this resolver; they take the onSelect path below.
-  const sessionTarget = (sessionId: string): SessionTarget | null => {
-    for (const workspace of workspaces) {
-      const session = (sessionLists.get(workspace.id) ?? []).find(
-        (item) => item.id === sessionId,
-      );
-      if (session !== undefined) return { workspace, session };
-    }
-    return null;
-  };
-
-  const openSession = async (summary: LiveSessionSummary, force = false): Promise<void> => {
-    const ws = workspaces.find((workspace) => workspace.chats.some((chat) => chat.id === summary.id));
-    const tm = ws?.chats.find((chat) => chat.id === summary.id);
-    if (ws !== undefined && tm !== undefined) {
-      onSelect(ws, tm);
+  const openSession = async (target: LiveSummaryTarget, force = false): Promise<void> => {
+    if (target.kind === "chat") {
+      onSelect(target.workspace, target.terminal);
       onActivated?.();
       return;
     }
-    const target = sessionTarget(summary.id);
-    if (target === null) return;
     const result = await onOpen(target.workspace, target.session, force);
     if (result === "opened") onActivated?.();
   };
 
-  const orderedSummaries = focusedSessionId === null
-    ? summaries
-    : [...summaries].sort((a, b) => Number(b.id === focusedSessionId) - Number(a.id === focusedSessionId));
+  // A card renders only when the summary resolves to an open target, so an
+  // enabled card always opens something. The resolved target from rendering
+  // drives the click: one resolution path for the whole list.
+  const listed = summaries.flatMap((summary): readonly { readonly summary: LiveSessionSummary; readonly target: LiveSummaryTarget }[] => {
+    const target = resolveLiveSummaryTarget(summary, workspaces, sessionLists);
+    return target === null ? [] : [{ summary, target }];
+  });
+  const ordered = focusedSessionId === null
+    ? listed
+    : [...listed].sort((a, b) => Number(b.summary.id === focusedSessionId) - Number(a.summary.id === focusedSessionId));
 
   return (
     <div className={`th-overview-list${listClassName !== undefined ? ` ${listClassName}` : ""}`}>
-      {orderedSummaries.map((summary) => {
+      {ordered.map(({ summary, target }) => {
         const title = summary.title.length > 0 ? summary.title : summary.id;
-        const target = sessionTarget(summary.id);
-        const attempt = target === null
-          ? undefined
-          : openAttempts.get(sessionOpenAttemptKey(target.workspace.id, target.session.id));
+        const attempt = target.kind === "session"
+          ? openAttempts.get(sessionOpenAttemptKey(target.workspace.id, target.session.id))
+          : undefined;
         const opening = attempt === "opening";
         const activeElsewhere = attempt === "session-active";
         const failed = attempt === "failed";
@@ -91,7 +76,7 @@ export function LiveSessionList({
               className="th-overview-card-open"
               disabled={opening || activeElsewhere}
               aria-busy={opening || undefined}
-              onClick={() => void openSession(summary)}
+              onClick={() => void openSession(target)}
             >
               <span className="th-overview-card-head">
                 <span className="th-overview-card-name">{title}</span>
@@ -116,7 +101,7 @@ export function LiveSessionList({
                   <button
                     type="button"
                     className={`th-btn th-btn--ghost ${activeElsewhere ? "th-overview-force-open" : "th-overview-retry-open"}`}
-                    onClick={() => void openSession(summary, activeElsewhere)}
+                    onClick={() => void openSession(target, activeElsewhere)}
                   >
                     {t(activeElsewhere ? "sidebar.tm.forceOpen" : "sidebar.tm.retryOpen")}
                   </button>
