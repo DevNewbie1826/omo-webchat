@@ -325,6 +325,8 @@ async function setupOverlays(browser, options = {}) {
  * the chat socket (activity shelf) and the all_live push socket (tree). */
 async function deliverRunningDag(env, notes) {
   const frame = summaryFrame('complete2');
+  const dag = frame.snapshots.find(snapshot => snapshot.name === 'omo.dag.updated').data;
+  env.fixture.base.setDagRuns(CHAT, dag.runs);
   await env.fixture.deliver(CHAT, frame);
   const peers = env.fixture.overview(frame);
   notes.push(`overview frame reached ${peers.length} all_live subscriber(s)`);
@@ -332,6 +334,7 @@ async function deliverRunningDag(env, notes) {
     await env.page.waitForSelector('[data-activity-tab="dag"]', { timeout: 4000 });
     await env.page.click('[data-activity-tab="dag"]');
     await env.page.waitForSelector('.th-activity-gnode--running', { timeout: 4000 });
+    notes.push('DAG graph reached');
   } catch (error) {
     notes.push(`DAG graph not reached: ${error instanceof Error ? error.message.split('\n')[0] : error}`);
   }
@@ -382,8 +385,13 @@ async function driveStateColors(browser, ctx) {
   await deliverRunningDag(env, notes);
   await deliverApproval(env, notes);
   try {
+    if (await env.page.locator('.th-modal-overlay').isVisible()) {
+      await env.page.keyboard.press('Escape');
+      await env.page.waitForSelector('.th-modal-overlay', { state: 'detached', timeout: 4000 });
+    }
     await env.page.click('.th-model-picker-btn');
     await env.page.waitForSelector('.th-model-picker-popover', { timeout: 4000 });
+    notes.push('model picker reached');
   } catch (error) {
     notes.push(`model picker not reached: ${error instanceof Error ? error.message.split('\n')[0] : error}`);
   }

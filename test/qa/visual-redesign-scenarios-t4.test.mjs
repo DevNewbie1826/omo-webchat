@@ -28,6 +28,7 @@ import {
   glyphOrderVerdict, haloVerdict, nodeStrokeViolations, overlapVerdict, progressVerdict,
   probeDagGraph, probeDagList, probeDagRunningMotion, probeShelfTabs, probeT4RunningIndicators,
   railVerdict, rovingVerdict, scaleXFromTransform, scenarios, stableTransformVerdict,
+  settleTablist,
   t4ActivityFrame, t4CatalogPayload, t4DocumentPayload, t4ExpectedProgress, t4ExtensionFrames,
   t4RunCounts, t4StageRoles, t4StageRun, t4StageSpec, thumbVerdict,
 } from './visual-redesign-scenarios-t4.mjs';
@@ -131,8 +132,13 @@ describe('T4 stage fixtures pass the real product parsers', () => {
     expect(t4StageRoles('mixed').running).toEqual(['k6']);
     expect(t4StageRoles('mixed').completed).toHaveLength(6);
     expect(t4StageRoles('mixed').failed).toEqual(['f']);
-    expect(t4ExpectedProgress('mixed')).toBeCloseTo(7 / 11, 10);
-    expect(t4ExpectedProgress('mixed-flip')).toBeCloseTo(8 / 11, 10);
+    expect(t4ExpectedProgress('mixed')).toBeCloseTo(6 / 11, 10);
+    expect(t4ExpectedProgress('mixed-flip')).toBeCloseTo(7 / 11, 10);
+    const terminal = t4RunCounts([
+      { state: 'completed' }, { state: 'failed' }, { state: 'skipped' }, { state: 'cancelled' },
+    ]);
+    expect(terminal.completed).toBe(1);
+    expect(terminal.total).toBe(4);
     expect(t4ExpectedProgress('dense16')).toBeCloseTo(4 / 16, 10);
     expect(t4ExpectedProgress('dense64')).toBeCloseTo(8 / 64, 10);
   });
@@ -167,6 +173,9 @@ describe('scaleXFromTransform / progressVerdict (S14 progress bar)', () => {
     expect(progressVerdict([{ ...facts[0], scaleX: null }], 0.5).pass).toBe(false);
     expect(progressVerdict([{ ...facts[0], inlineScaleX: 0.4 }], 6 / 11).pass).toBe(false);
     expect(progressVerdict([{ ...facts[0], settled: false }], 6 / 11).pass).toBe(false);
+    expect(progressVerdict([{ ...facts[0], countText: '6/11 done' }], 6 / 11, '6/11').pass).toBe(true);
+    expect(progressVerdict([{ ...facts[0], countText: '7/11 done' }], 6 / 11, '6/11').pass).toBe(false);
+    expect(progressVerdict([{ ...facts[0], countText: null }], 6 / 11, '6/11').pass).toBe(false);
     // Boundary: exactly 0.01 delta is inside the contract.
     expect(progressVerdict([{ ...facts[0], scaleX: 0.61, inlineScaleX: 0.6 }], 0.6).pass).toBe(true);
   });
@@ -269,15 +278,20 @@ describe('autoScrollVerdict (S14 first-paint auto-scroll)', () => {
     expect(verdict.pass).toBe(true);
     expect(verdict.measured.skipped).toBeDefined();
   });
+  test('overflow need not scroll when the first running node already occupies the initial viewport', () => {
+    const scroller = { where: 'div.graph', scrollLeft: 0, scrollWidth: 1800, clientWidth: 700, rect: rect(0, 0, 700, 300) };
+    expect(autoScrollVerdict({ scroller, runningRect: rect(300, 40, 160, 60) }).pass).toBe(true);
+  });
 });
 
 describe('railVerdict (S14 list view timeline)', () => {
-  test('rail child, pseudo-element and narrow rule all count; plain rows fail (baseline)', () => {
-    expect(railVerdict([{ railChild: true }, { pseudoRail: true }, { ruleChild: true }]).pass).toBe(true);
-    const verdict = railVerdict([{ railChild: false, pseudoRail: false, ruleChild: false }, { railChild: true }]);
+  test('only painted rail geometry in selected List mode counts', () => {
+    expect(railVerdict([{ paintedRail: true }, { paintedRail: true }], 'list').pass).toBe(true);
+    const verdict = railVerdict([{ paintedRail: false }, { paintedRail: true }], 'list');
     expect(verdict.pass).toBe(false);
     expect(verdict.failures[0]).toContain('1/2');
-    expect(railVerdict([]).pass).toBe(false);
+    expect(railVerdict([{ paintedRail: true }], 'graph').pass).toBe(false);
+    expect(railVerdict([], 'list').pass).toBe(false);
   });
 });
 
@@ -316,14 +330,17 @@ describe('thumbVerdict + rovingVerdict + countFontVerdict (S13)', () => {
     { id: 'dag', rect: rect(208, 0, 100, 32) },
   ];
   test('transform change + alignment passes; identical transform fails (left-mover)', () => {
-    const before = { thumb: { found: true, transform: 'matrix(1, 0, 0, 1, 208, 0)', rect: rect(210, 2, 96, 28) }, selectedId: 'dag', tabs };
-    const after = { thumb: { found: true, transform: 'matrix(1, 0, 0, 1, 104, 0)', rect: rect(106, 2, 96, 28) }, selectedId: 'agents', tabs };
+    const before = { thumbCount: 1, thumb: { found: true, painted: true, identity: 'same', transform: 'matrix(1, 0, 0, 1, 208, 0)', rect: rect(210, 2, 96, 28) }, selectedId: 'dag', tabs };
+    const after = { thumbCount: 1, thumb: { found: true, painted: true, identity: 'same', transform: 'matrix(1, 0, 0, 1, 104, 0)', rect: rect(106, 2, 96, 28) }, selectedId: 'agents', tabs };
     expect(thumbVerdict(before, after).pass).toBe(true);
     const staticThumb = { ...after, thumb: { ...after.thumb, transform: before.thumb.transform } };
     expect(thumbVerdict(before, staticThumb).pass).toBe(false);
     const misaligned = { thumb: { found: true, transform: 'matrix(1,0,0,1,0,0)', rect: rect(0, 2, 96, 28) }, selectedId: 'agents', tabs };
     expect(thumbVerdict(before, misaligned).pass).toBe(false);
-    expect(thumbVerdict({ thumb: { found: false }, selectedId: 'dag', tabs }, after).pass).toBe(false);
+    expect(thumbVerdict({ thumbCount: 0, thumb: { found: false }, selectedId: 'dag', tabs }, after).pass).toBe(false);
+    expect(thumbVerdict(before, { ...after, thumbCount: 2 }).pass).toBe(false);
+    expect(thumbVerdict(before, { ...after, thumb: { ...after.thumb, painted: false } }).pass).toBe(false);
+    expect(thumbVerdict(before, { ...after, thumb: { ...after.thumb, identity: 'replacement' } }).pass).toBe(false);
   });
   test('roving steps must move selection AND focus AND the tabindex', () => {
     const good = [
@@ -400,6 +417,14 @@ describe('dagRunningMotion / accent / reduced verdicts (S8)', () => {
 // ---------------------------------------------------------------------------
 
 describe('T4 plugin registration', () => {
+  test('settleTablist propagates a bounded animation timeout', async () => {
+    const timeout = new Error('Timeout 1600ms exceeded');
+    const page = { waitForFunction: async (predicate, arg, options) => {
+      expect(options.timeout).toBe(1600);
+      throw timeout;
+    } };
+    expect(settleTablist(page)).rejects.toThrow('Timeout 1600ms exceeded');
+  });
   test('the module registers S8/S13/S14 over the built-in registry', async () => {
     // Scan the REAL test/qa directory: relative imports inside the plugin
     // (visual-redesign-probes.mjs) only resolve in place, never from a copy.
@@ -407,9 +432,9 @@ describe('T4 plugin registration', () => {
     const mine = plugins.find(plugin => plugin.file === 'visual-redesign-scenarios-t4.mjs');
     expect(mine).toBeDefined();
     expect(mine.skipped).toBeUndefined();
-    expect(Object.keys(mine.scenarios).sort()).toEqual(['S13', 'S14', 'S8']);
+    expect(Object.keys(mine.scenarios).sort()).toEqual(['S13', 'S14', 'S15', 'S8']);
     const registry = buildScenarioRegistry(plugins);
-    for (const id of ['S8', 'S13', 'S14']) {
+    for (const id of ['S8', 'S13', 'S14', 'S15']) {
       const entry = registry.find(candidate => candidate.id === id);
       expect(entry.origin).toBe('plugin:visual-redesign-scenarios-t4.mjs');
       expect(entry.stub).toBe(false);
@@ -420,9 +445,10 @@ describe('T4 plugin registration', () => {
     expect(registry.find(candidate => candidate.id === 'S1').origin).toBe('builtin');
     expect(registry.find(candidate => candidate.id === 'S1').run).toBeInstanceOf(Function);
   });
-  test('the scenarios export is exactly S8/S13/S14 async functions', () => {
-    expect(Object.keys(scenarios).sort()).toEqual(['S13', 'S14', 'S8']);
+  test('the scenarios export includes S15 settled capture without losing its built-in motion driver', () => {
+    expect(Object.keys(scenarios).sort()).toEqual(['S13', 'S14', 'S15', 'S8']);
     for (const run of Object.values(scenarios)) expect(run.constructor.name).toBe('AsyncFunction');
+    expect(scenarios.S15.toString()).toContain('original(browser, ctx)');
   });
 });
 
@@ -808,6 +834,7 @@ function buildDom(tree) {
       ...options.host || {},
     };
     element.getAttribute = name => (element.attrs.has(name) ? element.attrs.get(name) : null);
+    element.setAttribute = (name, value) => { element.attrs.set(name, String(value)); };
     element.getAttributeNames = () => [...element.attrs.keys()];
     element.contains = other => {
       for (let node = other; node; node = node.parentElement) if (node === element) return true;
@@ -873,7 +900,7 @@ const computedFromStyles = styles => element => {
     inline[camel] = rest.join(':').trim();
   }
   const style = {
-    display: 'block', visibility: 'visible', transform: 'none', content: 'none',
+    display: 'block', visibility: 'visible', opacity: '1', transform: 'none', content: 'none',
     '--th-success': '#16a34a', '--th-warning': '#d97706', '--th-error': '#dc2626', '--th-accent': '#8b7cf6',
     '--th-font-mono': '"JetBrains Mono", ui-monospace, monospace',
     '--th-font-sans': '"Pretendard Variable", sans-serif',
@@ -906,7 +933,7 @@ const cometLoop = () => ({ name: 'th-dag-comet', iterations: Infinity });
 describe('S13 adversarial + conforming fixtures via the serialized probeShelfTabs', () => {
   const tabTree = (thumb, countFamily) => ['div', { class: 'th-activity-tabs', role: 'tablist' }, {
     children: [
-      ...(thumb ? [['div', { class: 'th-activity-tab-thumb', 'data-thumb': 'true' }]] : []),
+      ...(thumb ? [['div', { class: 'th-activity-tab-thumb', 'data-thumb': 'true', style: 'background-color: #25262b' }]] : []),
       ['button', { class: 'th-activity-tab', 'data-activity-tab': 'todo', role: 'tab', 'aria-selected': 'true', tabindex: '0' }, { children: [
         ['span', { class: 'th-activity-tab-label', '#text': 'Todo' }],
         ['span', { class: 'th-activity-tab-count', style: `font-family: ${countFamily}`, '#text': '0/3' }],
@@ -928,8 +955,8 @@ describe('S13 adversarial + conforming fixtures via the serialized probeShelfTab
     if (thumb) withBox(thumb, thumbX, 2, 96, 28);
     return tabs;
   };
-  const measure = (tree, thumbTransform, thumbX = 2) => {
-    const dom = buildDom(tree);
+  const measure = (tree, thumbTransform, thumbX = 2, existingDom = null) => {
+    const dom = existingDom ?? buildDom(tree);
     layout(dom, thumbX);
     const computed = computedFromStyles(element => (element.attrs.has('data-thumb') && thumbTransform ? { transform: thumbTransform } : {}));
     return runProbe(probeShelfTabs, null, dom, computed);
@@ -943,16 +970,37 @@ describe('S13 adversarial + conforming fixtures via the serialized probeShelfTab
     expect(countFontVerdict(facts.tabs, firstFamily(facts.monoToken)).pass).toBe(false);
   });
   test('conforming segmented control (thumb moves + sans counts) PASSES', async () => {
-    const factsA = await measure(tabTree(true, '"Pretendard Variable", sans-serif'), 'matrix(1, 0, 0, 1, 0, 0)', 2);
+    const dom = buildDom(tabTree(true, '"Pretendard Variable", sans-serif'));
+    const factsA = await measure(null, 'matrix(1, 0, 0, 1, 0, 0)', 2, dom);
     // A real switch moves the thumb box with the transform: agents is the
     // second segment, so the rect moves to x=106 alongside translateX(104).
-    const factsB = await measure(tabTree(true, '"Pretendard Variable", sans-serif'), 'matrix(1, 0, 0, 1, 104, 0)', 106);
+    const factsB = await measure(null, 'matrix(1, 0, 0, 1, 104, 0)', 106, dom);
     // factsB re-presents the agents tab as selected, as a real switch would.
     factsB.selectedId = 'agents';
     factsB.tabs[0].selected = false;
     factsB.tabs[1].selected = true;
     expect(thumbVerdict(factsA, factsB).pass).toBe(true);
     expect(countFontVerdict(factsB.tabs, firstFamily(factsB.monoToken)).pass).toBe(true);
+  });
+  test('duplicate, transparent and replaced serialized thumbs fail', async () => {
+    const dom = buildDom(tabTree(true, '"Pretendard Variable", sans-serif'));
+    const before = await measure(null, 'matrix(1, 0, 0, 1, 0, 0)', 2, dom);
+    const original = dom.document.querySelector('[data-thumb]');
+    const after = async () => {
+      const facts = await measure(null, 'matrix(1, 0, 0, 1, 104, 0)', 106, dom);
+      facts.selectedId = 'agents';
+      return facts;
+    };
+    const duplicate = buildDom(tabTree(true, '"Pretendard Variable", sans-serif'));
+    duplicate.root.children.splice(1, 0, buildDom(['span', { class: 'th-activity-tab-thumb' }]).root);
+    duplicate.root.children[1].parentElement = duplicate.root;
+    expect(thumbVerdict(before, await measure(null, 'matrix(1, 0, 0, 1, 104, 0)', 106, duplicate)).pass).toBe(false);
+    original.attrs.set('style', 'background-color: transparent');
+    expect(thumbVerdict(before, await after()).pass).toBe(false);
+    original.attrs.set('style', 'background-color: #25262b');
+    original.attrs.delete('data-qa-thumb-id');
+    // The next probe marks the replacement with a fresh identity.
+    expect(thumbVerdict(before, await after()).pass).toBe(false);
   });
 });
 
@@ -1120,7 +1168,7 @@ describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph
       transform: `translate(${wave * 164 + 6}, 6)`,
     },
     children: [
-      ['rect', { style: `stroke: ${stroke}`, width: 160, height: 60 }],
+      ['rect', { class: 'th-activity-gnode-card', style: `stroke: ${stroke}`, width: 160, height: 60 }],
       ['text', { class: 'th-activity-glabel', '#text': `label ${id}` }],
       ['text', { class: 'th-activity-gstate', '#text': state }],
       ...(state === 'muted' ? [] : [['circle', { class: `th-activity-gstatus th-activity-gstatus--${state}` }]]),
@@ -1141,11 +1189,11 @@ describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph
           ['g', { class: 'th-activity-gnode th-activity-gnode--running', 'data-node': 'k6' }, {
             host: { transform: 'translate(1030, 6)' },
             children: [
-              ['rect', { style: `stroke: ${redesigned ? 'rgba(255,255,255,0.06)' : 'rgb(217, 119, 6)'}` }],
+              ...(redesigned ? [['rect', { class: 'th-activity-gnode-halo', style: 'stroke: none' }]] : []),
+              ['rect', { class: 'th-activity-gnode-card', style: `stroke: ${redesigned ? 'rgba(255,255,255,0.06)' : 'rgb(217, 119, 6)'}` }],
               ['text', { class: 'th-activity-glabel', '#text': 'label k6' }],
               ['text', { class: 'th-activity-gstate', '#text': 'running' }],
               ['circle', { class: 'th-activity-gstatus th-activity-gstatus--running' }],
-              ...(redesigned ? [['circle', { class: 'th-dag-halo' }]] : []),
             ],
           }],
           node('k0', 'ok', redesigned ? 'rgba(255,255,255,0.06)' : 'rgb(22, 163, 74)', true, 0),
@@ -1154,8 +1202,9 @@ describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph
       ['div', { class: 'th-activity-dag-head' }, {
         children: redesigned ? [
           ['span', { class: 'th-activity-dag-name', '#text': 'run' }],
+          ['span', { class: 'th-activity-dag-counts', '#text': '6/11 done' }],
           ['div', { class: 'th-activity-dag-progress', role: 'progressbar', 'aria-valuenow': '7', 'aria-valuemax': '11' }, {
-            children: [['div', { class: 'th-activity-dag-progress-fill', style: 'transform: matrix(0.636364, 0, 0, 1, 0, 0)' }]],
+            children: [['div', { class: 'th-activity-dag-progress-fill', style: 'transform: matrix(0.545455, 0, 0, 1, 0, 0)' }]],
           }],
         ] : [['span', { class: 'th-activity-dag-name', '#text': 'run' }], ['span', { class: 'th-activity-dag-counts', '#text': '6/11' }]],
       }],
@@ -1175,7 +1224,7 @@ describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph
       if (glyph) withBox(glyph, redesigned ? x + 8 : x + 140, 12, 10, 10);
       const label = group.querySelector('text[class*="glabel" i]');
       if (label) withBox(label, x + 26, 10, 60, 12);
-      withBox(group.querySelector('rect'), x, 6, 160, 60);
+      for (const box of group.querySelectorAll('rect')) withBox(box, x, 6, 160, 60);
     }
     // Edge geometry must land on the REAL edge (defs/marker paths also
     // match the [class*="gedge"] census but are excluded by the probe).
@@ -1191,7 +1240,7 @@ describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph
     if (progress) {
       withBox(progress, 0, 82, 690, 4);
       withBox(progress.children[0], 0, 82, 690, 4);
-      progress.children[0].style = { transform: `scaleX(${7 / 11})` };
+      progress.children[0].style = { transform: `scaleX(${6 / 11})` };
     }
     const comet = dom.document.querySelector('[class*="comet" i]');
     if (comet) { withBox(comet, 180, 28, 12, 12); withAnimations(comet, [cometLoop()]); }
@@ -1209,11 +1258,11 @@ describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph
     expect(facts.found).toBe(true);
     const sourceRect = facts.nodes.find(n => n.id === 'k0')?.rect ?? null;
     expect(edgeShapeVerdict(facts.edges).pass).toBe(false);
-    expect(nodeStrokeViolations(facts.nodes.map(n => ({ id: n.id, stroke: n.stroke })), facts.tokens).pass).toBe(false);
+    expect(nodeStrokeViolations(facts.nodes, facts.tokens).pass).toBe(false);
     expect(glyphOrderVerdict(facts.nodes).pass).toBe(false);
     expect(cometVerdict(facts.comets, findRunningEdge(facts.edges, sourceRect, facts.runningRect)).pass).toBe(false);
     expect(haloVerdict(facts.halos, facts.runningRect).pass).toBe(false);
-    expect(progressVerdict(facts.progress.map(f => ({ ...f, scaleX: scaleXFromTransform(f.transform), inlineScaleX: scaleXFromTransform(f.inlineTransform) })), 7 / 11).pass).toBe(false);
+    expect(progressVerdict(facts.progress.map(f => ({ ...f, scaleX: scaleXFromTransform(f.transform), inlineScaleX: scaleXFromTransform(f.inlineTransform) })), 6 / 11).pass).toBe(false);
     expect(autoScrollVerdict({ scroller: facts.scroller, runningRect: facts.runningRect }).pass).toBe(false);
   });
   test('conforming redesigned graph PASSES every T4-owed assertion', async () => {
@@ -1222,31 +1271,54 @@ describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph
     const sourceRect = facts.nodes.find(n => n.id === 'k0')?.rect ?? null;
     const runningEdge = findRunningEdge(facts.edges, sourceRect, facts.runningRect);
     expect(edgeShapeVerdict(facts.edges).pass).toBe(true);
-    expect(nodeStrokeViolations(facts.nodes.map(n => ({ id: n.id, stroke: n.stroke })), facts.tokens).pass).toBe(true);
+    expect(nodeStrokeViolations(facts.nodes, facts.tokens).pass).toBe(true);
     expect(glyphOrderVerdict(facts.nodes).pass).toBe(true);
     expect(cometVerdict(facts.comets, runningEdge).pass).toBe(true);
     expect(haloVerdict(facts.halos, facts.runningRect).pass).toBe(true);
-    expect(progressVerdict(facts.progress.map(f => ({ ...f, scaleX: scaleXFromTransform(f.transform), inlineScaleX: scaleXFromTransform(f.inlineTransform) })), 7 / 11).pass).toBe(true);
+    expect(progressVerdict(facts.progress.map(f => ({ ...f, scaleX: scaleXFromTransform(f.transform), inlineScaleX: scaleXFromTransform(f.inlineTransform) })), 6 / 11).pass).toBe(true);
+    expect(facts.progress[0].countText).toBe('6/11 done');
+    expect(progressVerdict(facts.progress.map(f => ({
+      ...f, scaleX: scaleXFromTransform(f.transform), inlineScaleX: scaleXFromTransform(f.inlineTransform),
+    })), 6 / 11, '6/11').pass).toBe(true);
     expect(autoScrollVerdict({ scroller: facts.scroller, runningRect: facts.runningRect }).pass).toBe(true);
+  });
+  test('running card behind the halo is measured and a missing card fails', async () => {
+    for (const stroke of ['#8b7cf6', '#d97706']) {
+      const dom = buildDom(graphTree({ redesigned: true }));
+      dom.document.querySelector('.th-activity-dag-progress-fill').style = { transform: `scaleX(${6 / 11})` };
+      const card = dom.document.querySelector('[data-node="k6"] .th-activity-gnode-card');
+      card.attrs.set('style', `stroke: ${stroke}`);
+      const facts = await runProbe(probeDagGraph, { runningId: 'k6' }, dom, computedFromStyles());
+      expect(facts.nodes.find(nodeFact => nodeFact.id === 'k6').stroke).toBe(stroke);
+      expect(nodeStrokeViolations(facts.nodes, facts.tokens).pass).toBe(false);
+    }
+    const dom = buildDom(graphTree({ redesigned: true }));
+    dom.document.querySelector('.th-activity-dag-progress-fill').style = { transform: `scaleX(${6 / 11})` };
+    const removed = dom.document.querySelector('[data-node="k6"] .th-activity-gnode-card');
+    removed.attrs.set('class', 'removed-card');
+    removed.className = 'removed-card';
+    const facts = await runProbe(probeDagGraph, { runningId: 'k6' }, dom, computedFromStyles());
+    expect(facts.nodes.find(nodeFact => nodeFact.id === 'k6').cardFound).toBe(false);
+    expect(nodeStrokeViolations(facts.nodes, facts.tokens).pass).toBe(false);
   });
   test('a correct computed scale cannot hide a wrong inline progress target', async () => {
     const dom = buildDom(graphTree({ redesigned: true }));
     const fill = dom.document.querySelector('.th-activity-dag-progress-fill');
-    fill.attrs.set('style', 'transform: matrix(0.636364, 0, 0, 1, 0, 0)');
-    fill.style = { transform: 'scaleX(0.545455)' };
+    fill.attrs.set('style', 'transform: matrix(0.545455, 0, 0, 1, 0, 0)');
+    fill.style = { transform: 'scaleX(0.636364)' };
     const facts = await runProbe(probeDagGraph, { runningId: 'k6', sourceId: 'k0' }, dom, computedFromStyles());
     const verdict = progressVerdict(facts.progress.map(fact => ({
       found: fact.found, where: fact.where,
       settled: fact.settled, scaleX: scaleXFromTransform(fact.transform),
       inlineScaleX: scaleXFromTransform(fact.inlineTransform),
-    })), 7 / 11);
+    })), 6 / 11);
     expect(verdict.pass).toBe(false);
   });
   test('serialized graph probe measures progress after the fill transition finishes', async () => {
     const dom = buildDom(graphTree({ redesigned: true }));
     const fill = dom.document.querySelector('.th-activity-dag-progress-fill');
-    fill.style = { transform: `scaleX(${7 / 11})` };
-    fill.attrs.set('style', 'transform: matrix(0.545455, 0, 0, 1, 0, 0)');
+    fill.style = { transform: `scaleX(${6 / 11})` };
+    fill.attrs.set('style', 'transform: matrix(0.2, 0, 0, 1, 0, 0)');
     let resolveFinished;
     const finished = new Promise(resolve => { resolveFinished = resolve; });
     let observeAnimation;
@@ -1256,14 +1328,14 @@ describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph
 
     const pending = runProbe(probeDagGraph, { runningId: 'k6', sourceId: 'k0' }, dom, computedFromStyles());
     await observed;
-    fill.attrs.set('style', 'transform: matrix(0.636364, 0, 0, 1, 0, 0)');
+    fill.attrs.set('style', 'transform: matrix(0.545455, 0, 0, 1, 0, 0)');
     animation.playState = 'finished';
     resolveFinished();
     const facts = await pending;
     const verdict = progressVerdict(facts.progress.map(fact => ({
       found: fact.found, where: fact.where, settled: fact.settled,
       scaleX: scaleXFromTransform(fact.transform), inlineScaleX: scaleXFromTransform(fact.inlineTransform),
-    })), 7 / 11);
+    })), 6 / 11);
     expect(verdict.pass).toBe(true);
   });
 });
@@ -1271,19 +1343,26 @@ describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph
 // ----- S14 list view through the ACTUAL serialized probeDagList -----------
 
 describe('S14 list view via the serialized probeDagList', () => {
+  const railNode = () => ['span', { class: 'th-activity-dnode-rail' }, {
+    children: [['svg', {}, { children: [['circle', { class: 'th-activity-gstatus' }]] }]],
+  }];
   const listTree = railed => ['div', { 'data-activity-tabpanel': 'dag' }, {
     children: [
+      ['div', { class: 'th-activity-dag-view', 'data-view-mode': 'list' }, { children: [
+        ['button', { 'data-view': 'list', 'aria-pressed': 'true' }],
+        ['button', { 'data-view': 'graph', 'aria-pressed': 'false' }],
+      ] }],
       ['ul', { class: 'th-activity-dagnodes' }, {
         children: [
           ['li', { class: 'th-activity-dnode' }, {
             children: [
-              ...(railed ? [['span', { class: 'th-activity-timeline-rail' }]] : []),
+              ...(railed ? [railNode()] : []),
               ['span', { class: 'th-activity-dnode-label', '#text': 'node k0' }],
             ],
           }],
           ['li', { class: 'th-activity-dnode' }, {
             children: [
-              ...(railed ? [['span', { class: 'th-activity-timeline-rail' }]] : []),
+              ...(railed ? [railNode()] : []),
               ['span', { class: 'th-activity-dnode-label', '#text': 'node k6' }],
             ],
           }],
@@ -1291,20 +1370,39 @@ describe('S14 list view via the serialized probeDagList', () => {
       }],
     ],
   }];
-  const measure = railed => {
+  const measure = (railed, railColor = 'rgba(255,255,255,0.2)') => {
     const dom = buildDom(listTree(railed));
     dom.document.querySelectorAll('li').forEach((row, index) => withBox(row, 8, index * 40, 690, 32));
     dom.document.querySelectorAll('[class*="rail" i]').forEach(rail => withBox(rail, 8, 0, 2, 32));
-    return runProbe(probeDagList, null, dom, computedFromStyles(element => (railed && element.attrs.get('class')?.includes('rail') ? { backgroundColor: 'rgba(255,255,255,0.2)' } : {})));
+    const normal = computedFromStyles();
+    const computed = (element, pseudo) => pseudo
+      ? { content: '""', width: '1px', height: '16px', backgroundColor: railColor, opacity: '1' }
+      : normal(element);
+    return runProbe(probeDagList, null, dom, computed);
   };
   test('plain baseline list rows FAIL the rail verdict', async () => {
     const facts = await measure(false);
     expect(facts.found).toBe(true);
     expect(facts.rows).toHaveLength(2);
-    expect(railVerdict(facts.rows).pass).toBe(false);
+    expect(railVerdict(facts.rows, facts.viewMode).pass).toBe(false);
   });
   test('railed timeline rows PASS the rail verdict', async () => {
     const facts = await measure(true);
-    expect(railVerdict(facts.rows).pass).toBe(true);
+    expect(facts.viewMode).toBe('list'); // inline SVG status glyphs are not a graph.
+    expect(railVerdict(facts.rows, facts.viewMode).pass).toBe(true);
+  });
+  test('class-only unpainted rail and selected Graph mode fail', async () => {
+    const invisible = await measure(true, 'transparent');
+    expect(invisible.rows[0].segments).toHaveLength(2);
+    expect(railVerdict(invisible.rows, invisible.viewMode).pass).toBe(false);
+    const graph = buildDom(listTree(true));
+    graph.document.querySelector('[data-view-mode]').attrs.set('data-view-mode', 'graph');
+    graph.document.querySelector('[data-view="list"]').attrs.set('aria-pressed', 'false');
+    graph.document.querySelector('[data-view="graph"]').attrs.set('aria-pressed', 'true');
+    const facts = await runProbe(probeDagList, null, graph, (element, pseudo) => pseudo
+      ? { content: '""', width: '1px', height: '16px', backgroundColor: '#ffffff', opacity: '1' }
+      : computedFromStyles()(element));
+    expect(facts.viewMode).toBe('graph');
+    expect(railVerdict(facts.rows, facts.viewMode).pass).toBe(false);
   });
 });

@@ -651,7 +651,7 @@ describe('modalFocusRestoreDecision (G25 / S12 / S23)', () => {
 import { JSDOM } from '../../frontend/node_modules/jsdom/lib/api.js';
 
 /** Evaluate the real serialized probe inside a controlled jsdom document. */
-function serializedProbeInDom(probeFn, arg, { html = '<body></body>', tokens = {}, animations = null } = {}) {
+function serializedProbeInDom(probeFn, arg, { html = '<body></body>', tokens = {}, animations = null, prepare = null } = {}) {
   const dom = new JSDOM(html, { runScripts: 'dangerously', pretendToBeVisual: true, url: 'http://qa.local/' });
   const { window } = dom;
   window.Element.prototype.getClientRects = function () { return [{ width: 10, height: 10 }]; };
@@ -659,6 +659,7 @@ function serializedProbeInDom(probeFn, arg, { html = '<body></body>', tokens = {
     window.document.documentElement.style.setProperty(name, value);
   }
   if (animations) window.document.getAnimations = () => animations;
+  if (prepare) prepare(window);
   // The real driver wraps the kit + probe in new Function(...) so a top-level
   // `return` is legal; window.eval evaluates a Program, so wrap the identical
   // source in an IIFE - same code, same realm.
@@ -889,6 +890,71 @@ describe('lead fix: S5 painted-border and S15 background-position longhands', ()
     expect(normalizeMotionProperty('backgroundpositiony')).toBe('background-position');
     expect(motionViolations(['background-position-x', 'background-position-y'])).toEqual([]);
     expect(motionViolations(['width'])).toEqual(['width']);
+  });
+});
+
+describe('serialized S5 SVG stroke coverage in production element order', () => {
+  const tokens = {
+    '--th-success': '#16a34a', '--th-warning': '#d97706',
+    '--th-error': '#dc2626', '--th-accent': '#8b7cf6',
+  };
+  const run = svg => serializedProbeInDom(probeStateColors, {}, {
+    html: `<body><div class="th-activity-graph"><svg xmlns="http://www.w3.org/2000/svg">${svg}</svg></div></body>`,
+    tokens,
+  });
+  const runningCard = stroke => `<g class="th-activity-gnode th-activity-gnode--running">
+    <rect class="th-activity-gnode-halo" stroke="none" />
+    <rect class="th-activity-gnode-card" style="stroke:${stroke};stroke-width:1px" />
+    <circle class="th-activity-gstatus th-activity-gstatus--running" style="stroke:#8b7cf6;stroke-width:2px" />
+  </g>`;
+
+  test('running card behind its normal halo fails for accent and warning outlines', () => {
+    for (const stroke of ['#8b7cf6', '#d97706']) {
+      const result = run(runningCard(stroke));
+      expect(result.pass).toBe(false);
+      expect(result.measurements.stateColorViolationCount).toBe(1);
+      expect(result.measurements.stateColorViolationSamples[0].colour).toBe(stroke);
+    }
+  });
+  test('fulfilled dependency path and path enclosure cannot become state coloured', () => {
+    for (const markup of [
+      '<path class="th-activity-gedge th-activity-gedge--fulfilled" style="stroke:#16a34a;stroke-width:1px" />',
+      '<path class="th-activity-enclosure" style="stroke:#dc2626;stroke-width:2px" />',
+    ]) expect(run(markup).pass).toBe(false);
+  });
+  test('every SVG shape kind is checked, but unpainted strokes are not', () => {
+    for (const shape of ['line', 'polyline', 'polygon', 'circle', 'ellipse', 'rect']) {
+      expect(run(`<${shape} style="stroke:#16a34a;stroke-width:1px" />`).pass).toBe(false);
+    }
+    expect(run('<path style="stroke:#16a34a;stroke-width:0" />').pass).toBe(true);
+    expect(run('<path style="stroke:#16a34a;stroke-width:2px;stroke-opacity:0" />').pass).toBe(true);
+  });
+  test('normal status glyph, halo, comet, glow and focus or alert outlines remain allowed', () => {
+    const svg = `${runningCard('rgba(255,255,255,0.06)')}
+      <g class="th-activity-gstatus th-activity-gstatus--error">
+        <path style="stroke:#dc2626;stroke-width:2px" />
+      </g>
+      <path class="th-activity-gedge-comet" style="stroke:#8b7cf6;stroke-width:2px" />
+      <path class="th-activity-gedge-glow" style="stroke:#8b7cf6;stroke-width:6px" />
+      <rect class="th-activity-gnode-halo" stroke="none" />`;
+    expect(run(svg).pass).toBe(true);
+    expect(serializedProbeInDom(probeStateColors, {}, {
+      html: '<body><span class="th-tool-glyph th-tool-glyph--ok"><svg xmlns="http://www.w3.org/2000/svg"><path style="stroke:#16a34a;stroke-width:2px" /></svg></span></body>',
+      tokens,
+    }).pass).toBe(true);
+    const alert = serializedProbeInDom(probeStateColors, {}, {
+      html: '<body><div class="th-alert" style="border:1px solid #dc2626"><svg xmlns="http://www.w3.org/2000/svg"><path style="stroke:#dc2626;stroke-width:2px" /></svg></div></body>',
+      tokens,
+    });
+    expect(alert.pass).toBe(true);
+    const focus = serializedProbeInDom(probeStateColors, {}, {
+      html: '<body><input class="th-input" style="border:1px solid #8b7cf6" /></body>',
+      tokens, prepare: window => window.document.querySelector('input').focus(),
+    });
+    expect(focus.pass).toBe(true);
+    expect(serializedProbeInDom(probeStateColors, {}, {
+      html: '<body><div class="th-alert" style="border:1px solid #8b7cf6"></div></body>', tokens,
+    }).pass).toBe(true);
   });
 });
 

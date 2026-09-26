@@ -60,6 +60,7 @@ import {
   colorEquals,
   parseColor,
 } from './visual-redesign-probes.mjs';
+import { buildScenarioRegistry } from './visual-redesign.mjs';
 
 // ---------------------------------------------------------------------------
 // 1. Stage fixtures (pure)
@@ -206,10 +207,10 @@ export function t4ActivityFrame(run, chat) {
     ] };
 }
 
-/** Finished (succeeded + failed + skipped) / total, from run-document counts. */
+/** Contracted progress: completed / total, not all terminal states. */
 export function t4ExpectedProgress(stage) {
   const counts = t4RunCounts(t4StageSpec(stage));
-  return (counts.completed + counts.failed + counts.skipped) / counts.total;
+  return counts.completed / counts.total;
 }
 
 /** Node ids by role for a stage (probe arguments). */
@@ -255,14 +256,18 @@ export function scaleXFromTransform(transform) {
 }
 
 /** S14: every run-header fill's settled scale and inline target must both
- * equal finished/total (+-0.01). */
-export function progressVerdict(progressFacts, expected) {
+ * equal completed/total (+-0.01). */
+export function progressVerdict(progressFacts, expected, expectedCount = null) {
   const failures = [];
   const candidates = (progressFacts ?? []).filter(fact => fact && fact.found);
   if (candidates.length === 0) {
     return { pass: false, failures: ['run header has no progress fill'], measured: null, expected };
   }
   for (const fact of candidates) {
+    if (expectedCount && fact.countText !== expectedCount
+      && !fact.countText?.startsWith(`${expectedCount} `)) {
+      failures.push(`run header count ${fact.countText ?? '(missing)'} != completed/total ${expectedCount} (at ${fact.where})`);
+    }
     if (!fact.settled) failures.push(`progress fill did not settle at ${fact.where}`);
     if (fact.scaleX === null || fact.scaleX === undefined) failures.push(`progress fill has no computed scaleX at ${fact.where}`);
     else if (Math.abs(fact.scaleX - expected) > 0.01 + 1e-9) {
@@ -310,14 +315,17 @@ export function glyphOrderVerdict(nodeFacts) {
   return { pass: failures.length === 0, failures, measured: { judged: judged.length, wrongOrder: wrong.length } };
 }
 
-/** S14: node card strokes never equal a state/accent token colour.
- * nodeFacts: [{id, stroke}]; tokens: raw token strings, parsed here. */
+/** S14: every node has a card, whose stroke never equals a state colour. */
 export function nodeStrokeViolations(nodeFacts, tokens) {
   const wanted = Object.entries(tokens ?? {})
     .map(([name, raw]) => ({ name, color: parseColor(raw) }))
     .filter(entry => entry.color !== null);
   const violations = [];
   for (const fact of nodeFacts ?? []) {
+    if (fact.cardFound === false) {
+      violations.push({ id: fact.id, token: 'missing card', stroke: null });
+      continue;
+    }
     const stroke = parseColor(fact.stroke);
     if (!stroke || stroke.a < 0.02) continue;
     for (const token of wanted) {
@@ -401,25 +409,28 @@ export function autoScrollVerdict(scrollFacts) {
     // No horizontal overflow in this fixture cell: nothing to auto-scroll.
     return { pass: true, failures, measured: { skipped: 'no horizontal overflow', ...scroller } };
   }
-  if (scroller.scrollLeft <= 0) failures.push(`graph content overflows (${scroller.scrollWidth}>${scroller.clientWidth}px) but scrollLeft stayed ${scroller.scrollLeft}: running node not scrolled into view on first paint`);
   const center = (runningRect.left + runningRect.right) / 2;
   if (center < scroller.rect.left - 1 || center > scroller.rect.right + 1) {
     failures.push(`running node center ${center.toFixed(1)} outside the visible reel ${scroller.rect.left.toFixed(1)}..${scroller.rect.right.toFixed(1)}`);
   }
+  if (scroller.scrollLeft <= 0 && center > scroller.rect.right + 1) {
+    failures.push(`graph content overflows (${scroller.scrollWidth}>${scroller.clientWidth}px) but scrollLeft stayed ${scroller.scrollLeft}: running node not scrolled into view on first paint`);
+  }
   return { pass: failures.length === 0, failures, measured: scroller };
 }
 
-/** S14: list view rows render as timeline items with a rail. */
-export function railVerdict(rowFacts) {
+/** S14: list view rows expose painted, sized timeline rail segments. */
+export function railVerdict(rowFacts, viewMode) {
   const failures = [];
   const rows = rowFacts ?? [];
   if (rows.length === 0) {
     failures.push('list view rendered no node rows');
     return { pass: false, failures, measured: { rows: 0 } };
   }
-  const railed = rows.filter(fact => fact.railChild || fact.pseudoRail || fact.ruleChild);
+  if (viewMode !== 'list') failures.push(`DAG view mode is ${viewMode ?? 'missing'}, expected list`);
+  const railed = rows.filter(fact => fact.paintedRail === true);
   if (railed.length < rows.length) {
-    failures.push(`${rows.length - railed.length}/${rows.length} list rows have no timeline rail (child ~rail, pseudo-element, or narrow rule)`);
+    failures.push(`${rows.length - railed.length}/${rows.length} list rows have no painted, sized timeline rail`);
   }
   return { pass: failures.length === 0, failures, measured: { rows: rows.length, railed: railed.length } };
 }
@@ -462,14 +473,21 @@ export function stableTransformVerdict(before, after) {
   return { pass: failures.length === 0, failures, measured: { nodes: after.length } };
 }
 
-/** S13: exactly one thumb; its transform changes when the selection moves
+/** S13: exactly one visible painted persistent thumb; its transform changes
  * and it stays aligned with the selected tab.
  * facts: {thumb: {found, transform, rect}|null, selectedId, tabs: [{id, rect}]}. */
 export function thumbVerdict(before, after) {
   const failures = [];
   const measure = facts => facts?.thumb;
   if (!measure(before)?.found || !measure(after)?.found) {
-    return { pass: false, failures: ['segmented control has no single thumb element (class/data ~ "thumb" or non-tab tablist child)'], measured: null };
+    return { pass: false, failures: ['segmented control has no thumb element'], measured: null };
+  }
+  for (const [label, facts] of [['before', before], ['after', after]]) {
+    if (facts.thumbCount !== 1) failures.push(`${label}: expected exactly one thumb, found ${facts.thumbCount}`);
+    if (!facts.thumb.painted) failures.push(`${label}: thumb is transparent, hidden or has no painted area`);
+  }
+  if (!before.thumb.identity || before.thumb.identity !== after.thumb.identity) {
+    failures.push('thumb element was replaced between selections');
   }
   if (String(before.thumb.transform) === String(after.thumb.transform)) {
     failures.push(`thumb transform did not change between selections (stayed ${before.thumb.transform})`);
@@ -632,7 +650,7 @@ export async function probeDagGraph(arg) {
     const id = group.getAttribute('data-node') ?? `node-${nodes.length}`;
     if (seen.has(id)) continue;
     seen.add(id);
-    const card = group.querySelector('rect');
+    const card = group.querySelector('.th-activity-gnode-card');
     const cardStyle = card ? getComputedStyle(card) : null;
     const glyph = group.querySelector('[class*="gstatus" i], [class*="glyph" i], [data-glyph]');
     const label = group.querySelector('text[class*="glabel" i], text.label');
@@ -640,7 +658,7 @@ export async function probeDagGraph(arg) {
     nodes.push({
       id, cls: group.getAttribute('class'), transform: group.getAttribute('transform'),
       rect: rectJson(group),
-      stroke: cardStyle ? cardStyle.stroke : null, strokeWidth: cardStyle ? cardStyle.strokeWidth : null,
+      cardFound: !!card, stroke: cardStyle ? cardStyle.stroke : null, strokeWidth: cardStyle ? cardStyle.strokeWidth : null,
       glyph: glyph ? { found: true, tag: glyph.tagName, rect: rectJson(glyph) } : { found: false },
       label: label ? { found: true, rect: rectJson(label), text: (label.textContent || '').slice(0, 24) } : { found: false },
       stateWord: stateText ? { text: (stateText.textContent || '').trim(), visible: isVisibleElement(stateText) } : null,
@@ -678,6 +696,7 @@ export async function probeDagGraph(arg) {
   }
   const progress = fills.filter(isVisibleElement).map(fill => ({
     found: true, where: describeElement(fill),
+    countText: fill.closest('.th-activity-dag-head')?.querySelector('.th-activity-dag-counts')?.textContent.trim() ?? null,
     transform: getComputedStyle(fill).transform,
     inlineTransform: fill.style.transform,
     settled: settled && fill.getAnimations().every(animation => animation.playState !== 'running'),
@@ -710,23 +729,30 @@ export function probeDagList() {
     return { left: +r.left.toFixed(2), top: +r.top.toFixed(2), right: +r.right.toFixed(2), bottom: +r.bottom.toFixed(2), width: +r.width.toFixed(2), height: +r.height.toFixed(2) }; };
   const facts = [];
   for (const row of rows.slice(0, 80)) {
-    const style = getComputedStyle(row);
-    const before = getComputedStyle(row, '::before').content;
-    const after = getComputedStyle(row, '::after').content;
-    let ruleChild = false;
-    for (const child of row.children) {
-      const childStyle = getComputedStyle(child);
-      const bg = parseColor(childStyle.backgroundColor);
-      if (parseFloat(childStyle.width) <= 4 && child.getBoundingClientRect().height >= row.getBoundingClientRect().height * 0.4 && bg && bg.a > 0.02) { ruleChild = true; break; }
-    }
+    const rails = [...row.querySelectorAll('.th-activity-dnode-rail, [data-rail]')];
+    const segments = rails.flatMap(rail => ['::before', '::after'].map(pseudo => {
+      const style = getComputedStyle(rail, pseudo);
+      const colour = parseColor(style.backgroundColor);
+      return {
+        pseudo, content: style.content, width: parseFloat(style.width) || 0,
+        height: parseFloat(style.height) || 0, colour: style.backgroundColor,
+        painted: style.content !== 'none' && style.content !== 'normal'
+          && (parseFloat(style.width) || 0) > 0 && (parseFloat(style.height) || 0) > 0
+          && !!colour && colour.a > 0.02 && (parseFloat(style.opacity) || 1) > 0.02
+          && isVisibleElement(rail),
+      };
+    }));
     facts.push({
       cls: row.getAttribute('class'), rect: rectJson(row), text: (row.textContent || '').trim().slice(0, 32),
-      railChild: !!row.querySelector('[class*="rail" i], [data-rail]'),
-      pseudoRail: (before && before !== 'none') || (after && after !== 'none'),
-      ruleChild,
+      paintedRail: segments.some(segment => segment.painted), segments,
     });
   }
-  return { found: true, rows: facts, viewMode: !!panel.querySelector('.th-activity-graph, svg') ? 'graph' : 'list' };
+  const control = panel.querySelector('.th-activity-dag-view[data-view-mode]')
+    ?? document.querySelector('.th-activity-dag-view[data-view-mode]');
+  const pressed = control?.querySelector('[data-view][aria-pressed="true"]')?.getAttribute('data-view');
+  const viewMode = pressed ?? control?.getAttribute('data-view-mode')
+    ?? (panel.querySelector('.th-activity-graph') ? 'graph' : panel.querySelector('.th-activity-dagnodes') ? 'list' : null);
+  return { found: true, rows: facts, viewMode };
 }
 
 /** S13: shelf tab strip facts (tabs, counts, single thumb). */
@@ -753,15 +779,31 @@ export function probeShelfTabs() {
       tabIndex: tab.tabIndex, count,
     };
   });
-  const named = tablist.querySelector('[class*="thumb" i], [data-thumb], [data-segment-thumb]');
-  const structural = [...tablist.children].find(child => !child.matches('[role="tab"], template, script, style'));
-  const thumbElement = named ?? structural ?? null;
+  const candidates = [...tablist.children].filter(child => !child.matches('[role="tab"], template, script, style'));
+  const thumbElement = candidates[0] ?? null;
+  if (thumbElement && !thumbElement.getAttribute('data-qa-thumb-id')) {
+    const serial = Number(document.documentElement.getAttribute('data-qa-thumb-seq') || 0) + 1;
+    document.documentElement.setAttribute('data-qa-thumb-seq', String(serial));
+    thumbElement.setAttribute('data-qa-thumb-id', String(serial));
+  }
+  const painted = thumbElement ? (() => {
+    const style = getComputedStyle(thumbElement);
+    const bg = parseColor(style.backgroundColor);
+    const box = thumbElement.getBoundingClientRect();
+    let opacity = 1;
+    for (let element = thumbElement; element && element !== document.body; element = element.parentElement) {
+      opacity *= Number.parseFloat(getComputedStyle(element).opacity) || 0;
+    }
+    return isVisibleElement(thumbElement) && box.width > 0 && box.height > 0
+      && opacity > 0.02 && !!bg && bg.a > 0.02;
+  })() : false;
   const thumb = thumbElement ? {
-    found: true, where: describeElement(thumbElement), source: named ? 'named' : 'structural',
+    found: true, where: describeElement(thumbElement), identity: thumbElement.getAttribute('data-qa-thumb-id'),
+    painted,
     transform: getComputedStyle(thumbElement).transform, rect: rectJson(thumbElement),
   } : { found: false };
   return {
-    found: true, tabs, thumb,
+    found: true, tabs, thumb, thumbCount: candidates.length,
     selectedId: (tabs.find(tab => tab.selected) ?? {}).id ?? null,
     open: document.querySelector('.th-activity-shelf')?.getAttribute('data-open') ?? null,
     monoToken: getComputedStyle(document.documentElement).getPropertyValue('--th-font-mono').trim(),
@@ -943,14 +985,13 @@ async function openDagGraph(env) {
   await env.page.waitForSelector('.th-activity-gnode--running', { timeout: 9000 });
 }
 
-/** Wait until the tablist subtree settles (no running CSS transition/
- * animation), bounded: an infinite animation resolves via the timeout. */
-async function settleTablist(page) {
+/** Wait for the finite tab selection transition; a timeout fails the cell. */
+export async function settleTablist(page) {
   await page.waitForFunction(() => {
     const tablist = document.querySelector('.th-activity-tabs');
-    if (!tablist) return true;
+    if (!tablist) return false;
     return tablist.getAnimations({ subtree: true }).every(animation => animation.playState !== 'running');
-  }, undefined, { timeout: 1600 }).catch(() => {});
+  }, undefined, { timeout: 1600 });
 }
 
 /** Wait for a node count (dense stage transitions). */
@@ -974,7 +1015,7 @@ async function waitForAutoScroll(page, runningId) {
       }
     }
     return true;
-  }, runningId, { timeout: 2500 }).catch(() => {});
+  }, runningId, { timeout: 2500 });
 }
 
 /** True when the current node state word of `id` mentions `word`. */
@@ -1171,16 +1212,16 @@ async function driveS14(ctx) {
     const sourceRect = facts.nodes.find(node => node.id === sourceId)?.rect ?? null;
     const runningEdge = findRunningEdge(facts.edges, sourceRect, facts.runningRect);
     const autoScroll = autoScrollVerdict(facts.scroller ? { scroller: facts.scroller, runningRect: facts.runningRect } : null);
-    const strokes = nodeStrokeViolations(facts.nodes.map(node => ({ id: node.id, stroke: node.stroke })), facts.tokens);
+    const strokes = nodeStrokeViolations(facts.nodes, facts.tokens);
     const glyphOrder = glyphOrderVerdict(facts.nodes);
     const edgeShape = edgeShapeVerdict(facts.edges);
     const comet = cometVerdict(facts.comets, runningEdge);
     const halo = haloVerdict(facts.halos, facts.runningRect);
     const progress = progressVerdict((facts.progress ?? []).map(fact => ({
-      found: fact.found, where: fact.where, settled: fact.settled,
+      found: fact.found, where: fact.where, settled: fact.settled, countText: fact.countText,
       scaleX: scaleXFromTransform(fact.transform),
       inlineScaleX: scaleXFromTransform(fact.inlineTransform),
-    })), t4ExpectedProgress('mixed'));
+    })), t4ExpectedProgress('mixed'), '6/11');
     for (const [name, verdict] of [['auto-scroll', autoScroll], ['node strokes', strokes], ['glyph order', glyphOrder],
       ['edge shape', edgeShape], ['comet', comet], ['halo', halo], ['progress', progress]]) {
       failures.push(...verdict.failures.map(f => `${name}: ${f}`));
@@ -1192,7 +1233,7 @@ async function driveS14(ctx) {
     await env.page.click('[data-view="list"]');
     await env.page.waitForSelector('.th-activity-dagnodes > li, [class*="timeline" i]', { timeout: 5000 }).catch(() => {});
     const listFacts = await ctx.probe(env.page, probeDagList);
-    const rail = railVerdict(listFacts.rows ?? []);
+    const rail = railVerdict(listFacts.rows ?? [], listFacts.viewMode);
     failures.push(...rail.failures.map(f => `list rail: ${f}`));
     const shotList = await ctx.save(env.page, '-list');
     await env.page.click('[data-view="graph"]');
@@ -1205,25 +1246,27 @@ async function driveS14(ctx) {
     facts = await ctx.probe(env.page, probeDagGraph, { runningId, sourceId });
     const stable = stableTransformVerdict(transformsBefore, facts.nodes.map(node => ({ id: node.id, transform: node.transform })));
     const progressFlip = progressVerdict((facts.progress ?? []).map(fact => ({
-      found: fact.found, where: fact.where, settled: fact.settled,
+      found: fact.found, where: fact.where, settled: fact.settled, countText: fact.countText,
       scaleX: scaleXFromTransform(fact.transform),
       inlineScaleX: scaleXFromTransform(fact.inlineTransform),
-    })), t4ExpectedProgress('mixed-flip'));
+    })), t4ExpectedProgress('mixed-flip'), '7/11');
     failures.push(...stable.failures.map(f => `stable layout: ${f}`));
     failures.push(...progressFlip.failures.map(f => `progress after flip: ${f}`));
 
-    // Dense stages: no overlap, no document overflow, progress tracks.
+    // Dense in-place topology updates intentionally retain the mounted
+    // graph's user scroll; they do not exercise first-paint auto-scroll.
     const denseResults = {};
+    let previousScrollLeft = facts.scroller?.scrollLeft ?? null;
     for (const stage of ['dense16', 'dense64']) {
       await deliverStage(env, chatId, state, stage);
       await waitForNodeCount(env.page, t4StageSpec(stage).length);
       const denseFacts = await ctx.probe(env.page, probeDagGraph, { runningId: t4StageRoles(stage).running[0], sourceId: null });
       const overlap = overlapVerdict(denseFacts.nodes.map(node => ({ id: node.id, rect: node.rect })));
       const denseProgress = progressVerdict((denseFacts.progress ?? []).map(fact => ({
-        found: fact.found, where: fact.where, settled: fact.settled,
+        found: fact.found, where: fact.where, settled: fact.settled, countText: fact.countText,
         scaleX: scaleXFromTransform(fact.transform),
         inlineScaleX: scaleXFromTransform(fact.inlineTransform),
-      })), t4ExpectedProgress(stage));
+      })), t4ExpectedProgress(stage), `${t4RunCounts(t4StageSpec(stage)).completed}/${t4StageSpec(stage).length}`);
       const overflow = denseFacts.document.scrollWidth - denseFacts.document.innerWidth;
       failures.push(...overlap.failures.map(f => `${stage} overlap: ${f}`));
       failures.push(...denseProgress.failures.map(f => `${stage} progress: ${f}`));
@@ -1231,10 +1274,32 @@ async function driveS14(ctx) {
       denseResults[stage] = {
         nodes: denseFacts.nodes.length, overlap: overlap.overlapping,
         progress: denseProgress.measured, documentScrollWidth: denseFacts.document.scrollWidth,
+        scroll: { kind: 'in-place topology update', before: previousScrollLeft, after: denseFacts.scroller?.scrollLeft ?? null },
       };
+      previousScrollLeft = denseFacts.scroller?.scrollLeft ?? null;
       notes.push(`${stage}: ${denseFacts.nodes.length} nodes measured`);
     }
-    const shotDense = await ctx.save(env.page, '-dense64');
+    const shotDense = await ctx.save(env.page, '-dense64-retained-scroll');
+    let fresh = null;
+    let shotFresh;
+    let firstPaint;
+    try {
+      fresh = await ctx.setupLive();
+      const freshState = { stage: 'dense64', tick: 0 };
+      await installDagCatalog(fresh, chatId, freshState);
+      await deliverStage(fresh, chatId, freshState, 'dense64');
+      await openDagGraph(fresh);
+      const firstRunning = t4StageRoles('dense64').running[0];
+      await waitForAutoScroll(fresh.page, firstRunning);
+      const firstFacts = await ctx.probe(fresh.page, probeDagGraph, { runningId: firstRunning, sourceId: null });
+      const verdict = autoScrollVerdict(firstFacts.scroller
+        ? { scroller: firstFacts.scroller, runningRect: firstFacts.runningRect } : null);
+      failures.push(...verdict.failures.map(f => `dense64 first paint: ${f}`));
+      firstPaint = { scroller: firstFacts.scroller, runningRect: firstFacts.runningRect, verdict: verdict.measured };
+      shotFresh = await ctx.save(fresh.page, '-dense64-first-paint');
+    } finally {
+      if (fresh) await fresh.close();
+    }
     const motionSweep = await ctx.motionSweep(env.page);
     return {
       pass: failures.length === 0,
@@ -1248,11 +1313,12 @@ async function driveS14(ctx) {
         comet: comet.measured, halo: halo.measured, progress: progress.measured,
         progressAfterFlip: progressFlip.measured, stableLayout: stable.measured,
         list: { rows: (listFacts.rows ?? []).length, viewMode: listFacts.viewMode }, rail: rail.measured,
-        dense: denseResults, motion: motionSweep,
+        dense: denseResults,
+        denseFirstPaint: { kind: 'fresh graph', ...firstPaint }, motion: motionSweep,
         stableLayoutCoveredByUnitTests: 'frontend ActivityShelf.dagClip/stable-layout vitest suites pin the same contract',
       }, notes),
       failures,
-      screenshots: [shotGraph, shotList, shotDense],
+      screenshots: [shotGraph, shotList, shotDense, shotFresh],
       teardown: await env.close(),
     };
   } catch (error) {
@@ -1264,10 +1330,50 @@ async function driveS14(ctx) {
   }
 }
 
+/** Preserve the shared S15 interaction and in-motion screenshot unchanged,
+ * then exercise the shelf's normal-motion selection in a fresh fixture and
+ * record its bounded settled state. */
+async function driveS15(ctx) {
+  const env = await ctx.setupDesign();
+  const failures = [];
+  let base;
+  let shots = [];
+  let settled = null;
+  try {
+    const browser = env.context.browser();
+    const original = buildScenarioRegistry([]).find(entry => entry.id === 'S15').run;
+    base = await original(browser, ctx);
+    shots = [...(base.screenshots ?? [])];
+    await env.page.click('[data-activity-tab="agents"]');
+    await settleTablist(env.page);
+    await env.page.click('[data-activity-tab="todo"]');
+    shots.push(await ctx.save(env.page, '-shelf-motion'));
+    await settleTablist(env.page);
+    settled = await ctx.probe(env.page, probeShelfTabs);
+    if (settled.selectedId !== 'todo' || !settled.thumb.painted
+      || settled.thumbCount !== 1 || settled.open !== 'true') {
+      failures.push('S15 settled shelf selection/thumb does not match the open Todo panel');
+    }
+    shots.push(await ctx.save(env.page, '-settled'));
+  } catch (error) {
+    failures.push(`S15 settled capture failed: ${errLine(error)}`);
+  } finally {
+    await env.close();
+  }
+  return {
+    pass: base?.pass === true && failures.length === 0,
+    measurements: { ...base?.measurements, settledShelf: settled },
+    failures: [...(base?.failures ?? []), ...failures],
+    screenshots: shots,
+    teardown: base?.teardown,
+  };
+}
+
 /** Per-task scenario plugin export (merged over the built-in registry by
  * visual-redesign.mjs; see the plugin contract in its header). */
 export const scenarios = Object.freeze({
   S8: driveS8,
   S13: driveS13,
   S14: driveS14,
+  S15: driveS15,
 });
