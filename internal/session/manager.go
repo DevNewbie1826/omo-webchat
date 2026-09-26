@@ -746,6 +746,11 @@ func (m *Manager) retireChatIdentityLocked(chatID string) {
 			m.retireDurableLocked(durable, chatID)
 		}
 	}
+	for durable, entry := range m.overviewCache {
+		if entry.chatID == chatID {
+			m.retireDurableLocked(durable, chatID)
+		}
+	}
 }
 
 func (m *Manager) retireSessionIdentityLocked(s *Session, bumpGeneration bool) {
@@ -2037,21 +2042,24 @@ func (m *Manager) LiveSummaries() []Summary {
 	}
 	cached := make([]Summary, 0, len(m.overviewCache))
 	for id, entry := range m.overviewCache {
-		if m.byChat[entry.chatID] != nil {
-			continue
-		}
 		snapshot := entry.summary(entry.chatID, id)
 		snapshot.Title = entry.title
 		cached = append(cached, snapshot)
 	}
 	m.mu.Unlock()
 	out := make([]Summary, 0, len(all)+len(cached))
+	emitted := make(map[string]struct{}, len(all))
 	for _, s := range all {
 		if sum, ok := s.summary(); ok {
 			out = append(out, sum)
+			emitted[sum.ChatID] = struct{}{}
 		}
 	}
-	out = append(out, cached...)
+	for _, snapshot := range cached {
+		if _, exists := emitted[snapshot.ChatID]; !exists {
+			out = append(out, snapshot)
+		}
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ChatID < out[j].ChatID })
 	return out
 }

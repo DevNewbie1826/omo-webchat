@@ -298,9 +298,8 @@ func (m *Manager) ingestUnboundOverviewLocked(epoch omorpc.EpochToken, ev *omorp
 		}
 	}
 	if s := m.byChat[chatID]; s != nil && s.durableID != durableID {
-		// After a rebind, late events from the old durable retain their own
-		// provisional row rather than replacing the live chat's row.
-		chatID, title = durableID, ""
+		m.retireDurableLocked(durableID, chatID)
+		return Summary{}, nil
 	}
 	entry := m.overviewCache[durableID]
 	replaces := ""
@@ -396,10 +395,7 @@ func (m *Manager) mergeOverviewIntoSessionLocked(s *Session) (Summary, []*overvi
 		if durableID == s.durableID || cached.chatID != s.chatID {
 			continue
 		}
-		delete(m.overviewCache, durableID)
-		if current := m.overviewCurrent[s.chatID]; current.DurableSessionID == durableID {
-			delete(m.overviewCurrent, s.chatID)
-		}
+		m.retireDurableLocked(durableID, s.chatID)
 		removed = true
 	}
 	entry := m.overviewCache[s.durableID]

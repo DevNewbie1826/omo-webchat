@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
@@ -36,6 +37,102 @@ func (s *resolvingCursorStore) setOwner(durableID, chatID, name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.owners[durableID] = durableOwner{chatID: chatID, name: name}
+}
+
+func (s *resolvingCursorStore) deleteOwner(durableID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.owners, durableID)
+}
+
+func TestLiveSummariesIncludesCachedActivityWhenSessionIsResumable(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	store := newResolvingCursorStore()
+	mgr := testManager(t, client, store, 64)
+	sess, _, _ := acquire(t, mgr, testChat{id: "retained-chat", cwd: t.TempDir()}, nil)
+	oldToken, oldEvents := client.CurrentEpoch()
+	mgr.invalidateEpoch(sess.epoch)
+	d.DropConnections()
+	select {
+	case <-oldEvents:
+	case <-time.After(testTimeout):
+		t.Fatal("old epoch did not close")
+	}
+	if _, err := client.Call(context.Background(), omorpc.ListSessions{}); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	store.setOwner(sess.ID(), "retained-chat", "Stored title")
+	updates := make(chan Summary, 1)
+	unsubscribe := mgr.SubscribeOverview(func(snapshot Summary) { updates <- snapshot })
+	defer unsubscribe()
+	emitUnboundActivity(d, sess.ID(), activitySnapshotOrder[0], map[string]any{"tasks": []any{}})
+	if got := awaitOverview(t, updates); got.ChatID != "retained-chat" || got.DurableSessionID != sess.ID() {
+		t.Fatalf("successor epoch activity = %+v", got)
+	}
+	if current, _ := client.CurrentEpoch(); current == oldToken {
+		t.Fatal("reconnect did not advance the provider epoch")
+	}
+	initial, stop := mgr.SubscribeActivity(true, nil, func(Summary, bool) {})
+	defer stop()
+	live := mgr.LiveSummaries()
+	if len(initial) != 1 || len(live) != 1 || live[0].ChatID != initial[0].ChatID || live[0].DurableSessionID != initial[0].DurableSessionID {
+		t.Fatalf("REST rows %+v disagree with WS initial rows %+v", live, initial)
+	}
+}
+
+func TestRetireIdentityRemovesStoreResolvedCachedRows(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		deleted []string
+		want    int
+	}{
+		{name: "chat deletion", deleted: []string{"chat-a"}, want: 2},
+		{name: "workspace deletion", deleted: []string{"chat-a", "chat-b"}, want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newDaemon(t)
+			store := newResolvingCursorStore()
+			mgr := testManager(t, dial(t, d), store, 64)
+			for _, owner := range []struct{ durable, chat string }{
+				{"durable-a", "chat-a"}, {"durable-b", "chat-b"}, {"durable-other", "other-workspace-chat"},
+			} {
+				store.setOwner(owner.durable, owner.chat, owner.chat)
+			}
+			updates := make(chan Summary, 3)
+			unsubscribe := mgr.SubscribeOverview(func(snapshot Summary) { updates <- snapshot })
+			defer unsubscribe()
+			for _, durable := range []string{"durable-a", "durable-b", "durable-other"} {
+				emitUnboundActivity(d, durable, activitySnapshotOrder[0], map[string]any{"tasks": []any{}})
+				_ = awaitOverview(t, updates)
+			}
+
+			for _, chatID := range tc.deleted {
+				if chatID == "chat-a" {
+					store.deleteOwner("durable-a")
+				} else {
+					store.deleteOwner("durable-b")
+				}
+				mgr.RetireIdentity(chatID)
+			}
+			initial, stop := mgr.SubscribeActivity(true, nil, func(Summary, bool) {})
+			defer stop()
+			if len(initial) != tc.want || len(mgr.LiveSummaries()) != tc.want {
+				t.Fatalf("deleted rows survived retirement: WS %+v, REST %+v", initial, mgr.LiveSummaries())
+			}
+			token, _ := mgr.cfg.Client.CurrentEpoch()
+			for _, durable := range []string{"durable-a", "durable-b"}[:len(tc.deleted)] {
+				raw := []byte(`{"name":"omo.task.updated","data":{"tasks":[]}}`)
+				_, snapshot, _ := mgr.ingestEpochEvent(token, &omorpc.Event{Type: "extension_event", SessionID: durable, Raw: raw})
+				if snapshot.ChatID != "" {
+					t.Fatalf("late deleted durable %q republished %+v", durable, snapshot)
+				}
+			}
+			if live := mgr.LiveSummaries(); len(live) != tc.want {
+				t.Fatalf("late event resurrected a deleted chat: %+v", live)
+			}
+		})
+	}
 }
 
 func TestUnboundOverviewUsesStoredChatWithoutAcquire(t *testing.T) {
@@ -155,16 +252,16 @@ func TestUnboundOverviewAvoidsLiveChatCollision(t *testing.T) {
 	mgr := testManager(t, dial(t, d), store, 64)
 	sess, _, _ := acquire(t, mgr, testChat{id: "live-chat", cwd: t.TempDir()}, nil)
 	store.setOwner("other-durable", "live-chat", "Conflicting owner")
-	updates := make(chan Summary, 1)
-	unsubscribe := mgr.SubscribeOverview(func(snapshot Summary) { updates <- snapshot })
-	defer unsubscribe()
-
-	emitUnboundActivity(d, "other-durable", activitySnapshotOrder[0], map[string]any{"tasks": []any{}})
-	if got := awaitOverview(t, updates); got.ChatID != "other-durable" {
-		t.Fatalf("unbound row collided with live session: %+v", got)
+	token, _ := mgr.cfg.Client.CurrentEpoch()
+	_, snapshot, _ := mgr.ingestEpochEvent(token, &omorpc.Event{
+		Type: "extension_event", SessionID: "other-durable",
+		Raw: []byte(`{"name":"omo.task.updated","data":{"tasks":[]}}`),
+	})
+	if snapshot.ChatID != "" {
+		t.Fatalf("superseded durable published alongside live chat: %+v", snapshot)
 	}
 	live := mgr.LiveSummaries()
-	if len(live) != 2 || live[0].ChatID == live[1].ChatID {
+	if len(live) != 1 || live[0].ChatID != "live-chat" || live[0].DurableSessionID != sess.ID() {
 		t.Fatalf("duplicate chat identity in live rows (%q): %+v", sess.ID(), live)
 	}
 }
@@ -243,12 +340,16 @@ func TestLateOldDurableAfterRebindKeepsOnlyOneChatRow(t *testing.T) {
 	_ = awaitOverview(t, updates)
 	sess, _, _ := acquire(t, mgr, testChat{id: "rebound-chat", cwd: t.TempDir()}, nil)
 	_ = awaitOverview(t, updates)
-	emitUnboundActivity(d, "old-durable", activitySnapshotOrder[0], map[string]any{"tasks": []any{}})
-	if got := awaitOverview(t, updates); got.ChatID != "old-durable" || got.ReplacesSessionID != "" {
-		t.Fatalf("late old durable remapped live chat: %+v", got)
+	token, _ := mgr.cfg.Client.CurrentEpoch()
+	_, snapshot, _ := mgr.ingestEpochEvent(token, &omorpc.Event{
+		Type: "extension_event", SessionID: "old-durable",
+		Raw: []byte(`{"name":"omo.task.updated","data":{"tasks":[]}}`),
+	})
+	if snapshot.ChatID != "" {
+		t.Fatalf("late superseded durable published a row: %+v", snapshot)
 	}
 	live := mgr.LiveSummaries()
-	if len(live) != 2 || live[0].ChatID != "old-durable" || live[1].ChatID != "rebound-chat" || live[1].DurableSessionID != sess.ID() {
+	if len(live) != 1 || live[0].ChatID != "rebound-chat" || live[0].DurableSessionID != sess.ID() {
 		t.Fatalf("late old durable duplicated chat identity: %+v", live)
 	}
 }
