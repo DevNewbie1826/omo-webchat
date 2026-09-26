@@ -59,10 +59,12 @@
   /* Backdrop filter recipe for floating layers; saturate lifts the glass
      over busy transcript content. */
   --th-glass-filter: blur(20px) saturate(1.5);
-  /* Tool block - scoped material for executed tool records in both
-     disclosure states, behind the default hairline. */
-  --th-tool-surface: #1d1e22;
-  --th-tool-border: rgba(255, 255, 255, 0.06);
+  /* Whole executed tool card, even while collapsed: a cool violet hint on
+     the surface plus a neutral hairline that clears 1.3:1 against the pane. */
+  --th-tool-record-surface: color-mix(in srgb, var(--th-accent) 2%, var(--th-surface));
+  /* Shared neutral edge for boundaries that must clear 1.3:1. */
+  --th-border-visible: rgba(255, 255, 255, 0.16);
+  --th-tool-record-border: var(--th-border-visible);
   /* State treatments: hover lifts one step, press/selection one more. */
   --th-hover: #2c2d33;
   --th-active: #34353c;
@@ -104,6 +106,13 @@
   --th-accent-fg: #ffffff;
   /* Selection wash (::selection, selected rows) - accent at 14%. */
   --th-accent-soft: color-mix(in srgb, var(--th-accent) 14%, transparent);
+  /* Selected rows need a stronger wash than ::selection over --th-active. */
+  --th-accent-select: color-mix(in srgb, var(--th-accent) 22%, var(--th-active));
+  /* Running status tint at the same 12% as the other status hues, so running
+     reads as strongly as complete/failed. Running text uses --th-accent-ink,
+     which holds 4.5:1 on this tint over the pane and the tool card. */
+  --th-accent-bg: color-mix(in srgb, var(--th-accent) 12%, transparent);
+  --th-accent-ink: #9d90f8;
   /* Halo/glow for running indicators - accent at 35%. */
   --th-accent-glow: color-mix(in srgb, var(--th-accent) 35%, transparent);
 
@@ -117,8 +126,8 @@
      border colour change), per the primitive rules. */
   --th-ring: color-mix(in srgb, var(--th-accent) 55%, transparent);
 
-  /* Status hues: identity kept from the previous system, lightness held to
-     the 4.5:1 matrix on every v2 fill; tints re-derived at 12%. */
+  /* Semantic status ink and its matching light tint (12%): failed/blocked
+     red, complete green, warning amber. Borders stay neutral. */
   --th-error: #f98085;
   --th-error-fg: #0a0a0a;
   --th-error-bg: rgba(249, 128, 133, 0.12);
@@ -134,16 +143,10 @@
     0 10px 28px -8px rgba(0, 0, 0, 0.45);
   --th-shadow-overlay: 0 8px 20px rgba(0, 0, 0, 0.30),
     0 28px 64px -16px rgba(0, 0, 0, 0.60);
-  /* Migration aliases: the size-named shadows resolve to their level's role. */
-  --th-shadow-sm: var(--th-shadow-surface);
-  --th-shadow: var(--th-shadow-raised);
-  --th-shadow-lg: var(--th-shadow-overlay);
   /* Top-edge light on raised/overlay surfaces. */
   --th-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.05);
   /* Near-black scrim separating overlays from every pane. */
   --th-backdrop: rgba(10, 10, 12, 0.55);
-  /* Decorative only; carries no elevation job. Kept for legacy login art. */
-  --th-glow: rgba(255, 255, 255, 0.06);
 
   /* Concentric radii: inner radius = outer radius - padding (min 6px). */
   --th-radius-xs: 6px;
@@ -218,7 +221,6 @@
 
   --th-sidebar-w: 264px;
   --th-header-h: 44px;
-  --th-node-h: 34px;
 
   /* Motion scale (v2 contract): animate only transform, opacity, filter,
    * clip-path, stroke-dashoffset, and background-position; hover may
@@ -229,6 +231,8 @@
   --th-dur: 200ms;
   --th-dur-slow: 320ms;
   --th-dur-emph: 480ms;
+  /* Shared continuous running beat across tools, sidebar, DAG and chips. */
+  --th-dur-run: 700ms;
   --th-ease: cubic-bezier(0.2, 0, 0, 1);
   --th-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --th-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
@@ -236,12 +240,6 @@
     0.721 25.3%, 0.849 31.5%, 0.937 38.1%, 0.968 41.8%, 0.991 45.7%,
     1.006 50.1%, 1.015 55%, 1.017 63.9%, 1.001);
 
-  /* Progress clocks: the two continuous agent-alive loops (thinking spinner,
-   * running-label shimmer) keep a steady beat outside the 120-480ms state
-   * transition scale, so styleContracts.test.ts exempts them from that
-   * census. Both consume the shared linear easing. */
-  --th-dur-spin: 700ms;
-  --th-dur-shimmer: 1600ms;
   --th-ease-linear: linear;
 
   color-scheme: dark;
@@ -265,9 +263,11 @@
   /* Floating layers only; warm-white glass over content. */
   --th-glass: rgba(255, 255, 255, 0.72);
   --th-glass-filter: blur(20px) saturate(1.8);
-  /* Tool block - scoped material for executed tool records. */
-  --th-tool-surface: #f7f7f8;
-  --th-tool-border: rgba(24, 24, 27, 0.06);
+  /* Whole executed tool card: a light violet-cool tint and neutral hairline,
+     including the collapsed header. */
+  --th-tool-record-surface: color-mix(in srgb, var(--th-accent) 2%, var(--th-surface));
+  --th-border-visible: rgba(24, 24, 27, 0.16);
+  --th-tool-record-border: var(--th-border-visible);
   /* State treatments darken toward ink. */
   --th-hover: #f1f1f3;
   --th-active: #e9e9ec;
@@ -301,6 +301,9 @@
   --th-accent-solid-hover: #5b49c2;
   --th-accent-fg: #ffffff;
   --th-accent-soft: color-mix(in srgb, var(--th-accent) 14%, transparent);
+  --th-accent-select: color-mix(in srgb, var(--th-accent) 22%, var(--th-active));
+  --th-accent-bg: color-mix(in srgb, var(--th-accent) 12%, transparent);
+  --th-accent-ink: #5b49c2;
   --th-accent-glow: color-mix(in srgb, var(--th-accent) 35%, transparent);
 
   /* Composer send action: same filled violet control as dark. */
@@ -326,16 +329,10 @@
     0 10px 28px -10px rgba(24, 24, 27, 0.14);
   --th-shadow-overlay: 0 8px 20px rgba(24, 24, 27, 0.08),
     0 28px 64px -16px rgba(24, 24, 27, 0.22);
-  /* Migration aliases: the size-named shadows resolve to their level's role. */
-  --th-shadow-sm: var(--th-shadow-surface);
-  --th-shadow: var(--th-shadow-raised);
-  --th-shadow-lg: var(--th-shadow-overlay);
   /* Top-edge light on raised/overlay surfaces. */
   --th-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.7);
   /* Light scrim; never assumes the Canvas is black. */
   --th-backdrop: rgba(24, 24, 27, 0.24);
-  /* Decorative only; carries no elevation job. Kept for legacy login art. */
-  --th-glow: rgba(0, 0, 0, 0.05);
 
   color-scheme: light;
 }

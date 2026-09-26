@@ -62,40 +62,49 @@ contrast rules in the theme contract. `--th-bg` and `--th-accent` are pinned.
 | `--th-surface-overlay` | `#25262b` | `#ffffff` | Solid fallback for overlays |
 | `--th-glass` | `rgba(38,39,44,0.72)` | `rgba(255,255,255,0.72)` | Floating layers only: popovers, palettes, menus, modal panel |
 | `--th-glass-filter` | `blur(20px) saturate(1.5)` | `blur(20px) saturate(1.8)` | With `@supports (backdrop-filter: blur(1px))`; fallback is solid `--th-surface-overlay` |
-| `--th-tool-surface` | `#1d1e22` | `#f7f7f8` | Executed tool record material |
-| `--th-tool-border` | `rgba(255,255,255,0.06)` | `rgba(24,24,27,0.06)` | Tool record hairline |
+| `--th-tool-record-surface` | `color-mix(in srgb, var(--th-accent) 2%, var(--th-surface))` | same recipe | Whole tool card's quiet tinted material, collapsed or expanded |
+| `--th-border-visible` | `rgba(255,255,255,0.16)` | `rgba(24,24,27,0.16)` | Shared neutral edge with at least 1.3:1 against the pane |
+| `--th-tool-record-border` | `var(--th-border-visible)` | same | Neutral 1px tool-card hairline |
 | `--th-hover` | `#2c2d33` | `#f1f1f3` | Hover fill |
 | `--th-active` | `#34353c` | `#e9e9ec` | Active and selected fill |
 | `--th-border-surface`, `--th-border-raised` | `rgba(255,255,255,0.06)` | `rgba(24,24,27,0.07)` | Default hairline |
-| `--th-border-user`, `--th-border-overlay`, `--th-border-strong` | `rgba(255,255,255,0.10)` | `rgba(24,24,27,0.12)` | Strong hairline |
+| `--th-border-user`, `--th-border-overlay` | `rgba(255,255,255,0.10)` | `rgba(24,24,27,0.12)` | Strong hairline |
+| `--th-border-strong` | `var(--th-border-overlay)` | same | Strong hairline alias |
 | `--th-text` | `#ededf0` | `#18181b` | Primary text |
 | `--th-text-dim` | `#c4c4cc` | `#3f3f46` | Secondary text |
 | `--th-muted` | `#a1a1aa` | `#5f5f68` | Muted text; 4.5:1 on every fill including hover and active |
 | `--th-faint` | `#71717a` | `#8b8b94` | Metadata only; 3.0:1, allowlist enforced by test |
 | `--th-disabled-fg`, `--th-disabled-bg` | derived | derived | Disabled text and fill, derived from tested pairs |
-| `--th-accent` | `#8b7cf6` | `#6d5bd0` | Agent-alive text, glyph, ring, indicator |
+| `--th-accent` | `#8b7cf6` | `#6d5bd0` | Agent-alive glyphs, spinners, strokes and focus treatment; running text uses `--th-accent-ink` |
 | `--th-accent-hover` | `#9d90f8` | `#5b49c2` | Accent hover |
 | `--th-accent-solid` | `#6d5bd0` | `#6d5bd0` | Filled controls: send, primary button, toggles |
 | `--th-accent-solid-hover` | `#5b49c2` | `#5b49c2` | Filled control hover |
 | `--th-accent-fg` | `#ffffff` | `#ffffff` | Text on `--th-accent-solid`, 4.5:1 |
 | `--th-accent-soft` | `color-mix(in srgb, var(--th-accent) 14%, transparent)` | same | Selection wash |
+| `--th-accent-select` | `color-mix(in srgb, var(--th-accent) 22%, var(--th-active))` | same | Selected-row wash |
+| `--th-accent-bg` | `color-mix(in srgb, var(--th-accent) 12%, transparent)` | same | Running status tint, 4.5:1 with `--th-accent-ink` text over the pane and tool card |
+| `--th-accent-ink` | `#9d90f8` | `#5b49c2` | Running status word and count text on `--th-accent-bg` |
 | `--th-accent-glow` | `color-mix(in srgb, var(--th-accent) 35%, transparent)` | same | Halo (running node) |
 | `--th-send` | `var(--th-accent-solid)` | same | Send/stop slot fill |
 | `--th-send-hover` | `var(--th-accent-solid-hover)` | same | Send hover |
 | `--th-send-fg` | `#ffffff` | `#ffffff` | Send glyph |
 | `--th-ring` | `color-mix(in srgb, var(--th-accent) 55%, transparent)` | same | Focus ring |
-| `--th-error`, `--th-success`, `--th-warning` (+ `-bg`, `-fg`) | theme-scoped, hue identity kept | same names | Status hues, lightness adjusted to the contrast matrix |
+| `--th-error`, `--th-error-bg`, `--th-error-fg` | `#f98085`, `rgba(249,128,133,0.12)`, `#0a0a0a` | `#b3252e`, `rgba(179,37,46,0.12)`, `#ffffff` | Failed/blocked text, light tint and text on solid error fills |
+| `--th-success`, `--th-success-bg` | `#3fc084`, `rgba(63,192,132,0.12)` | `#146c43`, `rgba(20,108,67,0.12)` | Complete text and matching light tint |
+| `--th-warning`, `--th-warning-bg` | `#f5a623`, `rgba(245,166,35,0.12)` | `#8a5200`, `rgba(138,82,0,0.12)` | Warning text and matching light tint |
+| `--th-dur-run` | `700ms` | same | One continuous cadence for every running indicator |
 | `--th-shadow-surface` | `0 1px 2px rgba(0,0,0,.28), 0 4px 12px rgba(0,0,0,.16)` | `0 1px 2px rgba(24,24,27,.04), 0 4px 12px rgba(24,24,27,.05)` | Persistent chrome |
 | `--th-shadow-raised` | `0 2px 6px rgba(0,0,0,.24), 0 10px 28px -8px rgba(0,0,0,.45)` | `0 1px 3px rgba(24,24,27,.06), 0 10px 28px -10px rgba(24,24,27,.14)` | Cards, user bubble |
 | `--th-shadow-overlay` | `0 8px 20px rgba(0,0,0,.30), 0 28px 64px -16px rgba(0,0,0,.60)` | `0 8px 20px rgba(24,24,27,.08), 0 28px 64px -16px rgba(24,24,27,.22)` | Floating layers, modals |
 | `--th-highlight` | `inset 0 1px 0 rgba(255,255,255,.05)` | `inset 0 1px 0 rgba(255,255,255,.7)` | Top edge light on raised and overlay surfaces |
 | `--th-backdrop` | `rgba(10,10,12,.55)` | `rgba(24,24,27,.24)` | Overlay scrim |
 
-Accent usage is narrow and binding: violet appears only for agent-alive
-states. Those are a running or streaming session (running glyphs, the DAG
-running halo and comet), focus rings and selection, and the send/primary
-filled controls. Everything else, including status hues, stays inside the
-cool monochrome ladder.
+Accent usage is narrow and binding: violet identifies running or streaming
+agent work (`--th-accent-ink` text on `--th-accent-bg`, `--th-accent`
+glyphs/spinners/strokes, DAG halo and comet), focus rings and selection,
+and send/primary filled controls. Complete is green, failed or
+blocked red, and warning amber. Their text and light tints are semantic
+status cues against the cool monochrome base, not extra brand accents.
 
 Text tiers are binding: `--th-text`, `--th-text-dim`, and `--th-muted` meet
 4.5:1 on every fill in both themes, hover and active included.
@@ -117,7 +126,7 @@ create a second competing global palette.
 | --- | --- |
 | App canvas | `--th-bg` |
 | Sidebar / top bar / shelf | `--th-surface` |
-| Tool block material | `--th-tool-surface`, `--th-tool-border` |
+| Whole tool record card | `--th-tool-record-surface`, `--th-tool-record-border` |
 | Composer capsule | `--th-surface-composer` |
 | Raised card / menu solid fallback | `--th-surface-raised` |
 | User bubble | `--th-surface-user` |
@@ -125,20 +134,21 @@ create a second competing global palette.
 | Floating glass fill and filter | `--th-glass`, `--th-glass-filter` |
 | Hover / active | `--th-hover`, `--th-active` |
 | Default hairline | `--th-border-surface`, `--th-border-raised` |
+| Visible neutral boundary | `--th-border-visible`, `--th-tool-record-border` |
 | Strong hairline | `--th-border-user`, `--th-border-overlay`, `--th-border-strong` |
 | Text tiers | `--th-text`, `--th-text-dim`, `--th-muted`, `--th-faint` |
 | Disabled | `--th-disabled-fg`, `--th-disabled-bg` |
-| Accent (agent-alive only) | `--th-accent`, `--th-accent-hover` |
+| Accent glyphs, spinners, strokes | `--th-accent`, `--th-accent-hover` |
 | Accent filled controls | `--th-accent-solid`, `--th-accent-solid-hover`, `--th-accent-fg` |
-| Accent wash, halo, ring | `--th-accent-soft`, `--th-accent-glow`, `--th-ring` |
+| Accent selection wash, running word/tint, halo, ring | `--th-accent-soft`, `--th-accent-select`, `--th-accent-ink`, `--th-accent-bg`, `--th-accent-glow`, `--th-ring` |
 | Composer send action | `--th-send`, `--th-send-hover`, `--th-send-fg` |
-| Status | `--th-error`, `--th-success`, `--th-warning` (+ `-bg`, `-fg`) |
+| Status | `--th-error`, `--th-success`, `--th-warning` (+ each `-bg`; `--th-error-fg` only for solid error fills) |
 | Elevation shadows | `--th-shadow-surface`, `--th-shadow-raised`, `--th-shadow-overlay` |
 | Top-edge highlight | `--th-highlight` |
 | Overlay scrim | `--th-backdrop` |
 | Radius | `--th-radius-xs`, `--th-radius-sm`, `--th-radius`, `--th-radius-lg`, `--th-radius-xl`, `--th-radius-pill` |
 | Type stacks | `--th-font-sans`, `--th-font-mono` |
-| Motion | `--th-dur-fast`, `--th-dur`, `--th-dur-slow`, `--th-dur-emph`, `--th-ease`, `--th-ease-out`, `--th-ease-in-out`, `--th-ease-spring` |
+| Motion | `--th-dur-fast`, `--th-dur`, `--th-dur-slow`, `--th-dur-emph`, `--th-dur-run`, `--th-ease`, `--th-ease-out`, `--th-ease-in-out`, `--th-ease-spring` |
 
 Radius follows a scale, not a single small value: 6, 8, 12, 16, 24, and pill.
 The concentric rule binds nested rounded surfaces: an inner radius equals the
@@ -197,7 +207,8 @@ Major surfaces use the scale as follows:
 - A tool-execution block uses Label for its header and Secondary in its expanded
   body; command, argument, and output text use the mono stack.
 - A sidebar row is Secondary at read weight; the selected row changes only to
-  emphasize weight. Section captions and counts are Micro.
+  emphasize weight. Section captions are Label or Micro at emphasize weight
+  and at least 4.5:1; counts are Micro.
 - The top bar's primary title is Secondary at emphasize weight; path, provider,
   and model metadata are Label.
 - Composer input is Input; attachment and queued-state metadata are Label.
@@ -230,27 +241,49 @@ between icon and label, and 2px between adjacent rows. On a coarse pointer they
 become 44px minimum-height targets without increasing their text tier.
 Tool-execution disclosure headers are 48px minimum height with 8px block and
 12px inline padding, a 2px gap between their two text lines, and 8px between
-adjacent blocks. Expanded tool regions use 12px padding and a 12px gap between
-input and output sections; density does not change between themes.
+adjacent blocks. The 48px is the header height, NOT the timeline indent:
+tool cards and plain thinking disclosure rows start exactly `--th-space-6`
+(24px) from the prose column's left edge at every width. Expanded tool regions use 12px padding
+and a 12px gap between input and output sections; density does not change
+between themes.
 
 ## State encoding
 
-State is never encoded with a coloured border or stroke. The only coloured
-edge in the app is the focus ring (`box-shadow: 0 0 0 3px var(--th-ring)`):
-no component changes border-color or SVG stroke to a status or accent hue to
-say running, selected, failed, or active. Selection and active states use a
-wash (`--th-accent-soft` where the accent rule allows it, otherwise
-`--th-active`) plus a glyph. Two selection idioms exist and are not
-interchangeable: an item chosen from a list or option set (palette row,
-approval option, provider card, file row) takes the `--th-accent-soft` wash
-plus a check or active glyph; a segmented control (theme, language,
-List/Graph, shelf tabs) marks its current segment with one neutral raised
-thumb (`--th-surface-raised` or `--th-active` with `--th-shadow-surface` and
-`--th-highlight`) because every segment is always a valid value, not an
-agent-alive state. Status uses a glyph plus a localized word, with
-color as a redundant third cue. Error alerts and `:focus-visible` rings are
-the contract's only coloured outlines, and both are exceptions, not patterns
-to copy.
+Status uses a coloured glyph, a coloured localized word at emphasize weight,
+and a light tint of that SAME hue behind both: running/active uses
+`--th-accent-ink` text and `--th-accent` glyphs/spinners on `--th-accent-bg`,
+complete uses `--th-success` on
+`--th-success-bg`, failed/blocked `--th-error` on `--th-error-bg`, and
+warning `--th-warning` on `--th-warning-bg`. This applies to tool records,
+goal and activity chips (todo, subagents, DAG list and header), graph nodes,
+sidebar running counts and success/warning notices. Text on its tint meets
+4.5:1 in both themes; the glyph and word also convey state without colour.
+Pending, connected but idle, and disabled stay neutral and distinguishable by
+word and weight. Borders and fulfilled edge strokes remain NEUTRAL: state is
+never a coloured border or stroke, with ONE exception — DAG graph node cards.
+A completed node card carries a subtle `--th-success` stroke (reduced
+opacity) over its green tint, and a failed, cancelled or errored node card a
+`--th-error` stroke over its red tint; pending and running node cards keep
+their neutral stroke (running is carried by the accent tint, spinner and
+halo). No other surface may copy this exception. The coloured
+keyboard `:focus-visible` ring (`box-shadow: 0 0 0 3px var(--th-ring)`)
+communicates focus, not status.
+
+Selected options in a list (palette row, approval option, provider card,
+file row) take the `--th-accent-soft` wash plus a check or active glyph; the
+selected option's fill must remain distinguishable from its neighbours by
+at least 1.3:1. A segmented control (theme, language, List/Graph, shelf
+tabs) marks its current segment with a neutral raised thumb
+(`--th-surface-raised` or `--th-active`, `--th-shadow-surface` and
+`--th-highlight`) distinguishable from its track by at least 1.3:1 in both
+themes and at 390px. Neither idiom uses a status-coloured border.
+Section headings in the sidebar, files, settings and activity shelf use
+emphasize weight and a text tier with at least 4.5:1, never uppercase.
+Secondary actions (Cancel, Next, New folder, Choose files and Save) need a
+visible tonal fill or neutral hairline in both themes, including disabled
+states. Success toasts use `--th-success` glyph and word on
+`--th-success-bg`, warning notices use the amber pair; list rows such as
+queue and system stats keep a perceptible neutral separator or tier change.
 
 ## Elevation ladder
 
@@ -264,12 +297,12 @@ levels.
 | --- | --- | --- |
 | Canvas / `--th-bg` | Base application and transcript; also an inset output well inside a tool block | No border or shadow |
 | Surface / `--th-surface`, `--th-shadow-surface` | Persistent elevated chrome: sidebar, top bar, activity shelf | One luminance step above canvas, `--th-shadow-surface` |
-| Tool block / `--th-tool-surface`, `--th-tool-border` | The expanded tool-execution body only; a collapsed record is a transparent timeline row on the rail | Scoped fill behind the tool hairline, no shadow; the output well inside the body insets Canvas |
+| Tool card / `--th-tool-record-surface`, `--th-tool-record-border` | Every tool record, collapsed and expanded | One tinted fill and neutral 1px hairline enclosing header and optional body at `--th-radius`; an inset Canvas output well stays inside the same card |
 | Composer / `--th-surface-composer`, `--th-shadow-surface`, `--th-highlight` | The composer capsule only | Separates from the canvas by its one-step fill, the surface shadow, and the top-edge highlight; the light fill is white, so the shadow, highlight, and a single `--th-border-surface` hairline carry the separation |
 | Raised / `--th-surface-raised`, `--th-shadow-raised`, `--th-highlight` | Cards, file panels, and floating controls that sit above the canvas | Solid fill with the raised shadow and top-edge highlight |
-| Floating glass / `--th-glass`, `--th-glass-filter`, `--th-border-overlay`, `--th-shadow-overlay`, `--th-highlight` | Popovers, palettes, menus, and the modal panel: surfaces that read as material floating above whatever is behind them | Glass fill plus backdrop filter under `@supports (backdrop-filter: blur(1px))`, with `--th-surface-overlay` as the solid fallback; the overlay shadow and highlight sell the lift. Glass is confined to floating layers; nothing structural is ever glass. Radius is `--th-radius-lg` for menus and palettes and `--th-radius-xl` for the modal panel |
+| Floating overlay / `--th-surface-overlay` or effective `--th-glass` + `--th-glass-filter`, `--th-border-overlay`, `--th-shadow-overlay`, `--th-highlight` | Popovers, palettes, menus, and modal panels above other content | Prefer the opaque fill where backdrop content could compete with text; glass is permitted only with a measured effective blur that prevents behind-text interference. Solid fallback is mandatory. Radius is `--th-radius-lg` for menus and palettes and `--th-radius-xl` for modal panels |
 | User / `--th-surface-user`, `--th-shadow-raised` | The user chat bubble only: an authorship surface one visible step above Raised | The dedicated user fill plus the raised shadow at `--th-radius-lg` corners; borderless (styleContracts pins border-style none), so the bubble separates at a glance without accent decoration |
-| Overlay / `--th-surface-overlay` (or glass), `--th-shadow-overlay`, `--th-highlight`, `--th-backdrop` | Modal dialogs and blocking drawers that must separate from every pane | Solid or glass panel with the overlay shadow, top-edge highlight, and the theme-scoped scrim |
+| Overlay / `--th-surface-overlay`, `--th-shadow-overlay`, `--th-highlight`, `--th-backdrop` | Modal dialogs and blocking drawers that must separate from every pane | Opaque panel with overlay shadow, top-edge highlight, and theme-scoped scrim |
 
 Hover, selection, focus, and status stay state treatments on a level.
 `--th-hover` is one luminance step from the surface in each theme's own
@@ -316,6 +349,10 @@ intended background, and enforces contrast in both themes:
   faint selectors; faint text anywhere outside that allowlist fails the build.
 - `--th-accent-fg` holds 4.5:1 on `--th-accent-solid` and
   `--th-accent-solid-hover`.
+- `--th-accent-ink`, `--th-success`, `--th-error`, and `--th-warning`
+  hold 4.5:1 on their matching status tints over both the pane and the
+  tool record card; `--th-accent` remains the running glyph/spinner/stroke,
+  not the status word on its 12% tint.
 - `--th-error`, `--th-success`, and `--th-warning` used as text hold 4.5:1 on
   their own status backgrounds and on every elevation fill on which the status
   may appear; `--th-error-fg` holds 4.5:1 on solid `--th-error` fills,
@@ -323,6 +360,8 @@ intended background, and enforces contrast in both themes:
 - `--th-send-fg` holds 4.5:1 on `--th-send` and `--th-send-hover`. An earlier
   icon-only 3:1 exception for the send glyph is retired: the slot fill is now
   `--th-accent-solid`, so the pair is held to the full text requirement.
+- The neutral `--th-tool-record-border` hairline contrasts at least 1.3:1
+  against the pane in both themes, without borrowing a status hue.
 
 Opacity on a parent is not an acceptable way to create secondary or disabled
 text, because it makes the effective contrast depend on whatever is behind it.
@@ -431,23 +470,41 @@ Choose a tested foreground/background token pair instead.
   inside the DAG tab and the choice survives tab switches and open/close
   toggles. Nodes
   reuse the parsed waves/layering and size their boxes/row pitch to the user's
-  type setting. Actual SVG glyph widths determine two-line title wrapping;
-  separate line clips protect the status lane, and the full prompt stays in
-  the `<title>`. Nodes expose their state as visible text plus a
-  non-colour glyph. Edges are directional (arrowhead markers). An edge
-  leaving a completed source is fulfilled: the edge and its arrowhead lift
-  from the default hairline to a brightened neutral (text-dim at 40%), never
-  a state hue — dependency satisfaction is not destination success. Every
-  other edge stays at the default neutral hairline; no DAG stroke ever takes
-  a status colour. Edge flow
+  type setting. Actual SVG glyph widths determine title wrapping without
+  clipping or ellipsizing the title or state word; the full prompt also
+  stays in the `<title>`. Nodes expose their state as visible text plus a
+  non-colour glyph. Completed nodes use `--th-success-bg` with a green glyph
+  and word, failed nodes `--th-error-bg` with a red glyph and word, and
+  running nodes `--th-accent-bg` with a larger violet spinner, emphasized
+  `--th-accent-ink` word and visible `--th-accent-glow` halo. Per the ONE graph-card
+  border exception in State encoding, completed node cards use a subtle
+  green `--th-success` stroke, failed/cancelled/errored cards a red
+  `--th-error` stroke, and pending/running cards keep neutral strokes. At
+  1280px the mixed stage shows at least five whole node cards on first
+  paint; its footer expander remains completely inside the panel. On
+  phones the graph keeps this SAME left-to-right desktop structure: ONE
+  forward flow, including branches, with no row wrap, snake or zigzag
+  return. Only the graph reel scrolls horizontally. At phone width,
+  compact node-card height and row/column gaps let the graph's full
+  vertical extent, including branch rows, fit the panel without vertical
+  scrolling. At least three WHOLE nodes are visible on first paint at
+  390px; node titles and state words remain at least 11px and are NEVER
+  clipped or ellipsized. Compact sizing reduces padding and gaps, not
+  content visibility. Desktop density and graph structure are not changed
+  by the phone treatment.
+  Edges are directional (arrowhead markers).
+  An edge leaving a completed source is fulfilled: its neutral edge and
+  arrowhead contrast at least 3:1 against the graph background, never a
+  status hue — dependency satisfaction is not destination success. Other
+  edges stay at the neutral hairline. Edge flow
   animates only from a completed source to a running destination, only in
   the active Graph view while a run is running; flow stops under reduced
   motion, in hidden or closed panels, in List mode, and once the run reaches
   a terminal state. Motion is
-  state-purposeful only: the running node's dashed ring stays transparent
-  and rotates while the
-  node is running and visible; a completion or failure plays one brief
-  settle; a genuinely new node plays one restrained entry. No elapsed-time
+  state-purposeful only: the running node's spinner and halo use
+  `--th-dur-run` while the node is running and visible; a completion or
+  failure plays one brief settle; a genuinely new node plays one restrained
+  entry. No elapsed-time
   tick, tab switch, or reopen replays the graph: completion, cancellation
   and leaving the graph consume one-shot motion. Reduced motion shows the
   static glyph/word state. The peer tabs remain visible even when inner panel
@@ -541,7 +598,7 @@ implicitly because an ancestor does.
 | Reading column | content limiter | a `min(760px, 100%)` constraint on message content, never a scroller itself |
 | Split panes | independent panes | each pane owns its transcript scroll independently; no cross-pane scroll sharing |
 | Activity shelf | supporting pane | each tabpanel keeps its own scroll state and stays mounted; hidden panels scroll nothing |
-| DAG graph | graph reel | the graph container owns horizontal scroll and auto-scrolls the running node into view on first paint; vertical page scroll never moves the graph |
+| DAG graph | graph reel | the graph container alone owns horizontal scroll over one left-to-right flow; at phone width the complete vertical graph, including branches, fits without a vertical scrollport; the vertical page scroll never moves the graph |
 | Palettes, menus, modals, docks | imposter | overlay surfaces render above the region that summoned them, trap their own internal scroll, and never propagate wheel events into the transcript beneath |
 
 ## Pane focus and session routing
@@ -586,11 +643,31 @@ implicitly because an ancestor does.
 The column is the fixed Surface shell in Geometry. Its chrome:
 
 - The brand (`.th-sidebar-logo`) is Body at announce weight on the sans stack. It is never mono.
-- Section captions (`.th-sidebar-section-label` and the live-session captions) are sentence-case Micro in `--th-muted`. No shell label uses `text-transform: uppercase`.
+- Section captions (`.th-sidebar-section-label` and live-session captions)
+  are sentence-case at emphasize weight in `--th-muted` or stronger, with
+  at least 4.5:1 against the shell. No label uses uppercase transformation.
 - The add-workspace control (`.th-btn-add`) is a borderless ghost pill at row height. Hover and press are washes (`--th-hover`, `--th-active`), not a dashed outline.
-- Session rows are Secondary. Selection is one `.th-tree-indicator` that slides with `transform` only and fills `--th-active`; the selected label changes to emphasize weight and nothing else. The row does not grow a coloured border.
-- A running session is a 6px `--th-accent` dot (an opacity breathe) plus, when agents are running, a neutral `--th-active` wash and `--th-muted` tabular numerals on the sans stack. Counts (`.th-tree-count` and the live counts) are Micro pills. They are not mono and they are not status-coloured borders.
-- Pinned live cards and the home-live cards are raised surfaces. State is a fill change. The running pill is an accent wash with a transparent 1px border, so the row height stays stable, and the same accent dot. The last-output preview is the one mono line, because it is output.
+- Session rows are Secondary. Selection is one `.th-tree-indicator` that slides
+  with `transform` and fills `--th-active`; the selected label takes emphasize
+  weight and a visible selected wash. Connected-but-idle, running and
+  disconnected/idle rows differ by glyph, word and treatment, never by a
+  coloured border.
+- Running sessions use a legible accent glyph moving on `--th-dur-run`,
+  not a tiny slow-breathing dot. When agents are running, `.th-tree-count`
+  and live-card counts have tabular `--th-accent-ink` numerals on
+  `--th-accent-bg`, with neutral borders if needed. Counts are Micro pills
+  in the sans stack, not mono. Reduced motion keeps the static glyph and
+  accessible running name; main-session work needs no child-agent count.
+- Pinned live cards and home-live cards are raised surfaces. Their running
+  pill uses the same `--th-accent-ink` text on `--th-accent-bg` and cadence
+  as the tree and transcript.
+  The last-output preview alone uses mono, because it is output.
+- Open-sessions heading text, live-card title text, and the parent tree-label
+  column share a left edge; all right-hand count badges share a right edge,
+  within 1px with one or three cards on fine and coarse pointers. Workspace
+  rename/add/delete actions appear inline on fine pointers when hovered,
+  focused or selected. On coarse pointers only the `⋮` menu exposes those
+  actions, each with a 44px target.
 - Below 768px the same column is the dismissible drawer: Overlay fill, a hairline `--th-border-overlay`, the overlay shadow, entering and leaving on transform.
 
 ## Empty panes and session opening
@@ -660,9 +737,9 @@ The column is the fixed Surface shell in Geometry. Its chrome:
   changes send a request; confirmation and rollback retain the existing session
   transaction contract.
 - On desktop the picker opens as an upward popup anchored above the control
-  (floating glass: `--th-glass` with the overlay shadow and highlight,
-  bounded to `min(480px, 70dvh)`), so the list never
-  covers the composer or send action. On narrow screens the existing
+  (opaque `--th-surface-overlay` with the overlay shadow and highlight,
+  bounded to `min(480px, 70dvh)`), so the list never covers the composer
+  or send action. On narrow screens the existing
   viewport-contained sheet behavior is retained.
   Current identity, thinking controls and search stay fixed; only the list
   scrolls, including initial/keyboard option reveal. If the local upward bound
@@ -673,7 +750,10 @@ The column is the fixed Surface shell in Geometry. Its chrome:
   user's base font. At 1440x150 and font24 at least one whole option remains.
   Popup navigation never scrolls hidden ancestors or moves the composer.
   Mobile keeps its existing pinned current identity and sheet behavior.
-  Both presentations initially focus the non-text popup container. Forward Tab
+  Both presentations are opaque or prove blur effective enough that text behind
+  cannot compete with options; selected model and Thinking level differ from
+  neighbours by at least 1.3:1. Both presentations initially focus the
+  non-text popup container. Forward Tab
   reaches reasoning before search; sheet/panel close precedes reasoning.
   Search accepts text, Arrow navigation and Enter selection after it receives
   focus. Anchored desktop forward exit from search reaches attachment; reverse
@@ -695,8 +775,9 @@ The column is the fixed Surface shell in Geometry. Its chrome:
   explicit original-draft recovery with a duplicate-submission warning; it
   never retries or fills the composer automatically. A completed send ACK
   retires that request, not an independently running assistant response.
-- One stable indicator slot represents disconnected (warning-yellow spinner),
-  otherwise server-running (muted spinner), otherwise idle (empty). Reconnect
+- One stable indicator slot represents disconnected (amber warning glyph),
+  otherwise server-running (violet spinner on `--th-dur-run`), otherwise idle
+  (empty). Reconnect
   takes priority over stale running state. Localized accessible text and a
   descriptive tooltip replace visible Responding/Reconnecting words. Reduced
   motion retains a static recognizable ring. State changes do not move metrics
@@ -716,44 +797,65 @@ The column is the fixed Surface shell in Geometry. Its chrome:
   hook) pads its top with `--th-space-5`, so spacing before a user turn
   (28px total) visibly exceeds the 16px within-assistant rhythm without
   reordering the transcript.
-- Tool calls render as timeline records on a shared rail: a collapsed record
-  is a transparent row (status glyph, Label title, trailing status word,
-  round collapse chevron) so executions recede behind the transparent
-  assistant prose; only the expanded body carries the scoped tool material
-  behind its hairline, with the output well insetting Canvas. Status colour
-  is secondary to the glyph and word and never the only signal.
-- Thinking records share the tool-record timeline grammar — a status dot on
-  the rail, the Thinking label, and a round collapse chevron over a body that
-  discloses with the documented grid-rows interpolation — never a left rule.
+- Tool calls render as individually bounded, tinted timeline cards on a
+  shared rail. Collapsed and expanded records have the same outer card:
+  Label title, coloured status word and round chevron in its header, with
+  optional body and inset Canvas output well INSIDE it. The coloured status
+  glyph is in the 24px gutter OUTSIDE the card. Each
+  record separates from prose and neighbours by its light tint, neutral
+  hairline and 8px spacing. The rail stays in the gutter and never crosses
+  card fill or text. Glyph and word also convey status without colour.
+- Thinking records remain plain disclosure rows on the rail, without card
+  fill, hairline or radius. They share ONLY the 24px left indent, the rail
+  and status glyph in its outer gutter, the mono body, and the no-clipping
+  and immediate re-measure rules with tool records. The Thinking label and
+  round collapse chevron disclose the body through the documented grid-rows
+  interpolation; the rail never crosses their text.
 - The completion status is metadata, not a separate message.
 - Long words, URLs, code, Korean, and mixed-width text wrap without causing
-  horizontal page overflow.
+  horizontal page overflow. No node title or state word, tool status word,
+  or tool-card/thinking-disclosure body is clipped or ellipsized at any width.
 
 ## Tool-execution block anatomy
 
 A tool invocation and all of its incremental or final output form one
 addressable transcript block keyed by `toolCallId`. Invocation and result must
 never render as detached rows or neighboring cards, and restored history and
-live execution must converge on the same structure. The block spans the
-available reading-column width and uses one disclosure control and one shared
-state. Every record sits on a real timeline rail: an aria-hidden 1px element
-at `--th-border-surface` strength, centered on the status glyph and running
-the record's full height; a record whose previous sibling is also a record
-extends the rail up across the 8px block rhythm, so consecutive records
-within a turn read as one connected timeline. A collapsed record is
-transparent — no fill, no hairline, no enclosure — and recedes behind the
-transparent prose around it; only the expanded body carries the scoped tool
-material, so a dense run of tools never becomes a wall of heavy cards.
+live execution must converge on the same structure. The block stays inside
+the reading-column width minus its `--th-space-6` (24px) left gutter and
+uses one disclosure control and one shared
+state. Each record is ONE card in either disclosure state: a subtle
+`--th-tool-record-surface` tint, a 1px neutral
+`--th-tool-record-border` hairline, and `--th-radius` corners enclosing
+the header and optional body. Tool cards and plain thinking disclosure
+rows start exactly 24px from the prose column's left edge at EVERY width;
+their right edge stays inside the reading column. Tool cards have at least
+8px between them. The
+aria-hidden 1px `--th-border-surface` timeline rail and the status glyph
+sit inside that 24px gutter OUTSIDE every card. Consecutive rail segments
+join in the gutter across record gaps; neither rail nor glyph intersects
+a tool-card rectangle, summary line or thinking-body text box. Only tool
+records take the tinted card material; thinking stays transparent and
+unbordered so tool execution stands out.
+The entire card, including its expanded body, has a maximum width of the
+pane reading column MINUS the 24px gutter, so its right edge never passes
+the pane content edge on desktop or phone. This applies in both disclosure
+states at every width.
 
 The 48px-minimum disclosure header (8px block / 12px inline padding, 2px
-between its two text lines, transparent so the rail reads through it) is the
-entire button and shows two compact lines:
+between its two text lines) belongs INSIDE the card. It is the entire
+button and normally shows two compact lines; the first may wrap under
+width pressure to keep the status word visible:
 
-1. The first line leads with the round collapse chevron — a 20px chip that
-   rotates -90deg closed to 90deg open and takes the hover and focus-visible
-   background, so the record itself stays quiet — then a status glyph, the
-   operation title (a task summary when present, otherwise the tool name; a
-   read of SKILL.md names the skill), and a trailing localized status word.
+1. The first line leads with the round collapse chevron — a 20px chip
+   pointing RIGHT when collapsed and DOWN when expanded, taking hover and
+   focus-visible background — then the operation title (a task
+   summary when present, otherwise the tool name; a read of SKILL.md names
+   the skill), and a trailing localized status word. The status word stays
+   fully visible inside the card: under width pressure the invocation
+   preview yields or the header wraps; the status word never clips or
+   ellipsizes. Its status glyph lives in the 24px gutter alongside the card,
+   not inside this header.
 2. The second line is a single-line invocation summary: the command (or the
    serialized arguments) in the mono stack, then the latest non-empty output
    line after a ` · ` separator set in sans. The invocation is preserved
@@ -769,11 +871,22 @@ remounts); later phase updates and completion must not override that choice.
 The entire header is the button, exposes `aria-expanded`, keeps its geometry
 while state changes, and retains the visible status in either disclosure
 state.
+After expanding OR collapsing any tool or thinking record, the transcript
+virtualizer re-measures the changed row immediately (within two animation
+frames after disclosure settles). Rows below stay painted instead of
+leaving a blank band, the virtualizer's total height follows the measured
+rows, and the toggled record stays anchored: its top moves by no more than
+1px. This applies in both themes at phone and desktop widths, including
+the expanded failed-record collapse that previously blanked a phone
+transcript. Measuring only on later scroll or unrelated updates is not
+sufficient.
 
-Expanded blocks keep the identical header and add one inset body — the only
-scoped tool material in the record: `--th-tool-surface` behind a
-`--th-tool-border` hairline at `--th-radius` (12px), no shadow, inset below
-the transparent header so the rail appears to stop at the material's edge.
+Expanded blocks keep the identical header INSIDE the same card and append
+an inset body with no second outer border, shadow or detached enclosure.
+The body box fits the card's content width at every pane size, wraps long
+content and is never clipped or ellipsized at the pane edge. The bounded
+output well may scroll internally for long output; this does not crop the
+card body or hide its controls.
 The body contains:
 
 - a Command section when arguments contain a non-empty string `command`, shown
@@ -791,38 +904,28 @@ The body contains:
   the bottom.
 
 Do not render an empty body merely to fill space. Failure output remains
-available and is never replaced by a generic error label. Status is never a
-coloured border. The status glyph is a canvas-backed disc that knocks the
-rail so it reads as a dot on the line: while running it is a violet dotted
-spinner (the accent fill cut into wedges by a repeating-conic mask, rotating
-over 700ms), on success a muted check mark, on failure an error-hued
-exclamation mark — each beside a visible localized word (Running / Done /
-Failed), with colour only as a third, redundant cue. The running word carries
-the accent family with a slow `background-position` shimmer sweeping the
-lighter accent-hover stop across the text (an allowed animated property);
-the static frame still reads as the violet word. Under reduced motion the
-spin and shimmer stop and the static glyph plus word carry the state.
+available and is never replaced by a generic error label. The status glyph
+sits in a clear gutter beside the card. Running uses a visibly larger
+ `--th-accent` spinner on `--th-dur-run` beside an emphasized `--th-accent-ink` word
+on `--th-accent-bg`. Done uses a `--th-success` check and word on
+`--th-success-bg`; Failed uses an `--th-error` exclamation and word on
+`--th-error-bg`. Word contrast on each tint is at least 4.5:1; none
+changes the neutral card hairline. Reduced motion stops the spinner and
+any word shimmer; a static glyph and localized word carry the state.
 
-Colour roles come from the measured reference mapping, not from the captured
-tool chooser (a menu, not an executed output card): the scoped tool material
-is confined to the expanded body, where `--th-tool-surface` sits behind
-`--th-tool-border` and the output well insets Canvas, so the boundary and
-material depend only on the disclosure state. The dark tool fill reuses the measured
-elevated-chrome role; the light tool fill's light gray step is an
-app-specific distinction requested for P4, not a measured native output-card
-value. Both stay inside the app's fill/border idiom and do not move the
-global palette. Status hues used as text are the theme-scoped status tokens
-and keep the contrast matrix below on the tool fill.
+An executed card differs from a tool chooser menu. Its whole-record tint
+appears regardless of disclosure; the inset output well uses Canvas, and
+the neutral card hairline remains constant. Theme-scoped status hues stay
+legible on the tool tint and their matching status tints.
 
 The operation title and invocation preview use Label, status uses Micro, and
 expanded command and output use Secondary with `--th-font-mono`; section
-captions use Micro. The expanded body carries the `--th-tool-border` outline
-at `--th-radius` with no independent shadow and no whole-card status glow; a
-collapsed record carries no outline at all. A record recedes behind
-transparent Body-tier assistant prose through smaller type, compact spacing,
-and dim or muted text tokens -- never whole-record opacity -- but stays
-scannable through the rail, the fixed alignment, the monospace command text,
-the persistent status glyph and word, and one block per invocation.
+captions use Micro. The outer card carries the `--th-tool-record-border`
+hairline and `--th-radius` in both states; the expanded body adds no
+outline, shadow or whole-card status glow. Compact type and spacing keep
+the record quieter than transparent Body-tier assistant prose without
+lowering whole-record opacity. Fixed alignment, mono command text, status
+glyph and word, and one card per invocation make it scannable.
 
 ## Queue slot
 
@@ -853,17 +956,19 @@ dashed or coloured border.
 
 - Typing `/` opens the slash-command list; typing `$` opens the dollar-skill list for `skill:<name>` entries. Both lists are attached immediately above the composer.
 - The list is bounded to the reading column, never the viewport or sidebar.
-- Both palettes are one floating glass layer directly above the capsule:
-  `--th-glass` with `--th-glass-filter` under `@supports (backdrop-filter:
-  blur(1px))` (solid `--th-surface-overlay` fallback), a
+- Both palettes are one opaque or effectively blurred floating layer directly
+  above the capsule: prefer `--th-surface-overlay`; use `--th-glass` with
+  `--th-glass-filter` only when behind-text interference is measured as
+  absent (solid overlay fallback is mandatory), plus a
   `--th-border-overlay` hairline, `--th-shadow-overlay` with
   `--th-highlight`, and `--th-radius-lg` corners. They enter per the overlay
   motion rule — opacity + translateY + scale over `--th-dur` with
   `--th-ease-out` via `@starting-style`. A keyboard hint row rides the top:
   key caps as small `--th-hover` chips at `--th-radius-xs` with Micro copy,
   separated from the options by the surface hairline. The active option
-  takes the `--th-accent-soft` selection wash; command names keep the mono
-  stack and descriptions stay sans at the muted tier.
+  takes the `--th-accent-soft` selection wash and a glyph, distinguishable
+  from neighbours by at least 1.3:1; command names stay mono at the text
+  tier and descriptions stay sans at the muted tier.
 - Arrow Up/Down changes the active option; Enter/Tab selects; Escape closes.
 - The active option uses `aria-selected`, visible focus/active styling, and is
   kept in view.
@@ -901,7 +1006,8 @@ The notice band stands in for a pending approval or question while its
 question window is closed (and carries a non-blocking question until the user
 opens the window): one line in a glass pill — title, question count, deadline
 countdown, and an Open action pinned to the row's end. It is a floating
-layer (`--th-glass` under `@supports`, solid Overlay fallback,
+layer (opaque `--th-surface-overlay`, or proven effective filtered glass
+with a solid Overlay fallback,
 `--th-border-overlay` hairline, overlay shadow and highlight, pill radius)
 and enters once with a small 8px rise on the small-pop spring; under reduced
 motion it renders in its final state, with the text carrying the state.
@@ -922,7 +1028,14 @@ the answering surface for multi-question requests and approvals.
 - 메인 세션의 실행 상태와 서브에이전트 실행 수는 별개로 표시합니다. 자식 작업이 없어도 메인 세션이 응답하거나 압축 중이면 실행 표시가 켜집니다.
 - 세션이 연결되어 있다는 표시와 화면에 배치되어 있다는 표시는 실제 작업 중 표시를 대신하지 않습니다.
 - 실행 종료는 서버가 확인한 상태로 반영하며, 늦게 도착한 이전 조회 결과가 더 최신의 실행 상태를 덮어쓰지 않습니다.
-- 기존 상태 색상과 실행 표시 스타일을 재사용하고, 실행 중임을 색상만이 아니라 접근 가능한 이름으로도 전달합니다. 서브에이전트 수에 메인 세션을 더하지 않습니다.
+- 도구, 목표, 활동 목록, DAG, 사이드바의 실행 중 표시는 모두
+  `--th-accent` 글리프·회전 표시, `--th-accent-ink` 강조한 글자와
+  `--th-accent-bg` 옅은 바탕을
+  사용합니다. 진행 표시는 `--th-dur-run` 한 주기(700ms)로 움직이고,
+  동작 줄이기에서는 정적인 글리프와 접근 가능한 실행 이름을 유지합니다.
+  완료는 `--th-success`, 실패·차단은 `--th-error`, 경고는
+  `--th-warning` 글자와 각 상태의 같은 색 옅은 바탕을 사용합니다.
+  서브에이전트 수에 메인 세션을 더하지 않습니다.
 
 ## 통합 업데이트 대화상자
 
@@ -961,6 +1074,14 @@ the answering surface for multi-question requests and approvals.
 At 390x844 and comparable narrow sizes:
 
 - the conversation and composer remain at least 320px wide;
+- each tool card and plain thinking disclosure row, including its expanded
+  body, remains inside the pane content box after the 24px gutter; tool
+  status words, DAG node titles and state words remain fully visible
+  without clipping or ellipsis;
+- the DAG graph keeps one left-to-right desktop flow, never wraps rows or
+  reverses direction; the reel scrolls horizontally, not vertically.
+  Reduced node height and gaps fit all branch rows inside the panel while
+  three whole nodes show at first paint and every label stays at least 11px;
 - the workspace path may hide; the current model name and thinking level stay
   visible in the compact model control, which shares the status row above the
   capsule with the selector pinned to its right edge (see Model control
@@ -1002,6 +1123,7 @@ Motion tokens, shared and theme-independent:
 | `--th-dur` | 200ms | state change, popover open and close |
 | `--th-dur-slow` | 320ms | enter, disclosure |
 | `--th-dur-emph` | 480ms | one-time choreography only, such as the empty-state entrance |
+| `--th-dur-run` | 700ms | one period for all continuously running indicators, always at most 800ms |
 
 Easings: `--th-ease` `cubic-bezier(.2,0,0,1)` is the standard; `--th-ease-out`
 `cubic-bezier(.16,1,.3,1)` carries entrances; `--th-ease-in-out`
@@ -1023,9 +1145,10 @@ Every animation declares one purpose before it ships:
 - Acknowledgement: press, hover, selection. `--th-dur-fast`, `--th-ease`.
 - Continuity: session switch, pane focus change, selection indicator travel.
   `--th-dur`, `--th-ease-in-out`.
-- Progress: running and streaming indicators, the DAG comet and halo.
-  `--th-dur` or `--th-dur-slow`. Progress motion is honest: it reflects real,
-  observable state and never loops to suggest work that is not happening. An
+- Progress: running and streaming indicators, sidebar counts, tool spinner,
+  DAG comet and halo. All continuously running indicators use
+  `--th-dur-run` (700ms, never exceeding 800ms). Progress motion reflects
+  real, observable state and never loops to suggest work that is not happening. An
   indeterminate indicator is a clearly indeterminate glyph, and under reduced
   motion it is a static glyph plus a visible word.
 - Guidance: the entrance of an element the user must notice, such as a new DAG
@@ -1118,7 +1241,12 @@ plan. The T2 chat surface — pane header, transcript rows (user bubble, tool
 and thinking timeline records, subagent records), queue, composer and
 palettes, status row, question band, and session-switch continuity — is
 redesigned and described in the sections above. The T3 shell and T4
-activity/DAG surfaces have also shipped; their styling follows this contract.
+activity/DAG surfaces shipped under the previous contract and are being
+updated by the emphasis-restore surface nodes to meet this revised contract.
+This emphasis-restore contract supersedes earlier neutral-only status,
+transparent collapsed tool, slow running-dot and faint segmented-control
+rules. Surface and QA-harness migrations are separate nodes of the governing
+plan, not accepted visual debt or permission to ship the drained appearance.
 
 ## Release checks
 
@@ -1153,3 +1281,32 @@ widths confirms:
     0/59px crossed with bottom insets 0/34px, both keyboard states, both themes,
     and short/long lists: full control rectangles inside safe and ancestor
     clipping bounds, native hits, and interior-scroll reachability.
+13. both themes at 1280, 768 and 390 show coloured glyph AND word on matching
+    status tint with 4.5:1 text contrast, neutral tool borders and the ONE
+    DAG node-card stroke exception from State encoding (completed green,
+    failed/cancelled/error red, pending/running unchanged); running uses
+    a shared cadence no slower than 800ms with static reduced-motion
+    equivalents;
+14. every collapsed or open tool record is one tinted rounded card with a
+    visible neutral hairline, header and body in the same card, a right/down
+    chevron; plain thinking disclosure rows have no card fill, hairline
+    or radius. Both tool cards and thinking rows start exactly 24px from
+    the prose edge at all widths, with rail and glyph in the outer gutter
+    clear of cards, summaries and thinking text;
+15. DAG completed paths contrast at least 3:1 and five whole mixed-stage
+    nodes fit at 1280; on phones one left-to-right flow fits every branch
+    row vertically without vertical scrolling and shows at least three
+    whole nodes at first paint, with labels at least 11px; sidebar
+    open-session columns align within 1px;
+    workspace actions are inline for fine pointers and in a 44px-target
+    menu for coarse pointers;
+16. overlays do not show competing text behind rows; active options and
+    segments differ by at least 1.3:1, headings use emphasis weight without
+    uppercase, and secondary controls have a visible fill or neutral hairline;
+17. node titles and state words, tool status words and card bodies stay
+    wholly visible without clipping or ellipsis; every card stays inside
+    the pane content box at all widths. Expand/collapse re-measures the
+    transcript immediately, paints subsequent rows and anchors the toggled
+    record without a blank band;
+18. emphasis-restore Q1-Q17 passes on the built SPA and the contract, surface
+    styles and QA probes agree without a drained-state rule.
