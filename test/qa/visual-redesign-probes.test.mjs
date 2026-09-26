@@ -12,7 +12,8 @@ import {
   CONTRAST_BODY_MIN, CONTRAST_FAINT_MIN, HIERARCHY_MIN_RATIO, OLD_PALETTE_HEXES, classifyBorderFacts,
   collectAnimations, colorEquals, compositeOver, contrastRatio, defaultMotionAllowed, describeElement,
   hexOf, isOldPaletteColor, isVisibleElement, maxDurationMs, motionViolations, normalizeMotionProperty,
-  pageKit, parseColor, probeChromeTheme, probeContrastSurface, probeHeader, probeHierarchy, probeMotion,
+  pageKit, pagePanVerdict, parseColor, probeChromeTheme, probeContrastSurface, probeHeader, probeHierarchy, probeMotion,
+  probePagePan,
   probeReducedMotion, probeRunningGlyphs, probeRunningReducedMotion, probeSeparation, probeStateColors,
   probeTokens, relativeLuminance, runningGlyphSelectors, tokenColor, uppercaseOf, overlaySnapshot,
   modalFocusRestoreDecision, modalFocusRestoreFacts,
@@ -80,7 +81,7 @@ describe('pageKit completeness (regression: probes must resolve every helper in-
   test('every probe serializes into a parsable kit-augmented function', () => {
     const probes = [probeTokens, probeHierarchy, probeSeparation, probeStateColors, probeHeader,
       probeRunningGlyphs, probeRunningReducedMotion, overlaySnapshot, probeMotion,
-      probeReducedMotion, probeContrastSurface, probeChromeTheme, modalFocusRestoreFacts];
+      probeReducedMotion, probeContrastSurface, probeChromeTheme, modalFocusRestoreFacts, probePagePan];
     for (const fn of probes) {
       expect(() => new Function(`${pageKit()}\nreturn (${fn.toString()})();`)).not.toThrow();
     }
@@ -346,7 +347,7 @@ describe('injected-function self-containment (D6 regression)', () => {
     tokenColor, collectAnimations, runningGlyphSelectors,
     probeTokens, probeHierarchy, probeSeparation, probeStateColors, probeHeader,
     probeRunningGlyphs, probeRunningReducedMotion, overlaySnapshot, probeMotion,
-    probeReducedMotion, probeContrastSurface, probeChromeTheme, modalFocusRestoreFacts];
+    probeReducedMotion, probeContrastSurface, probeChromeTheme, modalFocusRestoreFacts, probePagePan];
   test('no injected function references a name the page never receives', () => {
     const kit = pageKit();
     for (const fn of INJECTED()) {
@@ -600,6 +601,45 @@ describe('maxDurationMs', () => {
     expect(maxDurationMs('')).toBe(0);
     expect(maxDurationMs('none')).toBe(0);
     expect(maxDurationMs(null)).toBe(0);
+  });
+});
+
+describe('pagePanVerdict (all screenshot cells)', () => {
+  const settled = {
+    scrollX: 0, scrollLeft: 0, scrollWidth: 390, innerWidth: 390,
+    offender: null, active: 'textarea.th-chat-input-textarea',
+  };
+
+  test('a settled document and the one-pixel rounding allowance pass', () => {
+    expect(pagePanVerdict(settled)).toEqual([]);
+    expect(pagePanVerdict({ ...settled, scrollWidth: 391 })).toEqual([]);
+  });
+
+  test('a focused offscreen element that pans only window or scrollingElement fails', () => {
+    for (const offsets of [{ scrollX: 40, scrollLeft: 0 }, { scrollX: 0, scrollLeft: 250 }, { scrollX: -2, scrollLeft: 0 }]) {
+      const failures = pagePanVerdict({ ...settled, ...offsets });
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toContain('horizontal document pan');
+      expect(failures[0]).toContain('textarea.th-chat-input-textarea');
+    }
+  });
+
+  test('an overflowing document fails and identifies the offending element', () => {
+    const failures = pagePanVerdict({
+      ...settled, scrollWidth: 392, offender: 'div.th-chat-pane (right=392px)',
+    });
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain('div.th-chat-pane (right=392px)');
+    expect(failures[0]).toContain('scrollWidth=392 > innerWidth=390 + 1');
+  });
+
+  test('simultaneous scroll and overflow produce independent failure reasons', () => {
+    const failures = pagePanVerdict({
+      ...settled, scrollX: 264, scrollLeft: 264, scrollWidth: 654,
+      offender: 'section.th-chat-scrollport (right=654px)',
+    });
+    expect(failures).toHaveLength(2);
+    expect(failures.every(failure => failure.includes('section.th-chat-scrollport'))).toBe(true);
   });
 });
 
@@ -880,5 +920,177 @@ describe('requiredInteractionVerdict (R4: broken required interactions fail S15)
     const failures = requiredInteractionVerdict([{ label: 'shelf' }]);
     expect(failures).toHaveLength(1);
     expect(failures[0]).toContain('no in-state motion inspection');
+  });
+});
+
+describe('lead fix: S5 painted-border and S15 background-position longhands', () => {
+  test('background-position-x/y longhands normalise onto the allowed shorthand', () => {
+    expect(normalizeMotionProperty('background-position-x')).toBe('background-position');
+    expect(normalizeMotionProperty('backgroundpositiony')).toBe('background-position');
+    expect(motionViolations(['background-position-x', 'background-position-y'])).toEqual([]);
+    expect(motionViolations(['width'])).toEqual(['width']);
+  });
+});
+
+// Adversarial DOM for the serialized probeStateColors the browser actually
+// runs (pageKit + the probe source). Colours are the resolved token values:
+// jsdom does not substitute var(--th-*) inside computed border/stroke.
+const stateColorTokens = {
+  '--th-success': '#146c43',
+  '--th-warning': '#a15c07',
+  '--th-error': '#b3252e',
+  '--th-accent': '#8b7cf6',
+};
+
+describe('serialized probeStateColors (painted borders and SVG enclosures)', () => {
+  test('a 1px solid border coloured --th-error fails', () => {
+    const result = serializedProbeInDom(probeStateColors, {}, {
+      html: '<body><span class="th-tool-status" style="border: 1px solid #b3252e">failed</span></body>',
+      tokens: stateColorTokens,
+    });
+    expect(result.pass).toBe(false);
+    expect(result.measurements.stateColorViolationCount).toBeGreaterThan(0);
+    expect(result.measurements.stateColorViolationSamples.every(sample => sample.token === 'error')).toBe(true);
+    expect(result.measurements.stateColorViolationSamples[0].where).toContain('th-tool-status');
+    expect(result.failures[0]).toContain('coloured border or stroke');
+  });
+
+  test('error-coloured text with a zero-width border passes', () => {
+    const result = serializedProbeInDom(probeStateColors, {}, {
+      html: '<body><span class="th-tool-status" style="color: #b3252e; border-width: 0; border-style: solid; border-color: #b3252e">failed</span></body>',
+      tokens: stateColorTokens,
+    });
+    expect(result.pass).toBe(true);
+    expect(result.measurements.stateColorViolationCount).toBe(0);
+    expect(result.measurements.uppercaseCount).toBe(0);
+    expect(result.failures).toEqual([]);
+  });
+
+  test('an svg rect enclosure with an accent stroke fails', () => {
+    const result = serializedProbeInDom(probeStateColors, {}, {
+      html: '<body><svg><rect style="stroke: #8b7cf6; stroke-width: 2px; fill: none"></rect></svg></body>',
+      tokens: stateColorTokens,
+    });
+    expect(result.pass).toBe(false);
+    expect(result.measurements.stateColorViolationCount).toBeGreaterThan(0);
+    expect(result.measurements.stateColorViolationSamples.every(sample => sample.token === 'accent')).toBe(true);
+    expect(result.measurements.stateColorViolationSamples[0].where).toBe('rect');
+  });
+
+  test('an svg circle glyph with an accent stroke passes', () => {
+    const result = serializedProbeInDom(probeStateColors, {}, {
+      html: '<body><svg><circle class="th-tool-glyph" style="stroke: #8b7cf6; stroke-width: 2px; fill: none"></circle></svg></body>',
+      tokens: stateColorTokens,
+    });
+    expect(result.pass).toBe(true);
+    expect(result.measurements.stateColorViolationCount).toBe(0);
+    expect(result.failures).toEqual([]);
+  });
+
+  test('a T2-scoped census ignores sidebar and activity-shelf violations', async () => {
+    const { probeChatStateColors } = await import('./visual-redesign-scenarios-t2.mjs');
+    const html = `<body>
+      <aside class="th-sidebar">
+        <div class="th-sidebar-section-label" style="border: 1px solid #b3252e; text-transform: uppercase">Workspaces</div>
+      </aside>
+      <section class="th-chat-pane">
+        <div class="th-activity-shelf">
+          <span class="th-activity-chip" style="border: 1px solid #146c43; text-transform: uppercase">Active</span>
+          <svg><rect style="stroke: #8b7cf6; stroke-width: 2px; fill: none"></rect></svg>
+        </div>
+        <div class="th-chat-msg">plain transcript</div>
+      </section>
+    </body>`;
+    const shared = serializedProbeInDom(probeStateColors, {}, { html, tokens: stateColorTokens });
+    expect(shared.pass).toBe(false);
+    expect(shared.measurements.stateColorViolationCount).toBeGreaterThan(0);
+    expect(shared.measurements.uppercaseCount).toBeGreaterThan(0);
+    const scoped = serializedProbeInDom(probeChatStateColors, {}, { html, tokens: stateColorTokens });
+    expect(scoped.pass).toBe(true);
+    expect(scoped.scenario).toBe('S5');
+    expect(scoped.measurements.stateColorViolationCount).toBe(0);
+    expect(scoped.measurements.uppercaseCount).toBe(0);
+    expect(scoped.measurements.tokens.error).toBe('#b3252e');
+    expect(scoped.failures).toEqual([]);
+  });
+});
+
+describe('lead fix: camelCase and hyphen-stripped motion property names', () => {
+  test('strokeDashoffset / strokedashoffset normalise to stroke-dashoffset and are allowed', () => {
+    expect(normalizeMotionProperty('strokeDashoffset')).toBe('stroke-dashoffset');
+    expect(normalizeMotionProperty('strokedashoffset')).toBe('stroke-dashoffset');
+    expect(normalizeMotionProperty('backgroundPositionX')).toBe('background-position');
+    expect(motionViolations(['strokedashoffset', 'backgroundPositionY'])).toEqual([]);
+    expect(motionViolations(['marginLeft'])).toEqual(['margin-left']);
+  });
+});
+
+describe('serialized T2 S5/S8 exclusion of T4-owned elements', () => {
+  const goalBar = `<body><section class="th-chat-pane">
+    <section class="th-goal-shelf">
+      <button type="button" class="th-goal-bar">
+        <span id="goal-chip" class="th-activity-chip" style="text-transform: uppercase">Active</span>
+      </button>
+    </section>
+  </section></body>`;
+  const glyphs = glyphStyle => `<body>
+    <span class="th-tool-glyph th-tool-glyph--running" style="${glyphStyle}"></span>
+    <g id="dag-node" class="th-activity-gnode th-activity-gnode--running" style="stroke: #ededf0; fill: #000000; color: #ededf0"></g>
+    <circle id="dag-status" class="th-activity-gstatus th-activity-gstatus--running" style="stroke: #ededf0; fill: none; color: #ededf0"></circle>
+  </body>`;
+
+  test('uppercase activity chip inside the goal bar is ignored', async () => {
+    const { probeChatStateColors } = await import('./visual-redesign-scenarios-t2.mjs');
+    const result = serializedProbeInDom(probeChatStateColors, {}, { html: goalBar, tokens: stateColorTokens });
+    expect(result.pass).toBe(true);
+    expect(result.measurements.uppercaseCount).toBe(0);
+    expect(result.measurements.excludedSelectors).toEqual([
+      '.th-activity-shelf', '.th-goal-shelf', '.th-goal-bar', '.th-activity-chip', '.th-activity-g*',
+    ]);
+    expect(result.measurements.excludedElementCount).toBeGreaterThan(0);
+    expect(result.measurements.excludedSamples).toContain('span#goal-chip.th-activity-chip');
+    expect(result.failures).toEqual([]);
+  });
+
+  test('uppercase text in a T2-owned element still fails', async () => {
+    const { probeChatStateColors } = await import('./visual-redesign-scenarios-t2.mjs');
+    const html = goalBar.replace(
+      '</section></body>',
+      '<span class="th-chat-kicker" style="text-transform: uppercase">Running</span></section></body>',
+    );
+    const result = serializedProbeInDom(probeChatStateColors, {}, { html, tokens: stateColorTokens });
+    expect(result.pass).toBe(false);
+    expect(result.measurements.uppercaseCount).toBe(1);
+    expect(result.measurements.uppercaseSamples[0].text).toBe('Running');
+    expect(result.measurements.uppercaseSamples[0].where).toContain('th-chat-kicker');
+    expect(result.failures[0]).toContain('th-chat-kicker');
+    expect(result.failures.some(failure => failure.includes('th-activity-chip'))).toBe(false);
+  });
+
+  test('a non-accent running tool glyph still fails S8', async () => {
+    const { probeChatRunningGlyphs } = await import('./visual-redesign-scenarios-t2.mjs');
+    const result = serializedProbeInDom(probeChatRunningGlyphs, {}, {
+      html: glyphs('background-color: #ededf0; color: #ededf0; border-color: #ededf0'),
+      tokens: stateColorTokens,
+    });
+    expect(result.pass).toBe(false);
+    expect(result.failures.some(failure => failure.includes('.th-tool-glyph--running'))).toBe(true);
+    expect(result.failures.some(failure => failure.includes('th-activity-g'))).toBe(false);
+    expect(result.measurements.excludedElementCount).toBe(2);
+  });
+
+  test('a non-accent DAG gnode is ignored by T2 S8 and still fails the shared probe', async () => {
+    const { probeChatRunningGlyphs } = await import('./visual-redesign-scenarios-t2.mjs');
+    const html = glyphs('background-color: #8b7cf6');
+    const scoped = serializedProbeInDom(probeChatRunningGlyphs, {}, { html, tokens: stateColorTokens });
+    expect(scoped.pass).toBe(true);
+    expect(scoped.measurements.glyphsFound).toBe(1);
+    expect(scoped.measurements.glyphs[0].selector).toBe('.th-tool-glyph--running');
+    expect(scoped.measurements.excludedElementCount).toBe(2);
+    expect(scoped.measurements.excludedSamples.some(sample => sample.includes('dag-node'))).toBe(true);
+    const shared = serializedProbeInDom(probeRunningGlyphs, {}, { html, tokens: stateColorTokens });
+    expect(shared.pass).toBe(false);
+    expect(shared.failures.some(failure => failure.includes('.th-activity-gnode--running'))).toBe(true);
+    expect(shared.failures.some(failure => failure.includes('.th-activity-gstatus--running'))).toBe(true);
   });
 });

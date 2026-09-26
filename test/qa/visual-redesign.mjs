@@ -70,7 +70,7 @@ import {
   SCENARIOS, THEME_EXPECTATIONS, colorEquals, modalFocusRestoreDecision, modalFocusRestoreFacts, motionViolations,
   overlaySnapshot, pageKit, parseColor, probeChromeTheme,
   probeContrastSurface, probeHeader, probeHierarchy, probeMotion, probeReducedMotion, probeRunningGlyphs,
-  probeRunningReducedMotion, probeSeparation, probeStateColors, probeTokens,
+  probeRunningReducedMotion, probeSeparation, probeStateColors, probeTokens, probePagePan, pagePanVerdict,
 } from './visual-redesign-probes.mjs';
 
 const SEED_CWD = '/fixture';
@@ -227,6 +227,24 @@ async function closeMobileDrawer(page) {
     const sidebar = document.querySelector('.th-sidebar');
     return !sidebar || sidebar.hasAttribute('inert') || sidebar.getAttribute('aria-hidden') === 'true';
   }, undefined, { timeout: 4000 }).catch(() => {});
+  // G29: the React inert/aria flip above lands immediately, but the drawer
+  // keeps sliding out for --th-dur-slow and flips visibility only at the end
+  // of its delayed transition - captures fired in that window show a drawer
+  // strip. Wait for the drawer's FINITE exit animations (the transform slide
+  // plus the visibility flip) to finish, event-based and bounded; infinite
+  // progress glyphs are excluded so an idle open drawer cannot stall the
+  // bound, and the timeout remains a failure bound, never a readiness delay.
+  await page.evaluate(() => {
+    const sidebar = document.querySelector('.th-sidebar');
+    if (!sidebar) return Promise.resolve();
+    const finite = sidebar.getAnimations({ subtree: true }).filter(animation => {
+      try { return animation.effect?.getComputedTiming()?.iterations !== Infinity; } catch { return false; }
+    });
+    return Promise.race([
+      Promise.allSettled(finite.map(animation => animation.finished)),
+      new Promise(done => setTimeout(done, 2500)),
+    ]);
+  }).catch(() => {});
 }
 
 /** D5 - click `selector` through its real entry point. On narrow viewports
@@ -1385,6 +1403,32 @@ export function buildScenarioRegistry(plugins) {
 
 async function screenshot(page, ctx, suffix) {
   const name = `${ctx.scenario}-${ctx.theme}-${ctx.viewport.label}${suffix}.png`;
+  // The plugin's mobile drawer close returns when React flips inert, before
+  // CSS finishes sliding the 264px drawer offscreen. Every capture waits for
+  // that finite exit; an open drawer (e.g. modal-churn) remains untouched.
+  if (ctx.viewport.width <= 768) {
+    await page.evaluate(async () => {
+      const sidebar = document.querySelector('.th-sidebar');
+      if (!sidebar?.hasAttribute('inert')) return;
+      const finite = sidebar.getAnimations({ subtree: true }).filter(animation =>
+        animation.effect?.getComputedTiming()?.iterations !== Infinity);
+      let timer;
+      try {
+        await Promise.race([
+          Promise.allSettled(finite.map(animation => animation.finished)),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('mobile drawer exit did not settle')), 2500); }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+      if (getComputedStyle(sidebar).visibility !== 'hidden') {
+        throw new Error('mobile drawer is inert but still visible after its exit animations');
+      }
+    });
+  }
+  const pan = await probe(page, probePagePan);
+  const failures = pagePanVerdict(pan);
+  if (failures.length > 0) throw new Error(`capture ${name}: ${failures.join('; ')}`);
   await page.screenshot({ path: join(ctx.shotsDir, name), fullPage: false });
   return `screenshots/${name}`;
 }

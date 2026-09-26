@@ -162,11 +162,23 @@ export function defaultMotionAllowed() {
 }
 
 export function normalizeMotionProperty(property) {
-  const name = String(property).trim().toLowerCase();
+  // Web Animations keyframes report camelCase names (strokeDashoffset,
+  // backgroundPositionX); some serializers lowercase them with the hyphens
+  // stripped. Convert both back to the CSS property name before matching.
+  const kebab = String(property).trim().replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
+  const aliases = new Map([
+  'transform', 'opacity', 'filter', 'clip-path', 'stroke-dashoffset', 'background-position',
+  'background-position-x', 'background-position-y', 'border-color', 'background-color', 'color',
+  'box-shadow', 'translate', 'scale', 'rotate', 'offset-distance', 'stroke-dasharray',
+].map(name => [name.replace(/-/g, ''), name]));
+  const name = kebab.includes('-') ? kebab : (aliases.get(kebab) ?? kebab);
   // Chrome reports per-side longhands for shorthands: a transition declared as
   // border-color animates as border-top-color/border-right-color/... Map them
   // back onto the contract's border-color entry.
   if (/^border-(top|right|bottom|left)-color$/.test(name)) return 'border-color';
+  // Keyframe longhands of background-position are reported as
+  // background-position-x/-y (some engines drop the hyphens).
+  if (/^background-?position-?[xy]$/.test(name)) return 'background-position';
   return name;
 }
 
@@ -236,6 +248,20 @@ export function maxDurationMs(list) {
   return max;
 }
 
+/** A viewport capture is valid only at the document's left edge with no
+ * document-level horizontal overflow. Internal scrollports do not count. */
+export function pagePanVerdict(facts) {
+  const failures = [];
+  const where = facts.offender ?? 'document.scrollingElement';
+  if (facts.scrollX !== 0 || facts.scrollLeft !== 0) {
+    failures.push(`horizontal document pan at ${where}: window.scrollX=${facts.scrollX}, scrollingElement.scrollLeft=${facts.scrollLeft} (active: ${facts.active})`);
+  }
+  if (facts.scrollWidth > facts.innerWidth + 1) {
+    failures.push(`horizontal document overflow at ${where}: scrollWidth=${facts.scrollWidth} > innerWidth=${facts.innerWidth} + 1`);
+  }
+  return failures;
+}
+
 // ---------------------------------------------------------------------------
 // 2. Page kit
 // ---------------------------------------------------------------------------
@@ -263,6 +289,32 @@ export function isVisibleElement(element) {
   const style = getComputedStyle(element);
   if (style.display === 'none' || style.visibility === 'hidden') return false;
   return element.getClientRects().length > 0;
+}
+
+/** The real DOM facts checked immediately before every screenshot. Identify
+ * the widest visible element if an overflow is present, and name the active
+ * element when focus has caused the document itself to pan. */
+export function probePagePan() {
+  const innerWidth = window.innerWidth;
+  const scrollWidth = document.documentElement.scrollWidth;
+  let offender = null;
+  if (scrollWidth > innerWidth + 1) {
+    let maxRight = innerWidth + 1;
+    for (const element of document.querySelectorAll('body *')) {
+      if (!isVisibleElement(element)) continue;
+      const right = element.getBoundingClientRect().right;
+      if (right > maxRight) {
+        maxRight = right;
+        offender = `${describeElement(element)} (right=${Math.round(right)}px)`;
+      }
+    }
+  }
+  return {
+    scrollX: window.scrollX,
+    scrollLeft: document.scrollingElement.scrollLeft,
+    scrollWidth, innerWidth, offender,
+    active: describeElement(document.activeElement),
+  };
 }
 
 export function tokenColor(name) {
@@ -430,8 +482,19 @@ export function probeStateColors() {
     if (element.classList.contains('th-input') && element.matches(':focus')) continue;
     const style = getComputedStyle(element);
     if (style.display === 'none' || style.visibility === 'hidden') continue;
-    const colours = [style.borderTopColor, style.borderRightColor, style.borderBottomColor, style.borderLeftColor];
-    if (element.namespaceURI === 'http://www.w3.org/2000/svg') colours.push(style.stroke, style.fill);
+    // Only painted borders encode state: a zero-width or style:none border
+    // reports currentColor and must not be counted. Status glyphs and status
+    // text may carry status/accent colour (DESIGN.md state encoding: wash +
+    // glyph), so SVG shapes count only when they draw an enclosure outline
+    // (a stroked rect), never icon/glyph strokes or fills.
+    const colours = [];
+    for (const side of ['Top', 'Right', 'Bottom', 'Left']) {
+      const width = parseFloat(style['border' + side + 'Width']) || 0;
+      const lineStyle = style['border' + side + 'Style'];
+      if (width > 0 && lineStyle !== 'none' && lineStyle !== 'hidden') colours.push(style['border' + side + 'Color']);
+    }
+    if (element.namespaceURI === 'http://www.w3.org/2000/svg' && element.localName === 'rect'
+      && style.stroke && style.stroke !== 'none' && (parseFloat(style.strokeWidth) || 0) > 0) colours.push(style.stroke);
     const where = describeElement(element);
     for (const raw of colours) {
       const colour = parseColor(raw);
