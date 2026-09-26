@@ -1412,7 +1412,7 @@ export async function runEmptyState(ctx) {
 
 /** Plugin export merged over the built-in registry by visual-redesign.mjs. */
 export const scenarios = Object.freeze({
-  S5: runStateColorsShell,
+  'S5:shell': runStateColorsShell,
   S10: runSidebarSelection,
   S11: runEmptyState,
 });

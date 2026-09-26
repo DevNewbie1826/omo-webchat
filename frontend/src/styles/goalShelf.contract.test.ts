@@ -20,7 +20,7 @@ import { describe, expect, it } from "vitest";
  * floor so its 60vh panel cannot shove the composer past the clipped pane
  * once the transcript has already gone to zero. When the activity shelf is
  * expanded, that floor also reserves the resize grip and a minimal panel
- * box (borders intact) so overflow: hidden cannot clip the interaction
+ * box (its padding) so overflow: hidden cannot clip the interaction
  * band in half; collapsed stays the plain bar floor. The activity button
  * uses the same inward focus outline as the goal button. The user-sized
  * activity panel must stay viewport-bounded (max-height as a vh fraction,
@@ -51,16 +51,17 @@ const BAR_ROW_HEIGHT_FLOOR = compactCss(
   "calc(var(--th-type-secondary-size) * var(--th-type-secondary-line) + var(--th-space-1) + var(--th-space-1) + 2px)",
 );
 
-/** Collapsed activity shelf: the permanent tab strip's label line,
- *  padding, and borders. */
+/** Collapsed activity shelf: the permanent segmented tab strip - one tab's
+ *  label line and block padding plus the track's inset (borderless). */
 const ACTIVITY_COLLAPSED_HEIGHT_FLOOR = compactCss(
-  "calc(var(--th-type-label-size) * var(--th-type-label-line) + var(--th-space-0-5) + var(--th-space-0-5) + 2px)",
+  "calc(var(--th-type-label-size) * var(--th-type-label-line) + var(--th-space-1) + var(--th-space-1) + var(--th-space-0-5) + var(--th-space-0-5))",
 );
 
 /** Expanded activity shelf: tab-strip floor + 10px grip + grip margin-top +
- *  panel margin-top + vertical padding + 1px borders. */
+ *  grip margin-bottom (the panel gap) + the borderless panel's vertical
+ *  padding. */
 const ACTIVITY_EXPANDED_HEIGHT_FLOOR = compactCss(
-  "calc(var(--th-type-label-size) * var(--th-type-label-line) + var(--th-space-0-5) + var(--th-space-0-5) + 2px + 10px + var(--th-space-0-5) + var(--th-space-1) + var(--th-space-2) + var(--th-space-2) + 2px)",
+  "calc(var(--th-type-label-size) * var(--th-type-label-line) + var(--th-space-1) + var(--th-space-1) + var(--th-space-0-5) + var(--th-space-0-5) + 10px + var(--th-space-0-5) + var(--th-space-1) + var(--th-space-2) + var(--th-space-2))",
 );
 
 const shelfMinHeightFloorViolations = (shelf: string): string[] => {
@@ -215,7 +216,7 @@ describe("goal shelf shrink contract", () => {
     if (compactCss(minHeight) !== ACTIVITY_COLLAPSED_HEIGHT_FLOOR) {
       violations.push(
         `activity-shelf.css .th-activity-shelf min-height is "${minHeight || "missing"}"; ` +
-          "expected the tab-strip floor (label line, padding, and borders) so the " +
+          "expected the tab-strip floor (label line, padding, and track inset) so the " +
           "chrome never collapses",
       );
     }
@@ -265,8 +266,8 @@ describe("goal shelf shrink contract", () => {
     if (compactCss(minHeight) !== ACTIVITY_EXPANDED_HEIGHT_FLOOR) {
       violations.push(
         `activity-shelf.css expanded .th-activity-shelf min-height is "${minHeight || "missing"}"; ` +
-          "expected bar floor + 10px grip + space-0-5 grip margin + space-1 panel margin + " +
-          "space-2 + space-2 padding + 2px borders so the interaction band stays inside the clip",
+          "expected tab-strip floor + 10px grip + space-0-5 + space-1 grip margins + " +
+          "space-2 + space-2 panel padding so the interaction band stays inside the clip",
       );
     }
     // Collapsed must stay the plain tab-strip floor: the expanded calc belongs

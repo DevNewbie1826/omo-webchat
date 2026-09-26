@@ -108,6 +108,37 @@ describe("complete DAG dashboard", () => {
   async function reply(item: Request, body: unknown, status = 200) {
     await act(async () => { item.resolve(new Response(JSON.stringify(body), { status })); });
   }
+  async function commitWhen(committed: () => boolean, trigger: () => Promise<void>) {
+    let observer: MutationObserver | undefined;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const commit = new Promise<void>(resolve => {
+      observer = new MutationObserver(() => {
+        if (committed()) resolve();
+      });
+      observer.observe(harness.container, { subtree: true, attributes: true });
+    });
+    try {
+      await trigger();
+      if (!committed()) {
+        await Promise.race([commit, new Promise<never>((_resolve, reject) => {
+          deadline = setTimeout(() => reject(new Error("DAG response commit deadline")), 4000);
+        })]);
+      }
+    } finally {
+      clearTimeout(deadline);
+      observer?.disconnect();
+    }
+  }
+  async function replyRuns(ids: readonly string[], index = 0) {
+    await commitWhen(
+      () => ids.every(id => status(id) === "complete"),
+      async () => {
+        await act(async () => {
+          for (const id of ids) request(`${base}/${id}`, index).resolve(new Response(JSON.stringify(full(id))));
+        });
+      },
+    );
+  }
   async function load() {
     render(); open();
     await reply(request(firstPage), catalog());
@@ -125,7 +156,7 @@ describe("complete DAG dashboard", () => {
     const ids = Array.from({ length: 10 }, (_unused, index) => `run-${index}`);
     render(); open();
     await reply(request(firstPage), catalog(ids, "cursor-2"));
-    for (const id of ids) await reply(request(`${base}/${id}`), full(id));
+    await replyRuns(ids);
     expect(rowIds()).toEqual(ids);
     for (const id of ids) {
       const row = rowOf(id);
@@ -162,7 +193,7 @@ describe("complete DAG dashboard", () => {
     revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "placeholder sentinel"));
     revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "placeholder sentinel"));
     expect(requests.some(item => item.url === pageAfter("cursor-2"))).toBe(false);
-    for (const id of firstTen) await reply(request(`${base}/${id}`), full(id));
+    await replyRuns(firstTen);
     // Settled list end: one reveal consumes exactly one more page of ten.
     revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "settled sentinel"));
     revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "settled sentinel"));
@@ -172,7 +203,7 @@ describe("complete DAG dashboard", () => {
     // The appended rows are placeholders again — still not a settled end.
     revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "sentinel after append"));
     expect(requests.some(item => item.url === pageAfter("cursor-3"))).toBe(false);
-    for (const id of secondTen) await reply(request(`${base}/${id}`), full(id));
+    await replyRuns(secondTen);
     revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "settled sentinel after append"));
     await reply(request(pageAfter("cursor-3")), catalog([], null));
     expect(harness.container.querySelector("[data-activity-dag-sentinel]")).toBeNull();
@@ -202,10 +233,10 @@ describe("complete DAG dashboard", () => {
     const reads = (prefix: string): number => requests.filter(item => item.url.startsWith(`${base}/${prefix}-`)).length;
     render(); open();
     await reply(request(firstPage), catalog(newest, "cursor-2"));
-    for (const id of newest) await reply(request(`${base}/${id}`), full(id));
+    await replyRuns(newest);
     revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "settled sentinel"));
     await reply(request(pageAfter("cursor-2")), catalog(deeper, null));
-    for (const id of deeper) await reply(request(`${base}/${id}`), full(id));
+    await replyRuns(deeper);
     expect(rowIds()).toEqual([...newest, ...deeper]);
     expect(reads("newest")).toBe(10);
     expect(reads("deeper")).toBe(10);
@@ -219,7 +250,7 @@ describe("complete DAG dashboard", () => {
     await reply(request(firstPage, 1), catalog(newest, "cursor-2"));
     // Only this opening's newest page re-reads; the deeper rows stay
     // unfetched until a real scroll asks for their catalog page again.
-    for (const id of newest) await reply(request(`${base}/${id}`, 1), full(id));
+    await replyRuns(newest, 1);
     expect(reads("newest")).toBe(20);
     expect(reads("deeper")).toBe(10);
     expect(rowIds()).toEqual(newest);
@@ -228,7 +259,10 @@ describe("complete DAG dashboard", () => {
 
   it("surfaces catalog retrieval errors explicitly and recovers through the refresh button", async () => {
     render(); open();
-    await reply(request(firstPage), { error: "catalog unavailable" }, 500);
+    await commitWhen(
+      () => catalogStatus() === "error",
+      () => reply(request(firstPage), { error: "catalog unavailable" }, 500),
+    );
     expect(catalogStatus()).toBe("error");
     expect(rowIds()).toEqual([]);
     expect(harness.container.querySelector(".th-activity-dag-complete > .th-activity-dag-freshness[role='alert']")?.textContent).toBe("activity.dagCatalogError");

@@ -38,7 +38,7 @@ describe("contrast utilities", () => {
   });
 
   it("resolves the color-mix() forms the design system uses", () => {
-    // activity-shelf.css recreates --th-success-bg as exactly this mix.
+    // Component tints (e.g. chat-pane.css's send wash) use exactly this form.
     const recreated = parseColor("color-mix(in srgb, #30a46c 12%, transparent)");
     expect(recreated.r).toBeCloseTo(48, 6);
     expect(recreated.g).toBeCloseTo(164, 6);
@@ -368,14 +368,21 @@ describe("token contrast contracts (WCAG 2.1)", () => {
       bg: "--th-warning-bg",
       over: "--th-surface",
       ratio: NORMAL_TEXT,
-      note: "activity-shelf running chip: status tint composed over the bar's --th-surface",
+      note: "warning status tint composed over --th-surface",
     },
     {
       fg: "--th-success",
       bg: "--th-success-bg",
       over: "--th-surface",
       ratio: NORMAL_TEXT,
-      note: "activity-shelf done chip: status tint composed over the bar's --th-surface",
+      note: "success status tint composed over --th-surface",
+    },
+    {
+      fg: "--th-text",
+      bg: "--th-accent-soft",
+      over: "--th-surface",
+      ratio: NORMAL_TEXT,
+      note: "activity-shelf running chip: violet wash composed over the shelf's --th-surface",
     },
   ];
 
@@ -514,6 +521,7 @@ describe("token contrast contracts (WCAG 2.1)", () => {
     ".th-login-foot": "login footer hint line",
     ".th-input::placeholder": "input placeholder hint",
     ".th-activity-bar-sep": "activity bar middot separator glyph",
+    ".th-activity-resize::after": "activity panel resize grip pill (non-text affordance, >=3:1 at rest)",
     ".th-tree-chevron": "session-tree disclosure chevron icon",
     ".th-tree-source": "session-tree source badge",
     ".th-files-chevron": "file-tree disclosure chevron icon",
@@ -723,37 +731,23 @@ describe("token contrast contracts (WCAG 2.1)", () => {
     expect(scopeBodies.get('[data-theme="light"]') ?? "").toMatch(/color-scheme:\s*light/);
   });
 
-  it("measures the activity-shelf chip's recreated success tint instead of skipping it", () => {
-    // activity-shelf.css rebuilds --th-success-bg with a raw color-mix() - the
-    // one component-side token recreation in the codebase. Resolve that exact
-    // expression in every theme scope, prove it still equals the token, and
-    // hold the chip's foreground-on-recreated-fill pair to the same 4.5:1
-    // contract as the token pair it stands in for.
+  it("measures the activity-shelf done chip's declared fill and label pair instead of skipping it", () => {
+    // The done chip no longer recreates --th-success-bg with a raw
+    // color-mix(); it requests a neutral token pair. Read the exact pair the
+    // stylesheet declares and hold it to the 4.5:1 contract in every theme
+    // scope, composed over the shelf's --th-surface.
     const shelf = readFileSync("src/styles/activity-shelf.css", "utf8");
-    const recreation = /\.th-activity-chip--ok\s*\{[^}]*?background:\s*([^;]+);/.exec(shelf)?.[1]?.trim();
-    expect(recreation).toBeDefined();
-    expect(recreation ?? "").toContain("color-mix(");
+    const rule = /\.th-activity-chip--ok\s*\{([^}]*)\}/.exec(shelf)?.[1] ?? "";
+    const fill = /(?:^|;)\s*background:\s*var\(\s*(--th-[\w-]+)\s*\)\s*;/.exec(rule)?.[1];
+    const label = /(?:^|;)\s*color:\s*var\(\s*(--th-[\w-]+)\s*\)\s*;/.exec(rule)?.[1];
+    expect(fill).toBeDefined();
+    expect(label).toBeDefined();
     const failures: string[] = [];
     for (const scope of scopes) {
-      const recreated = parseColor(recreation ?? "", (name) => scopeColor(scope, name));
-      const token = scopeColor(scope, "--th-success-bg");
-      for (const channel of ["r", "g", "b", "a"] as const) {
-        if (Math.abs(recreated[channel] - token[channel]) > 1e-6) {
-          failures.push(
-            `[${scope.selector}] recreated chip tint ${channel}=${recreated[channel]} ` +
-              `!= --th-success-bg ${token[channel]}: the recreation drifted from the token`,
-          );
-        }
-      }
-      const withRecreation: ThemeScope = {
-        selector: scope.selector,
-        declaredTokens: scope.declaredTokens,
-        tokens: { ...scope.tokens, "--th-success-bg-recreated": recreation ?? "" },
-      };
-      const measured = pairRatio(withRecreation, "--th-success", "--th-success-bg-recreated", "--th-surface");
+      const measured = pairRatio(scope, label ?? "", fill ?? "", "--th-surface");
       if (measured < NORMAL_TEXT) {
         failures.push(
-          `[${scope.selector}] --th-success on recreated chip tint: ${measured.toFixed(2)}:1 < required 4.5:1`,
+          `[${scope.selector}] ${label} on done chip ${fill}: ${measured.toFixed(2)}:1 < required 4.5:1`,
         );
       }
     }

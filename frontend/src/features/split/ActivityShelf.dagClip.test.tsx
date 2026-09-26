@@ -124,9 +124,15 @@ describe("ActivityShelf dag graph label clipping", () => {
     expect(Number.isFinite(x)).toBe(true);
     expect(Number.isFinite(width)).toBe(true);
     expect(clipEl.children).toHaveLength(1);
+    // The status glyph leads the label: the clip starts clear of the glyph
+    // lane and ends inside the card's inner edge.
     const glyph = requireElement(harness.container.querySelector('.th-activity-gstatus--running'), 'running glyph');
     const glyphLeft = Number(glyph.getAttribute('cx')) - Number(glyph.getAttribute('r'));
-    expect(x).toBeGreaterThanOrEqual(7);
-    expect(x + width).toBeLessThanOrEqual(glyphLeft - 2);
+    const glyphRight = Number(glyph.getAttribute('cx')) + Number(glyph.getAttribute('r'));
+    const cardWidth = Number(requireElement(harness.container.querySelector('.th-activity-gnode-card'), 'node card').getAttribute('width'));
+    expect(glyphLeft).toBeGreaterThanOrEqual(7);
+    expect(glyphRight).toBeLessThan(Number(label.getAttribute('x')));
+    expect(x).toBeGreaterThanOrEqual(glyphRight + 2);
+    expect(x + width).toBeLessThanOrEqual(cardWidth - 7);
   });
 });

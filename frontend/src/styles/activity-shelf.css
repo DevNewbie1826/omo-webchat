@@ -13,7 +13,9 @@
    column's real available space) and an inline flex-shrink: 0 — the
    transcript alone then absorbs a long transcript's deficit (it keeps a
    ~120px reserve and scrolls), and the shelf only ever yields on viewports
-   too small for the reserve. */
+   too small for the reserve. The collapsed floor is the segmented tab
+   strip: one tab's Label line box, its block padding, and the track's
+   inset. */
 .th-activity-shelf {
   display: flex;
   flex: 0 1 auto;
@@ -22,7 +24,8 @@
   min-width: 0;
   min-height: calc(
     var(--th-type-label-size) * var(--th-type-label-line) +
-      var(--th-space-0-5) + var(--th-space-0-5) + 2px
+      var(--th-space-1) + var(--th-space-1) +
+      var(--th-space-0-5) + var(--th-space-0-5)
   );
   overflow: hidden;
   margin: var(--th-space-2) auto 0;
@@ -37,17 +40,19 @@
 /* Expanded contract: the collapsed tab-strip floor plus overflow: hidden
    would clip the resize grip and the panel while the transcript still has
    space, so the grip hit-tests through to the status strip and the panel
-   loses its bottom border. Reserve the interaction band (grip + a minimal
-   panel box with both borders) only while the shelf's own data-expanded
-   state says the panel is actually allocated; collapsed stays the plain
-   tab-strip floor. The outer shelf remains flex: 0 1 auto so a true
-   deficit still yields, and the panel scrolls inside via min-height: 0. */
+   loses its bottom edge. Reserve the interaction band (grip + a minimal
+   borderless panel box: its block padding) only while the shelf's own
+   data-expanded state says the panel is actually allocated; collapsed stays
+   the plain tab-strip floor. The outer shelf remains flex: 0 1 auto so a
+   true deficit still yields, and the panel scrolls inside via
+   min-height: 0. */
 .th-activity-shelf[data-expanded="true"] {
   min-height: calc(
     var(--th-type-label-size) * var(--th-type-label-line) +
-      var(--th-space-0-5) + var(--th-space-0-5) + 2px +
-      10px + var(--th-space-0-5) +
-      var(--th-space-1) + var(--th-space-2) + var(--th-space-2) + 2px
+      var(--th-space-1) + var(--th-space-1) +
+      var(--th-space-0-5) + var(--th-space-0-5) +
+      10px + var(--th-space-0-5) + var(--th-space-1) +
+      var(--th-space-2) + var(--th-space-2)
   );
 }
 
@@ -68,10 +73,11 @@
   gap: var(--th-space-2);
   flex: 1 1 auto;
   min-width: 0;
-  padding: var(--th-space-1) var(--th-space-2);
+  padding: var(--th-space-1) var(--th-space-3);
   overflow: hidden;
-  border: 1px solid var(--th-border);
-  border-radius: var(--th-radius-sm);
+  /* One hairline: the expanded goal panel continues it below the bar. */
+  border: 1px solid var(--th-border-surface);
+  border-radius: var(--th-radius-pill);
   background: var(--th-surface);
   color: var(--th-text-dim);
   font-size: var(--th-type-secondary-size);
@@ -113,40 +119,74 @@ button.th-activity-bar:hover {
   color: var(--th-faint);
 }
 
+/* Expanded, the pill joins its panel as one card: the top corners settle
+   to the panel's corner radius (the bottom corners square off where the
+   panel hangs), instead of the pill radius growing to the bar's height. */
+.th-activity-bar[aria-expanded="true"] {
+  border-top-left-radius: var(--th-radius-sm);
+  border-top-right-radius: var(--th-radius-sm);
+}
+
 .th-activity-caret {
   flex: none;
   color: var(--th-muted);
-  transition: transform var(--th-dur-fast) var(--th-ease);
+  transition: transform var(--th-dur) var(--th-ease);
 }
 
 .th-activity-caret--open {
   transform: rotate(90deg);
 }
 
-/* Shrink contract: min-height: 0 lets the shelf column squeeze the panel
-   (it scrolls via overflow) instead of overflowing the clipped shelf. The
-   inline max-height set by the shared column clamp bounds the
-   panel by the column's real available space; these stylesheet caps are
-   the fallbacks when no measurement exists (no ResizeObserver, standalone
-   render) and the ceilings the clamp never exceeds. */
-/* Three equal primary tabs (P5). flex-basis 0 keeps the widths equal within
-   a pixel regardless of label length; the compact count rides in the tab. */
+/* Segmented control (P5): three equal tabs on one tonal pill track, the
+   selection marked by ONE neutral raised thumb that slides between
+   segments. flex-basis 0 keeps the widths equal within a pixel regardless
+   of label length, so the thumb is exactly one segment wide and
+   translateX(100%) steps one tab. No borders: the track separates from the
+   canvas by tone, the thumb from the track by shadow and highlight. */
 .th-activity-tabs {
+  position: relative;
   display: flex;
   flex: none;
-  gap: var(--th-space-1);
+  padding: var(--th-space-0-5);
+  border-radius: var(--th-radius-pill);
+  background: var(--th-surface);
 }
 
+.th-activity-tab-thumb {
+  position: absolute;
+  top: var(--th-space-0-5);
+  bottom: var(--th-space-0-5);
+  left: var(--th-space-0-5);
+  /* One of the three equal segments inside the track's inset. */
+  width: calc((100% - var(--th-space-0-5) - var(--th-space-0-5)) / 3);
+  border-radius: var(--th-radius-pill);
+  background: var(--th-surface-raised);
+  box-shadow: var(--th-shadow-surface), var(--th-highlight);
+  pointer-events: none;
+  /* Continuity: a re-aimed transition retargets from the thumb's current
+     position; the global reduced-motion policy moves it instantly. */
+  transition: transform var(--th-dur) var(--th-ease-in-out);
+}
+
+.th-activity-tab-thumb[data-index="1"] {
+  transform: translateX(100%);
+}
+
+.th-activity-tab-thumb[data-index="2"] {
+  transform: translateX(200%);
+}
+
+/* Positioned after the thumb in tree order, so labels paint above it. */
 .th-activity-tab {
+  position: relative;
   display: flex;
   align-items: baseline;
   justify-content: center;
   gap: var(--th-space-1);
   flex: 1 1 0;
   min-width: 0;
-  padding: var(--th-space-0-5) var(--th-space-1);
-  border: 1px solid var(--th-border);
-  border-radius: var(--th-radius-sm);
+  padding: var(--th-space-1) var(--th-space-2);
+  border-radius: var(--th-radius-pill);
   background: transparent;
   color: var(--th-muted);
   font-size: var(--th-type-label-size);
@@ -154,19 +194,18 @@ button.th-activity-bar:hover {
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
   cursor: pointer;
-  transition:
-    background-color var(--th-dur-fast) var(--th-ease),
-    border-color var(--th-dur-fast) var(--th-ease),
-    color var(--th-dur-fast) var(--th-ease);
+  transition: color var(--th-dur-fast) var(--th-ease);
 }
 
 .th-activity-tab:hover {
-  background: var(--th-hover);
   color: var(--th-text-dim);
 }
 
+/* The shelf clips its overflow: keep the forced-colours outline inside the
+   tab and size the ring to the track's 2px inset so no edge is cut. */
 .th-activity-tab:focus-visible {
   outline-offset: -2px;
+  box-shadow: 0 0 0 2px var(--th-ring);
 }
 
 /* Phones get a 32px tab strip (segmented-control scale); the base alignment
@@ -180,8 +219,6 @@ button.th-activity-bar:hover {
 }
 
 .th-activity-tab[aria-selected="true"] {
-  border-color: var(--th-border-strong);
-  background: var(--th-hover);
   color: var(--th-text);
 }
 
@@ -192,10 +229,11 @@ button.th-activity-bar:hover {
   text-overflow: ellipsis;
 }
 
+/* Compact counts stay sans; tabular figures keep the digits from jittering
+   as they tick. */
 .th-activity-tab-count {
   flex: none;
   color: var(--th-muted);
-  font-family: var(--th-font-mono);
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
@@ -235,7 +273,17 @@ button.th-activity-bar:hover {
   text-align: center;
 }
 
-/* The panel itself no longer scrolls; each tabpanel owns its scrollport. */
+/* Shrink contract: min-height: 0 lets the shelf column squeeze the panel
+   (it scrolls via overflow) instead of overflowing the clipped shelf. The
+   inline max-height set by the shared column clamp bounds the
+   panel by the column's real available space; these stylesheet caps are
+   the fallbacks when no measurement exists (no ResizeObserver, standalone
+   render) and the ceilings the clamp never exceeds.
+   The panel itself no longer scrolls; each tabpanel owns its scrollport.
+   Surface level by tone alone: the shelf clips overflow, so the level's
+   shadow would be cut, and rows inside separate by rhythm and the timeline
+   rail rather than nested frames. The inline padding keeps rows clear of
+   the large corners. */
 .th-activity-panel {
   position: relative;
   display: flex;
@@ -243,10 +291,9 @@ button.th-activity-bar:hover {
   gap: var(--th-space-2);
   min-height: 0;
   max-height: 280px;
-  padding: var(--th-space-2);
+  padding: var(--th-space-2) var(--th-space-3);
   overflow: hidden;
-  border: 1px solid var(--th-border);
-  border-radius: var(--th-radius-sm);
+  border-radius: var(--th-radius-lg);
   background: var(--th-surface);
 }
 
@@ -263,10 +310,11 @@ button.th-activity-bar:hover {
   transition: none;
 }
 
-/* Standalone grip between the summary bar and the panel: always visible,
-   centered in the reading column, with the ::after bar carrying the color
-   feedback (border → text-dim on hover → text while dragging). The grip
-   never yields its height; only the panel below it shrinks. */
+/* Pill grip between the tab strip and the panel: always visible, centered
+   in the reading column. The 10px band is the hit target; the ::after pill
+   carries the feedback (faint -> muted on hover -> text-dim while
+   dragging). The grip never yields its height; only the panel below it
+   shrinks. */
 .th-activity-resize {
   display: flex;
   flex: none;
@@ -278,25 +326,36 @@ button.th-activity-bar:hover {
   margin: var(--th-space-0-5) auto var(--th-space-1);
   cursor: row-resize;
   touch-action: none;
-  transition: background-color var(--th-dur-fast) var(--th-ease);
 }
 
 .th-activity-resize::after {
   content: "";
   flex: none;
   width: 36px;
-  height: 2px;
-  border-radius: 999px;
-  background: var(--th-border-strong);
-  transition: background-color var(--th-dur-fast) var(--th-ease);
+  height: 4px;
+  border-radius: var(--th-radius-pill);
+  background: var(--th-faint);
+  transition:
+    background-color var(--th-dur-fast) var(--th-ease),
+    box-shadow var(--th-dur-fast) var(--th-ease);
 }
 
 .th-activity-resize:hover::after {
-  background: var(--th-text-dim);
+  background: var(--th-muted);
 }
 
 .th-activity-resize:active::after {
-  background: var(--th-text);
+  background: var(--th-text-dim);
+}
+
+/* Keyboard focus rings the pill itself rather than the full-width band. */
+.th-activity-resize:focus-visible {
+  box-shadow: none;
+}
+
+.th-activity-resize:focus-visible::after {
+  background: var(--th-muted);
+  box-shadow: 0 0 0 3px var(--th-ring);
 }
 
 .th-activity-section {
@@ -317,7 +376,6 @@ button.th-activity-bar:hover {
   flex: none;
   margin-left: auto;
   color: var(--th-muted);
-  font-family: var(--th-font-mono);
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
@@ -332,64 +390,240 @@ button.th-activity-bar:hover {
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
-  text-transform: uppercase;
 }
 
+/* Status chip: a tinted wash behind the localized word, sans and in normal
+   case; hue is a redundant cue beside the word and the rail glyph. Running
+   takes the violet agent-alive wash with a neutral label (violet text on
+   the 14% wash measures ~4.1:1, under the 4.5:1 floor); done recedes to
+   the neutral active step like its muted rail check; failed keeps its
+   measured error pair; everything else stays neutral. */
 .th-activity-chip {
+  display: inline-flex;
   flex: none;
-  padding: 0 var(--th-space-1);
-  border-radius: 999px;
+  align-items: center;
+  padding: var(--th-space-0-5) var(--th-space-2);
+  border-radius: var(--th-radius-pill);
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
-  text-transform: uppercase;
   white-space: nowrap;
 }
 
-.th-activity-chip--running { background: var(--th-warning-bg); color: var(--th-warning); }
-.th-activity-chip--ok { background: color-mix(in srgb, var(--th-success) 12%, transparent); color: var(--th-success); }
+.th-activity-chip--running { background: var(--th-accent-soft); color: var(--th-text); }
+.th-activity-chip--ok { background: var(--th-active); color: var(--th-text-dim); }
 .th-activity-chip--error { background: var(--th-error-bg); color: var(--th-error); }
 .th-activity-chip--muted { background: var(--th-hover); color: var(--th-muted); }
 
-.th-activity-agents {
+/* Timeline list: rows touch (no gap) so each row's lane rail joins its
+   neighbours into one continuous thin rail, broken only around glyphs. */
+.th-activity-timeline {
   display: flex;
   flex-direction: column;
-  gap: var(--th-space-0-5);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
+/* Timeline row: a fixed glyph lane beside the content column. The lane
+   stretches the full row height; the content carries the block padding. */
+.th-activity-todo-task,
 .th-activity-agent {
-  display: flex;
-  align-items: center;
-  gap: var(--th-space-2);
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--th-space-4) minmax(0, 1fr);
+  column-gap: var(--th-space-2);
+  align-items: start;
   min-width: 0;
-  padding: var(--th-space-0-5) var(--th-space-1);
+  padding-inline: var(--th-space-1);
   border-radius: var(--th-radius-sm);
   font-size: var(--th-type-secondary-size);
   line-height: var(--th-type-secondary-line);
   letter-spacing: var(--th-type-secondary-tracking);
 }
 
+.th-activity-lane {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  align-self: stretch;
+}
+
+/* Rail segments run from the row top to just above the glyph and from just
+   below it to the row bottom. The upper segment ends where the first text
+   line centres the 1em glyph: the content's block padding plus half the
+   line box's slack, minus the 2px gap the glyph keeps from the rail. */
+.th-activity-lane::before,
+.th-activity-lane::after {
+  content: "";
+  width: 1px;
+  background: var(--th-border-strong);
+}
+
+.th-activity-lane::before {
+  flex: none;
+  height: calc(var(--th-space-1) + (1lh - 1em) / 2 - var(--th-space-0-5));
+}
+
+.th-activity-lane::after {
+  flex: 1 1 auto;
+}
+
+.th-activity-timeline > li:first-child > .th-activity-lane::before,
+.th-activity-timeline > li:last-child > .th-activity-lane::after {
+  visibility: hidden;
+}
+
+.th-activity-glyph {
+  position: relative;
+  flex: none;
+  width: 1em;
+  height: 1em;
+  margin-block: var(--th-space-0-5);
+  border-radius: var(--th-radius-pill);
+}
+
+/* Not started: a hollow muted ring. */
+.th-activity-glyph--pending,
+.th-activity-glyph--stopped {
+  color: var(--th-muted);
+  box-shadow: inset 0 0 0 0.125em currentColor;
+}
+
+/* Stopped (cancelled, skipped, dropped): the ring crossed by a dash. */
+.th-activity-glyph--stopped::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 25%;
+  left: 25%;
+  height: 0.125em;
+  border-radius: var(--th-radius-pill);
+  background: currentColor;
+  transform: translateY(-50%);
+}
+
+/* Running: a violet arc, the agent-alive accent. It is a masked fill, never
+   a coloured border or stroke. It spins only while the work is observably
+   live; otherwise, and under reduced motion (global policy), the static
+   arc stays distinct from the ring and the check. */
+.th-activity-glyph--running {
+  background-color: var(--th-accent);
+  mask-image:
+    conic-gradient(transparent 0 0.25turn, currentColor 0),
+    radial-gradient(closest-side, transparent calc(100% - 0.15em), currentColor calc(100% - 0.125em));
+  mask-composite: intersect;
+}
+
+.th-activity-glyph--live {
+  /* Same period as the DAG running ring, so every live spinner in the shelf
+     turns together. */
+  animation: th-activity-glyph-spin calc(var(--th-dur-slow) * 5) linear infinite;
+}
+
+@keyframes th-activity-glyph-spin {
+  to { transform: rotate(1turn); }
+}
+
+/* Done: a muted check; finished work recedes. */
+.th-activity-glyph--done {
+  background-color: var(--th-muted);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.75 8.5 6.5 11.25 12.25 5' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+/* Failed, or silent past the severed threshold: an exclamation on the error
+   wash. */
+.th-activity-glyph--error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--th-error-bg);
+  color: var(--th-error);
+}
+
+.th-activity-glyph--error::before {
+  content: "!";
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-announce);
+  line-height: 1;
+}
+
+.th-activity-agent-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-0-5);
+  min-width: 0;
+  padding-block: var(--th-space-1);
+}
+
+/* Head line: name and status chip lead; start time and freshness notes
+   trail at the far edge. The name truncates first. */
+.th-activity-agent-head {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  min-width: 0;
+}
+
 .th-activity-agent-name {
   flex: 0 1 auto;
   min-width: 0;
-  max-width: 40%;
   overflow: hidden;
   color: var(--th-text);
-  font-family: var(--th-font-mono);
-  font-size: var(--th-type-secondary-size);
-  line-height: var(--th-type-secondary-line);
-  letter-spacing: var(--th-type-secondary-tracking);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.th-activity-agent-tool {
-  flex: 0 1 auto;
+.th-activity-agent--done .th-activity-agent-name,
+.th-activity-agent--stopped .th-activity-agent-name {
+  color: var(--th-text-dim);
+}
+
+/* Trailing notes yield before the name on narrow panes (the trail's shrink
+   factor dwarfs the name's). A note that no longer fits wraps onto the
+   clipped second line, so it disappears whole instead of leaving a sliver;
+   the severed alarm never yields. */
+.th-activity-agent-trail {
+  display: flex;
+  flex: 0 999 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--th-space-2);
   min-width: 0;
+  max-height: calc(var(--th-type-micro-size) * var(--th-type-micro-line));
+  margin-left: auto;
+  overflow: hidden;
+}
+
+/* Zero-width, one-line-tall first flex item: a line always keeps at least
+   one item, so this placeholder holds the first line open at full height
+   and lets even the first real note wrap below the clip. */
+.th-activity-agent-trail::before {
+  content: "";
+  height: calc(var(--th-type-micro-size) * var(--th-type-micro-line));
+}
+
+.th-activity-severed .th-activity-agent-trail {
+  flex-shrink: 0;
+}
+
+/* Detail line, one tier down: the agent's live voice (current tool, an
+   identifier in mono, then the last assistant line) with compact counters
+   trailing. */
+.th-activity-agent-detail {
+  display: flex;
+  align-items: baseline;
+  gap: var(--th-space-2);
+  min-width: 0;
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+}
+
+.th-activity-agent-tool {
+  flex: none;
+  max-width: 40%;
   overflow: hidden;
   color: var(--th-muted);
   font-family: var(--th-font-mono);
@@ -397,16 +631,13 @@ button.th-activity-bar:hover {
   white-space: nowrap;
 }
 
-/* Last assistant line: the live voice of the agent, single line with
-   ellipsis, taking whatever lane the fixed-width metadata leaves it. */
+/* Last assistant line: single line with ellipsis, taking whatever lane the
+   tool and counters leave it. */
 .th-activity-agent-lastline {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--th-text-dim);
-  font-size: var(--th-type-secondary-size);
-  line-height: var(--th-type-secondary-line);
-  letter-spacing: var(--th-type-secondary-tracking);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -414,7 +645,6 @@ button.th-activity-bar:hover {
 .th-activity-agent-meta {
   flex: none;
   color: var(--th-muted);
-  font-family: var(--th-font-mono);
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
@@ -456,7 +686,7 @@ button.th-activity-bar:hover {
   width: var(--th-space-1);
   height: var(--th-space-1);
   margin-right: var(--th-space-1);
-  border-radius: 999px;
+  border-radius: var(--th-radius-pill);
   background: var(--th-error);
   animation: th-activity-severed-pulse calc(var(--th-dur-slow) * 4) var(--th-ease) infinite alternate;
 }
@@ -563,12 +793,13 @@ button.th-activity-bar:hover {
   margin-left: auto;
 }
 
+/* Quiet pill action (roster Retry, DAG Refresh, view toggle): no border, a
+   tonal fill that lifts on hover; pressed takes the active step. */
 .th-activity-view-btn {
-  padding: var(--th-space-0-5) var(--th-space-2);
-  border: 1px solid var(--th-border);
-  border-radius: var(--th-radius-sm);
-  background: transparent;
-  color: var(--th-muted);
+  padding: var(--th-space-0-5) var(--th-space-3);
+  border-radius: var(--th-radius-pill);
+  background: var(--th-hover);
+  color: var(--th-text-dim);
   font-size: var(--th-type-label-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-label-line);
@@ -576,45 +807,45 @@ button.th-activity-bar:hover {
   cursor: pointer;
   transition:
     background-color var(--th-dur-fast) var(--th-ease),
-    border-color var(--th-dur-fast) var(--th-ease),
     color var(--th-dur-fast) var(--th-ease);
 }
 
 .th-activity-view-btn:hover {
-  background: var(--th-hover);
-  color: var(--th-text-dim);
+  background: var(--th-active);
+  color: var(--th-text);
 }
 
 .th-activity-view-btn[aria-pressed="true"] {
-  border-color: var(--th-border-strong);
-  background: var(--th-hover);
+  background: var(--th-active);
   color: var(--th-text);
 }
 
 .th-activity-dag {
   display: flex;
   flex-direction: column;
-  gap: var(--th-space-1);
-  min-width: 0;
-}
-
-.th-activity-dag-head {
-  display: flex;
-  align-items: center;
   gap: var(--th-space-2);
   min-width: 0;
 }
 
+/* Run header: the title row (name, status chip, counts, view control) over
+   the determinate progress bar. */
+.th-activity-dag-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-2);
+  min-width: 0;
+}
+
+/* A run name is a UI label (sans Label tier); mono stays for identifiers. */
 .th-activity-dag-name {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--th-text);
-  font-family: var(--th-font-mono);
+  font-size: var(--th-type-label-size);
   font-weight: var(--th-weight-emphasize);
-  font-size: var(--th-type-secondary-size);
-  line-height: var(--th-type-secondary-line);
-  letter-spacing: var(--th-type-secondary-tracking);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -622,7 +853,6 @@ button.th-activity-bar:hover {
 .th-activity-dag-counts {
   flex: none;
   color: var(--th-muted);
-  font-family: var(--th-font-mono);
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
@@ -631,30 +861,34 @@ button.th-activity-bar:hover {
   white-space: nowrap;
 }
 
+/* List mode rows abut (no gap) so the rail runs unbroken from the first
+   glyph to the last. */
 .th-activity-dagnodes {
   display: flex;
   flex-direction: column;
-  gap: var(--th-space-0-5);
+  gap: 0;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
+/* Same lane geometry as the shelf's todo and agent timelines: a fixed glyph
+   lane, the label, and the state word at the far edge. */
 .th-activity-dnode {
-  display: flex;
-  align-items: center;
-  gap: var(--th-space-2);
+  display: grid;
+  grid-template-columns: var(--th-space-4) minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: var(--th-space-2);
   min-width: 0;
-  padding: var(--th-space-0-5) var(--th-space-1);
+  padding-inline: var(--th-space-1);
   border-radius: var(--th-radius-sm);
 }
 
 .th-activity-dnode-label {
-  flex: 1 1 auto;
   min-width: 0;
+  padding: var(--th-space-1) 0;
   overflow: hidden;
   color: var(--th-text-dim);
-  font-family: var(--th-font-mono);
   font-size: var(--th-type-secondary-size);
   line-height: var(--th-type-secondary-line);
   letter-spacing: var(--th-type-secondary-tracking);
@@ -662,15 +896,22 @@ button.th-activity-bar:hover {
   white-space: nowrap;
 }
 
+/* The graph reel owns horizontal scroll only: the tabpanel keeps vertical
+   scroll and horizontal overscroll never chains to the page. */
 .th-activity-graph {
   overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
 }
 
 .th-activity-graph svg {
   display: block;
 }
 
+/* Dependencies are one neutral hairline; a fulfilled one (completed source)
+   reads brighter, never green: satisfaction is not destination success. */
 .th-activity-gedge {
+  fill: none;
   stroke: var(--th-border-strong);
   stroke-width: 1;
 }
@@ -680,84 +921,107 @@ button.th-activity-bar:hover {
   stroke: none;
 }
 
-.th-activity-gedge--fulfilled { stroke: var(--th-success); }
-.th-activity-gedge-head--fulfilled { fill: var(--th-success); }
+.th-activity-gedge--fulfilled { stroke: var(--th-text-dim); stroke-opacity: 0.4; }
+.th-activity-gedge-head--fulfilled { fill: var(--th-text-dim); fill-opacity: 0.4; }
 
-/* Negative offset moves dashes from (x1,y1) toward (x2,y2), including
-   diagonal/backward edges. One full dash period keeps the loop seamless. */
-@keyframes th-dag-edge-flow {
-  from { stroke-dashoffset: 0; }
-  to { stroke-dashoffset: -12; }
+/* Cards keep the raised fill and default hairline in every state: state is
+   the glyph, the word and (running) the halo, never the outline. */
+.th-activity-gnode-card {
+  fill: var(--th-surface-raised);
+  stroke: var(--th-border-surface);
+  stroke-width: 1;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .th-activity-gedge--flow {
-    /* Remain visible beside a collinear solid dependency's 1px stroke. */
-    stroke-width: 3;
-    stroke-dasharray: 8 4;
-    animation: th-dag-edge-flow 1.2s linear infinite;
-  }
-}
-
-.th-activity-gnode rect {
-  fill: var(--th-bg);
-  stroke: var(--th-border);
-}
-
-.th-activity-glabel,
-.th-activity-gstate,
-.th-activity-gstatus {
+.th-activity-glabel {
   fill: var(--th-text-dim);
-  font-family: var(--th-font-mono);
+  stroke: none;
+  font-family: var(--th-font-sans);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+}
+
+/* The visible localized state word: textual status, never colour alone. */
+.th-activity-gstate {
+  fill: var(--th-muted);
+  stroke: none;
+  font-family: var(--th-font-sans);
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
 }
 
-/* The visible localized state word: textual status, never colour alone. */
-.th-activity-gstate {
-  fill: var(--th-muted);
+.th-activity-gstatus {
+  fill: none;
+  stroke: var(--th-muted);
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-.th-activity-gnode--ok rect { stroke: var(--th-success); }
-.th-activity-gnode--ok .th-activity-glabel { fill: var(--th-text); }
-.th-activity-gnode--running rect { stroke: var(--th-warning); }
-.th-activity-gnode--running .th-activity-glabel { fill: var(--th-text); }
-.th-activity-gnode--error rect { stroke: var(--th-error); }
+.th-activity-gstatus--error { stroke: var(--th-error); }
+
+/* Failed: the "!" sits on the error wash, like the shelf's other lanes. */
+.th-activity-gstatus-wash {
+  fill: var(--th-error-bg);
+  stroke: none;
+}
+
+/* Done: a neutral check one tier above the waiting glyphs (muted-to-text),
+   never green. pathLength is 1: one full dash, and a gap long enough that
+   the draw-in start (offset 1.1) paints nothing, not even a round cap. */
+.th-activity-gstatus--ok {
+  stroke: var(--th-text-dim);
+  stroke-dasharray: 1 2;
+}
+
+.th-activity-gnode--ok .th-activity-glabel,
+.th-activity-gnode--running .th-activity-glabel,
 .th-activity-gnode--error .th-activity-glabel { fill: var(--th-text); }
 
-/* Purposeful motion only. Entry: one restrained fade for a genuinely new
-   node. Settle: one brief transition when a node reaches a terminal state.
-   Opacity only — CSS transform would override the SVG position attribute
-   and violate the stable-layout contract. */
+/* Purposeful one-shots play on the inner body while the outer group keeps
+   the position attribute, so layout never moves: a genuinely new node fades
+   and grows in once; a node reaching a terminal state springs once and a
+   completion draws its check in. */
 @keyframes th-dag-node-enter {
-  from { opacity: 0; }
+  from { opacity: 0; transform: scale(0.97); }
 }
 
 @keyframes th-dag-node-settle {
-  from { opacity: 0.45; }
+  from { transform: scale(0.96); }
 }
 
-.th-activity-gnode--enter {
-  animation: th-dag-node-enter var(--th-dur-fast) var(--th-ease);
+.th-activity-gnode--enter > .th-activity-gbody {
+  animation: th-dag-node-enter var(--th-dur-slow) var(--th-ease-out);
 }
 
-.th-activity-gnode--settle {
-  animation: th-dag-node-settle var(--th-dur) var(--th-ease);
+.th-activity-gnode--settle > .th-activity-gbody {
+  animation: th-dag-node-settle var(--th-dur) var(--th-ease-spring);
 }
 
-/* The running node's dashed ring rotates while the node runs and the panel
-   is visible (a display:none subtree runs no animations). */
+/* The running spinner turns only for live work in a visible graph or list
+   (a display:none subtree runs no animations). */
 @keyframes th-dag-run-spin {
   to { transform: rotate(360deg); }
 }
 
+/* Agent-alive ink: a running node's stroke paint is the violet accent and
+   its dotted spinner strokes with it. The card, halo and text set their own
+   paint, so the card never gains a state outline. */
+.th-activity-gnode--running,
 .th-activity-gstatus--running {
-  fill: none;
+  stroke: var(--th-accent);
+}
+
+.th-activity-gstatus--running {
   transform-box: fill-box;
   transform-origin: center;
-  animation: th-dag-run-spin 1.2s linear infinite;
+}
+
+.th-activity-graph[data-live="true"] .th-activity-gstatus--running,
+.th-activity-dagnodes[data-live="true"] .th-activity-gstatus--running {
+  animation: th-dag-run-spin calc(var(--th-dur-slow) * 3) linear infinite;
 }
 
 .th-activity-phases {
@@ -784,39 +1048,14 @@ button.th-activity-bar:hover {
   letter-spacing: var(--th-type-label-tracking);
 }
 
-.th-activity-phase ul {
-  display: flex;
-  flex-direction: column;
-  gap: var(--th-space-0-5);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.th-activity-todo-task {
-  display: flex;
-  align-items: baseline;
-  gap: var(--th-space-1);
-  min-width: 0;
-  font-size: var(--th-type-secondary-size);
-  line-height: var(--th-type-secondary-line);
-  letter-spacing: var(--th-type-secondary-tracking);
-}
-
-.th-activity-todo-marker {
-  flex: none;
-  color: var(--th-muted);
-  font-family: var(--th-font-mono);
-}
-
+/* Todo rows share the timeline row above; the text wraps (never clips) and
+   the rail glyph carries the status, so completed work only recedes to
+   muted while dropped work is also struck through. */
 .th-activity-todo-text {
   min-width: 0;
+  padding-block: var(--th-space-1);
   color: var(--th-text-dim);
   overflow-wrap: anywhere;
-}
-
-.th-activity-todo-task--in_progress .th-activity-todo-marker {
-  color: var(--th-accent);
 }
 
 .th-activity-todo-task--in_progress .th-activity-todo-text {
@@ -824,17 +1063,13 @@ button.th-activity-bar:hover {
   font-weight: var(--th-weight-emphasize);
 }
 
-.th-activity-todo-task--completed .th-activity-todo-marker {
-  color: var(--th-success);
-}
-
 .th-activity-todo-task--completed .th-activity-todo-text {
   color: var(--th-muted);
-  text-decoration: line-through;
 }
 
-.th-activity-todo-task--abandoned .th-activity-todo-marker {
-  color: var(--th-error);
+.th-activity-todo-task--abandoned .th-activity-todo-text {
+  color: var(--th-muted);
+  text-decoration: line-through;
 }
 
 .th-activity-sr {
@@ -856,8 +1091,10 @@ button.th-activity-bar:hover {
     display: none;
   }
 
-  .th-activity-agent-name {
-    max-width: 55%;
+  /* Narrow heads keep only the most urgent trailing note: freshness over
+     the start time, and the severed alarm over both. */
+  .th-activity-agent-trail > .th-activity-agent-meta:not(:last-child) {
+    display: none;
   }
 }
 
@@ -874,4 +1111,320 @@ button.th-activity-bar:hover {
 .th-activity-panel[data-headless="true"] .th-activity-dag-toolbar,
 .th-activity-panel[data-headless="true"] .th-activity-section > .th-activity-section-title {
   display: none;
+}
+
+/* ==========================================================================
+   DAG living graph (v2). DAG-only selectors: run header chip, determinate
+   progress, List/Graph segmented control, reel edge fades, card body and
+   halo, travelling comet, and the list rail.
+   ========================================================================== */
+
+.th-activity-dag-section {
+  gap: var(--th-space-4);
+}
+
+.th-activity-dag-run + .th-activity-dag-run {
+  margin-top: var(--th-space-4);
+}
+
+.th-activity-dag-title {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  min-width: 0;
+}
+
+.th-activity-dag-title > .th-activity-dag-toolbar {
+  margin-left: auto;
+}
+
+/* Determinate progress: completed/total painted as scaleX from the left
+   edge, so a count change glides on the compositor. Accent while the run is
+   alive, neutral once it is not. The track is one step above the shelf fill
+   so an empty run still shows its bar. */
+.th-activity-dag-progress {
+  position: relative;
+  height: var(--th-space-0-5);
+  overflow: hidden;
+  border-radius: var(--th-radius-pill);
+  background: var(--th-active);
+}
+
+.th-activity-dag-progress-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--th-text-dim);
+  transform-origin: left center;
+  transition: transform var(--th-dur) var(--th-ease-in-out);
+}
+
+.th-activity-dag-progress[data-live="true"] > .th-activity-dag-progress-fill {
+  background: var(--th-accent);
+}
+
+/* List/Graph segmented control: a recessed pill track and one neutral raised
+   thumb that slides to the pressed segment, never a coloured border. */
+.th-activity-dag-view {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  flex: none;
+  padding: var(--th-space-0-5);
+  border-radius: var(--th-radius-pill);
+  background: var(--th-bg);
+  isolation: isolate;
+}
+
+/* The light canvas is white, so the recessed track takes the hover step. */
+[data-theme="light"] .th-activity-dag-view {
+  background: var(--th-hover);
+}
+
+.th-activity-dag-view-thumb {
+  position: absolute;
+  top: var(--th-space-0-5);
+  bottom: var(--th-space-0-5);
+  left: var(--th-space-0-5);
+  z-index: -1;
+  width: calc(50% - var(--th-space-0-5));
+  border-radius: var(--th-radius-pill);
+  background: var(--th-surface-raised);
+  box-shadow: var(--th-shadow-surface), var(--th-highlight);
+  transition: transform var(--th-dur) var(--th-ease-in-out);
+}
+
+.th-activity-dag-view[data-view-mode="graph"] > .th-activity-dag-view-thumb {
+  transform: translateX(100%);
+}
+
+.th-activity-dag-view-btn {
+  min-width: 0;
+  padding: var(--th-space-0-5) var(--th-space-3);
+  border: none;
+  border-radius: var(--th-radius-pill);
+  background: transparent;
+  color: var(--th-muted);
+  transition: color var(--th-dur-fast) var(--th-ease);
+}
+
+.th-activity-dag-view-btn:hover {
+  background: transparent;
+  color: var(--th-text-dim);
+}
+
+.th-activity-dag-view-btn[aria-pressed="true"] {
+  background: transparent;
+  color: var(--th-text);
+}
+
+@media (pointer: coarse) {
+  .th-activity-dag-view-btn {
+    min-height: var(--th-space-8);
+  }
+}
+
+/* Reel fades only on the sides that hide content (data-fade follows the
+   scroll position); the mask is fixed to the container, not the content. */
+.th-activity-graph[data-fade="start"] {
+  -webkit-mask-image: linear-gradient(to right, transparent, currentColor var(--th-space-6));
+  mask-image: linear-gradient(to right, transparent, currentColor var(--th-space-6));
+}
+
+.th-activity-graph[data-fade="end"] {
+  -webkit-mask-image: linear-gradient(to left, transparent, currentColor var(--th-space-6));
+  mask-image: linear-gradient(to left, transparent, currentColor var(--th-space-6));
+}
+
+.th-activity-graph[data-fade="both"] {
+  -webkit-mask-image: linear-gradient(to right, transparent, currentColor var(--th-space-6),
+    currentColor calc(100% - var(--th-space-6)), transparent);
+  mask-image: linear-gradient(to right, transparent, currentColor var(--th-space-6),
+    currentColor calc(100% - var(--th-space-6)), transparent);
+}
+
+/* Dense waves hide below the fold: the reel has no height bound (overflow-y
+   hides, the SVG is the content), so the shelf's clipped panel — or the
+   scroll-owning tabpanel — cuts the visible graph mid-row. The component
+   measures the distance from the reel's bottom edge to the deepest clipping
+   ancestor's visible bottom and lifts the fade stop by that runtime offset
+   (--dag-fade-lift, a measurement like the progress transform, not a token),
+   so the partially visible bottom row dissolves into the shelf instead of
+   slicing. The mask stops ride on --th-bg; a mask reads only alpha, and the
+   fade resolves to the canvas behind the reel. Content never clips at the
+   top, and with no clipping ancestor the attribute (and the fade) is
+   removed entirely. */
+.th-activity-graph[data-fade-bottom="true"] {
+  -webkit-mask-image: linear-gradient(to top, transparent var(--dag-fade-lift, 0px),
+    var(--th-bg) calc(var(--dag-fade-lift, 0px) + var(--th-space-6)));
+  mask-image: linear-gradient(to top, transparent var(--dag-fade-lift, 0px),
+    var(--th-bg) calc(var(--dag-fade-lift, 0px) + var(--th-space-6)));
+}
+
+/* When the bottom clips while a side fade is also up, both masks apply at
+   once; the layers compose by intersection (source-in / intersect) so each
+   fade keeps its own edge. */
+.th-activity-graph[data-fade-bottom="true"][data-fade="start"] {
+  -webkit-mask-image:
+    linear-gradient(to right, transparent, var(--th-bg) var(--th-space-6)),
+    linear-gradient(to top, transparent var(--dag-fade-lift, 0px),
+      var(--th-bg) calc(var(--dag-fade-lift, 0px) + var(--th-space-6)));
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to right, transparent, var(--th-bg) var(--th-space-6)),
+    linear-gradient(to top, transparent var(--dag-fade-lift, 0px),
+      var(--th-bg) calc(var(--dag-fade-lift, 0px) + var(--th-space-6)));
+  mask-composite: intersect;
+}
+
+.th-activity-graph[data-fade-bottom="true"][data-fade="end"] {
+  -webkit-mask-image:
+    linear-gradient(to left, transparent, var(--th-bg) var(--th-space-6)),
+    linear-gradient(to top, transparent var(--dag-fade-lift, 0px),
+      var(--th-bg) calc(var(--dag-fade-lift, 0px) + var(--th-space-6)));
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to left, transparent, var(--th-bg) var(--th-space-6)),
+    linear-gradient(to top, transparent var(--dag-fade-lift, 0px),
+      var(--th-bg) calc(var(--dag-fade-lift, 0px) + var(--th-space-6)));
+  mask-composite: intersect;
+}
+
+.th-activity-graph[data-fade-bottom="true"][data-fade="both"] {
+  -webkit-mask-image:
+    linear-gradient(to right, transparent, var(--th-bg) var(--th-space-6),
+      var(--th-bg) calc(100% - var(--th-space-6)), transparent),
+    linear-gradient(to top, transparent var(--dag-fade-lift, 0px),
+      var(--th-bg) calc(var(--dag-fade-lift, 0px) + var(--th-space-6)));
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to right, transparent, var(--th-bg) var(--th-space-6),
+      var(--th-bg) calc(100% - var(--th-space-6)), transparent),
+    linear-gradient(to top, transparent var(--dag-fade-lift, 0px),
+      var(--th-bg) calc(var(--dag-fade-lift, 0px) + var(--th-space-6)));
+  mask-composite: intersect;
+}
+
+.th-activity-gbody {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* Completion draws the check in once, inside the same settle window. */
+@keyframes th-dag-check-draw {
+  from { stroke-dashoffset: 1.1; }
+}
+
+.th-activity-gnode--settle .th-activity-gstatus--ok {
+  animation: th-dag-check-draw var(--th-dur) var(--th-ease-out);
+}
+
+/* Running halo: a blurred accent-glow card behind the card, breathing while
+   the run is live. It is rendered only then, and never under reduced
+   motion. */
+@keyframes th-dag-halo-breathe {
+  from { opacity: 0.45; }
+  to { opacity: 1; }
+}
+
+.th-activity-gnode-halo {
+  fill: var(--th-accent-glow);
+  stroke: none;
+  animation: th-dag-halo-breathe calc(var(--th-dur-slow) * 5) var(--th-ease-in-out) infinite alternate;
+}
+
+/* Comet on a running edge: pathLength 100, one 24-unit dash and a 100-unit
+   gap, so exactly one dash is ever on the path; it enters before the source
+   and leaves past the destination. The resting offset hides it. */
+@keyframes th-dag-comet {
+  from { stroke-dashoffset: 24; }
+  to { stroke-dashoffset: -100; }
+}
+
+.th-activity-gedge-comet,
+.th-activity-gedge-glow {
+  fill: none;
+  stroke-linecap: round;
+  stroke-dasharray: 24 100;
+  stroke-dashoffset: 24;
+}
+
+.th-activity-gedge-comet {
+  stroke: var(--th-accent);
+  stroke-width: 2;
+}
+
+.th-activity-gedge-glow {
+  stroke: var(--th-accent-glow);
+  stroke-width: 6;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .th-activity-gedge-comet,
+  .th-activity-gedge-glow {
+    animation: th-dag-comet calc(var(--th-dur-slow) * 5) linear infinite;
+  }
+}
+
+/* Live and failed work reads first; finished and waiting rows recede. */
+.th-activity-dnode--running .th-activity-dnode-label {
+  color: var(--th-text);
+  font-weight: var(--th-weight-emphasize);
+}
+
+.th-activity-dnode--error .th-activity-dnode-label {
+  color: var(--th-text);
+}
+
+/* The rail column spans its row: the top segment ends a 2px gap above the
+   glyph, which sits centred on the first text line (label padding plus
+   half-leading); the bottom segment runs on to the next row's glyph. */
+.th-activity-dnode-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  align-self: stretch;
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+}
+
+.th-activity-dnode-rail::before,
+.th-activity-dnode-rail::after {
+  content: "";
+  width: 1px;
+  background: var(--th-border-strong);
+}
+
+.th-activity-dnode-rail::before {
+  flex: none;
+  height: calc(var(--th-space-1) + (var(--th-type-secondary-line) - 1) * 0.5em - var(--th-space-0-5));
+}
+
+.th-activity-dnode-rail::after {
+  flex: 1 1 auto;
+}
+
+.th-activity-dnode:first-child .th-activity-dnode-rail::before,
+.th-activity-dnode:last-child .th-activity-dnode-rail::after {
+  background: transparent;
+}
+
+.th-activity-dnode-glyph {
+  display: block;
+  flex: none;
+  width: 1em;
+  height: 1em;
+  margin-block: var(--th-space-0-5);
+  overflow: visible;
+}
+
+.th-activity-dnode-state {
+  padding: var(--th-space-1) 0;
+  color: var(--th-muted);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  white-space: nowrap;
 }
