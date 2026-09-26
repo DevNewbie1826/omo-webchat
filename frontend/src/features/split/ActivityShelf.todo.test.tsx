@@ -47,9 +47,17 @@ describe("ActivityShelf", () => {
     expect(glyphOf(1)).toBe("running");
     expect(glyphOf(2)).toBe("stopped");
     expect(glyphOf(3)).toBe("pending");
-    // The glyph is decorative; the localized status word rides in SR text.
+    // The glyph is decorative; the localized status word rides in the chip.
     expect(items[1]?.querySelector(".th-activity-lane")?.getAttribute("aria-hidden")).toBe("true");
-    expect(items[1]?.querySelector(".th-activity-sr")?.textContent).toBe("activity.todoStatus.in_progress");
+    const chipOf = (index: number): string | null =>
+      [...(items[index]?.querySelector(".th-activity-chip")?.classList ?? [])].find(
+        (name) => name.startsWith("th-activity-chip--"),
+      ) ?? null;
+    expect(items[1]?.querySelector(".th-activity-chip")?.textContent).toBe("activity.todoStatus.in_progress");
+    expect(chipOf(0)).toBe("th-activity-chip--ok");
+    expect(chipOf(1)).toBe("th-activity-chip--running");
+    expect(chipOf(2)).toBe("th-activity-chip--muted");
+    expect(chipOf(3)).toBe("th-activity-chip--muted");
     expect(items[0]?.className).toContain("th-activity-todo-task--completed");
     expect(items[1]?.className).toContain("th-activity-todo-task--in_progress");
 

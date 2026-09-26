@@ -143,7 +143,12 @@ describe("ActivityShelf DAG bottom fade", () => {
     panel.style.overflowY = "hidden";
     pinRect(graph, 100, 700);
     pinRect(panel, 0, 400);
-    const observer = FadeResizeObserver.instances.find((instance) => instance.targets.has(graph));
+    // The fade effect is the only observer that watches the svg canvas
+    // (the width-measurement observer watches the reel alone, and the shelf
+    // allocator watches the panel), so the canvas target identifies it.
+    const canvas = graph.firstElementChild;
+    expect(canvas).not.toBeNull();
+    const observer = FadeResizeObserver.instances.find((instance) => instance.targets.has(canvas as Element));
     expect(observer).toBeDefined();
 
     act(() => observer?.fire());

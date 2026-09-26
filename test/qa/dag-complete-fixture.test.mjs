@@ -323,16 +323,20 @@ test('real SPA readiness follows the rendered transcript tail after 121 entries'
     const [ack, history] = await Promise.all([ready, entries]);
     assert.equal(ack.socketId, history.socketId); assert.deepEqual(history.frame.entries, expected);
     // Observe the actual virtual window before invoking the readiness seam.
-    // Both the old predicate's false state and the new tail are deterministic.
+    // Overscan may retain row 99, but the 121-entry tail must be mounted.
     const tail = expected.at(-1).message.content;
-    await doneDOM(page, await armDOM(page, tail => document.querySelector('.th-chat-row[data-index="120"] .th-chat-msg')?.textContent.includes(tail)
-      && !document.querySelector('.th-chat-body').textContent.includes('dag-transcript-99'), tail));
+    await doneDOM(page, await armDOM(page, tail => [...document.querySelectorAll('.th-chat-row .th-chat-msg')]
+      .some(node => node.textContent.includes(tail)), tail));
     receipt.before = await page.evaluate(() => ({
       original99Mounted: document.querySelector('.th-chat-body').textContent.includes('dag-transcript-99'),
       rows: [...document.querySelectorAll('.th-chat-row')].map(row => Number(row.dataset.index)),
+      tailIndex: [...document.querySelectorAll('.th-chat-row')].find(row => row.textContent.includes('dag-qa-event-21'))?.dataset.index,
+      wrongTailMatched: document.querySelector('.th-chat-row[data-index="120"] .th-chat-msg')?.textContent.includes('dag-qa-event-20'),
     }));
-    assert.equal(receipt.before.original99Mounted, false);
+    assert.equal(receipt.before.rows.includes(0), false, 'virtualizer excludes the distant original prefix');
     assert.ok(receipt.before.rows.length < expected.length);
+    assert.equal(receipt.before.tailIndex, '120');
+    assert.equal(receipt.before.wrongTailMatched, false, 'negative control: previous event cannot satisfy tail readiness');
     assert.equal(receipt.before.rows.at(-1), 120);
     receipt.readiness = await waitForTranscript(page, history.frame.entries);
     assert.deepEqual(receipt.readiness, { index: 120, role: 'assistant', marker: tail });

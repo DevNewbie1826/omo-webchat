@@ -299,10 +299,13 @@ describe("ActivityShelf", () => {
     const frames: FrameRequestCallback[] = [];
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
     vi.stubGlobal("cancelAnimationFrame", (handle: number) => { frames[handle - 1] = () => undefined; });
+    // 900px is a desktop-width reel: the compact phone layout stays off, so
+    // this pin exercises the wave-column centering path end to end.
+    const reelWidth = 900;
     const reelMetric = (value: number) => function (this: Element): number {
       return this.classList.contains("th-activity-graph") ? value : 0;
     };
-    const clientWidth = vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(reelMetric(300));
+    const clientWidth = vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(reelMetric(reelWidth));
     const scrollWidth = vi.spyOn(Element.prototype, "scrollWidth", "get").mockImplementation(reelMetric(2000));
     try {
       const chain = makeDag({
@@ -321,7 +324,7 @@ describe("ActivityShelf", () => {
       const cardWidth = Number(graph.querySelector(".th-activity-gnode-card")?.getAttribute("width"));
       expect(graph.scrollLeft).toBeGreaterThan(0);
       expect(nodeX).toBeGreaterThanOrEqual(graph.scrollLeft);
-      expect(nodeX + cardWidth).toBeLessThanOrEqual(graph.scrollLeft + 300);
+      expect(nodeX + cardWidth).toBeLessThanOrEqual(graph.scrollLeft + reelWidth);
 
       act(() => { for (const frame of frames.splice(0)) frame(0); });
       graph.scrollLeft = 0;
@@ -330,6 +333,75 @@ describe("ActivityShelf", () => {
     } finally {
       clientWidth.mockRestore();
       scrollWidth.mockRestore();
+    }
+  });
+
+  it("keeps a phone-width DAG left-to-right with three compact cards in view", () => {
+    const localizedStatus = vi.spyOn(i18n, "t").mockImplementation(key =>
+      key.startsWith("activity.status.") ? key.slice("activity.status.".length) : key);
+    const reelMetric = (value: number) => function (this: Element): number {
+      return this.classList.contains("th-activity-graph") ? value : 0;
+    };
+    // 366px is the real 390px-viewport reel width (390 minus the shelf
+    // gutters and panel padding).
+    const clientWidth = vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(reelMetric(366));
+    try {
+      const chain = makeDag({
+        nodes: [
+          { id: "a", prompt: "alpha node", dependsOn: [], state: "completed" },
+          { id: "b", prompt: "beta node", dependsOn: ["a"], state: "completed" },
+          { id: "c", prompt: "gamma node", dependsOn: ["b"], state: "running" },
+          { id: "d", prompt: "delta node", dependsOn: ["c"], state: "pending" },
+          { id: "e", prompt: "epsilon node", dependsOn: ["d"], state: "pending" },
+          { id: "f", prompt: "zeta node", dependsOn: ["e"], state: "pending" },
+        ],
+        edges: [
+          { from: "a", to: "b" },
+          { from: "b", to: "c" },
+          { from: "c", to: "d" },
+          { from: "d", to: "e" },
+          { from: "e", to: "f" },
+        ],
+      });
+      renderShelf(harness, activityState({ dags: [chain] }));
+      openShelf(harness.container);
+      const graph = requireElement(harness.container.querySelector<HTMLElement>(".th-activity-graph"), "graph reel");
+      const svg = requireElement(graph.querySelector("svg"), "graph svg");
+      // The same ordered chain extends horizontally; it never snakes back.
+      expect(Number(svg.getAttribute("width"))).toBeGreaterThan(366);
+      expect(graph.scrollLeft).toBe(0);
+      // Labels hold the 11px phone floor (the hidden measure probe is also a
+      // .th-activity-glabel, so scope to a rendered node's text)...
+      const label = requireElement(graph.querySelector<SVGTextElement>('[data-node] .th-activity-glabel'), "node label");
+      expect(Number(label.getAttribute("font-size"))).toBeGreaterThanOrEqual(11);
+      const card = requireElement(graph.querySelector(".th-activity-gnode-card"), "node card");
+      const cardWidth = Number(card.getAttribute("width"));
+      expect(Number(card.getAttribute("height"))).toBeLessThanOrEqual(40);
+      expect(Number(card.getAttribute("height"))).toBeGreaterThanOrEqual(36);
+      expect(Number(svg.getAttribute("height"))).toBeLessThan(80);
+      const transformOf = (id: string): readonly [number, number] => {
+        const value = graph.querySelector(`[data-node="${id}"]`)?.getAttribute("transform") ?? "";
+        const match = /translate\(([-\d.]+), ([-\d.]+)\)/.exec(value);
+        return [Number(match?.[1]), Number(match?.[2])] as const;
+      };
+      const [ax, ay] = transformOf("a");
+      const [cx] = transformOf("c");
+      const [ex, ey] = transformOf("e");
+      const [fx, fy] = transformOf("f");
+      expect(cx).toBeGreaterThan(ax);
+      expect(cx + cardWidth).toBeLessThanOrEqual(366);
+      expect(ex).toBeGreaterThan(cx);
+      expect(fx).toBeGreaterThan(ex);
+      expect(ey).toBe(ay);
+      expect(fy).toBe(ay);
+      // A later state flip keeps the identical geometry (stable-layout pin).
+      const before = [...graph.querySelectorAll("[data-node]")].map(node => node.getAttribute("transform"));
+      renderShelf(harness, activityState({ dags: [{ ...chain, status: "completed", nodes: chain.nodes.map(node => ({ ...node, state: "completed" })) }] }));
+      const after = [...graph.querySelectorAll("[data-node]")].map(node => node.getAttribute("transform"));
+      expect(after).toEqual(before);
+    } finally {
+      clientWidth.mockRestore();
+      localizedStatus.mockRestore();
     }
   });
 });

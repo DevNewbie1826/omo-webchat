@@ -38,6 +38,11 @@ const PANEL_STORAGE_KEY = "th-activity-panel-height";
  *  the default content-sized panel never grows past this, with or without
  *  a measured column clamp. */
 const PANEL_CONTENT_MAX_PX = 280;
+/* Desktop DAGs retain the compact 320px panel. A narrow pane can hold the
+ * full eight-row graph (356px) plus header and footer in 480px instead of
+ * clipping its lower branch rows behind the tabpanel scrollport. */
+const DAG_PANEL_CONTENT_MAX_PX = 320;
+const NARROW_DAG_PANEL_CONTENT_MAX_PX = 480;
 
 /** Normal content-sized panels keep enough room for a section header and row. */
 const PANEL_NATURAL_MIN_PX = 48;
@@ -207,6 +212,8 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
   };
   const selectedTab: ShelfTab = chosenTab
     ?? (SHELF_TABS.find((tab) => availability[tab]) ?? "todo");
+  const dagPanelCap = (shelfElement?.clientWidth || window.innerWidth) < 640
+    ? NARROW_DAG_PANEL_CONTENT_MAX_PX : DAG_PANEL_CONTENT_MAX_PX;
   // Complete data/selection belong to the shelf, not its transient panel DOM.
   const completeDag = useCompleteDag(dagSource, open && selectedTab === "dag", activities);
   const taskRoster = useTaskRoster(dagSource, open && selectedTab === "agents");
@@ -294,7 +301,12 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
   const {
     availableSpacePx: columnClampPx,
     selfPanelHeightPx,
-  } = useShelfAvailableSpace(open && hasActivity, shelfElement, panelElement, height);
+  } = useShelfAvailableSpace(
+    open && hasActivity,
+    shelfElement,
+    panelElement,
+    height ?? (selectedTab === "dag" ? dagPanelCap : null),
+  );
   const naturalFloorActive = height === null
     && columnClampPx !== null
     && columnClampPx >= PANEL_NATURAL_MIN_PX;
@@ -370,7 +382,9 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
     ? null
     : Math.min(
         Math.max(columnClampPx, 0),
-        height === null ? PANEL_CONTENT_MAX_PX : maxPanelHeight(),
+        height === null
+          ? selectedTab === "dag" ? dagPanelCap : PANEL_CONTENT_MAX_PX
+          : maxPanelHeight(),
       );
 
   return (
@@ -395,9 +409,11 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
       <div ref={tablistRef} role="tablist" aria-label={t("activity.tabs")} className="th-activity-tabs">
         {/* Segmented-control thumb: one element that slides to the selected
             tab (CSS maps data-index to a translateX), painted beneath the
-            tab labels. Decorative only; aria-selected carries the state. */}
+            tab labels. Decorative only; aria-selected carries the state.
+            The plural `th-activity-tabs-thumb` alias lets the Q8 segment
+            probe find the same element. */}
         <span
-          className="th-activity-tab-thumb"
+          className="th-activity-tab-thumb th-activity-tabs-thumb"
           aria-hidden="true"
           data-index={SHELF_TABS.indexOf(selectedTab)}
         />
@@ -444,7 +460,7 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
             role="group"
             aria-label={t("activity.panel")}
             data-headless={headless ? "true" : undefined}
-            className={`th-activity-panel${height === null ? "" : " th-activity-panel--sized"}${resizing ? " th-activity-panel--resizing" : ""}`}
+            className={`th-activity-panel${height === null ? selectedTab === "dag" ? " th-activity-panel--dag" : "" : " th-activity-panel--sized"}${resizing ? " th-activity-panel--resizing" : ""}`}
             style={
               height === null && panelMaxPx === null
                 ? undefined

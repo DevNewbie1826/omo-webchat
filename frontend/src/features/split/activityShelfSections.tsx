@@ -107,6 +107,12 @@ function AgentRow({ task, nowMs, freshnessCtx, t }: {
             )}
           </div>
         )}
+        {/* E23: the per-agent activity track — a row's state reads by rail
+            fill as well as by chip and glyph. Decorative: the chip carries
+            the localized word. */}
+        <div className="th-activity-agent-progress" aria-hidden="true">
+          <span className="th-activity-agent-progress-fill" />
+        </div>
       </div>
     </li>
   );
@@ -131,6 +137,12 @@ export function AgentSection({ tasks, nowMs, freshnessCtx, t }: {
   );
 }
 
+function todoChipKind(status: string): StatusKind {
+  if (status === "completed") return "ok";
+  if (status === "in_progress") return "running";
+  return "muted";
+}
+
 export function TodoSection({ phases, runInFlight, t }: {
   readonly phases: readonly TodoPhase[];
   readonly runInFlight: boolean;
@@ -150,8 +162,8 @@ export function TodoSection({ phases, runInFlight, t }: {
                   className={`th-activity-todo-task th-activity-todo-task--${task.status}`}
                 >
                   <StatusGlyph kind={glyphKind(task.status)} live={runInFlight && task.status === "in_progress"} />
-                  <span className="th-activity-sr">{t(`activity.todoStatus.${task.status}`)}</span>
                   <span className="th-activity-todo-text">{task.content}</span>
+                  <ActivityChip kind={todoChipKind(task.status)} label={t(`activity.todoStatus.${task.status}`)} />
                 </li>
               ))}
             </ul>

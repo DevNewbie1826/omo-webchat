@@ -13,14 +13,36 @@ import type { ActivityDagNode, ActivityDagRun } from "./activityTypes";
  * GAP_Y keeps stacked cards clear of a running neighbour's halo (HALO_SPREAD
  * plus the blur's visible falloff), GAP_X leaves room for the bezier
  * curvature and the arrowhead, and PADDING keeps an edge node's halo inside
- * the SVG viewport. The card's radius/padding/gap are NOT constants: they
- * resolve from the --th-* radius/spacing tokens below, so a token change
- * moves the painted card, the glyph lane and the label clips together.
+ * the SVG viewport. The pitch (NODE_WIDTH + GAP_X = 144) is sized so the
+ * mixed stage shows at least five whole cards inside the 736px reading-column
+ * reel at 1280 on first paint (E9; the painted width scales with the measured
+ * Label font — 129px at the default 14px setting — so the constant keeps five
+ * cards whole at the default type setting), and the compact PADDING/GAP_Y keep
+ * the run plus its footer expander inside the panel's 280px cap (E11). The
+ * card's radius/padding/gap are NOT constants: they resolve from the --th-*
+ * radius/spacing tokens below, so a token change moves the painted card, the
+ * glyph lane and the label clips together.
  */
-const NODE_WIDTH = 176;
-const GAP_X = 48;
-const GAP_Y = 16;
-const PADDING = 12;
+const NODE_WIDTH = 120;
+const GAP_X = 16;
+const GAP_Y = 12;
+const PADDING = 10;
+/* Phones keep desktop's left-to-right wave columns. Only card dimensions
+ * and gaps shrink; the reel owns horizontal overflow. */
+const COMPACT_BREAKPOINT = 640;
+const COMPACT_FONT_PX = 11;
+/* SVG fractional font metrics otherwise resolve an 11px state to 10.9998px. */
+const COMPACT_STATE_FONT_PX = 11.1;
+const COMPACT_MIN_CARD = 104;
+const COMPACT_GAP_X = 8;
+const COMPACT_GAP_Y = 4;
+const COMPACT_PADDING = 8;
+const COMPACT_PAD_X = 6;
+const COMPACT_PAD_Y = 2;
+const COMPACT_GLYPH_GAP = 2;
+const COMPACT_RADIUS = 8;
+const COMPACT_ROW_LINE = 1;
+const COMPACT_STATE_LINE = 1;
 const HALO_SPREAD = 2;
 const HALO_BLUR = 4;
 const COMET_BLUR = 1.5;
@@ -40,6 +62,11 @@ interface CardSpacing {
   readonly padX: number;
   readonly padY: number;
   readonly glyphGap: number;
+  /* Text measurement widens every wave column for long localized words. */
+  readonly width?: number;
+  /* Phone cards use tighter lines to fit branch rows in the panel. */
+  readonly rowLine?: number;
+  readonly stateLine?: number;
 }
 
 function resolveCardSpacing(): CardSpacing {
@@ -86,7 +113,7 @@ export function nextDagNodeMotion(
 ): DagNodeMotion {
   if (previous === undefined) return { state, entering: true, settling: false };
   if (previous.state !== state) {
-    const kind = statusKind(state);
+    const kind = nodeStatusKind(state);
     return {
       state,
       entering: false,
@@ -130,12 +157,12 @@ interface CardGeometry {
  * Label-tier title rows hanging from the glyph lane, and the Micro state word
  * on a fixed bottom row, so a status change never moves anything.
  */
-function cardGeometry(fontPx: number, spacing: Pick<CardSpacing, "padX" | "padY" | "glyphGap">): CardGeometry {
+function cardGeometry(fontPx: number, spacing: CardSpacing): CardGeometry {
   const { padX, padY, glyphGap } = spacing;
   // Round, not ceil: at the default size the ratio is 1 +/- float noise.
-  const width = Math.round(NODE_WIDTH * fontPx / DEFAULT_TYPE_PX);
-  const row = Math.ceil(fontPx * 1.4);
-  const stateRow = Math.ceil(fontPx * (MICRO_TIER / LABEL_TIER) * 1.4);
+  const width = spacing.width ?? Math.round(NODE_WIDTH * fontPx / DEFAULT_TYPE_PX);
+  const row = Math.ceil(fontPx * (spacing.rowLine ?? 1.4));
+  const stateRow = Math.ceil(fontPx * (MICRO_TIER / LABEL_TIER) * (spacing.stateLine ?? 1.4));
   const height = padY * 2 + row * 2 + stateRow;
   const firstBaseline = padY + Math.round(row * 0.75);
   const stateBaseline = padY + row * 2 + Math.round(stateRow * 0.75);
@@ -155,14 +182,13 @@ function cardGeometry(fontPx: number, spacing: Pick<CardSpacing, "padX" | "padY"
 
 interface GraphType {
   readonly fontPx: number;
+  readonly width: number;
   readonly labels: ReadonlyMap<string, readonly string[]>;
 }
 
 /**
- * P6: node titles wrap onto two lines when useful instead of a blind
- * fixed-character truncation. The break prefers a word boundary; only a
- * remainder that still overflows line 2 is ellipsized, and the <title>
- * always carries the full text.
+ * Titles use at most two complete lines. The graph measures their required
+ * width first, so neither line needs an ellipsis or a clip.
  */
 export function splitNodeLabel(
   text: string,
@@ -181,9 +207,10 @@ export function splitNodeLabel(
   };
   let head = fit(text, firstWidth);
   const space = head.lastIndexOf(" ");
-  if (space > head.length * 0.4) head = head.slice(0, space);
-  let tail = text.slice(head.length).trimStart();
-  if (measure(tail) > secondWidth) tail = `${fit(tail, secondWidth - measure("…"))}…`;
+  if (space > head.length * 0.4 && measure(text.slice(space).trimStart()) <= secondWidth) {
+    head = head.slice(0, space);
+  }
+  const tail = text.slice(head.length).trimStart();
   return [head, tail];
 }
 
@@ -232,6 +259,11 @@ function dagLayers(run: ActivityDagRun): readonly (readonly ActivityDagNode[])[]
 
 type GlyphShape = "pending" | "scheduled" | "blocked" | "running" | "check" | "error" | "stopped";
 
+function nodeStatusKind(state: string): ReturnType<typeof statusKind> {
+  return state === "cancelled" || state === "canceled" || state === "blocked"
+    ? "error" : statusKind(state);
+}
+
 function glyphShape(state: string): GlyphShape {
   switch (state) {
     case "running":
@@ -277,14 +309,18 @@ function StatusGlyph({ state, cx, cy, r }: {
 }) {
   const shape = glyphShape(state);
   const glyph = {
-    className: `th-activity-gstatus th-activity-gstatus--${statusKind(state)}`,
+    className: `th-activity-gstatus th-activity-gstatus--${nodeStatusKind(state)}`,
     "data-glyph": shape,
     "aria-hidden": true,
     strokeWidth: round(r / 3),
   } as const;
   switch (shape) {
-    case "running":
-      return <circle {...glyph} cx={cx} cy={cy} r={r} strokeDasharray={dottedRing(r, 8, 6)} />;
+    case "running": {
+      // E8: the running ring reads clearly at a glance — a larger violet
+      // arc than the waiting glyphs, on the shared 700ms beat.
+      const runningR = round(r * 1.15);
+      return <circle {...glyph} cx={cx} cy={cy} r={runningR} strokeDasharray={dottedRing(runningR, 8, 6)} />;
+    }
     case "scheduled":
       return <circle {...glyph} cx={cx} cy={cy} r={r} strokeDasharray={dottedRing(r, 8, 8)} />;
     case "blocked": {
@@ -357,19 +393,46 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
   const graphRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<SVGTextElement>(null);
   const firstPaintDone = useRef(false);
-  const [type, setType] = useState<GraphType>({ fontPx: DEFAULT_TYPE_PX, labels: new Map() });
+  const [type, setType] = useState<GraphType>({ fontPx: DEFAULT_TYPE_PX, width: 0, labels: new Map() });
+  const [viewWidth, setViewWidth] = useState(0);
   const labelKey = JSON.stringify(run.nodes.map(node => [node.id, node.label ?? node.prompt]));
   // The card metrics resolve once per render, so a token change lands on the
   // next paint together with the re-measured labels.
-  const { radius, padX, padY, glyphGap } = resolveCardSpacing();
+  const desktopSpacing = resolveCardSpacing();
+  // Width selects only compact card anatomy, not a new graph topology.
+  const compact = viewWidth > 0 && viewWidth < COMPACT_BREAKPOINT;
+  const spacing: CardSpacing = compact
+    ? {
+        radius: COMPACT_RADIUS,
+        padX: COMPACT_PAD_X,
+        padY: COMPACT_PAD_Y,
+        glyphGap: COMPACT_GLYPH_GAP,
+        width: Math.max(COMPACT_MIN_CARD, type.width),
+        rowLine: COMPACT_ROW_LINE,
+        stateLine: COMPACT_STATE_LINE,
+      }
+    : { ...desktopSpacing, ...(type.width > 0 ? { width: type.width } : {}) };
+  const layoutFontPx = compact ? COMPACT_FONT_PX : type.fontPx;
+  useLayoutEffect(() => {
+    const graph = graphRef.current;
+    if (!graph) return;
+    const update = (): void => setViewWidth(graph.clientWidth);
+    update();
+    if (typeof ResizeObserver !== "function") return;
+    const observer = new ResizeObserver(update);
+    observer.observe(graph);
+    return () => observer.disconnect();
+  }, []);
   useLayoutEffect(() => {
     const probe = measureRef.current;
     if (!probe) return;
     let disposed = false;
     const measure = (): void => {
       if (disposed) return;
-      const fontPx = Number.parseFloat(getComputedStyle(probe).fontSize) || fontSize * LABEL_TIER;
-      const { labelWidth } = cardGeometry(fontPx, { padX, padY, glyphGap });
+      // The probe paints the same size as the phone title and state text.
+      const measured = Number.parseFloat(getComputedStyle(probe).fontSize) || fontSize * LABEL_TIER;
+      const fontPx = compact ? COMPACT_FONT_PX : measured;
+      probe.style.fontSize = compact ? `${COMPACT_FONT_PX}px` : "";
       const textWidth = (text: string): number => {
         probe.textContent = text;
         // SVG measurement includes actual fallback glyphs and letter spacing.
@@ -379,17 +442,27 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
           : [...text].reduce((sum, glyph) => sum + fontPx * (/[^\u0000-\u007f]/.test(glyph) ? 1 : 0.62), 0);
       };
       const pairs: [string, string][] = JSON.parse(labelKey);
-      // Both title rows hang from the glyph lane, so they share one width.
+      const base = cardGeometry(fontPx, {
+        ...spacing,
+        width: compact ? COMPACT_MIN_CARD : Math.round(NODE_WIDTH * fontPx / DEFAULT_TYPE_PX),
+      });
+      // Measure every localized state, rather than the current snapshot:
+      // state flips must never move a card or clip its status word.
+      const states = ["pending", "scheduled", "blocked", "running", "completed", "failed", "error", "cancelled", "canceled", "skipped"];
+      const stateWidth = Math.max(...states.map(state => textWidth(statusLabel(t, state))));
+      const titleWidth = Math.max(0, ...pairs.map(([, text]) => textWidth(text) / 2 + fontPx * 2));
+      const width = Math.max(base.width, Math.ceil(base.labelX + spacing.padX + Math.max(stateWidth, titleWidth) + 2));
+      const { labelWidth } = cardGeometry(fontPx, { ...spacing, width });
       const labels = new Map(pairs.map(([id, text]) => [id, splitNodeLabel(text, labelWidth, labelWidth, textWidth)]));
       probe.textContent = "";
-      const next: GraphType = { fontPx, labels };
-      setType(previous => previous.fontPx === next.fontPx
+      const next: GraphType = { fontPx: measured, width, labels };
+      setType(previous => previous.fontPx === next.fontPx && previous.width === next.width
         && JSON.stringify([...previous.labels]) === JSON.stringify([...next.labels]) ? previous : next);
     };
     measure();
     void document.fonts?.ready.then(measure);
-    return () => { disposed = true; };
-  }, [font, fontSize, lang, labelKey, active, padX, padY, glyphGap]);
+    return () => { disposed = true; probe.style.fontSize = ""; };
+  }, [font, fontSize, lang, labelKey, active, compact, viewWidth, t]);
   useLayoutEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
@@ -476,26 +549,30 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
       observer?.disconnect();
     };
   }, []);
-  const geometry = cardGeometry(type.fontPx, { padX, padY, glyphGap });
+  const geometry = cardGeometry(layoutFontPx, spacing);
   const { width: nodeWidth, height: nodeHeight, row, glyph } = geometry;
+  const { radius } = spacing;
   const layers = dagLayers(run);
   const positions = new Map<
     string,
     { readonly x: number; readonly y: number; readonly layer: number }
   >();
+  const gapX = compact ? COMPACT_GAP_X : GAP_X;
+  const gapY = compact ? COMPACT_GAP_Y : GAP_Y;
+  const pad = compact ? COMPACT_PADDING : PADDING;
   layers.forEach((layer, layerIndex) =>
     layer.forEach((node, nodeIndex) =>
       positions.set(node.id, {
-        x: PADDING + layerIndex * (nodeWidth + GAP_X),
-        y: PADDING + nodeIndex * (nodeHeight + GAP_Y),
+        x: pad + layerIndex * (nodeWidth + gapX),
+        y: pad + nodeIndex * (nodeHeight + gapY),
         layer: layerIndex,
       }),
     ),
   );
   const columns = Math.max(1, layers.length);
   const rows = Math.max(1, ...layers.map((layer) => layer.length));
-  const svgWidth = PADDING * 2 + columns * nodeWidth + (columns - 1) * GAP_X;
-  const svgHeight = PADDING * 2 + rows * nodeHeight + (rows - 1) * GAP_Y;
+  const svgWidth = pad * 2 + columns * nodeWidth + (columns - 1) * gapX;
+  const svgHeight = pad * 2 + rows * nodeHeight + (rows - 1) * gapY;
   const nodesById = new Map(run.nodes.map(node => [node.id, node]));
   // Agent-alive motion (halo, comet, spinner) follows real observable work:
   // a running run in the active graph, never stale or hidden data.
@@ -512,13 +589,13 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
     // Hidden panels have no box: the first paint is the first visible one.
     if (graph === null || firstPaintDone.current || graph.clientWidth === 0) return undefined;
     if (firstRunning !== undefined) {
-      const viewStart = graph.scrollLeft;
-      const viewEnd = viewStart + graph.clientWidth;
-      if (firstRunning.x < viewStart || firstRunning.x + nodeWidth > viewEnd) {
-        // Only this container scrolls: ancestors (and the page) never move.
-        const maxScroll = Math.max(0, graph.scrollWidth - graph.clientWidth);
-        graph.scrollLeft = Math.min(maxScroll, Math.max(0, firstRunning.x + nodeWidth / 2 - graph.clientWidth / 2));
-      }
+      // Always center the running node, even when a previous pass already
+      // brought it inside the view: the label measurement re-render can
+      // change the card width, and an "inside" check would freeze the reel
+      // at the stale-width position with the running node off-center.
+      // Only this container scrolls: ancestors (and the page) never move.
+      const maxScroll = Math.max(0, graph.scrollWidth - graph.clientWidth);
+      graph.scrollLeft = Math.min(maxScroll, Math.max(0, firstRunning.x + nodeWidth / 2 - graph.clientWidth / 2));
     }
     if (typeof requestAnimationFrame !== "function") {
       firstPaintDone.current = true;
@@ -555,7 +632,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
     const y1 = from.y + nodeHeight / 2;
     const x2 = to.x;
     const y2 = to.y + nodeHeight / 2;
-    const dx = Math.max(GAP_X / 2, Math.abs(x2 - x1) / 2);
+    const dx = Math.max(gapX / 2, Math.abs(x2 - x1) / 2);
     const d = `M${round(x1)} ${round(y1)}C${round(x1 + dx)} ${round(y1)} ${round(x2 - dx)} ${round(y2)} ${round(x2)} ${round(y2)}`;
     return [{ edgeIndex, d, fulfilled, flowing }];
   });
@@ -622,11 +699,15 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
         {run.nodes.flatMap((node) => {
           const position = positions.get(node.id);
           if (position === undefined) return [];
-          const kind = statusKind(node.state);
+          const kind = nodeStatusKind(node.state);
           const motion = nodeMotion.get(node.id);
           const stateClass = [
             "th-activity-gnode",
             `th-activity-gnode--${kind}`,
+            // Binding user decision (2026-09-26): cancelled nodes join the
+            // failed/error red-border set; skipped and the waiting states
+            // keep the neutral stroke.
+            ...(node.state === "cancelled" || node.state === "canceled" ? ["th-activity-gnode--cancelled"] : []),
             ...(motion?.entering ? ["th-activity-gnode--enter"] : []),
             ...(motion?.settling ? ["th-activity-gnode--settle"] : []),
           ].join(" ");
@@ -660,6 +741,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
                   <text
                     key={lineIndex}
                     className="th-activity-glabel"
+                    fontSize={layoutFontPx}
                     x={geometry.labelX}
                     y={geometry.firstBaseline + lineIndex * row}
                     clipPath={`url(#${rowClipId(clipIdPrefix, runIndex, lineIndex)})`}
@@ -669,6 +751,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
                 ))}
                 <text
                   className="th-activity-gstate"
+                  fontSize={compact ? COMPACT_STATE_FONT_PX : undefined}
                   x={geometry.labelX}
                   y={geometry.stateBaseline}
                   clipPath={`url(#${rowClipId(clipIdPrefix, runIndex, 2)})`}
@@ -693,14 +776,14 @@ function DagList({ run, live, t }: {
   return (
     <ul className="th-activity-dagnodes" data-live={live ? "true" : undefined}>
       {run.nodes.map((node) => (
-        <li key={node.id} className={`th-activity-dnode th-activity-dnode--${statusKind(node.state)}`}>
+        <li key={node.id} className={`th-activity-dnode th-activity-dnode--${nodeStatusKind(node.state)}`}>
           <span className="th-activity-dnode-rail" aria-hidden="true">
             <InlineGlyph state={node.state} />
           </span>
           <span className="th-activity-dnode-label" title={node.prompt}>
             {node.label ?? node.prompt}
           </span>
-          <span className="th-activity-dnode-state">{statusLabel(t, node.state)}</span>
+          <span className={`th-activity-dnode-state th-activity-dnode-state--${nodeStatusKind(node.state)}`}>{statusLabel(t, node.state)}</span>
         </li>
       ))}
     </ul>

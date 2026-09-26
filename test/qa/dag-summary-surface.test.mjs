@@ -30,13 +30,10 @@ test('Chrome DOM machinery observes exact post-arm mutations, rejects false exac
     for (const viewport of viewports) {
       await page.setViewportSize(viewport);
       for (const stage of stages) {
-        const text = stage === 'canceled-retained-running2' ? null
-          : ['complete2', 'compact-duplicate-ids', 'complete2-empty-optional-ids', 'complete2-recovery'].includes(stage) ? '2'
-          : ['partial-retained1', 'compact-mixed-ids', 'required-empty-node-id'].includes(stage) ? '1+' : '?';
-        const suffix = text === '?' ? 'Unknown' : text?.endsWith('+') ? 'Partial' : '';
+        const text = stage === 'canceled-retained-running2' || stage === 'incomplete-retained0' ? null : '2';
         const marker = `${viewport.width}-${stage}`;
         const signal = await armDOM(page, marker => document.querySelector('.th-overview-card-line').textContent === marker, marker);
-        await page.evaluate(({ text, suffix, copy, marker }) => {
+        await page.evaluate(({ text, copy, marker }) => {
           for (const [selector, parent, key] of [['.th-tree-running', '.th-tree-node', 'sidebar.tm.runningAgents'],
             ['.th-overview-card-running', '.th-overview-card', 'overview.runningAria']]) {
             let node = document.querySelector(selector);
@@ -46,15 +43,15 @@ test('Chrome DOM machinery observes exact post-arm mutations, rejects false exac
               document.querySelector(parent).append(node);
             }
             node.textContent = text;
-            node.setAttribute('aria-label', copy[key + suffix].replace('{n}', String(Number.parseInt(text, 10))));
+            node.setAttribute('aria-label', copy[key].replace('{n}', text));
           }
           document.querySelector('.th-overview-card-line').textContent = marker;
-        }, { text, suffix, copy, marker });
+        }, { text, copy, marker });
         await doneDOM(page, signal); await settleCapture(page);
         const dom = await page.evaluate(readSummaryDOM), binary = assertSummaryDOM(dom, stage, copy);
         assert.equal(dom.marker, marker); assertVisibleBadge(dom, 'sidebar', stage); assertVisibleBadge(dom, 'overview', stage);
         observations.push({ viewport, stage, dom, binary });
-        if (stage === 'canceled-retained-running2') {
+        if (stage === 'canceled-retained-running2' || stage === 'incomplete-retained0') {
           for (const [surface, selector] of [['sidebar', '.th-tree-node'], ['overview', '.th-overview-card']]) {
             const hiddenSignal = await armDOM(page, selector => document.querySelector(selector).style.visibility === 'hidden', selector);
             await page.locator(selector).evaluate(node => { node.style.visibility = 'hidden'; });
@@ -69,7 +66,7 @@ test('Chrome DOM machinery observes exact post-arm mutations, rejects false exac
       }
     }
     await page.evaluate(copy => { const badge = document.querySelector('.th-tree-running'); badge.textContent = '1'; badge.setAttribute('aria-label', copy['sidebar.tm.runningAgents'].replace('{n}', '1')); }, copy);
-    assert.throws(() => assertSummaryDOM(observations[0].dom, 'complete2', copy));
+    assert.throws(() => assertSummaryDOM(observations[0].dom, 'incomplete-retained0', copy));
     const falseExact = await page.evaluate(readSummaryDOM);
     assert.throws(() => assertSummaryDOM(falseExact, 'partial-retained1', copy));
     await page.evaluate(() => document.querySelector('.th-overview-card-running').style.display = 'none');

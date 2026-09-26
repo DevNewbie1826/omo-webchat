@@ -1,6 +1,7 @@
 /** Lead-owned C3 gate: real built SPA + fresh Chrome profiles, native summary WS.
- * Rich + oversized compact wire inputs exercise the actual SPA parser/summary.
- * Go source -> digest generation is a separate producer proof, not simulated here.
+ * Lean live rows exercise the actual SPA parser/summary; rich and compact
+ * topology remains on attached chat activity surfaces, not the live feed.
+ * Go source -> count generation is a separate producer proof, not simulated here.
  * Build separately after producers settle. This command never edits product files.
  */
 import assert from 'node:assert/strict';
@@ -14,7 +15,7 @@ import { promisify } from 'node:util';
 import { confirmPortReleased, installDOMSignals, launchChild, snapshotAssets } from './dag-state-ordering.mjs';
 import { activityPath, createTaskRequestGate, deadline, pollPath } from './task-state-fixture.mjs';
 import { observeSockets } from './heartbeat-liveness.mjs';
-import { stages, summaryInput, summaryFrame, startSummaryFixture, viewports } from './dag-summary-fixture.mjs';
+import { stages, summaryInput, startSummaryFixture, viewports } from './dag-summary-fixture.mjs';
 import { armDOM, doneDOM, readSummaryDOM, assertSummaryDOM, assertVisibleBadge, settleCapture } from './dag-summary-surface.mjs';
 
 const script = fileURLToPath(import.meta.url), root = resolve(dirname(script), '../..');
@@ -23,6 +24,20 @@ export function parseArgs(args) {
   assert.equal(args.length, 2, 'Usage: bun test/qa/dag-summary.mjs --evidence-dir ABSOLUTE_PATH');
   assert.equal(args[0], '--evidence-dir'); assert.ok(args[1] && !args[1].startsWith('--'));
   return { evidenceDir: resolve(args[1]) };
+}
+
+export function liveSummary(stage) {
+  const input = summaryInput(stage);
+  // The source's full running count survives bounded/invalid retained IDs.
+  // A canceled run and a source with no running nodes have authoritative zero.
+  const running = stage === 'canceled-retained-running2' || stage === 'incomplete-retained0' ? 0 : 2;
+  const updatedAt = input.task.tasks[0].updated_at;
+  return { type: 'sessions.activity', sessionId: input.id, durableSessionId: input.id, overflow: false,
+    id: input.id, title: `${input.title} | ${input.marker}`, active: false, last_activity_ms: Date.parse(updatedAt),
+    running: { agents: running, tasks: 0, dag: running }, done: 0, dag_done: 0,
+    dag_total: stage === 'incomplete-retained0' ? 0 : 2,
+    truncated: { task: false, dag: input.dag_oversized === true || input.dag?.truncated_runs === true },
+    last_line: input.marker };
 }
 
 export async function run({ evidenceDir, assetsDir = join(root, 'frontend/dist'), chromium } = {}) {
@@ -37,7 +52,7 @@ export async function run({ evidenceDir, assetsDir = join(root, 'frontend/dist')
     return { ...JSON.parse(await readFile(join(evidenceDir, 'C3-actions.json'), 'utf8')), cleanup };
   }
   const report = { startedAt: new Date().toISOString(), passed: false, surface: 'built-SPA',
-    inputBoundary: 'synthetic sessions.activity / sessions.live wire; Go digest generation verified separately',
+    inputBoundary: 'synthetic lean sessions.activity / sessions.live wire; Go count generation verified separately',
     actions: [], captures: [], errors: [] };
   const cleanup = { fixtureInMemoryOnly: true, cases: [], errors: [] };
   const record = row => report.actions.push({ sequence: report.actions.length + 1, ...row });
@@ -57,12 +72,6 @@ export async function run({ evidenceDir, assetsDir = join(root, 'frontend/dist')
       const name = `${viewport.width}x${viewport.height}`, receipt = { name, errors: [] };
       cleanup.cases.push(receipt);
       let fixture, context, page, observed, gate, profile;
-      async function overview(open) {
-        const signal = await armDOM(page, open => Boolean(document.querySelector('.th-overview')) === open, open);
-        if (open) await page.locator('.th-sidebar-nav').getByRole('button', { name: copy['sidebar.overview'], exact: true }).click();
-        else await page.locator('[role="dialog"] .th-modal-close').click();
-        await doneDOM(page, signal);
-      }
       async function capture(stage, surface) {
         const settled = await settleCapture(page), dom = await page.evaluate(readSummaryDOM);
         const binary = assertSummaryDOM(dom, stage, copy, [surface]); assertVisibleBadge(dom, surface, stage);
@@ -105,16 +114,17 @@ export async function run({ evidenceDir, assetsDir = join(root, 'frontend/dist')
           await page.locator('.th-mobile-menu').click(); await doneDOM(page, signal);
         }
         for (const stage of stages) {
-          await overview(true);
           const input = summaryInput(stage);
-          const signal = await armDOM(page, marker => [...document.querySelectorAll('.th-overview-card-line')].some(n => n.textContent === marker), input.marker);
+          const signal = await armDOM(page, marker => [...document.querySelectorAll('.th-sidebar-live .th-overview-card-name')]
+            .some(n => n.textContent.endsWith(` | ${marker}`)), input.marker);
           if (stage === stages[0]) {
-            const { marker, ...session } = input, body = { sessions: [session] };
+            const { type, sessionId, durableSessionId, overflow, ...session } = liveSummary(stage);
+            const body = { sessions: [session] };
             const response = page.waitForResponse(r => new URL(r.url()).pathname === pollPath, { timeout: deadline });
             await gate.release(pollToken, body); await (await response).finished();
-            record({ viewport: name, action: 'summary-REST', stage, marker, body });
+            record({ viewport: name, action: 'summary-REST', stage, marker: input.marker, body });
           } else {
-            const frame = summaryFrame(stage), after = observed.mark();
+            const frame = liveSummary(stage), after = observed.mark();
             const received = observed.wait(row => row.direction === 'received' && JSON.stringify(row.frame) === JSON.stringify(frame), { after, label: stage });
             fixture.overview(frame); const delivery = await received;
             record({ viewport: name, action: 'summary-native-WS', stage, frame, socketId: delivery.socketId });
@@ -125,7 +135,7 @@ export async function run({ evidenceDir, assetsDir = join(root, 'frontend/dist')
           const binary = assertSummaryDOM(dom, stage, copy);
           assert.equal(dom.marker, input.marker, 'same projection marker proves the exact summary was consumed');
           record({ viewport: name, stage, action: 'assert-summary-projection', binary });
-          await capture(stage, 'overview'); await overview(false); await capture(stage, 'sidebar');
+          await capture(stage, 'overview'); await capture(stage, 'sidebar');
         }
         if (viewport.width === 390) {
           const signal = await armDOM(page, () => document.querySelector('.th-sidebar')?.getAttribute('aria-hidden') === 'true' && !document.querySelector('.th-backdrop'));
