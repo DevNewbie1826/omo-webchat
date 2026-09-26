@@ -1243,14 +1243,22 @@ button.th-activity-bar:hover {
     currentColor calc(100% - var(--th-space-6)), transparent);
 }
 
-/* Dense waves hide below the fold (overflow-y hidden), so the partially
-   visible bottom row would slice mid-glyph: dissolve it into the shelf
-   instead. The mask stops ride on --th-bg; a mask reads only alpha, and the
+/* Dense waves hide below the fold: the reel has no height bound (overflow-y
+   hides, the SVG is the content), so the shelf's clipped panel — or the
+   scroll-owning tabpanel — cuts the visible graph mid-row. The component
+   measures the distance from the reel's bottom edge to the deepest clipping
+   ancestor's visible bottom and lifts the fade stop by that runtime offset
+   (--dag-fade-lift, a measurement like the progress transform, not a token),
+   so the partially visible bottom row dissolves into the shelf instead of
+   slicing. The mask stops ride on --th-bg; a mask reads only alpha, and the
    fade resolves to the canvas behind the reel. Content never clips at the
-   top, so only the bottom edge fades. */
+   top, and with no clipping ancestor the attribute (and the fade) is
+   removed entirely. */
 .th-activity-graph[data-fade-bottom="true"] {
-  -webkit-mask-image: linear-gradient(to top, transparent, var(--th-bg) var(--th-space-6));
-  mask-image: linear-gradient(to top, transparent, var(--th-bg) var(--th-space-6));
+  -webkit-mask-image: linear-gradient(to top, transparent var(--dag-fade-lift, 0px),
+    var(--th-bg) calc(var(--dag-fade-lift, 0px) + var(--th-space-6)));
+  mask-image: linear-gradient(to top, transparent var(--dag-fade-lift, 0px),
+    var(--th-bg) calc(var(--dag-fade-lift, 0px) + var(--th-space-6)));
 }
 
 /* When the bottom clips while a side fade is also up, both masks apply at
@@ -1259,22 +1267,26 @@ button.th-activity-bar:hover {
 .th-activity-graph[data-fade-bottom="true"][data-fade="start"] {
   -webkit-mask-image:
     linear-gradient(to right, transparent, var(--th-bg) var(--th-space-6)),
-    linear-gradient(to top, transparent, var(--th-bg) var(--th-space-6));
+    linear-gradient(to top, transparent var(--dag-fade-lift, 0px),
+      var(--th-bg) calc(var(--dag-fade-lift, 0px) + var(--th-space-6)));
   -webkit-mask-composite: source-in;
   mask-image:
     linear-gradient(to right, transparent, var(--th-bg) var(--th-space-6)),
-    linear-gradient(to top, transparent, var(--th-bg) var(--th-space-6));
+    linear-gradient(to top, transparent var(--dag-fade-lift, 0px),
+      var(--th-bg) calc(var(--dag-fade-lift, 0px) + var(--th-space-6)));
   mask-composite: intersect;
 }
 
 .th-activity-graph[data-fade-bottom="true"][data-fade="end"] {
   -webkit-mask-image:
     linear-gradient(to left, transparent, var(--th-bg) var(--th-space-6)),
-    linear-gradient(to top, transparent, var(--th-bg) var(--th-space-6));
+    linear-gradient(to top, transparent var(--dag-fade-lift, 0px),
+      var(--th-bg) calc(var(--dag-fade-lift, 0px) + var(--th-space-6)));
   -webkit-mask-composite: source-in;
   mask-image:
     linear-gradient(to left, transparent, var(--th-bg) var(--th-space-6)),
-    linear-gradient(to top, transparent, var(--th-bg) var(--th-space-6));
+    linear-gradient(to top, transparent var(--dag-fade-lift, 0px),
+      var(--th-bg) calc(var(--dag-fade-lift, 0px) + var(--th-space-6)));
   mask-composite: intersect;
 }
 
@@ -1282,12 +1294,14 @@ button.th-activity-bar:hover {
   -webkit-mask-image:
     linear-gradient(to right, transparent, var(--th-bg) var(--th-space-6),
       var(--th-bg) calc(100% - var(--th-space-6)), transparent),
-    linear-gradient(to top, transparent, var(--th-bg) var(--th-space-6));
+    linear-gradient(to top, transparent var(--dag-fade-lift, 0px),
+      var(--th-bg) calc(var(--dag-fade-lift, 0px) + var(--th-space-6)));
   -webkit-mask-composite: source-in;
   mask-image:
     linear-gradient(to right, transparent, var(--th-bg) var(--th-space-6),
       var(--th-bg) calc(100% - var(--th-space-6)), transparent),
-    linear-gradient(to top, transparent, var(--th-bg) var(--th-space-6));
+    linear-gradient(to top, transparent var(--dag-fade-lift, 0px),
+      var(--th-bg) calc(var(--dag-fade-lift, 0px) + var(--th-space-6)));
   mask-composite: intersect;
 }
 

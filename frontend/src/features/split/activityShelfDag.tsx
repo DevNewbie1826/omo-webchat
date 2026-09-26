@@ -419,26 +419,60 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
     if (!graph) return;
     // Edge fades appear only on the sides that actually hide content; the
     // attribute is written directly so scrolling never re-renders the graph.
-    // Vertical overflow hides instead of scrolling, so only the bottom edge
-    // can clip (dense waves): dissolve that row instead of slicing it.
     const update = (): void => {
       const hiddenStart = graph.scrollLeft > 1;
       const hiddenEnd = graph.scrollWidth - graph.clientWidth - graph.scrollLeft > 1;
       const fade = hiddenStart && hiddenEnd ? "both" : hiddenStart ? "start" : hiddenEnd ? "end" : null;
       if (fade === null) graph.removeAttribute("data-fade");
       else if (graph.getAttribute("data-fade") !== fade) graph.setAttribute("data-fade", fade);
-      const clippedBottom = graph.scrollHeight - graph.clientHeight > 1;
-      if (clippedBottom) graph.setAttribute("data-fade-bottom", "true");
-      else graph.removeAttribute("data-fade-bottom");
+      // The reel has no height bound (overflow-y hides, the SVG is the
+      // content), so its own scrollHeight never exceeds its clientHeight and
+      // the shelf clips the visible graph instead. Walk to every ancestor
+      // whose overflow can clip and take the deepest visible bottom: a
+      // partially visible bottom row dissolves into the canvas at that
+      // boundary instead of slicing mid-glyph. --dag-fade-lift is a measured
+      // runtime offset (data, like the progress transform), not a token.
+      let visibleBottom = graph.getBoundingClientRect().bottom;
+      for (let ancestor = graph.parentElement; ancestor !== null; ancestor = ancestor.parentElement) {
+        const style = getComputedStyle(ancestor);
+        if (style.overflowX === "visible" && style.overflowY === "visible") continue;
+        visibleBottom = Math.min(visibleBottom, ancestor.getBoundingClientRect().bottom);
+        observe(ancestor);
+      }
+      if (graph.scrollHeight - graph.clientHeight > 1) {
+        visibleBottom = Math.min(visibleBottom, graph.getBoundingClientRect().top + graph.clientHeight);
+      }
+      const lift = Math.round(graph.getBoundingClientRect().bottom - visibleBottom);
+      if (lift > 1) {
+        graph.setAttribute("data-fade-bottom", "true");
+        graph.style.setProperty("--dag-fade-lift", `${lift}px`);
+      } else {
+        graph.removeAttribute("data-fade-bottom");
+        graph.style.removeProperty("--dag-fade-lift");
+      }
     };
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(update) : null;
+    // The test polyfill fires the callback synchronously from observe(), so
+    // each target may be handed to the observer only once: the re-entrant
+    // update then sees every target already observed and terminates.
+    const observed = new Set<Element>();
+    const observe = (target: Element): void => {
+      if (observed.has(target)) return;
+      observed.add(target);
+      observer?.observe(target);
+    };
+    observe(graph);
+    const canvas = graph.firstElementChild;
+    if (canvas !== null) observe(canvas);
     update();
     graph.addEventListener("scroll", update, { passive: true });
-    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(update) : null;
-    observer?.observe(graph);
-    const canvas = graph.firstElementChild;
-    if (canvas !== null) observer?.observe(canvas);
+    // The tabpanel owns vertical scroll: scrolling it moves the reel under
+    // the clip without touching the reel's own scroll position, and scroll
+    // events do not bubble, so capture every scroll in the subtree.
+    document.addEventListener("scroll", update, { capture: true, passive: true });
     return () => {
       graph.removeEventListener("scroll", update);
+      document.removeEventListener("scroll", update, { capture: true });
       observer?.disconnect();
     };
   }, []);
