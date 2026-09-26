@@ -8,14 +8,16 @@
  * This module is a per-task scenario plugin (see the contract in
  * visual-redesign.mjs): the CLI auto-loads `visual-redesign-scenarios-*.mjs`
  * and merges the exported `scenarios` object over the built-in registry.
- * It owns the T2 chat surface ids S4, S5, S6, S7, S8, S9 and S22. Where a
- * built-in driver already existed (S4/S6/S8) this override keeps every
- * built-in assertion and adds the T2-specific gates. S5 keeps the shared
- * painted-border and uppercase rules but measures only .th-chat-pane,
- * excluding T4-owned activity shelf, GoalBar, activity chips, and
- * activity-graph nodes, plus anything outside the pane (T3). S8 keeps
- * the running-glyph accent and reduced-motion gates for every other
- * glyph (tool, tree, overview) and does not judge those same T4 elements.
+ * It owns the T2 chat surface ids S4, S6, S7, S9 and S22, plus the
+ * chat-scoped variants S5:chat and S8:chat. Canonical S5 and S8 stay the
+ * built-in app-wide drivers. Where a built-in driver already existed
+ * (S4/S6) this override keeps every built-in assertion and adds the
+ * T2-specific gates. S5:chat keeps the shared painted-border and uppercase
+ * rules but measures only .th-chat-pane, excluding T4-owned activity shelf,
+ * GoalBar, activity chips, and activity-graph nodes, plus anything outside
+ * the pane (T3). S8:chat keeps the running-glyph accent and reduced-motion
+ * gates for every other glyph (tool, tree, overview) and does not judge
+ * those same T4 elements.
  *
  * Every probe below can FAIL and includes at least one assertion the
  * pre-redesign baseline fails (pinned by visual-redesign-scenarios-t2.test.mjs
@@ -27,15 +29,10 @@
  * T2 selector contracts this file measures (S7/S9 - the markup the
  * redesign must ship; alternatives are listed so the contract is a shape,
  * not a single spelling):
- *   - Timeline rail (S7): a real ELEMENT matching
- *     .th-chat-record-rail | .th-tool-rail | .th-timeline-rail |
- *     .th-chat-rail | [data-th-tool-rail] | [class*="record-rail"] |
- *     [class*="tool-rail"] | [class*="timeline-rail"],
- *     inside the tool record or within 3 ancestors, VISIBLE, <= 6px wide,
- *     vertically covering the record's center, LEFT of the record's title
- *     text (.th-tool-name, falling back to the header box) - the v2 Golo
- *     grammar overlays the rail on the transparent header at the glyph
- *     center, so the anchor is the text, not the header's border box.
+ *   - Timeline rail (S7): a real .th-chat-record-rail inside each visible
+ *     tool/thinking record, one CSS px wide, centered within 1px of its
+ *     status glyph and spanning the entire record. Consecutive records
+ *     continue from the previous rail without a lateral or vertical gap.
  *   - Overflow fade (S7): on/around the expanded overflowing output
  *     (.th-tool-output or its wrapper): computed mask-image (incl.
  *     -webkit-) non-none, or an ::after/::before with a gradient
@@ -140,21 +137,88 @@ export function commandInsertDecision(facts) {
   return { pass: failures.length === 0, failures, measurements: { ...facts } };
 }
 
-/** S7: per-record rail facts -> failures. The pre-redesign transcript has
- * no rail element at all, so every record fails (pinned by unit test). */
+/** S7: per-record glyph/rail geometry and consecutive-rail joins. */
 export function railFactsDecision(result) {
   const failures = [];
   const facts = (result?.facts ?? []).filter(fact => fact.recordVisible);
-  const measurements = { toolCount: result?.toolCount ?? 0, visibleToolCount: facts.length, records: [] };
+  const measurements = {
+    toolCount: result?.toolCount ?? 0,
+    visibleToolCount: facts.filter(fact => fact.kind === 'tool').length,
+    visibleThinkingCount: facts.filter(fact => fact.kind === 'thinking').length,
+    records: [],
+  };
   if (measurements.visibleToolCount === 0) failures.push('no visible tool records found to measure the timeline rail');
   for (const fact of facts) {
-    const thin = typeof fact.railWidth === 'number' && fact.railWidth <= 6;
-    const left = typeof fact.railRight === 'number' && typeof fact.anchorLeft === 'number' && fact.railRight <= fact.anchorLeft + 1;
-    const ok = fact.railFound && fact.railVisible && fact.railCoversRecord && thin && left;
-    measurements.records.push({ id: fact.id, ok, railFound: fact.railFound, railVisible: fact.railVisible, railWidth: fact.railWidth, railRight: fact.railRight, anchorLeft: fact.anchorLeft });
-    if (!ok) failures.push(`tool ${fact.id} has no qualifying timeline rail (found=${fact.railFound} visible=${fact.railVisible} covers=${fact.railCoversRecord} width=${fact.railWidth} railRight=${fact.railRight} anchorLeft=${fact.anchorLeft})`);
+    const alignment = fact.railCenter === null || fact.glyphCenter === null
+      ? null : Math.abs(fact.railCenter - fact.glyphCenter);
+    const thin = typeof fact.railWidth === 'number' && fact.railWidth >= 0.5 && fact.railWidth <= 1.5;
+    const joined = !fact.continues || !fact.previousVisible
+      || (fact.previousRailCenter !== null && fact.railCenter !== null
+        && Math.abs(fact.railCenter - fact.previousRailCenter) <= 1
+        && fact.railTop !== null && fact.previousRailBottom !== null
+        && fact.railTop <= fact.previousRailBottom + 1);
+    const ok = fact.railFound && fact.railVisible && fact.glyphFound
+      && fact.railSpansRecord && thin && alignment !== null && alignment <= 1 && joined;
+    measurements.records.push({
+      id: fact.id, kind: fact.kind, ok, railWidth: fact.railWidth,
+      railCenter: fact.railCenter, glyphCenter: fact.glyphCenter,
+      alignment, railSpansRecord: fact.railSpansRecord, joined,
+    });
+    if (!ok) failures.push(`${fact.kind} ${fact.id} has no qualifying timeline rail (found=${fact.railFound} glyph=${fact.glyphFound} spans=${fact.railSpansRecord} width=${fact.railWidth} offset=${alignment} joined=${joined})`);
   }
   return { pass: failures.length === 0, failures, measurements };
+}
+
+/** S7: only mounted rows intersecting the transcript scrollport can appear
+ * in a capture. Record their measured boxes after virtualizer settlement. */
+export function probeTranscriptRows() {
+  const scrollport = document.querySelector('.th-chat-body');
+  if (!scrollport) return { scrollportFound: false, rows: [], records: [] };
+  const viewport = scrollport.getBoundingClientRect();
+  const rows = [...scrollport.querySelectorAll('.th-chat-row[data-index]')]
+    .filter(row => isVisibleElement(row))
+    .map(row => {
+      const rect = row.getBoundingClientRect();
+      return {
+        index: Number(row.getAttribute('data-index')),
+        top: rect.top, bottom: rect.bottom,
+        visible: rect.bottom > viewport.top && rect.top < viewport.bottom,
+      };
+    })
+    .filter(row => row.visible)
+    .sort((a, b) => a.index - b.index);
+  const records = [...scrollport.querySelectorAll('.th-chat-record')]
+    .filter(record => isVisibleElement(record))
+    .map((record, index) => {
+      const rect = record.getBoundingClientRect();
+      return {
+        id: record.getAttribute('data-tool-call-id') ?? `thinking:${index}`,
+        top: rect.top, bottom: rect.bottom,
+      };
+    })
+    .filter(record => record.bottom > viewport.top && record.top < viewport.bottom);
+  return { scrollportFound: true, rows, records };
+}
+
+export function transcriptRowsDecision(result) {
+  const failures = [];
+  const rows = result?.rows ?? [];
+  const records = result?.records ?? [];
+  if (!result?.scrollportFound) failures.push('transcript scrollport is missing');
+  if (records.length < 2) failures.push('fewer than two visible transcript records to check for overlap');
+  for (let i = 1; i < rows.length; i += 1) {
+    const previous = rows[i - 1], current = rows[i];
+    if (current.top < previous.bottom - 1) {
+      failures.push(`transcript rows ${previous.index}/${current.index} overlap by ${Math.round((previous.bottom - current.top) * 100) / 100}px`);
+    }
+  }
+  for (let i = 1; i < records.length; i += 1) {
+    const previous = records[i - 1], current = records[i];
+    if (current.top < previous.bottom - 1) {
+      failures.push(`transcript records ${previous.id}/${current.id} overlap by ${Math.round((previous.bottom - current.top) * 100) / 100}px`);
+    }
+  }
+  return { pass: failures.length === 0, failures, measurements: { rows, records } };
 }
 
 /** S7: one expanded output fact -> has a bottom fade or not. */
@@ -242,44 +306,40 @@ export function switchOutcomeDecision(facts) {
 //    they may reference kit helpers and DOM APIs only - never module names)
 // ---------------------------------------------------------------------------
 
-/** S7: per-record rail facts (see the selector contract in the header
- * comment). The left anchor is the record's TITLE TEXT (.th-tool-name),
- * because the v2 grammar paints the rail over the transparent header at
- * the glyph center rather than outside the header box. */
+/** S7: status-glyph-centered, full-height rails on tool and thinking records. */
 export function probeToolRail() {
-  const railSelector = '.th-chat-record-rail, .th-tool-rail, .th-timeline-rail, .th-chat-rail, [data-th-tool-rail], [class*="record-rail"], [class*="tool-rail"], [class*="timeline-rail"]';
-  const records = [...document.querySelectorAll('[data-tool-call-id]')];
+  const records = [...document.querySelectorAll('.th-chat-record')];
   const facts = [];
-  for (const record of records) {
-    const head = record.querySelector('.th-tool-head');
-    const anchor = record.querySelector('.th-tool-name') ?? head;
+  for (const [index, record] of records.entries()) {
+    const kind = record.matches('[data-tool-call-id]') ? 'tool' : 'thinking';
+    const rail = record.querySelector('.th-chat-record-rail');
+    const glyph = record.querySelector(kind === 'tool' ? '.th-tool-glyph' : '.th-chat-thinking-dot');
     const recordRect = record.getBoundingClientRect();
-    const centerY = recordRect.top + recordRect.height / 2;
-    let rail = null;
-    let scope = record;
-    for (let depth = 0; depth < 4 && scope && !rail; depth += 1) {
-      for (const candidate of scope.querySelectorAll(railSelector)) {
-        const rect = candidate.getBoundingClientRect();
-        if (rect.top <= centerY && rect.bottom >= centerY) { rail = candidate; break; }
-      }
-      scope = scope.parentElement;
-    }
     const railRect = rail ? rail.getBoundingClientRect() : null;
-    const anchorRect = anchor ? anchor.getBoundingClientRect() : null;
+    const glyphRect = glyph ? glyph.getBoundingClientRect() : null;
+    const previous = records[index - 1];
+    const previousVisible = !!previous && isVisibleElement(previous)
+      && previous.closest('.th-chat-pane') === record.closest('.th-chat-pane');
+    const previousRail = previousVisible ? previous.querySelector('.th-chat-record-rail')?.getBoundingClientRect() : null;
     facts.push({
-      id: record.getAttribute('data-tool-call-id'),
-      label: describeElement(record),
+      id: record.getAttribute('data-tool-call-id') ?? `thinking:${index}`,
+      kind,
       recordVisible: isVisibleElement(record),
-      headFound: !!head,
       railFound: !!rail,
       railVisible: !!rail && isVisibleElement(rail),
-      railWidth: railRect ? Math.round(railRect.width * 100) / 100 : null,
-      railRight: railRect ? Math.round(railRect.right * 100) / 100 : null,
-      anchorLeft: anchorRect ? Math.round(anchorRect.left * 100) / 100 : null,
-      railCoversRecord: !!railRect && railRect.top <= centerY && railRect.bottom >= centerY,
+      glyphFound: !!glyph && isVisibleElement(glyph),
+      railWidth: railRect?.width ?? null,
+      railCenter: railRect ? (railRect.left + railRect.right) / 2 : null,
+      glyphCenter: glyphRect ? (glyphRect.left + glyphRect.right) / 2 : null,
+      railTop: railRect?.top ?? null,
+      railSpansRecord: !!railRect && railRect.top <= recordRect.top + 1 && railRect.bottom >= recordRect.bottom - 1,
+      continues: record.classList.contains('th-chat-record--continue'),
+      previousVisible,
+      previousRailCenter: previousRail ? (previousRail.left + previousRail.right) / 2 : null,
+      previousRailBottom: previousRail?.bottom ?? null,
     });
   }
-  return { toolCount: records.length, facts };
+  return { toolCount: records.filter(record => record.hasAttribute('data-tool-call-id')).length, facts };
 }
 
 /** S7: expanded output fade facts for every visible .th-tool-output. */
@@ -750,6 +810,145 @@ async function settleElement(page, selector) {
   }, selector).catch(() => {});
 }
 
+const opaqueStyle = value => {
+  const parsed = typeof value === 'number' ? value : Number(String(value ?? '').trim());
+  return Number.isFinite(parsed) && Math.abs(parsed - 1) < 0.001;
+};
+
+/** Finite enter animations only. A running glyph inside the subtree must
+ * not hold the deadline open; iterations Infinity never finishes. */
+const finiteEnterAnimations = root => {
+  if (!root || typeof root.getAnimations !== 'function') return [];
+  const animations = root.getAnimations({ subtree: true });
+  const finite = [];
+  for (const animation of animations) {
+    const timing = animation.effect && typeof animation.effect.getTiming === 'function'
+      ? animation.effect.getTiming()
+      : null;
+    if (timing && timing.iterations === Infinity) continue;
+    finite.push(animation);
+  }
+  return finite;
+};
+
+/** Wait for enter animations already listed on `roots`.
+ *
+ * Each `animation.finished` promise is captured synchronously, before this
+ * function awaits. Reading `.finished` later can observe a replaced promise
+ * (the animation is removed when it ends) that never settles. The deadline
+ * rejects; callers must not swallow it. After the promises settle, the
+ * panel's computed opacity must be 1 and its transform `none`.
+ */
+export async function settleEnterAnimations(roots, options = {}) {
+  const deadlineMs = options.deadlineMs ?? 2500;
+  const now = options.now ?? (() => Date.now());
+  const schedule = options.schedule ?? setTimeout;
+  const cancel = options.cancel ?? clearTimeout;
+  const readStyle = options.readStyle ?? null;
+  const started = now();
+  const seen = new Set();
+  const finished = [];
+  for (const root of roots ?? []) {
+    for (const animation of finiteEnterAnimations(root)) {
+      if (seen.has(animation)) continue;
+      seen.add(animation);
+      // Captured immediately, in this turn, before any await.
+      finished.push(animation.finished);
+    }
+  }
+  const remaining = deadlineMs - (now() - started);
+  let timer;
+  try {
+    await Promise.race([
+      Promise.all(finished),
+      new Promise((_, reject) => {
+        timer = schedule(() => {
+          reject(new Error(`question window enter animations did not settle within ${deadlineMs}ms`));
+        }, Math.max(0, remaining));
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) cancel(timer);
+  }
+  let style = null;
+  if (typeof readStyle === 'function') {
+    style = readStyle();
+    const opacity = style?.opacity;
+    const transform = String(style?.transform ?? '').trim();
+    if (!opaqueStyle(opacity) || transform !== 'none') {
+      throw new Error(`question window panel unsettled (opacity ${opacity}, transform ${transform})`);
+    }
+    if (style?.overlayOpacity !== undefined && !opaqueStyle(style.overlayOpacity)) {
+      throw new Error(`question window overlay unsettled (opacity ${style.overlayOpacity})`);
+    }
+  }
+  return {
+    opacity: style?.opacity ?? null,
+    transform: style?.transform ?? null,
+    overlayOpacity: style?.overlayOpacity ?? null,
+    animationCount: finished.length,
+  };
+}
+
+/** D2: the approval question window is portaled to document.body. The
+ * selector matches at the start of th-fade-in (overlay) and th-modal-in
+ * (panel). Census and capture must run only after those enter animations
+ * finish. A missed deadline rejects and fails the cell. */
+async function settleQuestionWindow(page, deadlineMs = 2500) {
+  const source = `
+    const settleEnterAnimations = ${settleEnterAnimations.toString()};
+    const opaqueStyle = ${opaqueStyle.toString()};
+    const finiteEnterAnimations = ${finiteEnterAnimations.toString()};
+    const started = performance.now();
+    let portal = null;
+    for (const node of document.querySelectorAll('.th-question-window')) {
+      const overlay = node.closest('.th-modal-overlay');
+      const panel = node.closest('.th-modal');
+      if (overlay && panel && overlay.parentElement === document.body) {
+        portal = { overlay, panel };
+        break;
+      }
+    }
+    if (!portal) throw new Error('question window portal is missing on document.body');
+    const roots = [portal.overlay, portal.panel];
+    const finiteRunning = () => {
+      const seen = new Set();
+      let count = 0;
+      for (const root of roots) {
+        for (const animation of finiteEnterAnimations(root)) {
+          if (seen.has(animation)) continue;
+          seen.add(animation);
+          if (animation.playState !== 'finished') count += 1;
+        }
+      }
+      return count;
+    };
+    const visualsFinal = () => {
+      const panel = getComputedStyle(portal.panel);
+      const overlay = getComputedStyle(portal.overlay);
+      return opaqueStyle(panel.opacity) && String(panel.transform).trim() === 'none' && opaqueStyle(overlay.opacity);
+    };
+    while (finiteRunning() === 0 && !visualsFinal()) {
+      const remaining = deadlineMs - (performance.now() - started);
+      if (remaining <= 0) break;
+      await new Promise(resolve => {
+        const timer = setTimeout(resolve, remaining);
+        requestAnimationFrame(() => { clearTimeout(timer); resolve(); });
+      });
+    }
+    return await settleEnterAnimations(roots, {
+      deadlineMs: Math.max(0, Math.ceil(deadlineMs - (performance.now() - started))),
+      now: () => performance.now(),
+      readStyle: () => {
+        const panel = getComputedStyle(portal.panel);
+        const overlay = getComputedStyle(portal.overlay);
+        return { opacity: panel.opacity, transform: panel.transform, overlayOpacity: overlay.opacity };
+      },
+    });
+  `;
+  return page.evaluate(new Function('deadlineMs', `return (async () => {\n${source}\n})();`), deadlineMs);
+}
+
 /** Serve the DAG catalog/document endpoints CompleteDagSection fetches.
  * The pane-workspace-ui fixture does not serve them (the documented T4
  * reachability gap): without routes the tab renders only a catalog error
@@ -857,6 +1056,41 @@ async function rapidDisclosureToggles(page, id, count) {
     record.error = errLine(error);
   }
   return record;
+}
+
+/** The virtualizer measures changed disclosure rows asynchronously. Two
+ * successive animation frames with identical mounted row rectangles confirm
+ * both the measured heights and absolute positions have stopped changing.
+ * The deadline rejects rather than treating a late/unstable frame as ready. */
+async function settleTranscriptRows(page) {
+  return page.evaluate(() => new Promise((resolve, reject) => {
+    const transcript = document.querySelector('.th-chat-body');
+    if (!transcript) {
+      reject(new Error('transcript scrollport is missing during settlement'));
+      return;
+    }
+    let previous = null;
+    let unchanged = 0;
+    let frame = 0;
+    const deadline = setTimeout(() => {
+      cancelAnimationFrame(frame);
+      reject(new Error('transcript virtual rows did not settle within 4000ms'));
+    }, 4000);
+    const sample = () => {
+      const rows = [...transcript.querySelectorAll('.th-chat-row[data-index]')];
+      const positions = [...rows, ...transcript.querySelectorAll('.th-chat-record')].map(row => {
+        const rect = row.getBoundingClientRect();
+        return `${row.getAttribute('data-index')}:${rect.top}:${rect.bottom}:${rect.left}:${rect.right}`;
+      }).join('|');
+      unchanged = rows.length > 0 && positions === previous ? unchanged + 1 : 0;
+      previous = positions;
+      if (unchanged >= 2) {
+        clearTimeout(deadline);
+        resolve({ rowCount: rows.length, unchangedFrames: unchanged });
+      } else frame = requestAnimationFrame(sample);
+    };
+    frame = requestAnimationFrame(sample);
+  }));
 }
 
 /** S22: pane identity + stale markers, read from the real DOM. */
@@ -1026,8 +1260,28 @@ async function stateColorsT2(ctx) {
     }
     const approval = await deliverApproval(env);
     if (!approval.reached) failures.push(`approval surface did not render: ${approval.error}`);
+    // The question window mounts on document.body. Wait for its enter
+    // animations (overlay + panel) before the census and the capture.
+    // A deadline rejection fails the cell and is not swallowed: an
+    // unsettled modal must not be recorded.
+    let questionWindowSettle = null;
+    if (approval.reached) {
+      try {
+        questionWindowSettle = await settleQuestionWindow(page);
+      } catch (error) {
+        failures.push(`approval window settle failed: ${errLine(error)}`);
+        return {
+          pass: false,
+          failures,
+          measurements: withErrors(env, { surfaceNotes: notes, questionWindowSettle: { error: errLine(error) } }),
+          screenshots: [],
+          teardown: await env.close(),
+        };
+      }
+    }
     const result = await ctx.probe(page, probeChatStateColors);
     result.measurements.surfaceNotes = notes;
+    result.measurements.questionWindowSettle = questionWindowSettle;
     result.measurements.motion = await ctx.motionSweep(page);
     const shot = await ctx.save(page, '');
     if (paletteOpened) {
@@ -1078,6 +1332,10 @@ async function timelineT2(ctx) {
     const page = env.page;
     const failures = [];
     const measurements = { narrowViewport: await isNarrow(page) };
+    await env.fixture.deliver('stored-a', {
+      type: 'messageDelta', delta: { kind: 'thinking_delta', delta: 'Checking the timeline.' },
+    });
+    await page.waitForSelector('.th-chat-thinking--running .th-chat-thinking-dot', { timeout: 4000 });
     await page.locator('[data-tool-call-id="design-failed"]').scrollIntoViewIfNeeded().catch(() => {});
 
     const rail = await ctx.probe(page, probeToolRail);
@@ -1137,6 +1395,22 @@ async function timelineT2(ctx) {
       if (!disclosureConsistency(after).ok) failures.push(`rapid toggles: ${disclosureConsistency(after).reason}`);
     }
 
+    try {
+      measurements.transcriptSettlement = await settleTranscriptRows(page);
+      const rows = transcriptRowsDecision(await ctx.probe(page, probeTranscriptRows));
+      measurements.transcriptRows = rows.measurements;
+      failures.push(...rows.failures.map(f => `transcript geometry: ${f}`));
+    } catch (error) {
+      failures.push(`transcript settlement failed: ${errLine(error)}`);
+    }
+    // An unsettled or overlapping artifact must never be retained as a
+    // purported S7 capture, even when the scenario records a FAIL.
+    if (failures.some(f => f.startsWith('transcript settlement failed:') || f.startsWith('transcript geometry:'))) {
+      return {
+        pass: false, measurements: withErrors(env, measurements),
+        failures, screenshots: [], teardown: await env.close(),
+      };
+    }
     measurements.motion = await ctx.motionSweep(page);
     const shot = await ctx.save(page, '');
     return {
@@ -1422,10 +1696,10 @@ async function interruptionT2(ctx) {
 
 export const scenarios = {
   S4: separationT2,
-  S5: stateColorsT2,
+  'S5:chat': stateColorsT2,
   S6: headerT2,
   S7: timelineT2,
-  S8: runningT2,
+  'S8:chat': runningT2,
   S9: composerT2,
   S22: interruptionT2,
 };

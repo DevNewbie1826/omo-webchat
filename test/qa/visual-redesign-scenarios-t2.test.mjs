@@ -7,14 +7,14 @@
  * crash - the D6 defect class), and the plugin registration contract over
  * the shared harness loader. Run: bun test test/qa/visual-redesign-scenarios-t2.test.mjs */
 import { describe, expect, test } from 'bun:test';
-import { buildScenarioRegistry, loadScenarioPlugins } from './visual-redesign.mjs';
+import { buildScenarioRegistry, loadScenarioPlugins, selectScenarioIds } from './visual-redesign.mjs';
 import { pageKit, parseColor, probeRunningGlyphs } from './visual-redesign-probes.mjs';
 import {
   commandInsertDecision, composerDecision, dagCatalogPayloads, disclosureConsistency, extractColorStrings,
   fadeDecision, headerTextDecision, keyboardHintRowText, outputFadeDecision, paletteDecision,
   probeChatRunningGlyphs, probeChatRunningReducedMotion, probeChatStateColors, probeComposerFacts, probeDisclosureState, probeHeaderTexts, probeOutputFade, probePaletteFacts,
-  probeToolMaterial, probeToolRail, probeBorderedSamples, railFactsDecision, ringColorDecision, scenarios,
-  switchOutcomeDecision, toolMaterialDecision,
+  probeToolMaterial, probeToolRail, probeBorderedSamples, probeTranscriptRows, railFactsDecision, ringColorDecision, scenarios,
+  settleEnterAnimations, switchOutcomeDecision, toolMaterialDecision, transcriptRowsDecision,
 } from './visual-redesign-scenarios-t2.mjs';
 
 import { JSDOM } from '../../frontend/node_modules/jsdom/lib/api.js';
@@ -24,18 +24,42 @@ import { JSDOM } from '../../frontend/node_modules/jsdom/lib/api.js';
 // ---------------------------------------------------------------------------
 
 describe('T2 plugin registration', () => {
-  test('registers exactly the seven T2 chat-surface scenarios over stubs and builtins', async () => {
+  test('registers T2-owned canonical scenarios and chat-scoped S5 and S8', async () => {
     const plugins = await loadScenarioPlugins(import.meta.dir);
     const mine = plugins.find(plugin => plugin.file === 'visual-redesign-scenarios-t2.mjs');
     expect(mine?.skipped).toBeUndefined();
     const registry = buildScenarioRegistry(plugins);
-    for (const id of ['S4', 'S5', 'S6', 'S7', 'S8', 'S9', 'S22']) {
+    for (const id of ['S4', 'S6', 'S7', 'S9', 'S22']) {
       const entry = registry.find(candidate => candidate.id === id);
       expect(entry?.origin, `${id} origin`).toBe('plugin:visual-redesign-scenarios-t2.mjs');
       expect(entry?.stub, `${id} stub`).toBe(false);
+      expect(entry?.reason, `${id} reason`).toBe(null);
       expect(entry?.run, `${id} run`).toBe(scenarios[id]);
     }
-    expect(Object.keys(scenarios).sort()).toEqual(['S22', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9']);
+    for (const id of ['S5', 'S8']) {
+      const entry = registry.find(candidate => candidate.id === id);
+      expect(entry?.origin, `${id} stays the built-in app-wide driver`).toBe('builtin');
+      expect(entry?.run, `${id} run`).not.toBe(scenarios[`${id}:chat`]);
+    }
+    for (const [id, title] of [
+      ['S5:chat', 'No state encoded by coloured border/stroke (chat scope)'],
+      ['S8:chat', 'Running indicator accent + reduced motion (chat scope)'],
+    ]) {
+      const entry = registry.find(candidate => candidate.id === id);
+      expect(entry, id).toMatchObject({
+        id, title, origin: 'plugin:visual-redesign-scenarios-t2.mjs', stub: false, reason: null,
+      });
+      expect(entry.run, `${id} run`).toBe(scenarios[id]);
+    }
+    expect(Object.keys(scenarios).sort()).toEqual(['S22', 'S4', 'S5:chat', 'S6', 'S7', 'S8:chat', 'S9']);
+  });
+
+  test('selecting S5 yields the builtin driver and S5:chat', async () => {
+    const plugins = await loadScenarioPlugins(import.meta.dir);
+    const registry = buildScenarioRegistry(plugins);
+    expect(selectScenarioIds(registry, ['S5'])).toEqual(['S5', 'S5:chat']);
+    expect(registry.find(entry => entry.id === 'S5').origin).toBe('builtin');
+    expect(registry.find(entry => entry.id === 'S5:chat').run).toBe(scenarios['S5:chat']);
   });
 
   test('probes that fail or throw are possible: each scenario is a real function', () => {
@@ -67,25 +91,46 @@ function serializedProbeInDom(probeFn, arg, { html = '<body></body>', tokens = {
 }
 
 describe('serialized probeToolRail', () => {
-  test('records a qualifying rail element and the decision passes', () => {
+  const geometry = ({ offset = 0 } = {}) => (window, document) => {
+    const boxes = {
+      record: { left: 24, right: 224, top: 100, bottom: 148, width: 200, height: 48 },
+      rail: { left: 65.5 + offset, right: 66.5 + offset, top: 100, bottom: 148, width: 1, height: 48 },
+      glyph: { left: 60, right: 72, top: 114, bottom: 126, width: 12, height: 12 },
+      title: { left: 80, right: 130, top: 110, bottom: 130, width: 50, height: 20 },
+    };
+    for (const [selector, box] of [
+      ['.th-tool', boxes.record],
+      ['.th-chat-record-rail', boxes.rail],
+      ['.th-tool-glyph', boxes.glyph],
+      ['.th-tool-name', boxes.title],
+    ]) document.querySelector(selector).getBoundingClientRect = () => box;
+  };
+  test('records a glyph-centered rail spanning its record and passes', () => {
     const result = serializedProbeInDom(probeToolRail, {}, {
-      html: `<body><div class="th-chat-pane"><div class="th-chat-row">
+      html: `<body><div class="th-chat-pane"><div class="th-tool th-chat-record" data-tool-call-id="t1">
         <span class="th-chat-record-rail"></span>
-        <div class="th-tool" data-tool-call-id="t1">
-          <button class="th-tool-head" aria-expanded="false"><span class="th-tool-name">bash</span></button>
-        </div>
+        <button class="th-tool-head" aria-expanded="false"><span class="th-tool-glyph"></span><span class="th-tool-name">bash</span></button>
       </div></div></body>`,
+      patch: geometry(),
     });
-    // jsdom boxes are all zero: railRight 0 <= anchorLeft 0 + 1, width 0
-    // <= 6, and a zero-height rail still "covers" a zero-height center.
     const verdict = railFactsDecision(result);
     expect(verdict.pass).toBe(true);
     expect(verdict.measurements.visibleToolCount).toBe(1);
   });
+  test('a rail shifted onto the chevron fails despite staying left of the title', () => {
+    const result = serializedProbeInDom(probeToolRail, {}, {
+      html: `<body><div class="th-tool th-chat-record" data-tool-call-id="t1">
+        <span class="th-chat-record-rail"></span>
+        <button class="th-tool-head"><span class="th-tool-chevron"></span><span class="th-tool-glyph"></span><span class="th-tool-name">bash</span></button>
+      </div></body>`,
+      patch: geometry({ offset: -24 }),
+    });
+    expect(railFactsDecision(result).pass).toBe(false);
+  });
   test('the pre-redesign transcript (no rail element at all) fails every record', () => {
     const result = serializedProbeInDom(probeToolRail, {}, {
       html: `<body><div class="th-chat-pane">
-        <div class="th-tool" data-tool-call-id="t1">
+        <div class="th-tool th-chat-record" data-tool-call-id="t1">
           <button class="th-tool-head"><span class="th-tool-name">bash</span></button>
         </div>
       </div></body>`,
@@ -94,15 +139,79 @@ describe('serialized probeToolRail', () => {
     expect(verdict.pass).toBe(false);
     expect(verdict.failures[0]).toContain('t1 has no qualifying timeline rail');
   });
-  test('accepts the v2 .th-chat-record-rail spelling overlaid on the header', () => {
-    // The landed grammar paints the rail INSIDE the header box, left of the
-    // title text - modelled here with jsdom's zero boxes plus explicit
-    // geometry through the pure decision.
-    const verdict = railFactsDecision({
-      toolCount: 1,
-      facts: [{ id: 't1', recordVisible: true, railFound: true, railVisible: true, railCoversRecord: true, railWidth: 1, railRight: 17.5, anchorLeft: 32 }],
+  test('a consecutive thinking record joins its previous tool without jumping', () => {
+    const result = serializedProbeInDom(probeToolRail, {}, {
+      html: `<body><section class="th-chat-pane">
+        <div class="th-tool th-chat-record" data-tool-call-id="t1"><span class="th-chat-record-rail"></span>
+          <button class="th-tool-head"><span class="th-tool-glyph"></span></button></div>
+        <div class="th-chat-thinking th-chat-record th-chat-record--continue"><span class="th-chat-record-rail"></span>
+          <button class="th-chat-thinking-head"><span class="th-chat-thinking-dot"></span></button></div>
+      </section></body>`,
+      patch: (window, document) => {
+        const rects = [
+          [document.querySelectorAll('.th-chat-record')[0], { top: 100, bottom: 148 }],
+          [document.querySelectorAll('.th-chat-record-rail')[0], { top: 100, bottom: 148, left: 65.5, right: 66.5, width: 1 }],
+          [document.querySelector('.th-tool-glyph'), { top: 114, bottom: 126, left: 60, right: 72 }],
+          [document.querySelectorAll('.th-chat-record')[1], { top: 164, bottom: 200 }],
+          [document.querySelectorAll('.th-chat-record-rail')[1], { top: 148, bottom: 200, left: 65.5, right: 66.5, width: 1 }],
+          [document.querySelector('.th-chat-thinking-dot'), { top: 172, bottom: 184, left: 60, right: 72 }],
+        ];
+        for (const [element, rect] of rects) element.getBoundingClientRect = () => rect;
+      },
     });
+    const verdict = railFactsDecision(result);
     expect(verdict.pass).toBe(true);
+    expect(verdict.measurements.visibleThinkingCount).toBe(1);
+    expect(verdict.measurements.records[1].joined).toBe(true);
+  });
+  test('a lateral jump or a vertical gap breaks a continued mixed rail', () => {
+    const good = {
+      id: 'thinking:1', kind: 'thinking', recordVisible: true,
+      railFound: true, railVisible: true, glyphFound: true, railSpansRecord: true,
+      railWidth: 1, railCenter: 66, glyphCenter: 66, continues: true,
+      previousVisible: true, previousRailCenter: 66, railTop: 148, previousRailBottom: 148,
+    };
+    expect(railFactsDecision({ toolCount: 1, facts: [good, { ...good, id: 't1', kind: 'tool', continues: false }] }).pass).toBe(true);
+    expect(railFactsDecision({ toolCount: 1, facts: [{ ...good, previousRailCenter: 42 }] }).pass).toBe(false);
+    expect(railFactsDecision({ toolCount: 1, facts: [{ ...good, railTop: 156 }] }).pass).toBe(false);
+  });
+});
+
+describe('serialized transcript row geometry', () => {
+  const html = `<body><div class="th-chat-body">
+    <div class="th-chat-row" data-index="0"><div class="th-chat-record" data-tool-call-id="a"></div></div>
+    <div class="th-chat-row" data-index="1"><div class="th-chat-record" data-tool-call-id="b"></div></div>
+  </div></body>`;
+  test('rejects overlap between two visible virtual rows', () => {
+    const result = serializedProbeInDom(probeTranscriptRows, {}, {
+      html,
+      patch: (window, document) => {
+        document.querySelector('.th-chat-body').getBoundingClientRect = () => ({ top: 0, bottom: 300 });
+        const rows = document.querySelectorAll('.th-chat-row');
+        rows[0].getBoundingClientRect = () => ({ top: 40, bottom: 120 });
+        rows[1].getBoundingClientRect = () => ({ top: 110, bottom: 170 });
+        const records = document.querySelectorAll('.th-chat-record');
+        records[0].getBoundingClientRect = () => ({ top: 50, bottom: 100 });
+        records[1].getBoundingClientRect = () => ({ top: 120, bottom: 160 });
+      },
+    });
+    expect(transcriptRowsDecision(result).failures[0]).toContain('overlap by 10px');
+  });
+  test('rejects overlapping records even when both live in one tall virtual row', () => {
+    const result = serializedProbeInDom(probeTranscriptRows, {}, {
+      html: `<body><div class="th-chat-body"><div class="th-chat-row" data-index="0">
+        <div class="th-chat-record" data-tool-call-id="a"></div>
+        <div class="th-chat-record" data-tool-call-id="b"></div>
+      </div></div></body>`,
+      patch: (window, document) => {
+        document.querySelector('.th-chat-body').getBoundingClientRect = () => ({ top: 0, bottom: 300 });
+        document.querySelector('.th-chat-row').getBoundingClientRect = () => ({ top: 40, bottom: 250 });
+        const records = document.querySelectorAll('.th-chat-record');
+        records[0].getBoundingClientRect = () => ({ top: 50, bottom: 130 });
+        records[1].getBoundingClientRect = () => ({ top: 125, bottom: 170 });
+      },
+    });
+    expect(transcriptRowsDecision(result).failures[0]).toContain('records a/b overlap by 5px');
   });
 });
 
@@ -406,23 +515,24 @@ describe('commandInsertDecision (S9)', () => {
 
 describe('railFactsDecision (S7, baseline: no rail)', () => {
   const record = overrides => ({
-    id: 'design-read', recordVisible: true, railFound: true, railVisible: true,
-    railCoversRecord: true, railWidth: 2, railRight: 300, anchorLeft: 312,
+    id: 'design-read', kind: 'tool', recordVisible: true, railFound: true, railVisible: true,
+    glyphFound: true, railSpansRecord: true, railWidth: 1, railCenter: 300, glyphCenter: 300,
+    continues: false, previousVisible: false,
     ...overrides,
   });
-  test('a left, thin, covering rail passes', () => {
+  test('a thin, full-height glyph-centered rail passes', () => {
     expect(railFactsDecision({ toolCount: 1, facts: [record()] }).pass).toBe(true);
   });
   test('the pre-redesign transcript (no rail anywhere) fails', () => {
-    const verdict = railFactsDecision({ toolCount: 3, facts: [record({ railFound: false, railVisible: false, railWidth: null, railRight: null })] });
+    const verdict = railFactsDecision({ toolCount: 3, facts: [record({ railFound: false, railVisible: false, railWidth: null, railCenter: null })] });
     expect(verdict.pass).toBe(false);
     expect(verdict.failures[0]).toContain('no qualifying timeline rail');
   });
-  test('an invisible, wide, right-side or non-covering rail each fail', () => {
+  test('an invisible, wide, offset or short rail each fail', () => {
     expect(railFactsDecision({ toolCount: 1, facts: [record({ railVisible: false })] }).pass).toBe(false);
     expect(railFactsDecision({ toolCount: 1, facts: [record({ railWidth: 14 })] }).pass).toBe(false);
-    expect(railFactsDecision({ toolCount: 1, facts: [record({ railRight: 400 })] }).pass).toBe(false);
-    expect(railFactsDecision({ toolCount: 1, facts: [record({ railCoversRecord: false })] }).pass).toBe(false);
+    expect(railFactsDecision({ toolCount: 1, facts: [record({ railCenter: 276 })] }).pass).toBe(false);
+    expect(railFactsDecision({ toolCount: 1, facts: [record({ railSpansRecord: false })] }).pass).toBe(false);
   });
   test('no visible tool records at all is a failure, not a pass', () => {
     const verdict = railFactsDecision({ toolCount: 0, facts: [] });
@@ -824,3 +934,50 @@ describe('serialized T2 S5/S8 exclusion of T4-owned elements', () => {
     expect(passing.measurements.excludedElementCount).toBe(1);
   });
 });
+
+describe('question window enter settle', () => {
+  test('deadline fails the cell when captured enter animations never finish', async () => {
+    let reads = 0;
+    const finished = new Promise(() => {});
+    const animation = { effect: { getTiming: () => ({ iterations: 1 }) } };
+    Object.defineProperty(animation, 'finished', {
+      get() {
+        reads += 1;
+        return finished;
+      },
+    });
+    const root = { getAnimations: () => [animation] };
+    const pending = settleEnterAnimations([root], { deadlineMs: 25 });
+    // .finished is captured in the same turn as getAnimations, before the deadline wait.
+    expect(reads).toBe(1);
+    await expect(pending).rejects.toThrow('question window enter animations did not settle within 25ms');
+    expect(reads).toBe(1);
+  });
+
+  test('resolves once finite enter animations finish and the panel is opacity 1 / transform none', async () => {
+    const root = {
+      getAnimations: () => [
+        { finished: Promise.resolve(), effect: { getTiming: () => ({ iterations: 1 }) } },
+        { finished: new Promise(() => {}), effect: { getTiming: () => ({ iterations: Infinity }) } },
+      ],
+    };
+    const result = await settleEnterAnimations([root], {
+      deadlineMs: 50,
+      readStyle: () => ({ opacity: '1', transform: 'none', overlayOpacity: '1' }),
+    });
+    expect(result.animationCount).toBe(1);
+    expect(result.opacity).toBe('1');
+    expect(result.transform).toBe('none');
+    expect(result.overlayOpacity).toBe('1');
+  });
+
+  test('fails when the settled panel is not opacity 1 and transform none', async () => {
+    const root = { getAnimations: () => [] };
+    await expect(settleEnterAnimations([root], {
+      deadlineMs: 50,
+      readStyle: () => ({ opacity: '0.4', transform: 'matrix(0.98, 0, 0, 0.98, 0, 4)' }),
+    })).rejects.toThrow('question window panel unsettled (opacity 0.4, transform matrix(0.98, 0, 0, 0.98, 0, 4))');
+  });
+});
+
+

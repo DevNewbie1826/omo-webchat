@@ -23,10 +23,9 @@
  * ---------------------------------------------------------------------------
  * At startup this CLI globs `test/qa/visual-redesign-scenarios-*.mjs` (sorted
  * by filename, later files win), imports each, and merges its exported
- * `scenarios` object over the built-in registry: keys are scenario ids
- * ("S7", ...; unknown/extra ids are allowed), values are async probe
- * functions. A plugin entry overrides the built-in stub for that id (and may
- * override a built-in implementation; the recorded origin shows which).
+ * `scenarios` object into the built-in registry: bare ids may fill stubs
+ * ("S7") or register extra scenarios; scoped ids ("S5:shell") add a
+ * variant without replacing the built-in app-wide driver.
  *
  * Plugin module contract:
  *   export const scenarios = {
@@ -1371,9 +1370,9 @@ export async function loadScenarioPlugins(dir) {
   return plugins;
 }
 
-/** Merge plugin probes over the built-in registry. Returns an ordered array
- * of { id, title, run, origin, stub, reason }. Built-in stubs and unknown ids
- * both get run=null. Exported for unit tests. */
+/** Merge plugin probes into the built-in registry. Returns an ordered array
+ * of { id, title, run, origin, stub, reason }. Built-in stubs start with
+ * run=null. Exported for unit tests. */
 export function buildScenarioRegistry(plugins) {
   const registry = new Map();
   for (const [id, meta] of Object.entries(SCENARIOS)) {
@@ -1386,15 +1385,32 @@ export function buildScenarioRegistry(plugins) {
   for (const plugin of plugins) {
     for (const [id, run] of Object.entries(plugin.scenarios ?? {})) {
       if (typeof run !== 'function') continue;
+      const scoped = id.includes(':');
+      const [canonical, scope] = id.split(':');
+      if (scoped && (!SCENARIOS[canonical] || !/^[a-z][a-z0-9-]*$/.test(scope ?? '') || id !== `${canonical}:${scope}`)) {
+        throw new Error(`invalid scoped scenario "${id}" in ${plugin.file} (want <canonical>:<scope>)`);
+      }
       const previous = registry.get(id);
       registry.set(id, {
         id,
-        title: previous?.title ?? `plugin scenario ${id}`,
+        title: scoped ? `${SCENARIOS[canonical].title} (${scope} scope)` : previous?.title ?? `plugin scenario ${id}`,
         run, origin: `plugin:${plugin.file}`, stub: false, reason: null,
       });
     }
   }
   return [...registry.values()];
+}
+
+/** A canonical CLI selection runs its app-wide driver and every registered
+ * scoped variant; an explicit scoped id runs only that variant. */
+export function selectScenarioIds(registry, requested = null) {
+  if (!requested) return registry.filter(entry => !entry.stub && entry.run).map(entry => entry.id);
+  const ids = registry.map(entry => entry.id);
+  for (const id of requested) {
+    if (!ids.includes(id)) throw new Error(`unknown scenario ${id} (known: ${ids.join(',')})`);
+  }
+  return [...new Set(requested.flatMap(id => id.includes(':')
+    ? [id] : ids.filter(candidate => candidate === id || candidate.startsWith(`${id}:`))))];
 }
 
 // ---------------------------------------------------------------------------
@@ -1464,14 +1480,8 @@ async function main() {
   try {
     const plugins = await loadScenarioPlugins(import.meta.dir);
     const registry = buildScenarioRegistry(plugins);
-    const registryIds = registry.map(entry => entry.id);
     const baselineMode = options.baseline;
-    let scenarioIds = options.scenarios;
-    if (baselineMode) scenarioIds = ['S4', 'S5'];
-    else if (!options.scenarios) scenarioIds = registry.filter(entry => !entry.stub && entry.run).map(entry => entry.id);
-    if (options.scenarios) {
-      for (const id of options.scenarios) if (!registryIds.includes(id)) throw new Error(`unknown scenario ${id} (known: ${registryIds.join(',')})`);
-    }
+    const scenarioIds = baselineMode ? ['S4', 'S5'] : selectScenarioIds(registry, options.scenarios);
     const baselineData = baselineMode ? null : await loadBaseline(options);
     const baselineCounts = {};
 
