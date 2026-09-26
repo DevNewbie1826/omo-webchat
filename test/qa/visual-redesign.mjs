@@ -42,6 +42,7 @@
  * ctx passed to every probe function (built-in drivers receive the same
  * object plus the browser as their first argument):
  *   scenario: id, theme: "dark"|"light", viewport: {width, height, label},
+ *   browser: the shared browser (S15's built-in driver keeps page ownership),
  *   evidenceDir, shotsDir, baseline: per-combo counts from --baseline-file or
  *     <evidence>/baseline-counts.json (null when absent),
  *   setupDesign(options?) -> {page, context, fixture, errors, close()} - the
@@ -778,7 +779,7 @@ export function requiredInteractionVerdict(records) {
  * state, not only after closing it), and every open/close/interaction is
  * driven through the surface's real entry point (hover-revealed tree
  * actions, mobile drawer for sidebar-dwelling triggers). */
-async function driveMotion(browser, ctx) {
+async function driveMotion(browser, ctx, afterInteractions) {
   const env = await setupOverlays(browser, ctx);
   const page = env.page;
   const failures = [];
@@ -866,6 +867,14 @@ async function driveMotion(browser, ctx) {
   result.measurements.interactions = interactions;
   const shot = await screenshot(page, ctx, '');
   await closeMobileDrawer(page);
+  let extension = null;
+  if (afterInteractions) {
+    try {
+      extension = await afterInteractions(page);
+    } catch (error) {
+      failures.push(`S15 same-page capture failed: ${errLine(error)}`);
+    }
+  }
   // Merge, never overwrite: probeMotion's own failures-only spread used to
   // drop the interaction failures accumulated above (the round-2 false pass
   // where a timed-out file-palette interaction left the cell green).
@@ -873,8 +882,9 @@ async function driveMotion(browser, ctx) {
     ...result,
     pass: result.pass && failures.length === 0,
     failures: [...result.failures, ...failures],
-    measurements: withPageErrors(env, result.measurements),
-    screenshots: [shot], teardown: await env.close(),
+    measurements: withPageErrors(env, { ...result.measurements, ...extension?.measurements }),
+    screenshots: [shot, ...(extension?.screenshots ?? [])],
+    teardown: await env.close(),
   };
 }
 
@@ -1453,7 +1463,7 @@ async function main() {
         for (const viewport of options.viewports) {
           const comboKey = `${theme}/${viewport.label}`;
           const ctx = {
-            scenario: id, theme, viewport, shotsDir,
+            scenario: id, theme, viewport, shotsDir, browser,
             evidenceDir: options.evidence,
             baseline: !baselineMode && baselineData?.counts?.[comboKey] ? baselineData.counts[comboKey] : null,
             setupDesign: (extra = {}) => setupDesign(browser, { theme, viewport: { width: viewport.width, height: viewport.height }, ...extra }),

@@ -25,8 +25,8 @@ import { pageKit } from './visual-redesign-probes.mjs';
 import {
   T4_RUN, T4_STAGE_ORDER, autoScrollVerdict, cometVerdict, countFontVerdict, dagGlyphAccentVerdict,
   dagReducedMotionVerdict, dagRunningMotionVerdict, edgeShapeVerdict, findRunningEdge, firstFamily,
-  glyphOrderVerdict, haloVerdict, nodeStrokeViolations, overlapVerdict, progressVerdict,
-  probeDagGraph, probeDagList, probeDagRunningMotion, probeShelfTabs, probeT4RunningIndicators,
+  denseFadeVerdict, glyphOrderVerdict, haloVerdict, nodeStrokeViolations, overlapVerdict, progressVerdict,
+  probeDagGraph, probeDagList, probeDagRunningMotion, probeDenseViewport, probeShelfTabs, probeT4RunningIndicators,
   railVerdict, rovingVerdict, scaleXFromTransform, scenarios, stableTransformVerdict,
   settleTablist,
   t4ActivityFrame, t4CatalogPayload, t4DocumentPayload, t4ExpectedProgress, t4ExtensionFrames,
@@ -448,7 +448,7 @@ describe('T4 plugin registration', () => {
   test('the scenarios export includes S15 settled capture without losing its built-in motion driver', () => {
     expect(Object.keys(scenarios).sort()).toEqual(['S13', 'S14', 'S15', 'S8']);
     for (const run of Object.values(scenarios)) expect(run.constructor.name).toBe('AsyncFunction');
-    expect(scenarios.S15.toString()).toContain('original(browser, ctx)');
+    expect(scenarios.S15.toString()).toContain('original(browser, ctx, async');
   });
 });
 
@@ -683,14 +683,14 @@ function freeIdentifiers(combinedSource, fnSource) {
 describe('in-page probe self-containment (D6 regression)', () => {
   test('every T4 probe serializes into a parsable kit-augmented function', async () => {
     const module = await import('./visual-redesign-scenarios-t4.mjs');
-    const probes = [module.probeDagGraph, module.probeDagList, module.probeShelfTabs, module.probeDagRunningMotion, module.probeT4RunningIndicators];
+    const probes = [module.probeDagGraph, module.probeDenseViewport, module.probeDagList, module.probeShelfTabs, module.probeDagRunningMotion, module.probeT4RunningIndicators];
     for (const fn of probes) {
       expect(() => new Function(`${pageKit()}\nreturn (${fn.toString()})();`)).not.toThrow();
     }
   });
   test('no T4 probe references a name the page never receives', async () => {
     const module = await import('./visual-redesign-scenarios-t4.mjs');
-    const probes = [module.probeDagGraph, module.probeDagList, module.probeShelfTabs, module.probeDagRunningMotion, module.probeT4RunningIndicators];
+    const probes = [module.probeDagGraph, module.probeDenseViewport, module.probeDagList, module.probeShelfTabs, module.probeDagRunningMotion, module.probeT4RunningIndicators];
     const kit = pageKit();
     for (const fn of probes) {
       const free = freeIdentifiers(`${kit}\n${fn.toString()}`, fn.toString());
@@ -699,7 +699,7 @@ describe('in-page probe self-containment (D6 regression)', () => {
   });
   test('probe bodies contain no module import syntax (serialized standalone)', async () => {
     const module = await import('./visual-redesign-scenarios-t4.mjs');
-    for (const fn of [module.probeDagGraph, module.probeDagList, module.probeShelfTabs, module.probeDagRunningMotion, module.probeT4RunningIndicators]) {
+    for (const fn of [module.probeDagGraph, module.probeDenseViewport, module.probeDagList, module.probeShelfTabs, module.probeDagRunningMotion, module.probeT4RunningIndicators]) {
       expect(fn.toString()).not.toMatch(/\bimport\b|\bexport\b/);
     }
   });
@@ -876,7 +876,8 @@ async function runProbe(fn, arg, dom, computed) {
   const source = `${pageKit()}\nreturn (${fn.toString()})(${JSON.stringify(arg ?? {})});`;
   const executable = new Function(source);
   const saved = {};
-  const globals = { document: dom.document, getComputedStyle: computed, window: { innerWidth: 1280 }, Element: Object };
+  const globals = { document: dom.document, getComputedStyle: computed,
+    window: { innerWidth: 1280, innerHeight: 900, scrollX: 0, scrollY: 0 }, Element: Object };
   try {
     for (const [name, value] of Object.entries(globals)) {
       saved[name] = globalThis[name];
@@ -896,7 +897,8 @@ const computedFromStyles = styles => element => {
   for (const pair of String(element.attrs.get('style') ?? '').split(';')) {
     const [property, ...rest] = pair.split(':');
     if (!property || !rest.length) continue;
-    const camel = property.trim().replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+    const camel = property.trim().startsWith('--') ? property.trim()
+      : property.trim().replace(/-([a-z])/g, (_, c) => c.toUpperCase());
     inline[camel] = rest.join(':').trim();
   }
   const style = {
@@ -1340,6 +1342,57 @@ describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph
   });
 });
 
+describe('S14 dense bottom boundary via the serialized viewport probe', () => {
+  const denseTree = () => ['div', { class: 'th-activity-shelf',
+    style: 'overflow-y: hidden; mask-image: linear-gradient(to top, transparent, black 24px)' }, { children: [
+    ['div', { class: 'th-activity-graph', style: 'overflow-y: hidden' }, { children: [
+      ['svg', {}, { children: [
+        ['g', { class: 'th-activity-gnode', 'data-node': 'row-3' }],
+      ] }],
+    ] }],
+  ] }];
+  const measure = async dom => {
+    withBox(dom.root, 0, 0, 700, 220);
+    const graph = withBox(dom.document.querySelector('.th-activity-graph'), 0, 40, 700, 660);
+    withBox(graph.querySelector('svg'), 0, 40, 700, 660);
+    withBox(dom.document.querySelector('[data-node]'), 10, 200, 160, 60);
+    return runProbe(probeDenseViewport, null, dom, computedFromStyles());
+  };
+  test('an ancestor fade at the actual clipped row passes, with bounds and mask recorded', async () => {
+    const facts = await measure(buildDom(denseTree()));
+    expect(facts.graph.rect.bottom).toBe(700);
+    expect(facts.visibleBottom).toBe(220);
+    expect(facts.clippingAncestors[0].rect.bottom).toBe(220);
+    expect(facts.clippingAncestors[0].maskImage).toContain('linear-gradient');
+    expect(facts.partialNodes).toEqual(['row-3']);
+    expect(denseFadeVerdict(facts).pass).toBe(true);
+  });
+  test('removing the fade or painting it on the full-height graph fails', async () => {
+    const dom = buildDom(denseTree());
+    dom.root.attrs.set('style', 'overflow-y: hidden');
+    const bare = await measure(dom);
+    expect(bare.bottomFade).toBe(false);
+    expect(denseFadeVerdict(bare).pass).toBe(false);
+    dom.document.querySelector('.th-activity-graph').attrs.set('style',
+      'overflow-y: hidden; mask-image: linear-gradient(to top, transparent, black 24px)');
+    const wrongBoundary = await measure(dom);
+    expect(wrongBoundary.bottomFade).toBe(false);
+    expect(denseFadeVerdict(wrongBoundary).pass).toBe(false);
+  });
+  test('a lifted graph mask passes only when its transparent stop matches the clipping edge', async () => {
+    const dom = buildDom(denseTree());
+    dom.root.attrs.set('style', 'overflow-y: hidden');
+    const graph = dom.document.querySelector('.th-activity-graph');
+    graph.attrs.set('data-fade-bottom', 'true');
+    graph.attrs.set('style', 'overflow-y: hidden; --dag-fade-lift: 480px; mask-image: linear-gradient(to top, transparent 480px, black 504px)');
+    expect(denseFadeVerdict(await measure(dom)).pass).toBe(true);
+    graph.attrs.set('style', 'overflow-y: hidden; --dag-fade-lift: 440px; mask-image: linear-gradient(to top, transparent 440px, black 464px)');
+    expect(denseFadeVerdict(await measure(dom)).pass).toBe(false);
+    graph.attrs.set('style', 'overflow-y: hidden; --dag-fade-lift: 480px; mask-image: none');
+    expect(denseFadeVerdict(await measure(dom)).pass).toBe(false);
+  });
+});
+
 // ----- S14 list view through the ACTUAL serialized probeDagList -----------
 
 describe('S14 list view via the serialized probeDagList', () => {
@@ -1370,13 +1423,18 @@ describe('S14 list view via the serialized probeDagList', () => {
       }],
     ],
   }];
-  const measure = (railed, railColor = 'rgba(255,255,255,0.2)') => {
+  const measure = (railed, railColor = 'rgba(255,255,255,0.2)', options = {}) => {
     const dom = buildDom(listTree(railed));
+    if (options.ancestorStyle) dom.root.attrs.set('style', options.ancestorStyle);
     dom.document.querySelectorAll('li').forEach((row, index) => withBox(row, 8, index * 40, 690, 32));
-    dom.document.querySelectorAll('[class*="rail" i]').forEach(rail => withBox(rail, 8, 0, 2, 32));
+    dom.document.querySelectorAll('[class*="rail" i]').forEach(rail => {
+      withBox(rail, 8, 0, 2, 32);
+      if (options.railStyle) rail.attrs.set('style', options.railStyle);
+    });
     const normal = computedFromStyles();
     const computed = (element, pseudo) => pseudo
-      ? { content: '""', width: '1px', height: '16px', backgroundColor: railColor, opacity: '1' }
+      ? { content: '""', width: '1px', height: '16px', backgroundColor: railColor, opacity: '1',
+        display: 'block', visibility: 'visible', ...options.pseudo }
       : normal(element);
     return runProbe(probeDagList, null, dom, computed);
   };
@@ -1404,5 +1462,19 @@ describe('S14 list view via the serialized probeDagList', () => {
       : computedFromStyles()(element));
     expect(facts.viewMode).toBe('graph');
     expect(railVerdict(facts.rows, facts.viewMode).pass).toBe(false);
+  });
+  test('zero-opacity, hidden pseudo paint and transparent ancestors fail the serialized rail verdict', async () => {
+    for (const options of [
+      { pseudo: { opacity: '0' } },
+      { pseudo: { display: 'none' } },
+      { pseudo: { visibility: 'hidden' } },
+      { pseudo: { content: 'none' } },
+      { railStyle: 'opacity: 0' },
+      { ancestorStyle: 'opacity: 0' },
+      { ancestorStyle: 'visibility: hidden' },
+    ]) {
+      const facts = await measure(true, 'rgba(255,255,255,0.2)', options);
+      expect(railVerdict(facts.rows, facts.viewMode).pass, JSON.stringify(options)).toBe(false);
+    }
   });
 });

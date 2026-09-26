@@ -452,6 +452,20 @@ export function overlapVerdict(nodeRects) {
   return { pass: failures.length === 0, failures, overlapping };
 }
 
+/** The bottom dissolve must be painted at the viewport that actually clips
+ * a dense node, not at the bottom of an SVG-sized graph behind its parent. */
+export function denseFadeVerdict(facts) {
+  const failures = [];
+  if (!facts?.found) return { pass: false, failures: ['dense graph viewport unavailable'] };
+  if (facts.partialNodes.length > 0 && facts.contentBelow && !facts.bottomFade) {
+    failures.push(`${facts.partialNodes.length} dense node(s) cross the visible bottom ${facts.visibleBottom}px without a bottom fade at that boundary`);
+  }
+  return { pass: failures.length === 0, failures, measured: {
+    visibleBottom: facts.visibleBottom, partialNodes: facts.partialNodes,
+    bottomFade: facts.bottomFade, contentBelow: facts.contentBelow,
+  } };
+}
+
 /** S14 stable-layout pin: the outer transform attribute of every node is
  * unchanged when only node states change. */
 export function stableTransformVerdict(before, after) {
@@ -720,6 +734,60 @@ export async function probeDagGraph(arg) {
   };
 }
 
+/** S14 dense first-paint AND in-place topology-update viewport. Ancestors
+ * with vertical clipping determine the visible edge even when the graph box
+ * keeps its full SVG height. Inspect the mask on the actual edge owner. */
+export function probeDenseViewport() {
+  const graph = document.querySelector('.th-activity-graph');
+  const svg = graph?.querySelector('svg');
+  if (!graph || !svg) return { found: false };
+  const rectJson = element => { const r = element.getBoundingClientRect();
+    return { left: +r.left.toFixed(2), top: +r.top.toFixed(2), right: +r.right.toFixed(2), bottom: +r.bottom.toFixed(2), width: +r.width.toFixed(2), height: +r.height.toFixed(2) }; };
+  const maskState = element => {
+    const style = getComputedStyle(element);
+    return { where: describeElement(element), rect: rectJson(element),
+      maskImage: style.maskImage, webkitMaskImage: style.webkitMaskImage,
+      fadeBottom: element.getAttribute('data-fade-bottom'),
+      fadeLift: style.getPropertyValue('--dag-fade-lift').trim(),
+      overflowY: style.overflowY, scrollTop: element.scrollTop,
+      scrollHeight: element.scrollHeight, clientHeight: element.clientHeight };
+  };
+  const graphState = maskState(graph);
+  const clippingAncestors = [];
+  let visibleBottom = Math.min(window.innerHeight, graphState.rect.bottom);
+  for (let element = graph.parentElement; element; element = element.parentElement) {
+    const state = maskState(element);
+    if (/(hidden|clip|auto|scroll)/.test(state.overflowY)) {
+      clippingAncestors.push(state);
+      visibleBottom = Math.min(visibleBottom, state.rect.bottom);
+    }
+  }
+  visibleBottom = +visibleBottom.toFixed(2);
+  const partialNodes = [...svg.querySelectorAll('.th-activity-gnode, g[data-node]')]
+    .filter(node => {
+      const box = node.getBoundingClientRect();
+      return box.top < visibleBottom - 1 && box.bottom > visibleBottom + 1;
+    }).map(node => node.getAttribute('data-node')).slice(0, 20);
+  const contentBelow = svg.getBoundingClientRect().bottom > visibleBottom + 1;
+  const hasBottomMask = state => {
+    const image = `${state.maskImage ?? ''} ${state.webkitMaskImage ?? ''}`;
+    const lift = Number.parseFloat(state.fadeLift);
+    const atVisibleEdge = Math.abs(state.rect.bottom - visibleBottom) <= 2
+      || (state.fadeBottom === 'true' && Number.isFinite(lift) && lift > 0
+        && Math.abs(state.rect.bottom - lift - visibleBottom) <= 2
+        && image.includes(`${lift}px`));
+    return atVisibleEdge && /linear-gradient\(\s*to top\b/i.test(image)
+      && /(transparent|rgba?\([^)]*,\s*0(?:\.0+)?\)|rgb\([^)]*\/\s*0%?\))/i.test(image);
+  };
+  return {
+    found: true, graph: graphState, svg: rectJson(svg), clippingAncestors,
+    visibleBottom, partialNodes, contentBelow,
+    bottomFade: [graphState, ...clippingAncestors].some(hasBottomMask),
+    document: { scrollX: window.scrollX, scrollY: window.scrollY,
+      scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight },
+  };
+}
+
 /** S14: list-view row facts. */
 export function probeDagList() {
   const panel = document.querySelector('[data-activity-tabpanel="dag"]');
@@ -730,18 +798,29 @@ export function probeDagList() {
   const facts = [];
   for (const row of rows.slice(0, 80)) {
     const rails = [...row.querySelectorAll('.th-activity-dnode-rail, [data-rail]')];
-    const segments = rails.flatMap(rail => ['::before', '::after'].map(pseudo => {
-      const style = getComputedStyle(rail, pseudo);
-      const colour = parseColor(style.backgroundColor);
-      return {
-        pseudo, content: style.content, width: parseFloat(style.width) || 0,
-        height: parseFloat(style.height) || 0, colour: style.backgroundColor,
-        painted: style.content !== 'none' && style.content !== 'normal'
-          && (parseFloat(style.width) || 0) > 0 && (parseFloat(style.height) || 0) > 0
-          && !!colour && colour.a > 0.02 && (parseFloat(style.opacity) || 1) > 0.02
-          && isVisibleElement(rail),
-      };
-    }));
+    const segments = rails.flatMap(rail => {
+      let ancestorOpacity = 1;
+      for (let element = rail; element; element = element.parentElement) {
+        const style = getComputedStyle(element);
+        if (style.display === 'none' || style.visibility !== 'visible') ancestorOpacity = 0;
+        ancestorOpacity *= Number.parseFloat(style.opacity);
+      }
+      return ['::before', '::after'].map(pseudo => {
+        const style = getComputedStyle(rail, pseudo);
+        const colour = parseColor(style.backgroundColor);
+        const effectiveOpacity = Number.parseFloat(style.opacity) * ancestorOpacity * (colour?.a ?? 0);
+        return {
+          pseudo, content: style.content, width: parseFloat(style.width) || 0,
+          height: parseFloat(style.height) || 0, colour: style.backgroundColor,
+          effectiveOpacity,
+          painted: style.content !== 'none' && style.content !== 'normal'
+            && (parseFloat(style.width) || 0) > 0 && (parseFloat(style.height) || 0) > 0
+            && style.display !== 'none' && style.visibility === 'visible'
+            && effectiveOpacity > 0.02
+            && isVisibleElement(rail),
+        };
+      });
+    });
     facts.push({
       cls: row.getAttribute('class'), rect: rectJson(row), text: (row.textContent || '').trim().slice(0, 32),
       paintedRail: segments.some(segment => segment.painted), segments,
@@ -1268,12 +1347,16 @@ async function driveS14(ctx) {
         inlineScaleX: scaleXFromTransform(fact.inlineTransform),
       })), t4ExpectedProgress(stage), `${t4RunCounts(t4StageSpec(stage)).completed}/${t4StageSpec(stage).length}`);
       const overflow = denseFacts.document.scrollWidth - denseFacts.document.innerWidth;
+      const viewport = await ctx.probe(env.page, probeDenseViewport);
+      const fade = denseFadeVerdict(viewport);
       failures.push(...overlap.failures.map(f => `${stage} overlap: ${f}`));
       failures.push(...denseProgress.failures.map(f => `${stage} progress: ${f}`));
+      failures.push(...fade.failures.map(f => `${stage} bottom fade: ${f}`));
       if (overflow > 1) failures.push(`${stage}: document overflows viewport by ${overflow}px`);
       denseResults[stage] = {
         nodes: denseFacts.nodes.length, overlap: overlap.overlapping,
         progress: denseProgress.measured, documentScrollWidth: denseFacts.document.scrollWidth,
+        viewport, fade: fade.measured,
         scroll: { kind: 'in-place topology update', before: previousScrollLeft, after: denseFacts.scroller?.scrollLeft ?? null },
       };
       previousScrollLeft = denseFacts.scroller?.scrollLeft ?? null;
@@ -1295,7 +1378,11 @@ async function driveS14(ctx) {
       const verdict = autoScrollVerdict(firstFacts.scroller
         ? { scroller: firstFacts.scroller, runningRect: firstFacts.runningRect } : null);
       failures.push(...verdict.failures.map(f => `dense64 first paint: ${f}`));
-      firstPaint = { scroller: firstFacts.scroller, runningRect: firstFacts.runningRect, verdict: verdict.measured };
+      const viewport = await ctx.probe(fresh.page, probeDenseViewport);
+      const fade = denseFadeVerdict(viewport);
+      failures.push(...fade.failures.map(f => `dense64 first paint bottom fade: ${f}`));
+      firstPaint = { scroller: firstFacts.scroller, runningRect: firstFacts.runningRect,
+        verdict: verdict.measured, viewport, fade: fade.measured };
       shotFresh = await ctx.save(fresh.page, '-dense64-first-paint');
     } finally {
       if (fresh) await fresh.close();
@@ -1330,43 +1417,60 @@ async function driveS14(ctx) {
   }
 }
 
-/** Preserve the shared S15 interaction and in-motion screenshot unchanged,
- * then exercise the shelf's normal-motion selection in a fresh fixture and
- * record its bounded settled state. */
+/** Extend the built-in S15 driver on the exact page that performed its
+ * palette interactions; only the built-in driver owns fixture teardown. */
 async function driveS15(ctx) {
-  const env = await ctx.setupDesign();
-  const failures = [];
-  let base;
-  let shots = [];
-  let settled = null;
-  try {
-    const browser = env.context.browser();
-    const original = buildScenarioRegistry([]).find(entry => entry.id === 'S15').run;
-    base = await original(browser, ctx);
-    shots = [...(base.screenshots ?? [])];
-    await env.page.click('[data-activity-tab="agents"]');
-    await settleTablist(env.page);
-    await env.page.click('[data-activity-tab="todo"]');
-    shots.push(await ctx.save(env.page, '-shelf-motion'));
-    await settleTablist(env.page);
-    settled = await ctx.probe(env.page, probeShelfTabs);
+  const original = buildScenarioRegistry([]).find(entry => entry.id === 'S15').run;
+  const browser = ctx.browser;
+  return original(browser, ctx, async page => {
+    const viewport = () => page.evaluate(() => {
+      const bounds = element => { const r = element.getBoundingClientRect();
+        return { left: +r.left.toFixed(2), top: +r.top.toFixed(2), right: +r.right.toFixed(2), bottom: +r.bottom.toFixed(2) }; };
+      const tablist = document.querySelector('.th-activity-tabs');
+      const overflowBounds = [];
+      for (let element = tablist; element; element = element.parentElement) {
+        const style = getComputedStyle(element);
+        if (/(hidden|clip|auto|scroll)/.test(`${style.overflowX} ${style.overflowY}`)) {
+          overflowBounds.push({ tag: element.tagName, cls: element.className,
+            rect: bounds(element), overflowX: style.overflowX, overflowY: style.overflowY,
+            scrollLeft: element.scrollLeft, scrollTop: element.scrollTop,
+            scrollWidth: element.scrollWidth, clientWidth: element.clientWidth,
+            scrollHeight: element.scrollHeight, clientHeight: element.clientHeight });
+        }
+      }
+      return {
+        url: location.href, scrollX: window.scrollX, scrollY: window.scrollY,
+        rootScrollLeft: document.documentElement.scrollLeft, rootScrollTop: document.documentElement.scrollTop,
+        documentScrollWidth: document.documentElement.scrollWidth,
+        documentScrollHeight: document.documentElement.scrollHeight,
+        viewportWidth: window.innerWidth, viewportHeight: window.innerHeight, overflowBounds,
+      };
+    });
+    const afterPalette = await viewport();
+    await page.click('[data-activity-tab="agents"]');
+    await settleTablist(page);
+    await page.click('[data-activity-tab="todo"]');
+    const shotMotion = await ctx.save(page, '-shelf-motion');
+    await settleTablist(page);
+    const settled = await ctx.probe(page, probeShelfTabs);
     if (settled.selectedId !== 'todo' || !settled.thumb.painted
       || settled.thumbCount !== 1 || settled.open !== 'true') {
-      failures.push('S15 settled shelf selection/thumb does not match the open Todo panel');
+      throw new Error('S15 settled shelf selection/thumb does not match the open Todo panel');
     }
-    shots.push(await ctx.save(env.page, '-settled'));
-  } catch (error) {
-    failures.push(`S15 settled capture failed: ${errLine(error)}`);
-  } finally {
-    await env.close();
-  }
-  return {
-    pass: base?.pass === true && failures.length === 0,
-    measurements: { ...base?.measurements, settledShelf: settled },
-    failures: [...(base?.failures ?? []), ...failures],
-    screenshots: shots,
-    teardown: base?.teardown,
-  };
+    const afterSettlement = await viewport();
+    const recovered = afterPalette.scrollX > 1 && afterSettlement.scrollX <= 1
+      && afterSettlement.documentScrollWidth <= afterSettlement.viewportWidth + 1;
+    const shotSettled = await ctx.save(page, '-settled');
+    return {
+      measurements: { settledShelf: settled,
+        shelfCapture: { lineage: 'built-in S15 palette interaction page', afterPalette, afterSettlement,
+          panRecovery: recovered ? { verified: true } : {
+            verified: false, owner: 'T2 chat surface (palette interaction)',
+            reason: 'no observed nonzero pan followed by an in-page recovery',
+          } } },
+      screenshots: [shotMotion, shotSettled],
+    };
+  });
 }
 
 /** Per-task scenario plugin export (merged over the built-in registry by
