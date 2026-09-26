@@ -882,3 +882,106 @@ describe('requiredInteractionVerdict (R4: broken required interactions fail S15)
     expect(failures[0]).toContain('no in-state motion inspection');
   });
 });
+
+describe('lead fix: S5 painted-border and S15 background-position longhands', () => {
+  test('background-position-x/y longhands normalise onto the allowed shorthand', () => {
+    expect(normalizeMotionProperty('background-position-x')).toBe('background-position');
+    expect(normalizeMotionProperty('backgroundpositiony')).toBe('background-position');
+    expect(motionViolations(['background-position-x', 'background-position-y'])).toEqual([]);
+    expect(motionViolations(['width'])).toEqual(['width']);
+  });
+});
+
+describe('lead fix: camelCase and hyphen-stripped motion property names', () => {
+  test('strokeDashoffset / strokedashoffset normalise to stroke-dashoffset and are allowed', () => {
+    expect(normalizeMotionProperty('strokeDashoffset')).toBe('stroke-dashoffset');
+    expect(normalizeMotionProperty('strokedashoffset')).toBe('stroke-dashoffset');
+    expect(normalizeMotionProperty('backgroundPositionX')).toBe('background-position');
+    expect(motionViolations(['strokedashoffset', 'backgroundPositionY'])).toEqual([]);
+    expect(motionViolations(['marginLeft'])).toEqual(['margin-left']);
+  });
+});
+
+describe('T4 S8 scope leaves the shared running-glyph census for T5', () => {
+  test('built-in S8 still censuses the transcript tool glyph', () => {
+    expect(runningGlyphSelectors()).toEqual([
+      '.th-tool-glyph--running',
+      '.th-tree-running-dot',
+      '.th-overview-card-running-dot',
+      '.th-activity-gnode--running',
+      '.th-activity-gstatus--running',
+    ]);
+  });
+
+  test('serialized T4 probe: dim DAG node fails, accent passes, transcript tool glyph is ignored', async () => {
+    const { JSDOM } = await import('../../frontend/node_modules/jsdom/lib/api.js');
+    const { probeT4RunningIndicators } = await import('./visual-redesign-scenarios-t4.mjs');
+    const accent = '#8b7cf6';
+    const dim = '#c4c4cc';
+    const html = ({ stroke, transcript }) => `<!doctype html><html><body>
+      ${transcript ? `<section class="th-chat-transcript"><span class="th-tool-glyph th-tool-glyph--running" style="color:${dim};background-color:#000000;border-top-color:#000000;fill:#000000"></span><svg><circle class="th-activity-gstatus th-activity-gstatus--running" style="stroke:${dim};color:${dim}"></circle></svg></section><span class="th-tree-running-dot" style="background-color:${dim}"></span>` : ''}
+      <div class="th-activity-shelf">
+        <div class="th-activity-dag-head">
+          <span class="th-activity-chip th-activity-chip--running" style="background-color:#3f3f46;color:#ededf0">Running</span>
+          <div class="th-activity-dag-progress" data-live="true"><span class="th-activity-dag-progress-fill" style="background-color:${stroke}"></span></div>
+        </div>
+        <div class="th-activity-graph"><svg><g class="th-activity-gnode th-activity-gnode--running" style="stroke:${stroke};color:${dim}"><circle class="th-activity-gstatus th-activity-gstatus--running" style="stroke:${stroke};color:${dim}"></circle></g></svg></div>
+        <ul class="th-activity-dagnodes"><li class="th-activity-dnode th-activity-dnode--running"><svg><circle class="th-activity-gstatus th-activity-gstatus--running" style="stroke:${stroke};color:${dim}"></circle></svg></li></ul>
+        <span class="th-activity-glyph th-activity-glyph--running" style="background-color:${stroke}"></span>
+      </div>
+    </body></html>`;
+    const run = (markup) => {
+      const dom = new JSDOM(markup);
+      const { window } = dom;
+      window.document.documentElement.style.setProperty('--th-accent', accent);
+      const proto = window.Element.prototype;
+      proto.getClientRects = function clientRects() {
+        const style = window.getComputedStyle(this);
+        if (style.display === 'none' || style.visibility === 'hidden') return [];
+        return [{ width: 8, height: 8, top: 0, left: 0, right: 8, bottom: 8 }];
+      };
+      proto.getAnimations = function animations() { return []; };
+      const source = `${pageKit()}\nreturn (${probeT4RunningIndicators.toString()})(${JSON.stringify({ phase: 'accent' })});`;
+      const saved = {
+        document: globalThis.document,
+        getComputedStyle: globalThis.getComputedStyle,
+        Element: globalThis.Element,
+      };
+      try {
+        globalThis.document = window.document;
+        globalThis.getComputedStyle = window.getComputedStyle.bind(window);
+        globalThis.Element = window.Element;
+        return new Function(source)();
+      } finally {
+        globalThis.document = saved.document;
+        globalThis.getComputedStyle = saved.getComputedStyle;
+        globalThis.Element = saved.Element;
+        if (saved.document === undefined) delete globalThis.document;
+        if (saved.getComputedStyle === undefined) delete globalThis.getComputedStyle;
+        if (saved.Element === undefined) delete globalThis.Element;
+      }
+    };
+
+    const dimNode = run(html({ stroke: dim, transcript: false }));
+    expect(dimNode.pass).toBe(false);
+    expect(dimNode.measurements.inScopeCount).toBeGreaterThan(0);
+    expect(dimNode.failures.every(failure => failure.includes('not accent-coloured'))).toBe(true);
+    expect(dimNode.failures.join('\n')).not.toContain('th-tool-glyph');
+
+    const accentNode = run(html({ stroke: accent, transcript: false }));
+    expect(accentNode.pass).toBe(true);
+    expect(accentNode.failures).toEqual([]);
+    expect(accentNode.measurements.glyphs.every(glyph => glyph.matchesAccent)).toBe(true);
+    expect(accentNode.measurements.glyphs.map(glyph => glyph.selector)).toContain('.th-activity-gnode--running');
+    expect(accentNode.measurements.glyphs.map(glyph => glyph.selector)).toContain('.th-activity-dag-progress[data-live="true"] .th-activity-dag-progress-fill');
+
+    const ignored = run(html({ stroke: accent, transcript: true }));
+    expect(ignored.pass).toBe(true);
+    expect(ignored.failures).toEqual([]);
+    expect(ignored.measurements.excludedSelectors).toContain('.th-tool-glyph');
+    expect(ignored.measurements.excludedSelectors).toContain('.th-chat-transcript');
+    expect(ignored.measurements.excludedCounts['.th-tool-glyph--running']).toBe(1);
+    expect(ignored.measurements.excludedCounts['.th-chat-transcript']).toBeGreaterThan(0);
+    expect(ignored.measurements.glyphs.some(glyph => String(glyph.selector).includes('tool-glyph'))).toBe(false);
+  });
+});
