@@ -11,8 +11,8 @@ import { runViewTransition } from "../../lib/viewTransition";
  * view-transition-name, paired with the th-pane-session class that
  * view-transitions.css clocks with --th-dur / --th-ease-out.
  *
- * The update runs exactly once on every path; rapid repeats join the helper's
- * latest-wins lane so a burst of clicks ends on the last session.
+ * The update runs exactly once on every applying path; rapid repeats in the
+ * same pane coalesce without cancelling switches in other panes.
  */
 const TRANSCRIPT_REGION_SELECTOR = ".th-chat-scrollport";
 
@@ -110,7 +110,7 @@ export function applyPaneSessionTransition(paneId: string, update: () => void): 
     flushSync(update);
     const incoming = findRegion(paneId);
     if (incoming) nameRegion(incoming, name);
-  }, { latestWins: true });
+  }, { latestWins: true, latestWinsKey: paneId });
 
   scheduleNameCleanup(paneId, name, epoch);
 }

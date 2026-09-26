@@ -156,6 +156,26 @@ describe("applyPaneSessionTransition", () => {
     expect(paneEl("p1").textContent).not.toContain("content-two");
   });
 
+  it("keeps two panes' pending transcript switches independent", () => {
+    mountPanes();
+    const callbacks: Array<() => unknown> = [];
+    installStart((update) => {
+      callbacks.push(update);
+      return pendingTransition();
+    });
+    const first = vi.fn(() => swapRegion("p1", "content-a"));
+    const second = vi.fn(() => swapRegion("p2", "content-b"));
+
+    applyPaneSessionTransition("p1", first);
+    applyPaneSessionTransition("p2", second);
+    for (const callback of callbacks) callback();
+
+    expect(first).toHaveBeenCalledOnce();
+    expect(second).toHaveBeenCalledOnce();
+    expect(regionOf("p1").textContent).toBe("content-a");
+    expect(regionOf("p2").textContent).toBe("content-b");
+  });
+
   it("starts no transition under reduced motion and applies the update once", () => {
     mountPanes();
     stubReducedMotion(true);

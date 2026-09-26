@@ -171,6 +171,19 @@ describe("ChatPane streaming", () => {
 			),
 		).toBe(true);
 		expect(
+			finalizedThinking.every(
+				(record) => !record.classList.contains("th-chat-thinking--open"),
+			),
+		).toBe(true);
+		expect(
+			finalizedThinking.every(
+				(record) =>
+					record
+						.querySelector(".th-chat-thinking-body")
+						?.hasAttribute("inert") === true,
+			),
+		).toBe(true);
+		expect(
 			finalizedThinking.map(
 				(record) => record.querySelector(".th-chat-thinking-label")?.textContent,
 			),

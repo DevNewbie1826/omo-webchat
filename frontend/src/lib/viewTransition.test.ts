@@ -213,6 +213,29 @@ describe("runViewTransition", () => {
     expect(applied).toEqual(["c"]);
   });
 
+  it("keeps pending updates in different named lanes independent", () => {
+    stubReducedMotion(false);
+    const applied: string[] = [];
+    const callbacks: Array<() => unknown> = [];
+    installStart((callback) => {
+      callbacks.push(callback);
+      return {
+        ready: new Promise<void>(() => undefined),
+        finished: new Promise<void>(() => undefined),
+        updateCallbackDone: new Promise<void>(() => undefined),
+        skipTransition: () => undefined,
+        types: new Set<string>() as unknown as ViewTransitionTypeSet,
+      };
+    });
+
+    runViewTransition(() => { applied.push("pane-a-old"); }, { latestWins: true, latestWinsKey: "pane-a" });
+    runViewTransition(() => { applied.push("pane-b"); }, { latestWins: true, latestWinsKey: "pane-b" });
+    runViewTransition(() => { applied.push("pane-a-new"); }, { latestWins: true, latestWinsKey: "pane-a" });
+    for (const callback of callbacks) callback();
+
+    expect(applied).toEqual(["pane-b", "pane-a-new"]);
+  });
+
   it("ends rapid latest-wins calls on the last update when earlier transitions reject", async () => {
     stubReducedMotion(false);
     const applied: string[] = [];

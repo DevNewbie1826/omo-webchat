@@ -20,7 +20,11 @@ export interface ThinkingDisclosureProps {
  * grid-template-rows disclosure transition. Accessible disclosure semantics
  * ride a real button (aria-expanded + aria-controls) so Enter/Space toggle
  * natively; the body stays mounted so the CSS transition retargets safely
- * mid-flight with no JS timers. The reasoning text stays on the reading
+ * mid-flight with no JS timers. While closed, the body also leaves the
+ * accessibility tree (inert + aria-hidden), so the collapsed reasoning is
+ * neither readable nor focusable; opening drops both and applies
+ * th-chat-thinking--open, the only selector lifting the body track from
+ * 0fr to 1fr. The reasoning text stays on the reading
  * tier (>= 4.5:1), never the metadata-only faint tier.
  */
 export function ThinkingDisclosure({ text, running = false, continuesRail = false, className = "" }: ThinkingDisclosureProps) {
@@ -32,6 +36,7 @@ export function ThinkingDisclosure({ text, running = false, continuesRail = fals
       className={
         "th-chat-thinking th-chat-record" +
         (running ? " th-chat-thinking--running" : "") +
+        (open ? " th-chat-thinking--open" : "") +
         (continuesRail ? " th-chat-record--continue" : "") +
         className
       }
@@ -50,7 +55,11 @@ export function ThinkingDisclosure({ text, running = false, continuesRail = fals
           <IconChevron size={12} />
         </span>
       </button>
-      <div className="th-chat-thinking-body" id={regionId}>
+      <div
+        className="th-chat-thinking-body"
+        id={regionId}
+        {...(open ? {} : { inert: "", "aria-hidden": "true" })}
+      >
         <div className="th-chat-thinking-body-inner">
           <pre>{text}</pre>
         </div>
