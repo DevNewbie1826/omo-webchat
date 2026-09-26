@@ -148,15 +148,23 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if err := s.cursors.DeleteWorkspace(id); err != nil {
-		clearDeleting()
-		s.writeStoreError(w, err)
-		return
-	}
+	remove := func() error { return s.cursors.DeleteWorkspace(id) }
+	var deleteErr error
 	if s.manager != nil {
-		for _, c := range chats {
-			s.manager.RetireIdentity(c.ID)
+		// A stop can wait for an acquisition to persist a new cursor. Capture
+		// every current durable before the workspace removes its owners.
+		identities := make(map[string]string)
+		for _, c := range s.workspaceLifecycleChats(id) {
+			identities[c.ID] = c.DurableSessionID
 		}
+		deleteErr = s.manager.DeleteChatIdentities(identities, remove)
+	} else {
+		deleteErr = remove()
+	}
+	if deleteErr != nil {
+		clearDeleting()
+		s.writeStoreError(w, deleteErr)
+		return
 	}
 	clearDeleting()
 	w.WriteHeader(http.StatusNoContent)

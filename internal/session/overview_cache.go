@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
@@ -16,8 +17,6 @@ const (
 type overviewCacheEntry struct {
 	liveRevision  liveRevision
 	epoch         omorpc.EpochToken
-	chatID        string
-	title         string
 	snapshots     map[string]json.RawMessage
 	oversized     map[string]bool
 	task          *TaskDigest
@@ -38,6 +37,8 @@ type overviewSubscriber struct {
 	sessionIDs map[string]struct{}
 	queue      chan overviewUpdate
 	stop       chan struct{}
+	mu         sync.Mutex
+	published  overviewPublications
 }
 
 func (s *overviewSubscriber) run() {
@@ -76,8 +77,9 @@ func (m *Manager) SubscribeActivity(allLive bool, sessionIDs []string, onSnapsho
 		return nil, func() {}
 	}
 	initial := make([]Summary, 0, len(m.overviewCurrent))
-	for _, snapshot := range m.overviewCurrent {
+	for _, snapshot := range m.projectedOverviewLocked() {
 		if sub.matches(snapshot) {
+			sub.published.project(snapshot)
 			initial = append(initial, snapshot)
 		}
 	}
@@ -113,7 +115,12 @@ func (m *Manager) SubscribeOverview(onSnapshot func(Summary)) func() {
 }
 
 func (s *overviewSubscriber) matches(snapshot Summary) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.allLive {
+		return true
+	}
+	if _, observed := s.published.ids[snapshot.DurableSessionID]; observed {
 		return true
 	}
 	for _, id := range [...]string{snapshot.ChatID, snapshot.DurableSessionID, snapshot.ReplacesSessionID} {
@@ -126,17 +133,28 @@ func (s *overviewSubscriber) matches(snapshot Summary) bool {
 
 // updateOverviewLocked stores immutable current state and evaluates filters.
 // Delivery only enqueues bounded hand-offs; subscriber callbacks run separately.
-func (m *Manager) updateOverviewLocked(snapshot Summary) []*overviewSubscriber {
+func (m *Manager) updateOverviewLocked(snapshot *Summary) []*overviewSubscriber {
+	*snapshot = m.projectOverviewLocked(*snapshot)
 	if snapshot.ChatID == "" {
 		return nil
+	}
+	published := overviewPublications{ids: m.overviewPreviousIDs, fifo: m.overviewPreviousFIFO}
+	*snapshot = published.project(*snapshot)
+	m.overviewPreviousIDs, m.overviewPreviousFIFO = published.ids, published.fifo
+	for id, previous := range m.overviewCurrent {
+		if snapshot.DurableSessionID != "" && previous.DurableSessionID == snapshot.DurableSessionID {
+			if id != snapshot.ChatID {
+				delete(m.overviewCurrent, id)
+			}
+		}
 	}
 	if m.overviewCurrent == nil {
 		m.overviewCurrent = make(map[string]Summary)
 	}
-	m.overviewCurrent[snapshot.ChatID] = snapshot
+	m.overviewCurrent[snapshot.ChatID] = *snapshot
 	matched := make([]*overviewSubscriber, 0, len(m.overviewSubscribers))
 	for _, sub := range m.overviewSubscribers {
-		if sub.matches(snapshot) {
+		if sub.matches(*snapshot) {
 			matched = append(matched, sub)
 		}
 	}
@@ -145,7 +163,9 @@ func (m *Manager) updateOverviewLocked(snapshot Summary) []*overviewSubscriber {
 
 func deliverOverview(subscribers []*overviewSubscriber, snapshot Summary) {
 	for _, sub := range subscribers {
-		update := overviewUpdate{summary: cloneSummary(snapshot)}
+		sub.mu.Lock()
+		update := overviewUpdate{summary: cloneSummary(sub.published.project(snapshot))}
+		sub.mu.Unlock()
 		select {
 		case sub.queue <- update:
 			continue
@@ -190,7 +210,8 @@ func (m *Manager) notifySessionOverviewUpdateLocked(s *Session, activityOnly boo
 	snapshot := cloneSummary(s.summaryLocked())
 	// Keep enqueueing inside the route barrier: a delayed active hand-off must
 	// never follow the inactive hand-off from epoch/session retirement.
-	deliverOverview(m.updateOverviewLocked(snapshot), snapshot)
+	subscribers := m.updateOverviewLocked(&snapshot)
+	deliverOverview(subscribers, snapshot)
 }
 
 // removeOverviewLocked clears the running indicator before retiring its row.
@@ -200,7 +221,8 @@ func (m *Manager) removeOverviewLocked(chatID string) {
 		revision := liveRevision{values: snapshot.LiveValues(), active: snapshot.Active, title: snapshot.Title, initialized: true}
 		snapshot.Active = false
 		snapshot = revision.project(snapshot, time.Now().UnixMilli())
-		deliverOverview(m.updateOverviewLocked(snapshot), snapshot)
+		subscribers := m.updateOverviewLocked(&snapshot)
+		deliverOverview(subscribers, snapshot)
 	}
 	delete(m.overviewCurrent, chatID)
 }
@@ -255,15 +277,9 @@ func (m *Manager) ingestEpochEvent(epoch omorpc.EpochToken, ev *omorpc.Event) (*
 	}
 	if durableID, _, _, ok := decodeOverviewEvent(ev); ok {
 		if byDurable := m.byDurableEpoch[epoch]; byDurable != nil {
-			if binding := byDurable[durableID]; binding != nil {
-				if binding.session == nil {
-					return nil, Summary{}, nil
-				}
+			if binding := byDurable[durableID]; binding != nil && binding.session != nil {
 				return binding.session, Summary{}, nil
 			}
-		}
-		if _, retired := m.retiredDurable[durableID]; retired {
-			return nil, Summary{}, nil
 		}
 	}
 	snapshot, subscribers := m.ingestUnboundOverviewLocked(epoch, ev)
@@ -281,64 +297,14 @@ func (m *Manager) ingestUnboundOverviewLocked(epoch omorpc.EpochToken, ev *omorp
 	if !ok {
 		return Summary{}, nil
 	}
-	if _, retired := m.retiredDurable[durableID]; retired {
-		return Summary{}, nil
-	}
 	if m.deletingDurable[durableID] != 0 {
 		return Summary{}, nil
 	}
-	chatID := durableID
-	title := ""
 	entry := m.overviewCache[durableID]
-	// Losing a reverse lookup is not a new identity. Keep the last owner
-	// until a stored replacement or deletion retires it, rather than letting
-	// a late event remap the chat back to an untitled durable row.
-	if entry != nil {
-		chatID, title = entry.chatID, entry.title
-	}
-	mapped := m.durableToChat[durableID]
-	claimed := mapped != ""
-	if mapped != "" {
-		chatID = mapped
-	}
-	if m.durableChatResolver != nil {
-		if resolvedID, name, found := m.durableChatResolver.ChatForDurable(durableID); found && resolvedID != "" {
-			if mapped == "" {
-				chatID = resolvedID
-			}
-			if chatID == resolvedID {
-				title = name
-				claimed = true
-			}
-		}
-	}
-	incumbent := m.byChat[chatID]
-	pending := incumbent != nil && incumbent.durableID != durableID
-	if pending && entry != nil {
-		// Preserve a previously published provisional row's remap source
-		// until the replacement is actually allowed to publish.
-		chatID = entry.chatID
-	}
-	replaces := ""
 	if entry == nil || entry.epoch != epoch {
-		if entry != nil {
-			if m.overviewCurrent[entry.chatID].DurableSessionID == durableID {
-				delete(m.overviewCurrent, entry.chatID)
-			}
-			if entry.chatID != chatID {
-				replaces = entry.chatID
-			}
-		}
-		entry = &overviewCacheEntry{epoch: epoch, chatID: chatID, snapshots: make(map[string]json.RawMessage), oversized: make(map[string]bool)}
+		entry = &overviewCacheEntry{epoch: epoch, snapshots: make(map[string]json.RawMessage), oversized: make(map[string]bool)}
 		m.overviewCache[durableID] = entry
-	} else if entry.chatID != chatID {
-		if m.overviewCurrent[entry.chatID].DurableSessionID == durableID {
-			delete(m.overviewCurrent, entry.chatID)
-		}
-		replaces = entry.chatID
-		entry.chatID = chatID
 	}
-	entry.title = title
 	m.overviewClock++
 	entry.used = m.overviewClock
 	switch name {
@@ -359,26 +325,10 @@ func (m *Manager) ingestUnboundOverviewLocked(epoch omorpc.EpochToken, ev *omorp
 		reconcileOverviewEntry(entry)
 	}
 	refreshOverviewExactCounts(entry)
-	// Persistence precedes route publication during acquisition. Keep the
-	// replacement's snapshots, but let validated publication replace the
-	// incumbent chat identity; activity cannot retire its own durable.
-	if pending {
-		m.evictOverviewLRULocked()
-		return Summary{}, nil
-	}
-	// A stored cursor can change without an acquisition. Its resolved owner
-	// is authoritative for a cold chat, and has exactly one current durable.
-	if claimed {
-		for previous, cached := range m.overviewCache {
-			if previous != durableID && cached.chatID == chatID {
-				m.retireDurableLocked(previous, chatID)
-			}
-		}
-	}
 	m.evictOverviewLRULocked()
-	snapshot := entry.summary(entry.chatID, durableID, entry.title)
-	snapshot.ReplacesSessionID = replaces
-	return snapshot, m.updateOverviewLocked(snapshot)
+	snapshot := Summary{ChatID: durableID, DurableSessionID: durableID}
+	subscribers := m.updateOverviewLocked(&snapshot)
+	return snapshot, subscribers
 }
 
 // ApplyChatTitle republishes cached unbound rows under a stored chat's new
@@ -387,7 +337,7 @@ func (m *Manager) ingestUnboundOverviewLocked(epoch omorpc.EpochToken, ev *omorp
 // is projected like any activity change and therefore advances the freshness
 // revision. Rows owned by a live session are skipped: SetSessionName owns
 // their title and its own publication.
-func (m *Manager) ApplyChatTitle(chatID, name string) {
+func (m *Manager) ApplyChatTitle(chatID, _ string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
@@ -397,18 +347,13 @@ func (m *Manager) ApplyChatTitle(chatID, name string) {
 	if owner != nil && m.byRoute[owner.routingID] == owner {
 		return
 	}
-	for durableID, entry := range m.overviewCache {
-		if entry.chatID != chatID {
+	for durableID := range m.overviewCache {
+		snapshot := m.projectOverviewLocked(Summary{ChatID: durableID, DurableSessionID: durableID})
+		if snapshot.ChatID != chatID {
 			continue
 		}
-		entry.title = name
-		m.overviewClock++
-		entry.used = m.overviewClock
-		if owner != nil && owner.durableID != durableID {
-			continue
-		}
-		snapshot := entry.summary(chatID, durableID, name)
-		deliverOverview(m.updateOverviewLocked(snapshot), snapshot)
+		subscribers := m.updateOverviewLocked(&snapshot)
+		deliverOverview(subscribers, snapshot)
 	}
 }
 
@@ -436,11 +381,8 @@ func (m *Manager) evictOverviewLRULocked() {
 				oldestID, oldest = id, entry.used
 			}
 		}
-		entry := m.overviewCache[oldestID]
 		delete(m.overviewCache, oldestID)
-		if m.overviewCurrent[entry.chatID].DurableSessionID == oldestID {
-			delete(m.overviewCurrent, entry.chatID)
-		}
+		m.removeDurableOverviewLocked(oldestID)
 	}
 }
 
@@ -453,26 +395,20 @@ func (m *Manager) evictOverviewLRULocked() {
 // transfer has no destination incumbent to compare and moves the accepted state
 // together with its freshness; subsequent bound dispatch uses the shared policy.
 func (m *Manager) mergeOverviewIntoSessionLocked(s *Session) (Summary, []*overviewSubscriber) {
+	previous, replacing := m.overviewCurrent[s.chatID]
+	delete(m.overviewCurrent, s.chatID)
 	m.activateIdentityLocked(s)
 
-	removed := false
-	for durableID, cached := range m.overviewCache {
-		if durableID == s.durableID || cached.chatID != s.chatID {
-			continue
-		}
-		m.retireDurableLocked(durableID, s.chatID)
-		removed = true
-	}
 	entry := m.overviewCache[s.durableID]
 	if entry == nil {
-		if removed || s.activeLocked() {
-			snapshot := cloneSummary(s.summaryLocked())
-			return snapshot, m.updateOverviewLocked(snapshot)
+		if (!replacing || previous.DurableSessionID == s.durableID) && !s.activeLocked() {
+			return Summary{}, nil
 		}
-		return Summary{}, nil
+		snapshot := cloneSummary(s.summaryLocked())
+		subscribers := m.updateOverviewLocked(&snapshot)
+		return snapshot, subscribers
 	}
 	delete(m.overviewCache, s.durableID)
-	delete(m.overviewCurrent, entry.chatID)
 	if entry.epoch == s.epoch {
 		s.liveRevision = entry.liveRevision
 		s.taskDigest = cloneTaskDigest(entry.task)
@@ -493,8 +429,6 @@ func (m *Manager) mergeOverviewIntoSessionLocked(s *Session) (Summary, []*overvi
 	// This replacement is the remap signal for subscribers that observed the
 	// provisional durable-keyed row before its stable chat identity was known.
 	snapshot := cloneSummary(s.summaryLocked())
-	if entry.chatID != s.chatID {
-		snapshot.ReplacesSessionID = entry.chatID
-	}
-	return snapshot, m.updateOverviewLocked(snapshot)
+	subscribers := m.updateOverviewLocked(&snapshot)
+	return snapshot, subscribers
 }

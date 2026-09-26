@@ -62,6 +62,7 @@ func TestApplyChatTitleRefreshesCachedUnboundRow(t *testing.T) {
 		t.Fatal("cached row carries no freshness revision")
 	}
 
+	store.setOwner("rename-durable", "rename-chat", "Renamed title")
 	mgr.ApplyChatTitle("rename-chat", "Renamed title")
 
 	renamed := awaitOverview(t, updates)

@@ -81,8 +81,8 @@ func TestPR197PendingReplacementPreservesProvisionalRemap(t *testing.T) {
 
 	store.setOwner("new", "chat", "Replacement")
 	_, pending, _ := mgr.ingestEpochEvent(epoch, ev)
-	if pending.ChatID != "" {
-		t.Fatalf("pending replacement published before acquisition: %+v", pending)
+	if pending.ChatID != "chat" || pending.ReplacesSessionID != "new" {
+		t.Fatalf("current stored owner did not remap the provisional row: %+v", pending)
 	}
 	replacement := newSession(mgr, "chat", "/tmp", omorpc.OpenSessionData{
 		SessionID: "new-route", State: omorpc.SessionState{SessionID: "new"},
@@ -94,7 +94,7 @@ func TestPR197PendingReplacementPreservesProvisionalRemap(t *testing.T) {
 	published, _ := mgr.mergeOverviewIntoSessionLocked(replacement)
 	mgr.mu.Unlock()
 	replacement.lifecycleMu.Unlock()
-	if published.ChatID != "chat" || published.ReplacesSessionID != "new" {
-		t.Fatalf("publication lost provisional remap: %+v", published)
+	if published.ChatID != "chat" || published.ReplacesSessionID != "" {
+		t.Fatalf("acquisition repeated an already published remap: %+v", published)
 	}
 }

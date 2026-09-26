@@ -204,7 +204,7 @@ func TestUnboundOverviewKeepsUnknownDurableIdentity(t *testing.T) {
 	}
 }
 
-func TestUnboundOverviewPrefersManagerIdentityOverStore(t *testing.T) {
+func TestUnboundOverviewPrefersStoreOverUnboundManagerAlias(t *testing.T) {
 	d := newDaemon(t)
 	store := newResolvingCursorStore()
 	store.setOwner("mapped-durable", "stale-chat", "Stale title")
@@ -217,12 +217,12 @@ func TestUnboundOverviewPrefersManagerIdentityOverStore(t *testing.T) {
 	defer unsubscribe()
 
 	emitUnboundActivity(d, "mapped-durable", activitySnapshotOrder[0], map[string]any{"tasks": []any{}})
-	if got := awaitOverview(t, updates); got.ChatID != "current-chat" || got.Title == "Stale title" {
-		t.Fatalf("store identity displaced manager mapping: %+v", got)
+	if got := awaitOverview(t, updates); got.ChatID != "stale-chat" || got.Title != "Stale title" {
+		t.Fatalf("unbound manager alias displaced current store ownership: %+v", got)
 	}
 }
 
-func TestUnboundOverviewDropsRetiredDurableBeforeResolver(t *testing.T) {
+func TestUnboundOverviewCurrentOwnerOverridesRetirement(t *testing.T) {
 	store := newResolvingCursorStore()
 	store.setOwner("retired-durable", "retired-chat", "Retired")
 	mgr := NewManager(Config{Store: store})
@@ -235,14 +235,14 @@ func TestUnboundOverviewDropsRetiredDurableBeforeResolver(t *testing.T) {
 	_, snapshot, subscribers := mgr.ingestEpochEvent(omorpc.EpochToken{}, &omorpc.Event{
 		Type: "extension_event", SessionID: "retired-durable", Raw: raw,
 	})
-	if snapshot.ChatID != "" || len(subscribers) != 0 || len(mgr.LiveSummaries()) != 0 {
-		t.Fatalf("retired durable published overview: %+v", snapshot)
+	if snapshot.ChatID != "retired-chat" || len(subscribers) != 0 || len(mgr.LiveSummaries()) != 1 {
+		t.Fatalf("retirement suppressed current store ownership: %+v", snapshot)
 	}
 	store.mu.Lock()
 	calls := store.calls
 	store.mu.Unlock()
-	if calls != 0 {
-		t.Fatalf("resolver called %d times for retired durable", calls)
+	if calls == 0 {
+		t.Fatal("retired durable bypassed current owner lookup")
 	}
 }
 
@@ -295,7 +295,7 @@ func TestAcquireMergesResolvedUnboundOverviewWithoutReplacement(t *testing.T) {
 	}
 }
 
-func TestAcquireNewDurableRemovesOtherResolvedOverviewForChat(t *testing.T) {
+func TestAcquireNewDurableSuppressesOtherResolvedOverviewForChat(t *testing.T) {
 	d := newDaemon(t)
 	store := newResolvingCursorStore()
 	store.setOwner("old-durable", "rebound-chat", "Stored title")
@@ -320,10 +320,10 @@ func TestAcquireNewDurableRemovesOtherResolvedOverviewForChat(t *testing.T) {
 		t.Fatalf("old cached row duplicated rebound chat: %+v", live)
 	}
 	mgr.mu.Lock()
-	_, stale := mgr.overviewCache["old-durable"]
+	_, retained := mgr.overviewCache["old-durable"]
 	mgr.mu.Unlock()
-	if stale {
-		t.Fatal("old resolved durable remained cached after rebind")
+	if !retained {
+		t.Fatal("projection discarded another durable's activity")
 	}
 }
 

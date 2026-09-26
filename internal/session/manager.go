@@ -244,6 +244,10 @@ type Manager struct {
 	openSettled          chan struct{}
 	overviewCache        map[string]*overviewCacheEntry
 	overviewCurrent      map[string]Summary
+	overviewOwners       map[string]string
+	overviewOwnerFIFO    []string
+	overviewPreviousIDs  map[string]string
+	overviewPreviousFIFO []string
 	overviewClock        uint64
 	overviewSubscribers  map[uint64]*overviewSubscriber
 	overviewSubscriberID uint64
@@ -599,7 +603,7 @@ func (m *Manager) detachEpoch(token omorpc.EpochToken) []*Session {
 	for id, entry := range m.overviewCache {
 		if entry.epoch == token {
 			delete(m.overviewCache, id)
-			delete(m.overviewCurrent, entry.chatID)
+			m.removeDurableOverviewLocked(id)
 		}
 	}
 	for _, s := range all {
@@ -714,13 +718,17 @@ func (m *Manager) pruneDurableTombstonesLocked(epoch omorpc.EpochToken) {
 }
 
 func (m *Manager) retireDurableLocked(durable, chatID string) {
-	delete(m.durableToChat, durable)
-	if entry := m.overviewCache[durable]; entry != nil {
-		if m.overviewCurrent[entry.chatID].DurableSessionID == durable {
-			delete(m.overviewCurrent, entry.chatID)
+	// A stale alias or duplicate stored cursor cannot retire another chat's
+	// current activity or route. Ownership has the same precedence as reads.
+	if current, _ := m.currentOverviewOwnerLocked(durable, ""); current != "" && current != chatID {
+		if m.durableToChat[durable] == chatID {
+			delete(m.durableToChat, durable)
 		}
-		delete(m.overviewCache, durable)
+		return
 	}
+	delete(m.durableToChat, durable)
+	m.removeDurableOverviewLocked(durable)
+	delete(m.overviewCache, durable)
 	for epoch, entries := range m.byDurableEpoch {
 		if binding := entries[durable]; binding != nil && binding.chatID == chatID {
 			delete(entries, durable)
@@ -749,8 +757,8 @@ func (m *Manager) retireChatIdentityLocked(chatID string) {
 			m.retireDurableLocked(durable, chatID)
 		}
 	}
-	for durable, entry := range m.overviewCache {
-		if entry.chatID == chatID {
+	for durable, owner := range m.overviewOwners {
+		if owner == chatID {
 			m.retireDurableLocked(durable, chatID)
 		}
 	}
@@ -1278,7 +1286,6 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			}
 			m.byChat[chatID] = s
 			m.byRoute[data.SessionID] = s
-			delete(m.overviewCurrent, chatID)
 			overviewSnapshot, overviewSubscribers = m.mergeOverviewIntoSessionLocked(s)
 		}
 		deliverOverview(overviewSubscribers, overviewSnapshot)
@@ -1350,10 +1357,11 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			delete(m.byRoute, existing.routingID)
 		}
 		m.byChat[chatID] = s
-		delete(m.overviewCurrent, chatID)
 		if epochLive && !cleanupInFlight && !retiredRoute {
 			m.byRoute[data.SessionID] = s
 			overviewSnapshot, overviewSubscribers = m.mergeOverviewIntoSessionLocked(s)
+		} else {
+			delete(m.overviewCurrent, chatID)
 		}
 	}
 	deliverOverview(overviewSubscribers, overviewSnapshot)
@@ -2044,30 +2052,31 @@ func (m *Manager) LiveSummaries() []Summary {
 	m.mu.Lock()
 	all := make([]*Session, 0, len(m.byChat))
 	for _, s := range m.byChat {
-		if _, retired := m.retiredDurable[s.durableID]; !retired {
+		if m.byRoute[s.routingID] == s {
 			all = append(all, s)
 		}
 	}
-	cached := make([]Summary, 0, len(m.overviewCache))
-	for id, entry := range m.overviewCache {
-		if s := m.byChat[entry.chatID]; s != nil && s.durableID != id {
-			continue
-		}
-		snapshot := entry.summary(entry.chatID, id, entry.title)
-		cached = append(cached, snapshot)
-	}
+	cached := m.projectedOverviewLocked()
 	m.mu.Unlock()
 	out := make([]Summary, 0, len(all)+len(cached))
 	emitted := make(map[string]struct{}, len(all))
 	for _, s := range all {
 		if sum, ok := s.summary(); ok {
-			out = append(out, sum)
-			emitted[sum.ChatID] = struct{}{}
+			m.mu.Lock()
+			if m.byRoute[s.routingID] == s {
+				sum = m.projectOverviewLocked(sum)
+				if sum.ChatID != "" {
+					out = append(out, sum)
+					emitted[sum.ChatID] = struct{}{}
+				}
+			}
+			m.mu.Unlock()
 		}
 	}
 	for _, snapshot := range cached {
 		if _, exists := emitted[snapshot.ChatID]; !exists {
 			out = append(out, snapshot)
+			emitted[snapshot.ChatID] = struct{}{}
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ChatID < out[j].ChatID })
@@ -2173,6 +2182,10 @@ func (m *Manager) CloseAll(ctx context.Context) error {
 	m.slotGenerationFIFO = nil
 	m.overviewCache = make(map[string]*overviewCacheEntry)
 	m.overviewCurrent = make(map[string]Summary)
+	m.overviewOwners = nil
+	m.overviewOwnerFIFO = nil
+	m.overviewPreviousIDs = nil
+	m.overviewPreviousFIFO = nil
 	for id, sub := range m.overviewSubscribers {
 		delete(m.overviewSubscribers, id)
 		close(sub.stop)

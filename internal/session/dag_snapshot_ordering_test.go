@@ -63,7 +63,7 @@ func (h *dagOrderingHarness) summary() Summary {
 	h.m.mu.Lock()
 	defer h.m.mu.Unlock()
 	entry := h.m.overviewCache[h.s.durableID]
-	return entry.summary(h.s.chatID, h.s.durableID, entry.title)
+	return entry.summary(h.s.chatID, h.s.durableID, "")
 }
 
 func dagOrderingRun(id, status, updated string) map[string]any {

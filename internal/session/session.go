@@ -1380,6 +1380,7 @@ func (s *Session) SetSessionName(ctx context.Context, name string) error {
 	if _, err = s.routeLocked(); err == nil {
 		s.title, s.nameSource = name, NameSourceUser
 		s.publishLocked(Frame{Kind: FrameName, SessionID: s.durableID, Data: map[string]any{"name": name, "origin": NameSourceUser}})
+		s.manager.notifySessionOverviewLocked(s)
 	}
 	s.lifecycleMu.Unlock()
 	if err != nil {
