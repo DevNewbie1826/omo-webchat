@@ -2254,6 +2254,15 @@ func (s *CursorStore) UpdateName(_ context.Context, id, name, source string) err
 	return (*cursorstore.Store)(s).UpdateName(id, name, source)
 }
 
+// ChatForDurable maps an engine durable session id to the owning stored chat.
+func (s *CursorStore) ChatForDurable(durableID string) (chatID, name string, ok bool) {
+	chat, found := (*cursorstore.Store)(s).ChatForDurable(durableID)
+	if !found {
+		return "", "", false
+	}
+	return chat.ID, chat.Name, true
+}
+
 var (
 	_ session.CursorStore = (*CursorStore)(nil)
 	_ http.Handler        = (*Handler)(nil)
