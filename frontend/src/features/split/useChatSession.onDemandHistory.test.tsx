@@ -119,6 +119,50 @@ it("discards a response when durable history identity changes on the same connec
   expect(state.historyRootKnown).toBe(false);
 });
 
+it("discards an old branch page and completion after same-socket replacement", async () => {
+  tail();
+  load();
+  deliver({
+    type: "entries", sessionId: session.id, historySessionId: "durable",
+    entries: [entry("new-tail")], final: true, historyComplete: false,
+  });
+  expect(state.messages.map(message => message.id)).toEqual(["new-tail"]);
+  await respond(0, 200, {
+    sessionId: "durable", entries: [entry("root"), entry("old-parent")], historyComplete: true,
+  });
+  expect(state.messages.map(message => message.id)).toEqual(["new-tail"]);
+  expect(state.historyRootKnown).toBe(false);
+  expect(state.olderHistory.state).toBe("idle");
+  expect(requests[0]?.signal?.aborted).toBe(true);
+  load();
+  expect(requests[1]?.url).toContain("before=new-tail");
+  await respond(1, 200, { ...olderPage(true), entries: [entry("new-parent")] });
+  expect(state.messages.map(message => message.id)).toEqual(["new-parent", "new-tail"]);
+});
+
+it("discards a page requested before a new replay generation on the same socket", async () => {
+  tail();
+  load();
+  ready();
+  await respond(0, 200, olderPage(true));
+  expect(state.messages.map(message => message.id)).toEqual(["tail"]);
+  expect(state.historyRootKnown).toBe(false);
+  expect(state.olderHistory.state).toBe("idle");
+});
+
+it("discards a page whose before boundary has already advanced", async () => {
+  tail();
+  load();
+  deliver({
+    type: "entries", sessionId: session.id, historySessionId: "durable",
+    segment: "head", entries: [entry("current-parent")], historyComplete: false,
+  });
+  await respond(0, 200, olderPage(true));
+  expect(state.messages.map(message => message.id)).toEqual(["current-parent", "tail"]);
+  expect(state.historyRootKnown).toBe(false);
+  expect(state.olderHistory.state).toBe("idle");
+});
+
 it("aborts older history on explicit resync and does not commit a late page", async () => {
   tail();
   load();

@@ -30,7 +30,7 @@ export function useOlderHistory(
   const loadOlder = (): void => {
     const context = latestRef.current.getOlderHistoryContext();
     if (requestRef.current || !context.ready || context.rootKnown || !context.cursor || state === "unavailable") return;
-    const { cursor, connectionGeneration } = context;
+    const { cursor, connectionGeneration, replayGeneration } = context;
     const controller = new AbortController();
     requestRef.current = controller;
     setState("loading");
@@ -40,7 +40,10 @@ export function useOlderHistory(
       if (requestRef.current !== controller || controller.signal.aborted) return;
       requestRef.current = null;
       const current = latestRef.current.getOlderHistoryContext();
-      if (current.connectionGeneration !== connectionGeneration || current.cursor?.sessionId !== cursor.sessionId) {
+      if (current.connectionGeneration !== connectionGeneration
+        || current.replayGeneration !== replayGeneration
+        || current.cursor?.sessionId !== cursor.sessionId
+        || current.cursor.firstEntryId !== cursor.firstEntryId) {
         setState("idle");
         return;
       }

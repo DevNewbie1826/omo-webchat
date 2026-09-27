@@ -1,6 +1,7 @@
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { messageText } from "./chatEntries";
+import { steerMarks } from "./chatSteerMarks";
 import {
   mountReconnectHarness,
   type ReconnectHarness,
@@ -51,6 +52,54 @@ describe("useChatSession steer occurrence identity", () => {
       await unmountReconnectHarness(harness);
     }
     window.sessionStorage.clear();
+  });
+
+  it.each(["before", "after"])("retains the steer occurrence when its entry id arrives %s the terminal page", async order => {
+    const harness = mountReconnectHarness();
+    mounted.push(harness);
+    act(() => {
+      harness.deliver({
+        type: "entries", sessionId: session.id, entries: canonicalEntries.slice(0, 2),
+        final: true, historyComplete: false,
+      });
+      harness.deliver({ type: "run.started", sessionId: session.id });
+      harness.current?.steer("마무리");
+      if (order === "after") harness.deliver({
+        type: "entries", sessionId: session.id, entries: canonicalEntries,
+        final: true, historyComplete: false,
+      });
+      harness.deliver({
+        type: "message", sessionId: session.id,
+        message: { role: "user", blocks: [{ kind: "text", text: "마무리" }], ts: 30 },
+      });
+      harness.deliver({
+        type: "entry.appended", sessionId: session.id, id: "steer",
+        parentId: "reply", role: "user", textPrefix: "마무리",
+      });
+      if (order === "before") harness.deliver({
+        type: "entries", sessionId: session.id, entries: canonicalEntries,
+        final: true, historyComplete: false,
+      });
+    });
+    expectOnlyLaterOccurrenceMarked(harness);
+    expect(steerMarks(session.id)).toEqual([
+      { requestId: expect.any(String), text: "마무리", entryId: "steer" },
+    ]);
+    act(() => {
+      harness.deliver({ type: "entries", sessionId: session.id, entries: [], final: true, historyComplete: true });
+    });
+    expect(harness.current?.messages).toEqual([]);
+    await unmountReconnectHarness(harness);
+    mounted.splice(mounted.indexOf(harness), 1);
+    const remounted = mountReconnectHarness();
+    mounted.push(remounted);
+    act(() => {
+      remounted.deliver({
+        type: "entries", sessionId: session.id, entries: canonicalEntries,
+        final: true, historyComplete: false,
+      });
+    });
+    expectOnlyLaterOccurrenceMarked(remounted);
   });
 
   it("keeps only a later identical steer marked through settle, resync, and remount", async () => {

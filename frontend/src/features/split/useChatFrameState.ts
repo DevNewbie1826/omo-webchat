@@ -656,8 +656,16 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     },
     acceptHistoryPage: (frame) => {
       if (frame.segment === "head" && !historyPageCommittedRef.current) return null;
+      const previousCursor = resumeCoverage.current.cursor();
       const accepted = resumeCoverage.current.accept(frame);
       if (frame.segment === "head" || frame.final !== false) {
+        // A replacement retires requests even when its socket and durable
+        // session survive. A head only replaces on a durable contradiction.
+        if ((frame.segment !== "head" && !accepted.resumed)
+          || (previousCursor !== undefined && frame.historySessionId !== undefined
+            && previousCursor.sessionId !== frame.historySessionId)) {
+          olderHistoryInvalidationRef.current?.(false);
+        }
         // Coverage already produced the whole accepted list, including replacement.
         entriesBuffer.reset();
         historyPageCommittedRef.current = true;
@@ -1024,6 +1032,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     olderHistoryInvalidationRef,
     getOlderHistoryContext: () => ({
       connectionGeneration: connectionGenerationRef.current,
+      replayGeneration: replayGenerationRef.current,
       cursor: resumeCoverage.current.cursor(),
       ready: socketOpenRef.current && historyStatusRef.current === "loaded",
       rootKnown: pageBuffer.historyRootKnown(),

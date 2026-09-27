@@ -333,12 +333,19 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
             .map(block => block.text ?? "").join("")).slice(0, 128).join("") === frame.textPrefix);
         const message = messages[index];
         if (!message) return;
-        const bound = { ...message, id: frame.id };
+        const canonical = messages.find(row => row.id === frame.id);
+        const bound = canonical === undefined ? { ...message, id: frame.id }
+          : message.customType === "steer" && canonical.customType !== "steer"
+            ? { ...canonical, customType: "steer" } : canonical;
         bindings.bindSteerEntry(message, bound);
         // Binding changes identity, not receipt ownership. Keep the snapshot
-        // reference in step so a baseline row cannot become a new live suffix.
-        bindings.snapshotMessagesRef.current = bindings.snapshotMessagesRef.current.map(row => row === message ? bound : row);
-        bindings.replaceMessages(messages.map((row, position) => position === index ? bound : row));
+        // references in step for both occurrences, so the merged canonical
+        // row cannot become a new live suffix on the next replacement.
+        bindings.snapshotMessagesRef.current = [...new Set(bindings.snapshotMessagesRef.current
+          .map(row => row === message || row === canonical ? bound : row))];
+        bindings.replaceMessages(messages.flatMap(row => row === message
+          ? canonical === undefined ? [bound] : []
+          : [row === canonical ? bound : row]));
         return;
       }
       case "run.started":

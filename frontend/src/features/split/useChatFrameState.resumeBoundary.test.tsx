@@ -178,6 +178,21 @@ it("binds transferred live frames before a same-socket resumed page filters dupl
   expect(state().messages.map(message => message.id)).toEqual(["a","b","c"]);
 }));
 
+it.each(["before", "after"])("merges a live entry id arriving %s its terminal page", order => harness(({state,deliver}) => {
+  deliver({type:"ready",sessionId:"s",resumed:true,piSessionId:"durable"});
+  deliver(page(["a","b"]));
+  const resume = state().getHistoryResume();
+  deliver({type:"ready",sessionId:"s",resumed:true,piSessionId:"durable"});
+  if (order === "after") deliver(page(["c"], {resume}));
+  deliver({type:"message",sessionId:"s",message:{role:"user",content:"c"}});
+  deliver({type:"entry.appended",sessionId:"s",id:"c",parentId:"b",role:"user",textPrefix:"c"});
+  if (order === "before") deliver(page(["c"], {resume}));
+  expect(state().messages.map(message => message.id)).toEqual(["a","b","c"]);
+  // A merged baseline row must not become a live suffix on the next replacement.
+  deliver(page(["new-tail"], {historyComplete:false}));
+  expect(state().messages.map(message => message.id)).toEqual(["new-tail"]);
+}));
+
 it("binds equal-text live messages FIFO, respecting role and Unicode code-point prefixes", () => harness(({state,deliver}) => {
   const text = "\u{1f600}".repeat(127) + "xy";
   deliver(page(["a"]));
