@@ -179,7 +179,7 @@ describe("SessionTree session-row activation target", () => {
       const tail = label?.querySelector(".th-tree-label-tail");
       expect(label?.textContent).toBe(name);
       expect(head?.textContent).toBe("Earlier workspace");
-      expect(head?.classList.contains("th-tree-label-head--long")).toBe(true);
+      expect(head?.getAttribute("class")).toBe("th-tree-label-head");
       expect(tail?.textContent).toBe(` ${index + 1}`);
       expect(label?.getAttribute("aria-hidden")).toBe("true");
       expect(disclosure.getAttribute("aria-label")).toBe(name);
@@ -197,12 +197,12 @@ describe("SessionTree session-row activation target", () => {
     expect(disclosure?.getAttribute("aria-label")).toBe(longName);
   });
 
-  it("keeps short workspace names unsplit visually and without a prefix floor", () => {
+  it("keeps short workspace names continuous and their accessible names intact", () => {
     render();
 
     const disclosure = container.querySelector<HTMLButtonElement>(".th-tree-workspace-activation");
     expect(disclosure?.querySelector(".th-tree-label-text")?.textContent).toBe(workspace.name);
-    expect(disclosure?.querySelector(".th-tree-label-head--long")).toBeNull();
+    expect(disclosure?.querySelector(".th-tree-label-head")?.textContent).toBe("Work");
     expect(disclosure?.getAttribute("aria-label")).toBe(workspace.name);
   });
 });

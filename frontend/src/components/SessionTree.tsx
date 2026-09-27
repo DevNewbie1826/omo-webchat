@@ -294,7 +294,7 @@ export function SessionTree({
                   onClick={() => onToggle(ws.id)}
                 >
                   <span className="th-tree-label-text" aria-hidden="true">
-                    <span className={`th-tree-label-head${Array.from(nameHead).length > 8 ? " th-tree-label-head--long" : ""}`}>{nameHead}</span>
+                    <span className="th-tree-label-head">{nameHead}</span>
                     <span className="th-tree-label-tail">{nameTail}</span>
                   </span>
                   <span className={`th-tree-chevron${isOpen ? " th-tree-chevron--open" : ""}`} aria-hidden="true">

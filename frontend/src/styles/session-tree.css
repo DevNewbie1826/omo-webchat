@@ -258,12 +258,6 @@
   text-overflow: ellipsis;
 }
 
-/* Leave a readable prefix on long names. If even that and the tail cannot
-   fit, the label genuinely overflows instead of silently clipping its tail. */
-.th-tree-label-head--long {
-  min-width: calc(var(--th-space-12) + var(--th-space-5));
-}
-
 .th-tree-label-tail {
   flex: none;
   /* The tail starts with the word separator (" 12"); a flex item collapses

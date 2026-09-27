@@ -1667,6 +1667,9 @@ describe("coarse-pointer shell hit-area contracts (G40)", () => {
       .toBe("inline-flex");
     expect(declarationValue(ruleBody(sessionTree, ".th-tree--touch .th-tree-count"), "display"))
       .toBe("none");
+    expect(declarationValue(ruleBody(sessionTree, ".th-tree-label-head"), "min-width"))
+      .toBe("0");
+    expect(sessionTree).not.toContain(".th-tree-label-head--long");
   });
 });
 
