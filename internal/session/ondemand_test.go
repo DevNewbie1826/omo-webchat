@@ -143,7 +143,13 @@ func TestOnDemandResumeUsesCursorFirstIndexForCompletion(t *testing.T) {
 }
 
 func TestEntryAppendedPublishesOnlyMessageEntriesWithUnicodePrefix(t *testing.T) {
-	s, sub := acquireDrained(t, "on-demand-entry")
+	d := newDaemon(t)
+	store := newMemStore()
+	mgr := testManager(t, dial(t, d), store, 64)
+	path, leaf := writeProgressiveFixture(t, t.TempDir(), "entry.jsonl", 1, 0)
+	s, sub, detach := attachOnDemandTail(t, d, mgr, store, "on-demand-entry", path, leaf, nil)
+	defer detach()
+	collectMarkedHydration(t, s, sub.capabilityRecorder)
 	text := strings.Repeat("한", 127) + "🌐" + "not included"
 	for _, entry := range []map[string]any{
 		{"type": "custom", "id": "other", "customType": "unknown"},
@@ -158,7 +164,7 @@ func TestEntryAppendedPublishesOnlyMessageEntriesWithUnicodePrefix(t *testing.T)
 	} {
 		injectEvent(t, s, map[string]any{"type": "entry_appended", "entry": entry})
 	}
-	frames := publishCompactionMarker(t, s, sub)
+	frames := publishCompactionMarker(t, s, &sub.capabilityRecorder.recorder)
 	var appended []EntryAppendedInfo
 	for _, frame := range frames {
 		if frame.Kind == FrameEntryAppended {
