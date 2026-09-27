@@ -526,20 +526,26 @@ export function probeWorkspaceColumns() {
     .filter(isVisibleElement).filter(row => {
       const box = row.getBoundingClientRect();
       return body && box.top < body.bottom && box.bottom > body.top;
-    }).map(row => ({
-      name: row.querySelector('.th-tree-label-text')?.textContent.trim() ?? '',
-      running: !!row.querySelector('.th-tree-count--running, .th-tree-running--workspace'),
-      count: row.querySelector('.th-tree-count')?.getBoundingClientRect().toJSON() ?? null,
-      chevron: row.querySelector('.th-tree-workspace-activation > .th-tree-chevron')
-        ?.getBoundingClientRect().toJSON() ?? null,
-    }));
+    }).map(row => {
+      const running = !!row.querySelector('.th-tree-count--running, .th-tree-running--workspace');
+      const count = row.querySelector(running ? '.th-tree-running--workspace' : '.th-tree-count');
+      const style = count && getComputedStyle(count);
+      return {
+        name: row.querySelector('.th-tree-label-text')?.textContent.trim() ?? '',
+        running,
+        count: count?.getBoundingClientRect().toJSON() ?? null,
+        countVisible: style?.visibility === 'visible' && Number(style.opacity) > 0,
+        chevron: row.querySelector('.th-tree-workspace-activation > .th-tree-chevron')
+          ?.getBoundingClientRect().toJSON() ?? null,
+      };
+    });
 }
 
 export function workspaceColumnsVerdict(facts) {
   const failures = [];
   fail(facts.some(row => row.running) && facts.some(row => !row.running),
     'Q26 missing running or idle workspace row', failures);
-  fail(facts.length >= 2 && facts.every(row => row.count?.width > 0
+  fail(facts.length >= 2 && facts.every(row => row.countVisible && row.count?.width > 0
     && row.count.height > 0 && row.chevron?.width > 0 && row.chevron.height > 0),
   'Q26 visible count pill or chevron box missing', failures);
   for (const [kind, edge] of [['count', 'right'], ['chevron', 'left'], ['chevron', 'right']]) {
@@ -2163,6 +2169,8 @@ async function driveQ24(ctx) {
           document.querySelectorAll('.th-activity-graph [data-node]').length === count,
         t4StageSpec(stage).length, { timeout: 9000 });
       }
+      await env.page.evaluate(async () => { await document.fonts.ready; });
+      await settleFinite(env.page, '.th-activity-graph');
       const facts = await ctx.probe(env.page, probeMobileDag);
       measurements[stage] = facts;
       fail(await env.page.evaluate(() => innerWidth) === 390,

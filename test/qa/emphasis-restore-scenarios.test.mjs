@@ -524,13 +524,19 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     console.log(`Q25 68px/65.9px head control: ${output.failures.join('; ')}`);
   });
 
-  test('Q26 rejects a running workspace chevron shifted left by 34px', () => {
-    const measure = shift => serialized(probeWorkspaceColumns,
+  test('Q26 rejects a shifted running badge even when its hidden count stays aligned', () => {
+    const measure = ({ chevronShift = 0, badgeShift = 0, badgeVisible = true, badgeOpacity = 1 } = {}) =>
+      serialized(probeWorkspaceColumns,
       `<div class="th-sidebar-body">${['Idle', 'Running'].map((name, index) =>
         `<div class="th-tree-workspace"><div class="th-tree-node">
           <button class="th-tree-workspace-activation"><span class="th-tree-label-text">${name}</span>
             <span class="th-tree-chevron"></span></button>
-          <span class="th-tree-count${index ? ' th-tree-count--running' : ''}">1</span>
+          <span class="th-tree-count-slot">
+            <span class="th-tree-count${index ? ' th-tree-count--running' : ''}"
+              style="${index ? 'visibility:hidden' : ''}">1</span>
+            ${index ? `<span class="th-tree-running th-tree-running--workspace"
+              style="visibility:${badgeVisible ? 'visible' : 'hidden'};opacity:${badgeOpacity}">1</span>` : ''}
+          </span>
         </div></div>`).join('')}</div>`, (_window, document) => {
         const bounds = (element, left, right, top, bottom) => {
           element.getBoundingClientRect = () => ({
@@ -540,21 +546,25 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
         };
         bounds(document.querySelector('.th-sidebar-body'), 0, 264, 0, 500);
         document.querySelectorAll('.th-tree-node').forEach((row, index) => {
-          const offset = index ? shift : 0;
           bounds(row, 0, 264, index * 40, index * 40 + 30);
-          bounds(row.querySelector('.th-tree-count'), 204 - offset, 224 - offset, index * 40, index * 40 + 20);
-          bounds(row.querySelector('.th-tree-chevron'), 170 - offset, 182 - offset, index * 40, index * 40 + 20);
+          bounds(row.querySelector('.th-tree-count'), 204, 224, index * 40, index * 40 + 20);
+          if (index) bounds(row.querySelector('.th-tree-running--workspace'),
+            204 - badgeShift, 224 - badgeShift, index * 40, index * 40 + 20);
+          const offset = index ? chevronShift : 0;
+          bounds(row.querySelector('.th-tree-chevron'), 170 - offset, 182 - offset,
+            index * 40, index * 40 + 20);
         });
       });
-    expect(workspaceColumnsVerdict(measure(0)).pass).toBe(true);
-    const output = workspaceColumnsVerdict(measure(34));
-    expect(output.failures).toContain('Q26 count right edges drift: 224,190');
+    expect(workspaceColumnsVerdict(measure()).pass).toBe(true);
+    const output = workspaceColumnsVerdict(measure({ chevronShift: 34 }));
     expect(output.failures).toContain('Q26 chevron left edges drift: 170,136');
-    const hidden = measure(0).map(row => ({ ...row,
-      count: { ...row.count, width: 0, height: 0 } }));
-    expect(workspaceColumnsVerdict(hidden).failures)
-      .toContain('Q26 visible count pill or chevron box missing');
-    console.log(`Q26 running-row -34px control: ${output.failures.join('; ')}`);
+    const shiftedBadge = workspaceColumnsVerdict(measure({ badgeShift: 34 }));
+    expect(shiftedBadge.failures).toContain('Q26 count right edges drift: 224,190');
+    const hidden = workspaceColumnsVerdict(measure({ badgeVisible: false }));
+    expect(hidden.failures).toContain('Q26 visible count pill or chevron box missing');
+    const transparent = workspaceColumnsVerdict(measure({ badgeOpacity: 0 }));
+    expect(transparent.failures).toContain('Q26 visible count pill or chevron box missing');
+    console.log(`Q26 visible running badge -34px control: ${shiftedBadge.failures.join('; ')}`);
   });
 
   function headingCount({ spinner = true, duration = 700, headingRight = 247, reduced = false } = {}) {
