@@ -1003,27 +1003,53 @@ export function ChatTranscript({
     };
   }, [scrollRef, noteProgrammaticWrite]);
 
+  // The virtualizer learns DOM scroll writes only from the asynchronous
+  // scroll observation: scrollToIndex writes the scroll position at once
+  // (custom scrollToFn above), but the instance adopts the new offset when
+  // the browser echoes the scroll event — after this commit has painted. The
+  // window rendered by this commit would still describe the previous
+  // viewport, so an open would paint one frame there before auto-scrolling
+  // to the tail (the visible row count drops for a frame, then regrows).
+  // Mirror the written position onto the instance — the same write
+  // applyScrollAdjustment makes for measurement corrections — and bump state
+  // so React re-renders this component before paint: the first paint of a
+  // mounted/admitted history is already the tail window.
+  const [, setPinSyncVersion] = useState(0);
+  const pinTailBeforePaint = useCallback(() => {
+    if (rows.length === 0) return;
+    virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
+    const element = scrollRef.current;
+    if (element === null) return;
+    const offset = element.scrollTop;
+    if (virtualizer.scrollOffset === offset) return;
+    virtualizer.scrollOffset = offset;
+    setPinSyncVersion((version) => version + 1);
+  }, [rows.length, virtualizer, scrollRef]);
+
   // Focus GAIN / session-restore pin to the end regardless of follow intent.
   // Losing focus must NOT move the viewport: the reader keeps their parked
-  // position. Row-count growth only follows when already at the bottom.
+  // position. Scheduled before paint so a restored session never flashes the
+  // pre-restore viewport.
   const prevRestoreVersionRef = useRef(restoreVersion);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const restoreChanged = prevRestoreVersionRef.current !== restoreVersion;
     prevRestoreVersionRef.current = restoreVersion;
-    if (rows.length === 0) return;
     if (!focused && !restoreChanged) return;
-    virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
-    // rows.length is read for the target index, not as a trigger.
+    pinTailBeforePaint();
+    // pinTailBeforePaint and rows.length are read for the target index, not
+    // as triggers: appending rows while focused must not yank a parked
+    // reader — only focus gain and session restore pin regardless of intent.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focused, restoreVersion, virtualizer]);
+  }, [focused, restoreVersion]);
 
-  // Before paint: the held earlier history mounts in one commit, so a pin
-  // scheduled after paint would let the reader see one frame at the
-  // pre-admission offset.
+  // Before paint: history admitted in this commit (the hydrating tail, an
+  // on-demand older page, a live append while following) must surface at the
+  // tail immediately — a pin scheduled after paint would let the reader see
+  // one frame at the pre-admission offset.
   useLayoutEffect(() => {
-    if (rows.length === 0 || !isFollowing()) return;
-    virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
-  }, [rows.length, isFollowing, virtualizer]);
+    if (!isFollowing()) return;
+    pinTailBeforePaint();
+  }, [rows.length, isFollowing, pinTailBeforePaint]);
 
   return (
     <div className="th-chat-scrollport">
