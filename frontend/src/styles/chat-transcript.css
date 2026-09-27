@@ -492,15 +492,15 @@
 /* Narrow panes (s17 critique D1, QA S22 at 390): the reading column fills
    nearly the whole pane, so the inline-end anchored circle lands inside the
    record text lane and covers a collapsed record's status word. Inside the
-   chat pane's 600px container breakpoint the button moves into a reserved
-   strip below the scroll body: the scrollport grows matching bottom padding
-   only while the button is mounted (:has), and the circle centres as a
-   floating pill in that strip, so no transcript row can ever render beneath
-   it. The 44px hit area and the wide inline-end placement above stay
-   untouched. */
+   chat pane's 600px container breakpoint the circle centres away from the
+   inline-end status column, and while it is mounted (:has) the scroll body
+   fades out over the button's band instead of reserving an opaque strip, so
+   rows beneath it recede rather than being hard-clipped. The 44px hit area
+   and the wide inline-end placement above stay untouched. */
 @container chat-pane (max-width: 600px) {
-  .th-chat-scrollport:has(> .th-chat-scroll-bottom) {
-    padding-bottom: calc(var(--th-space-11) + var(--th-space-4));
+  .th-chat-scrollport:has(> .th-chat-scroll-bottom) > .th-chat-body {
+    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - var(--th-space-11) - var(--th-space-4)), transparent);
+    mask-image: linear-gradient(to bottom, #000 calc(100% - var(--th-space-11) - var(--th-space-4)), transparent);
   }
 
   .th-chat-pane .th-chat-scroll-bottom {
