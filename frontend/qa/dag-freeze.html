@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DAG freeze QA</title>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    .th-chat-pane { height: 100%; }
+    #root {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+    }
+  </style>
+</head>
+<body>
+  <div class="th-chat-pane">
+    <main class="th-chat-main">
+      <div id="root"></div>
+    </main>
+  </div>
+  <script type="module" src="./dagFreeze.tsx"></script>
+</body>
+</html>

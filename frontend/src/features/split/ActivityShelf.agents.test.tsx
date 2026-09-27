@@ -63,21 +63,21 @@ describe("ActivityShelf", () => {
     // with its run's start time while alpha/beta land in the terminal group.
     expect(agentNames).toEqual([
       "Running new",
-      "(DAG running new) - gamma step",
-      "(DAG completed new) - gamma step",
+      "(DAG running new) - c",
+      "(DAG completed new) - c",
       "Running old",
-      "(DAG running old) - gamma step",
-      "(DAG completed old) - gamma step",
-      "(DAG running new) - alpha step",
-      "(DAG running new) - beta step",
+      "(DAG running old) - c",
+      "(DAG completed old) - c",
+      "(DAG running new) - a",
+      "(DAG running new) - b",
       "Completed new",
-      "(DAG completed new) - alpha step",
-      "(DAG completed new) - beta step",
-      "(DAG running old) - alpha step",
-      "(DAG running old) - beta step",
+      "(DAG completed new) - a",
+      "(DAG completed new) - b",
+      "(DAG running old) - a",
+      "(DAG running old) - b",
       "Completed old",
-      "(DAG completed old) - alpha step",
-      "(DAG completed old) - beta step",
+      "(DAG completed old) - a",
+      "(DAG completed old) - b",
     ]);
     const dagNames = [...harness.container.querySelectorAll(".th-activity-dag-name")].map((row) => row.textContent);
     expect(dagNames).toEqual(["DAG running new", "DAG running old", "DAG completed new", "DAG completed old"]);
