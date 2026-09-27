@@ -114,6 +114,43 @@ describe("connectWs", () => {
     expect(FakeWebSocket.instances).toHaveLength(2);
   });
 
+  it("re-arms silence deadline for every frame but enforces the 60s ping cap", async () => {
+    vi.useFakeTimers();
+    const onClose = vi.fn();
+    conn = connectWs("/chat", { onMessage: () => undefined, onClose });
+    const socket = FakeWebSocket.instances[0]!;
+    socket.serverOpen();
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    for (let i = 0; i < 11; i++) {
+      await vi.advanceTimersByTimeAsync(5_000);
+      socket.onmessage?.({ data: '{"type":"data"}' } as MessageEvent);
+    }
+    expect(onClose).not.toHaveBeenCalled(); // 55s from ping
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(onClose).not.toHaveBeenCalled(); // no close at 60s
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(4000);
+  });
+
+  it("re-arms the ordinary pong deadline from malformed inbound frames", async () => {
+    vi.useFakeTimers();
+    const onClose = vi.fn();
+    const onParseError = vi.fn();
+    conn = connectWs("/chat", { onMessage: () => undefined, onClose, onParseError });
+    const socket = FakeWebSocket.instances[0]!;
+    socket.serverOpen();
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    await vi.advanceTimersByTimeAsync(9_000);
+    socket.onmessage?.({ data: "{malformed" } as MessageEvent);
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(onClose).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(4000);
+    expect(onParseError).toHaveBeenCalledOnce();
+  });
+
   it("signals onClose exactly once for the stale socket on a visibility reconnect", () => {
     const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     const onClose = vi.fn();
@@ -270,6 +307,57 @@ describe("connectWs resume liveness probe", () => {
     expect(onClose).toHaveBeenCalledExactlyOnceWith(4000);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+
+  it("enforces the absolute cap while data continues to arrive", async () => {
+    const onClose = vi.fn();
+    const socket = openHealthy(onClose);
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    // One unanswered periodic ping remains outstanding through the cap.
+    for (let i = 0; i < 12; i++) {
+      await vi.advanceTimersByTimeAsync(4_999);
+      socket.onmessage?.({ data: '{"type":"data"}' } as MessageEvent);
+    }
+    await vi.advanceTimersByTimeAsync(12);
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(4000); // absolute cap at 60s
+  });
+
+  it("re-arms the short resume deadline on frames and clears its cap on pong", async () => {
+    const onClose = vi.fn();
+    const socket = openHealthy(onClose);
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    await vi.advanceTimersByTimeAsync(1_500);
+    socket.onmessage?.({ data: '{"type":"data"}' } as MessageEvent);
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(onClose).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(4000);
+  });
+
+  it("pong clears the absolute cap for the outstanding ping", async () => {
+    const onClose = vi.fn();
+    const socket = openHealthy(onClose);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    await vi.advanceTimersByTimeAsync(20_000);
+    socket.onmessage?.({ data: '{"type":"pong"}' } as MessageEvent);
+
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("re-arms the short resume deadline on frames", async () => {
+    const onClose = vi.fn();
+    const socket = openHealthy(onClose);
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    await vi.advanceTimersByTimeAsync(1_500);
+    socket.onmessage?.({ data: '{"type":"data"}' } as MessageEvent);
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(onClose).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(4000);
   });
 });
 
