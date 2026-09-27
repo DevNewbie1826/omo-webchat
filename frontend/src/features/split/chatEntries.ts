@@ -11,7 +11,9 @@ export interface UiMessage extends AssistantMessage {
   readonly summaryKind?: "compaction" | "branch_summary";
 }
 
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+type RawEntry = Readonly<Record<string, unknown>>;
+
+function isRecord(value: unknown): value is RawEntry {
   return typeof value === "object" && value !== null;
 }
 
@@ -139,14 +141,14 @@ interface MergeNode {
   /** Message the fold was applied to. A hit is valid only for this preimage. */
   readonly from: UiMessage;
   readonly message: UiMessage;
-  readonly next: WeakMap<object, MergeNode>;
+  readonly next: WeakMap<RawEntry, MergeNode>;
 }
 
 interface EmitEffect {
   readonly kind: "emit";
   readonly message: UiMessage;
   /** Merges applied to `message`, keyed by the tool-result entry object. */
-  readonly next: WeakMap<object, MergeNode>;
+  readonly next: WeakMap<RawEntry, MergeNode>;
 }
 
 interface ToolEffect {
@@ -156,7 +158,7 @@ interface ToolEffect {
   readonly extraImages: readonly ContentBlock[];
   readonly standalone: UiMessage;
   /** Merges applied when this result itself becomes a standalone row. */
-  readonly next: WeakMap<object, MergeNode>;
+  readonly next: WeakMap<RawEntry, MergeNode>;
 }
 
 type EntryEffect = { readonly kind: "skip" } | EmitEffect | ToolEffect;
@@ -164,18 +166,18 @@ type EntryEffect = { readonly kind: "skip" } | EmitEffect | ToolEffect;
 const skipEffect: EntryEffect = { kind: "skip" };
 
 /** Bounded by live entry objects: discarded entries drop their parsed messages. */
-const entryEffects = new WeakMap<object, EntryEffect>();
+const entryEffects = new WeakMap<RawEntry, EntryEffect>();
 
 interface MemoSlot {
   message: UiMessage;
-  next: WeakMap<object, MergeNode>;
+  next: WeakMap<RawEntry, MergeNode>;
 }
 
 function emitEffect(message: UiMessage): EmitEffect {
   return { kind: "emit", message, next: new WeakMap() };
 }
 
-function toolEffect(message: Readonly<Record<string, unknown>>, entryId: unknown): ToolEffect {
+function toolEffect(message: RawEntry, entryId: unknown): ToolEffect {
   const toolCallId = message["toolCallId"];
   const toolName = message["toolName"];
   const isError = message["isError"];
@@ -238,7 +240,7 @@ function mergedToolMessage(
 }
 
 /** Nearest preceding toolCall/tool block with this id, matching the historical fold. */
-function applyToolEffect(slots: MemoSlot[], entry: object, effect: ToolEffect): void {
+function applyToolEffect(slots: MemoSlot[], entry: RawEntry, effect: ToolEffect): void {
   const toolCallId = effect.toolCallId;
   if (toolCallId !== undefined) {
     for (let index = slots.length - 1; index >= 0; index -= 1) {
@@ -258,7 +260,7 @@ function applyToolEffect(slots: MemoSlot[], entry: object, effect: ToolEffect): 
       const existing = blocks[blockIndex];
       if (!existing) continue;
       const merged = mergedToolMessage(slot.message, blocks, blockIndex, existing, effect);
-      const next = new WeakMap<object, MergeNode>();
+      const next = new WeakMap<RawEntry, MergeNode>();
       slot.next.set(entry, { from: slot.message, message: merged, next });
       slot.message = merged;
       slot.next = next;
@@ -268,7 +270,7 @@ function applyToolEffect(slots: MemoSlot[], entry: object, effect: ToolEffect): 
   slots.push({ message: effect.standalone, next: effect.next });
 }
 
-function interpretEntry(entry: Readonly<Record<string, unknown>>, hydrationReceiptTime: number): EntryEffect {
+function interpretEntry(entry: RawEntry, hydrationReceiptTime: number): EntryEffect {
   if (entry["type"] === "custom_message") {
     const customType = entry["customType"];
     const content = entry["content"];
@@ -344,7 +346,7 @@ function interpretEntry(entry: Readonly<Record<string, unknown>>, hydrationRecei
   });
 }
 
-function cachedEffect(entry: object, hydrationReceiptTime: number): EntryEffect {
+function cachedEffect(entry: RawEntry, hydrationReceiptTime: number): EntryEffect {
   const cached = entryEffects.get(entry);
   if (cached) return cached;
   const effect = interpretEntry(entry, hydrationReceiptTime);
