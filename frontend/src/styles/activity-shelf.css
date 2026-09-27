@@ -346,9 +346,9 @@ button.th-activity-bar:hover {
   max-height: max(320px, calc(320 * var(--th-font-size) / 13));
 }
 
-/* At phone/pane width, eight compact branch rows plus the header and footer
-   need a taller allocation; only horizontal graph scrolling remains. The
-   shared column allocator still reserves transcript space first. */
+/* At phone/pane width, compact branch rows may exceed this allocation.
+   The tabpanel then scrolls vertically; the graph reel retains horizontal
+   scrolling. The shared column allocator reserves transcript space first. */
 @container chat-pane (max-width: 640px) {
   .th-activity-panel--dag {
     max-height: 480px;
@@ -360,8 +360,8 @@ button.th-activity-bar:hover {
     gap: var(--th-space-1);
   }
 
-  /* Keep dense branch rows and the footer in the allocated panel at the
-     largest user font setting; compact DAG chrome has its own readable tier. */
+  /* Compact DAG chrome has its own readable tier even when dense rows
+     overflow the panel's vertical scrollport. */
   .th-activity-panel--dag .th-activity-dag-details {
     font-size: var(--th-type-dag-compact-details-size);
   }

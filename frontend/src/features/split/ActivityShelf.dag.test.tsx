@@ -15,6 +15,26 @@ import { i18n, requireElement } from "./chatPaneTestHarness";
 import { ActivityShelf } from "./ActivityShelf";
 import { applyActivityEvent, emptyActivityState } from "./activityState";
 
+// jsdom has no SVG ink boxes; these compact-font offsets approximate the
+// baseline-to-ink distances. Browser geometry verifies the actual pixels.
+function expectCompactSpacing(node: Element): void {
+  const card = requireElement(node.querySelector(".th-activity-gnode-card"), "compact card");
+  const titles = [...node.querySelectorAll(".th-activity-glabel")];
+  const state = requireElement(node.querySelector(".th-activity-gstate"), "compact state");
+  const first = Number(requireElement(titles[0], "first title").getAttribute("y"));
+  const last = Number(requireElement(titles.at(-1), "last title").getAttribute("y"));
+  const stateY = Number(state.getAttribute("y"));
+  const height = Number(card.getAttribute("height"));
+  const top = first - 10;
+  const bottom = height - stateY - 3;
+  const gap = stateY - 11 - (last + 2);
+  expect(top).toBeGreaterThanOrEqual(4);
+  expect(bottom).toBeGreaterThanOrEqual(4);
+  expect(Math.abs(top - bottom)).toBeLessThanOrEqual(1);
+  expect(gap).toBeGreaterThanOrEqual(0);
+  expect(gap).toBeLessThanOrEqual(Math.min(top, bottom));
+}
+
 describe("ActivityShelf", () => {
   let harness: ActivityShelfHarness;
 
@@ -471,8 +491,10 @@ describe("ActivityShelf", () => {
       expect(Number.parseFloat(getComputedStyle(state).fontSize)).toBeGreaterThanOrEqual(11);
       const card = requireElement(graph.querySelector(".th-activity-gnode-card"), "node card");
       const cardWidth = Number(card.getAttribute("width"));
-      expect(Number(card.getAttribute("height"))).toBeLessThanOrEqual(40);
-      expect(Number(card.getAttribute("height"))).toBeGreaterThanOrEqual(36);
+      // The phone anatomy stays below the desktop two-row height without
+      // trading away its top/bottom ink spacing for a fixed height ceiling.
+      expect(Number(card.getAttribute("height"))).toBeLessThan(64);
+      for (const node of graph.querySelectorAll(".th-activity-gnode")) expectCompactSpacing(node);
       expect(Number(svg.getAttribute("height"))).toBeLessThan(80);
       const transformOf = (id: string): readonly [number, number] => {
         const value = graph.querySelector(`[data-node="${id}"]`)?.getAttribute("transform") ?? "";
@@ -524,13 +546,13 @@ describe("ActivityShelf", () => {
       const graph = requireElement(harness.container.querySelector(".th-activity-graph"), "dense graph");
       const svg = requireElement(graph.querySelector("svg"), "dense SVG");
       expect(graph.querySelectorAll(".th-activity-gnode")).toHaveLength(64);
-      expect(Number(svg.getAttribute("height"))).toBeLessThanOrEqual(290);
       for (const node of graph.querySelectorAll(".th-activity-gnode")) {
         expect(node.querySelectorAll(".th-activity-glabel")).toHaveLength(1);
         const card = requireElement(node.querySelector(".th-activity-gnode-card"), "dense card");
         const height = Number(card.getAttribute("height"));
-        expect(height).toBeGreaterThanOrEqual(28);
-        expect(height).toBeLessThanOrEqual(32);
+        expect(height).toBeLessThan(64);
+        expect(Number(svg.getAttribute("height"))).toBeGreaterThan(height);
+        expectCompactSpacing(node);
         const state = requireElement(node.querySelector(".th-activity-gstate"), "dense state");
         expect(Number.parseFloat(getComputedStyle(state).fontSize)).toBeGreaterThanOrEqual(11);
         expect(Number(state.getAttribute("y"))).toBeLessThan(height);

@@ -38,9 +38,9 @@ const PANEL_STORAGE_KEY = "th-activity-panel-height";
  *  the default content-sized panel never grows past this, with or without
  *  a measured column clamp. */
 const PANEL_CONTENT_MAX_PX = 280;
-/* Desktop DAGs start at 320px and grow with the user's type setting. A narrow pane can hold the
- * full eight-row graph (356px) plus header and footer in 480px instead of
- * clipping its lower branch rows behind the tabpanel scrollport. */
+/* Desktop DAGs start at 320px and grow with the user's type setting.
+ * Narrow panes allocate up to 480px; taller graphs scroll in the tabpanel
+ * rather than sacrificing the node's inner spacing. */
 const DAG_PANEL_CONTENT_MAX_PX = 320;
 const NARROW_DAG_PANEL_CONTENT_MAX_PX = 480;
 
