@@ -240,6 +240,15 @@ describe("type scale token block", () => {
     expect(tokens).toContain("--th-weight-announce: 590;");
     expect(tokens.match(/--th-weight-[\w-]+:/g) ?? []).toHaveLength(3);
   });
+
+  it("keeps phone DAG chrome capped and graph text fixed without changing the List scale", () => {
+    expect(tokens).toContain("--th-type-dag-compact-details-size: min(var(--th-type-secondary-size), 12px);");
+    expect(tokens).toContain("--th-type-dag-compact-name-size: min(var(--th-type-label-size), 13px);");
+    expect(tokens).toContain("--th-type-dag-compact-counts-size: min(var(--th-type-micro-size), 11.1px);");
+    expect(tokens).toContain("--th-type-dag-compact-graph-title-size: 11px;");
+    expect(tokens).toContain("--th-type-dag-compact-graph-state-size: 11.1px;");
+    expect(tokens).toContain("--th-type-dag-desktop-graph-title-max-size: 12px;");
+  });
 });
 
 describe("stylesheet type contracts", () => {
@@ -252,7 +261,7 @@ describe("stylesheet type contracts", () => {
     for (const { file, css } of componentCss) {
       for (const match of css.matchAll(/font-size\s*:\s*([^;}]+);/g)) {
         const value = (match[1] ?? "").trim();
-        if (!/^var\(--th-type-(?:display|title|input|body|secondary|label|micro)-size\)$/.test(value)) {
+        if (!/^var\(--th-type-(?:display|title|input|body|secondary|label|micro|dag-compact-(?:details|name|counts|graph-state))-size\)$/.test(value)) {
           offenders.push(`${file}: font-size: ${value}`);
         }
       }

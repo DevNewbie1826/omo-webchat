@@ -197,6 +197,16 @@
   --th-type-micro-line: 1.3;
   --th-type-micro-tracking: 0.02em;
 
+  /* The phone DAG chrome follows the user's tier until its compact cap;
+   * graph labels are fixed for a stable, readable three-card overview.
+   * List rows keep the ordinary uncapped type scale. */
+  --th-type-dag-compact-details-size: min(var(--th-type-secondary-size), 12px);
+  --th-type-dag-compact-name-size: min(var(--th-type-label-size), 13px);
+  --th-type-dag-compact-counts-size: min(var(--th-type-micro-size), 11.1px);
+  --th-type-dag-compact-graph-title-size: 11px;
+  --th-type-dag-compact-graph-state-size: 11.1px;
+  --th-type-dag-desktop-graph-title-max-size: 12px;
+
   /* The only three text weights. Fonts without an exact intermediate weight
    * use the browser's nearest available face; components never substitute ad
    * hoc 500/600/700 values. Pretendard Variable covers 45-920 continuously. */

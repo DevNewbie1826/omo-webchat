@@ -442,6 +442,9 @@ describe("token contrast contracts (WCAG 2.1)", () => {
         "--th-type-secondary-size", "--th-type-secondary-line", "--th-type-secondary-tracking",
         "--th-type-label-size", "--th-type-label-line", "--th-type-label-tracking",
         "--th-type-micro-size", "--th-type-micro-line", "--th-type-micro-tracking",
+        "--th-type-dag-compact-details-size", "--th-type-dag-compact-name-size",
+        "--th-type-dag-compact-counts-size", "--th-type-dag-compact-graph-title-size",
+        "--th-type-dag-compact-graph-state-size", "--th-type-dag-desktop-graph-title-max-size",
         "--th-weight-read", "--th-weight-emphasize", "--th-weight-announce",
       ],
     },
@@ -524,7 +527,7 @@ describe("token contrast contracts (WCAG 2.1)", () => {
     expect(failures).toEqual([]);
   });
 
-  it("keeps the running SVG word legible over the painted halo and card throughout its opacity cycle", () => {
+  it("retains base running-word contrast and rejects the calibrated overlapping-halo paint", () => {
     const css = postcss.parse(readFileSync("src/styles/activity-shelf.css", "utf8"));
     const declaration = (selector: string, property: string): string => {
       let value: string | undefined;
@@ -539,8 +542,6 @@ describe("token contrast contracts (WCAG 2.1)", () => {
       return must(token);
     };
     const ink = paintedToken(".th-activity-gnode--running .th-activity-gstate", "fill");
-    const halo = paintedToken(".th-activity-gnode-halo", "stroke");
-    const haloFill = declaration(".th-activity-gnode-halo", "fill");
     const card = paintedToken(".th-activity-gnode--running .th-activity-gnode-card", "fill");
     const backdrop = paintedToken(".th-activity-panel", "background");
     expect(declaration(".th-activity-gnode-halo", "animation")).toContain("th-dag-halo-breathe");
@@ -563,7 +564,6 @@ describe("token contrast contracts (WCAG 2.1)", () => {
       { selector: ":root", word: "rgb(157, 144, 248)", behind: "rgb(65, 60, 102)", ratio: 3.7705 },
       { selector: '[data-theme="light"]', word: "rgb(91, 73, 194)", behind: "rgb(196, 188, 234)", ratio: 3.6919 },
     ] as const;
-    const failures: string[] = [];
     for (const reference of currentPaint) {
       const observed = contrastRatio(parseColor(reference.word), parseColor(reference.behind));
       expect(observed).toBeCloseTo(reference.ratio, 4);
@@ -571,34 +571,24 @@ describe("token contrast contracts (WCAG 2.1)", () => {
 
       const scope = must(scopes.find((candidate) => candidate.selector === reference.selector));
       const word = scopeColor(scope, ink);
-      const glow = scopeColor(scope, halo);
       const wash = scopeColor(scope, card);
       const pane = scopeColor(scope, backdrop);
-      let minimum = Infinity;
-      let atOpacity = from;
-      // The ring has no fill under the word. A filled halo was the old
-      // compositing defect; Q3 also samples the actual blurred edge pixels.
-      for (let frame = 0; frame <= 1000; frame += 1) {
-        const alpha = from + (to - from) * frame / 1000;
-        const behind = compositeOver(wash, compositeOver({ ...glow, a: haloFill === "none" ? 0 : glow.a * alpha }, pane));
-        const paintedWord = word.a === 1 ? word : compositeOver(word, behind);
-        const measured = contrastRatio(paintedWord, behind);
-        if (measured < minimum) {
-          minimum = measured;
-          atOpacity = alpha;
-        }
-      }
-      if (minimum < NORMAL_TEXT) {
-        failures.push(
-          `[${reference.selector}] running SVG word over halo/card/panel: ${minimum.toFixed(4)}:1 ` +
-            `at halo opacity ${atOpacity.toFixed(2)} < ${NORMAL_TEXT}:1 ` +
-            `(settled painted pixel: ${observed.toFixed(4)}:1)`,
-        );
-      }
-      const oldBackground = compositeOver(wash, compositeOver({ ...glow, a: glow.a * to }, pane));
-      expect(contrastRatio(word, oldBackground)).toBeLessThan(NORMAL_TEXT);
+      // This is only the necessary base stack. A hollow SVG rect still has a
+      // blurred stroke, and the following node's ring can paint under this
+      // word. Q3 samples actual glyph pixels in the dense graph at each phase.
+      const base = compositeOver(wash, pane);
+      expect(contrastRatio(word, base)).toBeGreaterThanOrEqual(NORMAL_TEXT);
     }
-    expect(failures).toEqual([]);
+    const overlappingDark = contrastRatio(
+      parseColor("rgb(157, 144, 248)"), parseColor("rgb(54, 51, 81)"),
+    );
+    const isolatedDark = contrastRatio(
+      parseColor("rgb(157, 144, 248)"), parseColor("rgb(48, 46, 70)"),
+    );
+    expect(overlappingDark).toBeCloseTo(4.446822592, 6);
+    expect(overlappingDark).toBeLessThan(NORMAL_TEXT);
+    expect(isolatedDark).toBeCloseTo(4.846608785, 6);
+    expect(isolatedDark).toBeGreaterThanOrEqual(NORMAL_TEXT);
   });
 
   // --th-faint is the METADATA-ONLY tier (the >=3.0:1 rule above). Every

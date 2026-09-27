@@ -1,5 +1,6 @@
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { I18nContext } from "../../i18n";
 import {
   activityState,
   click,
@@ -11,6 +12,7 @@ import {
   type ActivityShelfHarness,
 } from "./ActivityShelf.support";
 import { i18n, requireElement } from "./chatPaneTestHarness";
+import { ActivityShelf } from "./ActivityShelf";
 import { applyActivityEvent, emptyActivityState } from "./activityState";
 
 describe("ActivityShelf", () => {
@@ -331,6 +333,51 @@ describe("ActivityShelf", () => {
     }
   });
 
+  it.each([13, 14, 24])("keeps desktop DAG text readable and five cards visible at font%d", fontSize => {
+    const localizedStatus = vi.spyOn(i18n, "t").mockImplementation(key =>
+      key.startsWith("activity.status.") ? key.slice("activity.status.".length) : key);
+    const clientWidth = vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
+      return this.classList.contains("th-activity-graph") ? 734 : 0;
+    });
+    try {
+      const nodes = Array.from({ length: 6 }, (_, index) => ({
+        id: `n${index}`, prompt: `Node ${index}`,
+        dependsOn: index === 0 ? [] : [`n${index - 1}`], state: "completed",
+      }));
+      const run = makeDag({ status: "completed", nodes,
+        counts: { ...makeDag().counts, total: 6, running: 0, completed: 6 },
+        edges: nodes.slice(1).map((node, index) => ({ from: `n${index}`, to: node.id })) });
+      act(() => {
+        harness.root.render(
+          <I18nContext.Provider value={{ ...i18n, fontSize }}>
+            <ActivityShelf activities={activityState({ dags: [run] })} />
+          </I18nContext.Provider>,
+        );
+      });
+      openShelf(harness.container);
+      click(requireElement(harness.container.querySelector('[data-activity-tab="dag"]'), "DAG tab"));
+      const graph = requireElement(harness.container.querySelector(".th-activity-graph"), "desktop graph");
+      const cards = [...graph.querySelectorAll<SVGRectElement>(".th-activity-gnode-card")];
+      expect(cards).toHaveLength(6);
+      for (const card of cards) {
+        const node = requireElement(card.closest("[data-node]"), "DAG node");
+        for (const title of node.querySelectorAll(".th-activity-glabel")) {
+          const size = Number.parseFloat(getComputedStyle(title).fontSize);
+          expect(size).toBeGreaterThanOrEqual(11);
+          expect(size).toBeLessThanOrEqual(12);
+        }
+        const state = requireElement(node.querySelector(".th-activity-gstate"), "state word");
+        expect(Number.parseFloat(getComputedStyle(state).fontSize)).toBeGreaterThanOrEqual(11);
+      }
+      const fifth = requireElement(cards[4], "fifth card");
+      const x = Number(/translate\(([-\d.]+)/.exec(fifth.parentElement?.parentElement?.getAttribute("transform") ?? "")?.[1]);
+      expect(x + Number(fifth.getAttribute("width"))).toBeLessThanOrEqual(734);
+    } finally {
+      clientWidth.mockRestore();
+      localizedStatus.mockRestore();
+    }
+  });
+
   it("scrolls the first running node into view on the first visible paint, then leaves the reel to the user", () => {
     const frames: FrameRequestCallback[] = [];
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
@@ -437,6 +484,47 @@ describe("ActivityShelf", () => {
       renderShelf(harness, activityState({ dags: [{ ...chain, status: "completed", nodes: chain.nodes.map(node => ({ ...node, state: "completed" })) }] }));
       const after = [...graph.querySelectorAll("[data-node]")].map(node => node.getAttribute("transform"));
       expect(after).toEqual(before);
+    } finally {
+      clientWidth.mockRestore();
+      localizedStatus.mockRestore();
+    }
+  });
+
+  it("uses a single title row for dense phone waves whose labels fit", () => {
+    const localizedStatus = vi.spyOn(i18n, "t").mockImplementation(key =>
+      key.startsWith("activity.status.") ? key.slice("activity.status.".length) : key);
+    const clientWidth = vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
+      return this.classList.contains("th-activity-graph") ? 340 : 0;
+    });
+    try {
+      const nodes = Array.from({ length: 64 }, (_, index) => ({
+        id: `w${Math.floor(index / 8)}n${index % 8}`,
+        prompt: `w${Math.floor(index / 8)}n${index % 8}`,
+        dependsOn: index < 8 ? [] : [`w${Math.floor(index / 8) - 1}n${index % 8}`],
+        state: index >= 8 && index < 16 ? "running" : "completed",
+      }));
+      const waves = Array.from({ length: 8 }, (_, index) => ({
+        index, nodeIds: nodes.slice(index * 8, (index + 1) * 8).map(node => node.id),
+      }));
+      renderShelf(harness, activityState({ dags: [makeDag({
+        nodes, waves, edges: [], counts: { ...makeDag().counts, total: 64, running: 8, completed: 56 },
+      })] }));
+      openShelf(harness.container);
+      click(requireElement(harness.container.querySelector('[data-activity-tab="dag"]'), "DAG tab"));
+      const graph = requireElement(harness.container.querySelector(".th-activity-graph"), "dense graph");
+      const svg = requireElement(graph.querySelector("svg"), "dense SVG");
+      expect(graph.querySelectorAll(".th-activity-gnode")).toHaveLength(64);
+      expect(Number(svg.getAttribute("height"))).toBeLessThanOrEqual(290);
+      for (const node of graph.querySelectorAll(".th-activity-gnode")) {
+        expect(node.querySelectorAll(".th-activity-glabel")).toHaveLength(1);
+        const card = requireElement(node.querySelector(".th-activity-gnode-card"), "dense card");
+        const height = Number(card.getAttribute("height"));
+        expect(height).toBeGreaterThanOrEqual(28);
+        expect(height).toBeLessThanOrEqual(32);
+        const state = requireElement(node.querySelector(".th-activity-gstate"), "dense state");
+        expect(Number.parseFloat(getComputedStyle(state).fontSize)).toBeGreaterThanOrEqual(11);
+        expect(Number(state.getAttribute("y"))).toBeLessThan(height);
+      }
     } finally {
       clientWidth.mockRestore();
       localizedStatus.mockRestore();

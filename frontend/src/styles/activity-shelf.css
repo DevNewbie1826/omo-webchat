@@ -359,6 +359,22 @@ button.th-activity-bar:hover {
     gap: var(--th-space-1);
   }
 
+  /* Keep dense branch rows and the footer in the allocated panel at the
+     largest user font setting; compact DAG chrome has its own readable tier. */
+  .th-activity-panel--dag .th-activity-dag-details {
+    font-size: var(--th-type-dag-compact-details-size);
+  }
+
+  .th-activity-panel--dag .th-activity-dag-name,
+  .th-activity-panel--dag .th-activity-view-btn {
+    font-size: var(--th-type-dag-compact-name-size);
+  }
+
+  .th-activity-panel--dag .th-activity-dag-counts,
+  .th-activity-panel--dag .th-activity-chip {
+    font-size: var(--th-type-dag-compact-counts-size);
+  }
+
   .th-activity-panel--dag .th-activity-dag-complete > .th-activity-dag-toolbar {
     margin-bottom: 0;
   }
@@ -1041,7 +1057,7 @@ button.th-activity-bar:hover {
   fill: var(--th-muted);
   stroke: none;
   font-family: var(--th-font-sans);
-  font-size: var(--th-type-micro-size);
+  font-size: var(--th-type-dag-compact-graph-state-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);

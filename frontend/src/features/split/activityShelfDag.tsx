@@ -7,8 +7,9 @@ import type { ActivityDagNode, ActivityDagRun } from "./activityTypes";
 
 /*
  * Living-graph geometry (v2). Every value is at the default Label tier (13px
- * base) and the card scales with the measured Label font, so the user's type
- * setting grows width, row pitch and the glyph lane together. Each node owns
+ * base) and the card scales with the measured Label font up to the desktop
+ * density limit. Width, row pitch and glyph lane use that same bounded size.
+ * Each node owns
  * one cell of the wave/layer grid, so dense runs (64 nodes) never overlap:
  * GAP_Y keeps stacked cards clear of a running neighbour's halo (HALO_SPREAD
  * plus the blur's visible falloff), GAP_X leaves room for the bezier
@@ -30,9 +31,6 @@ const PADDING = 10;
 /* Phones keep desktop's left-to-right wave columns. Only card dimensions
  * and gaps shrink; the reel owns horizontal overflow. */
 const COMPACT_BREAKPOINT = 640;
-const COMPACT_FONT_PX = 11;
-/* SVG fractional font metrics otherwise resolve an 11px state to 10.9998px. */
-const COMPACT_STATE_FONT_PX = 11.1;
 const COMPACT_MIN_CARD = 104;
 const COMPACT_GAP_X = 8;
 const COMPACT_GAP_Y = 4;
@@ -44,10 +42,9 @@ const COMPACT_RADIUS = 8;
 const COMPACT_ROW_LINE = 1;
 const COMPACT_STATE_LINE = 1;
 const HALO_SPREAD = 2;
-const HALO_BLUR = 4;
+const HALO_BLUR = 3;
 const COMET_BLUR = 1.5;
 const LABEL_TIER = 0.8571;
-const MICRO_TIER = 0.7857;
 /** The measured title font determines card size, row pitch and glyph lane. */
 const DEFAULT_TYPE_PX = 13 * LABEL_TIER;
 
@@ -157,15 +154,18 @@ interface CardGeometry {
  * Label-tier title rows hanging from the glyph lane, and the Micro state word
  * on a fixed bottom row, so a status change never moves anything.
  */
-function cardGeometry(fontPx: number, spacing: CardSpacing): CardGeometry {
+function cardGeometry(fontPx: number, stateFontPx: number, spacing: CardSpacing, titleRows = 2): CardGeometry {
   const { padX, padY, glyphGap } = spacing;
   // Round, not ceil: at the default size the ratio is 1 +/- float noise.
   const width = spacing.width ?? Math.round(NODE_WIDTH * fontPx / DEFAULT_TYPE_PX);
   const row = Math.ceil(fontPx * (spacing.rowLine ?? 1.4));
-  const stateRow = Math.ceil(fontPx * (MICRO_TIER / LABEL_TIER) * (spacing.stateLine ?? 1.4));
-  const height = padY * 2 + row * 2 + stateRow;
+  const stateRow = Math.ceil(stateFontPx * (spacing.stateLine ?? 1.4));
+  // A dense wave of one-line titles needs no empty second title row. Allow
+  // three extra baseline pixels so the title and state ink do not overlap.
+  const stateGap = titleRows === 1 ? 3 : 0;
+  const height = padY * 2 + row * titleRows + stateGap + stateRow;
   const firstBaseline = padY + Math.round(row * 0.75);
-  const stateBaseline = padY + row * 2 + Math.round(stateRow * 0.75);
+  const stateBaseline = padY + row * titleRows + stateGap + Math.round(stateRow * 0.75);
   const r = round(fontPx * 0.4);
   const labelX = Math.ceil(padX + r * 2 + glyphGap);
   return {
@@ -400,6 +400,10 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
   // The card metrics resolve once per render, so a token change lands on the
   // next paint together with the re-measured labels.
   const desktopSpacing = resolveCardSpacing();
+  const typeTokens = getComputedStyle(document.documentElement);
+  const compactFontPx = Number.parseFloat(typeTokens.getPropertyValue("--th-type-dag-compact-graph-title-size")) || 11;
+  const stateFontPx = Number.parseFloat(typeTokens.getPropertyValue("--th-type-dag-compact-graph-state-size")) || 11.1;
+  const maxTitleFontPx = Number.parseFloat(typeTokens.getPropertyValue("--th-type-dag-desktop-graph-title-max-size")) || 12;
   // Width selects only compact card anatomy, not a new graph topology.
   const compact = viewWidth > 0 && viewWidth < COMPACT_BREAKPOINT;
   const spacing: CardSpacing = compact
@@ -413,7 +417,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
         stateLine: COMPACT_STATE_LINE,
       }
     : { ...desktopSpacing, ...(type.width > 0 ? { width: type.width } : {}) };
-  const layoutFontPx = compact ? COMPACT_FONT_PX : type.fontPx;
+  const layoutFontPx = compact ? compactFontPx : type.fontPx;
   useLayoutEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
@@ -430,43 +434,46 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
     let disposed = false;
     const measure = (): void => {
       if (disposed) return;
-      // Match the inline font sizes on the visible compact SVG text. SVG
-      // presentation attributes lose to the stylesheet's type-tier rules.
-      probe.style.fontSize = compact ? `${COMPACT_FONT_PX}px` : "";
+      // Read the theme's title tier before applying the same bounded size to
+      // the probe and visible SVG text. Presentation attributes lose to CSS.
+      probe.style.fontSize = compact ? `${compactFontPx}px` : "";
       const measured = Number.parseFloat(getComputedStyle(probe).fontSize) || fontSize * LABEL_TIER;
-      const fontPx = compact ? COMPACT_FONT_PX : measured;
+      const fontPx = compact ? compactFontPx
+        : Math.max(compactFontPx, Math.min(maxTitleFontPx, measured));
+      probe.style.fontSize = `${fontPx}px`;
       const textWidth = (text: string): number => {
         probe.textContent = text;
         // SVG measurement includes actual fallback glyphs and letter spacing.
         // Non-layout renderers cannot measure SVG text; browser QA owns pixels.
         return typeof probe.getComputedTextLength === "function"
           ? probe.getComputedTextLength()
-          : [...text].reduce((sum, glyph) => sum + fontPx * (/[^\u0000-\u007f]/.test(glyph) ? 1 : 0.62), 0);
+          : [...text].reduce((sum, glyph) => sum
+            + Number.parseFloat(probe.style.fontSize) * (/[^\u0000-\u007f]/.test(glyph) ? 1 : 0.62), 0);
       };
       const pairs: [string, string][] = JSON.parse(labelKey);
-      const base = cardGeometry(fontPx, {
+      const base = cardGeometry(fontPx, stateFontPx, {
         ...spacing,
         width: compact ? COMPACT_MIN_CARD : Math.round(NODE_WIDTH * fontPx / DEFAULT_TYPE_PX),
       });
       // Measure every localized state, rather than the current snapshot:
       // state flips must never move a card or clip its status word.
       const states = ["pending", "scheduled", "blocked", "running", "completed", "failed", "error", "cancelled", "canceled", "skipped"];
-      if (compact) probe.style.fontSize = `${COMPACT_STATE_FONT_PX}px`;
+      probe.style.fontSize = `${stateFontPx}px`;
       const stateWidth = Math.max(...states.map(state => textWidth(statusLabel(t, state))));
-      if (compact) probe.style.fontSize = `${COMPACT_FONT_PX}px`;
+      probe.style.fontSize = `${fontPx}px`;
       const titleWidth = Math.max(0, ...pairs.map(([, text]) => textWidth(text) / 2 + fontPx * 2));
       const width = Math.max(base.width, Math.ceil(base.labelX + spacing.padX + Math.max(stateWidth, titleWidth) + 2));
-      const { labelWidth } = cardGeometry(fontPx, { ...spacing, width });
+      const { labelWidth } = cardGeometry(fontPx, stateFontPx, { ...spacing, width });
       const labels = new Map(pairs.map(([id, text]) => [id, splitNodeLabel(text, labelWidth, labelWidth, textWidth)]));
       probe.textContent = "";
-      const next: GraphType = { fontPx: measured, width, labels };
+      const next: GraphType = { fontPx, width, labels };
       setType(previous => previous.fontPx === next.fontPx && previous.width === next.width
         && JSON.stringify([...previous.labels]) === JSON.stringify([...next.labels]) ? previous : next);
     };
     measure();
     void document.fonts?.ready.then(measure);
     return () => { disposed = true; probe.style.fontSize = ""; };
-  }, [font, fontSize, lang, labelKey, active, compact, viewWidth, t]);
+  }, [font, fontSize, lang, labelKey, active, compact, viewWidth, t, compactFontPx, stateFontPx, maxTitleFontPx]);
   useLayoutEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
@@ -553,10 +560,12 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
       observer?.disconnect();
     };
   }, []);
-  const geometry = cardGeometry(layoutFontPx, spacing);
+  const layers = dagLayers(run);
+  const denseOneLine = compact && Math.max(0, ...layers.map(layer => layer.length)) >= 4
+    && run.nodes.every(node => (type.labels.get(node.id) ?? [node.label ?? node.prompt]).length === 1);
+  const geometry = cardGeometry(layoutFontPx, stateFontPx, spacing, denseOneLine ? 1 : 2);
   const { width: nodeWidth, height: nodeHeight, row, glyph } = geometry;
   const { radius } = spacing;
-  const layers = dagLayers(run);
   const positions = new Map<
     string,
     { readonly x: number; readonly y: number; readonly layer: number }
@@ -750,7 +759,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
                   <text
                     key={lineIndex}
                     className="th-activity-glabel"
-                    style={compact ? { fontSize: `${COMPACT_FONT_PX}px` } : undefined}
+                    style={{ fontSize: `${layoutFontPx}px` }}
                     x={geometry.labelX}
                     y={geometry.firstBaseline + lineIndex * row}
                     clipPath={`url(#${rowClipId(clipIdPrefix, runIndex, lineIndex)})`}
@@ -760,7 +769,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
                 ))}
                 <text
                   className="th-activity-gstate"
-                  style={compact ? { fontSize: `${COMPACT_STATE_FONT_PX}px` } : undefined}
+                  style={{ fontSize: `${stateFontPx}px` }}
                   x={geometry.labelX}
                   y={geometry.stateBaseline}
                   clipPath={`url(#${rowClipId(clipIdPrefix, runIndex, 2)})`}
