@@ -105,9 +105,10 @@ test('compact stages keep exact lean REST and WS counts without rich live topolo
       globalThis.fetch = async (path, init) => {
         assert.equal(path, '/api/sessions/live'); assert.equal(init.method, 'GET');
         const { type, sessionId, durableSessionId, overflow, ...lean } = liveSummary(stage);
-        return Response.json({ sessions: [lean] });
+        return Response.json({ instanceId: 'dag-summary-instance', sessions: [lean] });
       };
-      const [parsed] = await listLiveSummarySessions(new AbortController().signal);
+      const { sessions: [parsed], instanceId } = await listLiveSummarySessions(new AbortController().signal);
+      assert.equal(instanceId, 'dag-summary-instance');
       assert.equal(parsed.dag, null); assert.equal(parsed.task, null);
       assert.deepEqual(parsed.lean, { last_activity_ms: frame.last_activity_ms, running: frame.running,
         done: frame.done, dag_done: frame.dag_done, dag_total: frame.dag_total,
@@ -164,7 +165,7 @@ test('rich identity fixtures preserve literal empty IDs on attached DAG while le
         const { type, sessionId, durableSessionId, overflow, ...lean } = liveSummary(stage);
         return Response.json({ sessions: [lean] });
       };
-      const [rest] = await listLiveSummarySessions(new AbortController().signal);
+      const { sessions: [rest] } = await listLiveSummarySessions(new AbortController().signal);
       const ws = parseChatServerFrame(JSON.parse(JSON.stringify(liveSummary(stage))));
       assert.deepEqual(rest.lean.running, ws.running);
       assert.equal(rest.lean.last_line, marker);
@@ -197,7 +198,7 @@ test('canceled retained-running input survives actual REST, WS and DAG parsers b
         const { type, sessionId, durableSessionId, overflow, ...lean } = liveSummary(stage);
         return Response.json({ sessions: [lean] });
       };
-      const [rest] = await listLiveSummarySessions(new AbortController().signal);
+      const { sessions: [rest] } = await listLiveSummarySessions(new AbortController().signal);
       const ws = parseChatServerFrame(JSON.parse(JSON.stringify(liveSummary(stage))));
       assert.deepEqual(rest.lean.running, ws.running);
       assert.equal(rest.lean.last_line, marker);
