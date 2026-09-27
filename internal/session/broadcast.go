@@ -62,6 +62,7 @@ type replayDedupDecider func(data any, msgSeq uint64) (entryIDs []string, matche
 
 type subscription struct {
 	sub              Subscriber
+	onDemandHistory  bool
 	q                chan queuedFrame
 	stopCh           chan struct{}
 	exited           chan struct{}
@@ -85,15 +86,19 @@ type subscription struct {
 }
 
 type overflowTransfer struct {
-	frames     []Frame
-	suffix     []Frame
-	reserved   int
-	finalized  bool
-	overflowed bool
-	consumed   bool
+	frames          []Frame
+	suffix          []Frame
+	reserved        int
+	finalized       bool
+	overflowed      bool
+	consumed        bool
+	onDemandHistory bool
 }
 
 func (t *overflowTransfer) append(f Frame) {
+	if f.Kind == FrameEntryAppended && !t.onDemandHistory {
+		return
+	}
 	size := len(t.frames)
 	if !t.finalized {
 		size = t.reserved + len(t.suffix)
@@ -409,6 +414,9 @@ func (x *subscription) enqueue(f Frame) bool {
 		return false
 	default:
 	}
+	if f.Kind == FrameEntryAppended && !x.onDemandHistory {
+		return true
+	}
 	x.replayMu.Lock()
 	if x.replaying {
 		if len(x.pendingLive) >= cap(x.q) {
@@ -544,6 +552,13 @@ func (b *broadcaster) attachWithError(sub Subscriber, size int, initial []Frame)
 	if sub == nil {
 		return 0, nil, func() {}, nil
 	}
+	// Negotiation belongs to this subscription. Resolve the capability before
+	// taking b.mu: transport subscribers can acquire their connection lock.
+	onDemandHistory := false
+	if capable, ok := sub.(OnDemandHistorySubscriber); ok {
+		onDemandHistory = capable.OnDemandHistory()
+	}
+	initial = filterEntryAppended(initial, onDemandHistory)
 	var owned *SubscriberOverflowTransfer
 	if owner, ok := sub.(overflowTransferOwner); ok {
 		owned = owner.SubscriberOverflowTransfer()
@@ -572,14 +587,14 @@ func (b *broadcaster) attachWithError(sub Subscriber, size int, initial []Frame)
 			} else {
 				delete(b.overflowTransfers, key)
 				transfer.consumed = true
-				initial = mergeOverflowTransfer(initial, transfer.frames)
+				initial = mergeOverflowTransfer(initial, filterEntryAppended(transfer.frames, onDemandHistory))
 				if size < len(initial) {
 					size = len(initial)
 				}
 			}
 		}
 	}
-	x := &subscription{sub: sub, q: make(chan queuedFrame, size), stopCh: make(chan struct{}), exited: make(chan struct{}), initialDone: make(chan struct{}), initialRemaining: len(initial), cleanupDone: make(chan struct{})}
+	x := &subscription{sub: sub, onDemandHistory: onDemandHistory, q: make(chan queuedFrame, size), stopCh: make(chan struct{}), exited: make(chan struct{}), initialDone: make(chan struct{}), initialRemaining: len(initial), cleanupDone: make(chan struct{})}
 	x.retire = func(reason error) { b.retire(id, reason, true) }
 	b.subs[id] = x
 	accepted := !transferRejected
@@ -616,6 +631,19 @@ func (b *broadcaster) attachWithError(sub Subscriber, size int, initial []Frame)
 		return id, x, detach, ErrSubscriberOverflow
 	}
 	return id, x, detach, nil
+}
+
+func filterEntryAppended(frames []Frame, onDemandHistory bool) []Frame {
+	if onDemandHistory {
+		return frames
+	}
+	filtered := make([]Frame, 0, len(frames))
+	for _, frame := range frames {
+		if frame.Kind != FrameEntryAppended {
+			filtered = append(filtered, frame)
+		}
+	}
+	return filtered
 }
 
 func mergeOverflowTransfer(initial, transfer []Frame) []Frame {
@@ -740,7 +768,7 @@ func (b *broadcaster) publishExcept(f Frame, except *subscription) {
 					if b.overflowTransfers == nil {
 						b.overflowTransfers = make(map[string]*overflowTransfer)
 					}
-					transfer := &overflowTransfer{}
+					transfer := &overflowTransfer{onDemandHistory: x.onDemandHistory}
 					if replaying {
 						transfer.reserved = len(replayFrames)
 					} else {
