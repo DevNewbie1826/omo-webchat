@@ -37,17 +37,9 @@
   white-space: nowrap;
 }
 
-/* The heading count totals RUNNING agents, so it wears the same running
-   state treatment as the chips: accent ink on the matching tint. */
+/* Share the card's running pill; only the heading's far-edge alignment differs. */
 .th-sidebar-live-count {
   margin-left: auto;
-  min-width: calc(var(--th-type-micro-size) * var(--th-type-micro-line) + 2 * var(--th-space-0-5));
-  padding: var(--th-space-0-5) var(--th-space-1);
-  border-radius: var(--th-radius-pill);
-  background: var(--th-accent-bg);
-  color: var(--th-accent-ink);
-  font-variant-numeric: tabular-nums;
-  text-align: center;
 }
 
 .th-sidebar-live-list {
