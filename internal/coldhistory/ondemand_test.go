@@ -443,6 +443,69 @@ func TestIndexCacheInvalidatesOnAppend(t *testing.T) {
 	}
 }
 
+func TestIndexCacheRejectsSameSizeRestoredMtimeRewrite(t *testing.T) {
+	path := writeLinearBranch(t, 5)
+	original, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Stream(context.Background(), path, Options{}, func(Metadata, Page) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := strings.Replace(string(contents), `"id":"e-4"`, `"id":"x-4"`, 1)
+	if replacement == string(contents) {
+		t.Fatal("fixture has no leaf to replace")
+	}
+	if err := os.WriteFile(path, []byte(replacement), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, original.ModTime(), original.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	rewritten, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(original, rewritten) || original.Size() != rewritten.Size() || !original.ModTime().Equal(rewritten.ModTime()) {
+		t.Fatalf("rewrite did not preserve cached path/inode/size/mtime: old=%+v new=%+v", original, rewritten)
+	}
+
+	metadata, err := Stream(context.Background(), path, Options{}, func(Metadata, Page) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.LeafID != "x-4" {
+		t.Fatalf("leaf after same-identity rewrite = %q, want x-4", metadata.LeafID)
+	}
+}
+
+func TestIndexCacheRespectsIndexBudgetsAfterWarm(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts Options
+		want error
+	}{
+		{name: "index bytes", opts: Options{IndexBytes: 1}, want: ErrIndexBudgetExceeded},
+		{name: "line bytes", opts: Options{MaxLineBytes: 64, PageBytes: 64}, want: ErrLineTooLong},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeLinearBranch(t, 5)
+			if _, err := Stream(context.Background(), path, Options{}, func(Metadata, Page) error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Stream(context.Background(), path, tc.opts, func(Metadata, Page) error { return nil })
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("cached stream error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestIndexCacheEvictsLeastRecentlyUsed(t *testing.T) {
 	paths := make([]string, DefaultIndexCacheFiles+1)
 	for i := range paths {

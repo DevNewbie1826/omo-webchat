@@ -2,8 +2,12 @@
 
 package coldhistory
 
-import "os"
+import (
+	"os"
+	"time"
+)
 
-// statIdentity has no portable kernel identity off unix; size and mtime
-// still fence staleness.
-func statIdentity(os.FileInfo) (device, inode uint64) { return 0, 0 }
+// Non-Unix files use a content digest instead of kernel change time.
+func statIdentity(os.FileInfo) (device, inode uint64, changeTime time.Time) {
+	return 0, 0, time.Time{}
+}

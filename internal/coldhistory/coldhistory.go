@@ -15,6 +15,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -166,8 +167,23 @@ func withSessionFile(ctx context.Context, sessionPath string, opts normalizedOpt
 		return Metadata{}, fmt.Errorf("coldhistory: stat %q: %w", sessionPath, err)
 	}
 	identity := newFileIdentity(info)
+	if !opts.noCache && identity.changeTime.IsZero() {
+		// Without a kernel change time, identical size/mtime (including a
+		// restored mtime) cannot prove that the indexed contents are current.
+		if err := ctx.Err(); err != nil {
+			return Metadata{}, err
+		}
+		hash := sha256.New()
+		if _, err := io.Copy(hash, f); err != nil {
+			return Metadata{}, fmt.Errorf("coldhistory: hash %q: %w", sessionPath, err)
+		}
+		copy(identity.digest[:], hash.Sum(nil))
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return Metadata{}, fmt.Errorf("coldhistory: seek %q: %w", sessionPath, err)
+		}
+	}
 	if !opts.noCache {
-		if metadata, branch, ok := sessionIndexCache.get(sessionPath, identity); ok {
+		if metadata, branch, ok := sessionIndexCache.get(sessionPath, identity, opts); ok {
 			metadata, err := read(metadata, branch, f)
 			if err != nil {
 				return Metadata{}, fmt.Errorf("coldhistory: read %q: %w", sessionPath, err)
@@ -180,7 +196,10 @@ func withSessionFile(ctx context.Context, sessionPath string, opts normalizedOpt
 		return Metadata{}, fmt.Errorf("coldhistory: read %q: %w", sessionPath, err)
 	}
 	if !opts.noCache {
-		sessionIndexCache.put(sessionPath, identity, metadata, branch)
+		sessionIndexCache.put(cachedIndex{
+			path: sessionPath, identity: identity, metadata: metadata, branch: branch,
+			maxLineBytes: opts.maxLineBytes, indexBytes: opts.indexBytes,
+		})
 	}
 	metadata, err = read(metadata, branch, f)
 	if err != nil {
