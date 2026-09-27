@@ -158,8 +158,9 @@ attachments, and a 24px modal panel inset by 12px gets 12px inner radii.
 
 ## Type scale
 
-`--th-font-size` is the user-controlled base for the entire scale. Define the
-size, line-height, and tracking values below once in `tokens.css` as
+`--th-font-size` is the user-controlled base for the type tiers below, except
+for compact phone DAG Graph node titles and state words (fixed at 11px). Define
+the size, line-height, and tracking values below once in `tokens.css` as
 `--th-type-<tier>-size`, `--th-type-<tier>-line`, and
 `--th-type-<tier>-tracking`; component styles consume those tokens as a complete
 style. The three allowed text weights are `--th-weight-read: 400`,
@@ -183,8 +184,9 @@ while the `--th-font-size: 14px` declared in `tokens.css` is only the
 pre-hydration fallback. The approved 14px-vs-15px prose comparison resolves
 through the tier system, not a base bump: raising the fallback or the app
 default would resize every chrome surface at once and fight the user's own
-scaling. A 15px user setting must move the entire hierarchy, which the
-scaling evidence scenario pins.
+scaling. A 15px user setting must move every type tier, including the DAG List
+view and desktop/tablet Graph text, except the fixed 11px compact phone Graph
+titles and state words. The scaling evidence scenario pins the tier behavior.
 
 The sans stack is Pretendard Variable, vendored as the dynamic-subset woff2
 build with `font-display: swap`. Pretendard carries Korean and Latin in one
@@ -196,9 +198,11 @@ stack is restricted to code, paths, tool input and output, and identifiers. It
 never sets UI labels, counts, badges, buttons, or chrome. No UI label uses
 `text-transform: uppercase`; hierarchy comes from weight, size, and colour,
 never from case. Component CSS must use a named tier for every text
-`font-size`, never a raw `px`, `rem`, or `em` font size. This rule makes a change
-to `--th-font-size` move the full hierarchy rather than only inherited body
-text.
+`font-size`, never a raw `px`, `rem`, or `em` font size, except the compact phone
+DAG Graph node titles and state words, fixed at 11px regardless of the user's
+font-size setting. This rule makes a change to `--th-font-size` move the type
+tiers rather than only inherited body text; the compact Graph is an
+at-a-glance overview, and the setting-scaled List is its readable alternative.
 
 Major surfaces use the scale as follows:
 
@@ -472,8 +476,13 @@ Choose a tested foreground/background token pair instead.
 - Activity DAG view: graph is the default; the List mode remains available
   inside the DAG tab and the choice survives tab switches and open/close
   toggles. Nodes
-  reuse the parsed waves/layering and size their boxes/row pitch to the user's
-  type setting. Actual SVG glyph widths determine title wrapping without
+  reuse the parsed waves/layering. Desktop/tablet Graph text follows the user's
+  font-size setting and stays at least 11px at every supported size; its boxes
+  and row pitch follow that text. The List view also follows the user's font
+  setting. Compact phone Graph titles and state words are fixed at 11px
+  regardless of that setting so the at-a-glance overview keeps at least three
+  whole nodes visible; its boxes and row pitch use compact geometry. Actual SVG
+  glyph widths determine title wrapping without
   clipping or ellipsizing the title or state word; the full prompt also
   stays in the `<title>`. Nodes expose their state as visible text plus a
   non-colour glyph. Completed nodes use `--th-success-bg` with a green glyph
@@ -490,13 +499,17 @@ Choose a tested foreground/background token pair instead.
   paint; its footer expander remains completely inside the panel. On
   phones the graph keeps this SAME left-to-right desktop structure: ONE
   forward flow, including branches, with no row wrap, snake or zigzag
-  return. Only the graph reel scrolls horizontally. At phone width,
+  return. The graph reel owns horizontal scrolling only and never scrolls
+  vertically. At phone width,
   compact node-card height and row/column gaps let the graph's full
-  vertical extent, including branch rows, fit the panel without vertical
-  scrolling. At least three WHOLE nodes are visible on first paint at
-  390px; node titles and state words remain at least 11px and are NEVER
-  clipped or ellipsized. Compact sizing reduces padding and gaps, not
-  content visibility. Desktop density and graph structure are not changed
+  vertical extent, including branch rows, fit the panel without any vertical
+  scrollport through its ancestors. At desktop/tablet widths, a dense graph
+  taller than the shelf may scroll vertically inside its tabpanel, which
+  retains its own scroll state; every card remains reachable and no
+  non-scrolling ancestor clips it. At least three WHOLE nodes are visible on
+  first paint at 390px; phone Graph node titles and state words stay fixed at
+  11px and are NEVER clipped or ellipsized. Compact sizing reduces padding and
+  gaps, not content visibility. Desktop density and graph structure are not changed
   by the phone treatment.
   Edges are directional (arrowhead markers).
   An edge leaving a completed source is fulfilled: its neutral edge and
@@ -603,8 +616,8 @@ implicitly because an ancestor does.
 | Chat pane | scroll-body shell | the transcript is the sole vertical scroller; header, status row, and composer are fixed bands; banners, queue, and shelves scroll in the content shell between header and composer only when fixed bands exceed the column |
 | Reading column | content limiter | a `min(760px, 100%)` constraint on message content, never a scroller itself |
 | Split panes | independent panes | each pane owns its transcript scroll independently; no cross-pane scroll sharing |
-| Activity shelf | supporting pane | each tabpanel keeps its own scroll state and stays mounted; hidden panels scroll nothing |
-| DAG graph | graph reel | the graph container alone owns horizontal scroll over one left-to-right flow; at phone width the complete vertical graph, including branches, fits without a vertical scrollport; the vertical page scroll never moves the graph |
+| Activity shelf | supporting pane | each tabpanel keeps its own scroll state and stays mounted; hidden panels scroll nothing; a desktop/tablet dense DAG taller than the shelf may scroll vertically in its tabpanel so every card is reachable, never clipped by a non-scrolling ancestor |
+| DAG graph | graph reel | the graph reel owns horizontal scroll only over one left-to-right flow and never scrolls vertically; at phone width the complete graph, including branch rows, fits without any vertical scrollport; the vertical page scroll never moves the graph |
 | Palettes, menus, modals, docks | imposter | overlay surfaces render above the region that summoned them, trap their own internal scroll, and never propagate wheel events into the transcript beneath |
 
 ## Pane focus and session routing
