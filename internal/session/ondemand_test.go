@@ -104,6 +104,52 @@ func TestOnDemandAttachSendsTailAndTerminalWithoutWarmPages(t *testing.T) {
 	}
 }
 
+func TestOnDemandAttachBoundsFreshTailByEntryBytes(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		count    int
+		padding  int
+		wantTail int
+	}{
+		{name: "300 KiB entries", count: 8, padding: 300 << 10, wantTail: 3},
+		{name: "entry over 1 MiB", count: 2, padding: 2 << 20, wantTail: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Given a durable branch whose newest entries exceed one MiB together.
+			d := newDaemon(t)
+			store := newMemStore()
+			mgr := testManager(t, dial(t, d), store, 64)
+			path, leaf := writeProgressiveFixture(t, t.TempDir(), "wide.jsonl", tc.count, tc.padding)
+
+			// When a v4 client opens without a resume cursor.
+			sess, sub, detach := attachOnDemandTail(t, d, mgr, store, "wide", path, leaf, nil)
+			defer detach()
+			pages, _ := collectMarkedHydration(t, sess, sub.capabilityRecorder)
+
+			// Then only the newest byte-bounded range precedes the terminal.
+			var ids []string
+			totalBytes := 0
+			for _, page := range pages[:len(pages)-1] {
+				ids = append(ids, pageEntryIDs(t, page)...)
+				for _, raw := range page.Entries {
+					totalBytes += len(raw)
+				}
+			}
+			assertIDs(t, ids, wantIDs(tc.count-tc.wantTail, tc.count))
+			if totalBytes > 1<<20 && tc.wantTail != 1 {
+				t.Fatalf("tail entry JSON = %d bytes, want at most 1 MiB", totalBytes)
+			}
+			if tc.wantTail == 1 && totalBytes <= 1<<20 {
+				t.Fatalf("oversized entry = %d bytes, want over 1 MiB", totalBytes)
+			}
+			terminal := pages[len(pages)-1]
+			if !terminal.Final || terminal.HistoryComplete == nil || *terminal.HistoryComplete {
+				t.Fatalf("partial tail terminal = %+v, want historyComplete=false", terminal)
+			}
+		})
+	}
+}
+
 func TestOnDemandResumeUsesCursorFirstIndexForCompletion(t *testing.T) {
 	for _, tc := range []struct {
 		name, first string

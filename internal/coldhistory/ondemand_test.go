@@ -107,6 +107,34 @@ func TestStreamTailFirstSkipWarmEmitsTailOnly(t *testing.T) {
 	})
 }
 
+func TestStreamTailFirstFreshTailUsesEntryJSONByteBound(t *testing.T) {
+	// Given a branch with a tail whose last two JSON entries exactly fit.
+	path := writePaddedLinearBranch(t, 4, 128)
+	budget := len(paddedEntryLine(2, 128)) + len(paddedEntryLine(3, 128))
+
+	// When selecting a fresh tail under both the entry and byte bounds.
+	var pages []Page
+	_, err := StreamTailFirst(context.Background(), path, Options{SkipWarm: true, TailBytes: budget}, 60, 100,
+		func(_ Metadata, page Page) error {
+			pages = append(pages, page)
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Then the exact JSON size is eligible, and its absolute start is not root.
+	if len(pages) != 1 || pages[0].Start != 2 || !pages[0].Final {
+		t.Fatalf("bounded tail pages = %s, want one final page starting at 2", summarizePages(t, pages))
+	}
+	if got := pageIDs(t, pages); fmt.Sprint(got) != fmt.Sprint([]string{"e-2", "e-3"}) {
+		t.Fatalf("bounded tail ids = %v, want the last two", got)
+	}
+	if got := len(pages[0].Entries[0]) + len(pages[0].Entries[1]); got != budget {
+		t.Fatalf("entry JSON = %d bytes, want exact budget %d", got, budget)
+	}
+}
+
 func TestStreamTailFirstSkipWarmResumeRangeOnly(t *testing.T) {
 	path := writeLinearBranch(t, 430)
 	cursor := ResumeCursor{SessionID: "session-1", FirstEntryID: "e-140", LastEntryID: "e-299", HistoryComplete: false}

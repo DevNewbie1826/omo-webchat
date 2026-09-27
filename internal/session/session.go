@@ -34,6 +34,7 @@ const (
 	// hydrationTailBudget bounds the branch entries streamed before the
 	// terminal live-tail page when the client negotiated progressive history.
 	hydrationTailBudget = 60
+	hydrationTailBytes  = 1 << 20
 	// hydrationWarmChunk bounds each backward head page that warms the
 	// earlier branch after the terminal page.
 	hydrationWarmChunk = 100
@@ -2417,12 +2418,16 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 	}
 	var err error
 	if progressive {
-		_, err = streamTailFirstSessionHistory(ctx, sessionPath, coldhistory.Options{
+		options := coldhistory.Options{
 			ResolveResume: resolveResume,
 			Resume:        resume,
 			PageEntries:   entriesPageMaxCount,
 			SkipWarm:      onDemand,
-		}, hydrationTailBudget, hydrationWarmChunk, streamCallback)
+		}
+		if onDemand {
+			options.TailBytes = hydrationTailBytes
+		}
+		_, err = streamTailFirstSessionHistory(ctx, sessionPath, options, hydrationTailBudget, hydrationWarmChunk, streamCallback)
 	} else {
 		_, err = streamSessionHistory(ctx, sessionPath, coldhistory.Options{
 			PageEntries: entriesPageMaxCount,

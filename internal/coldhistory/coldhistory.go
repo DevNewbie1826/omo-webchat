@@ -73,7 +73,8 @@ type ResumeCursor struct {
 // Options bounds disk reads, individual JSONL records, the aggregate retained
 // index, and emitted pages. Zero fields select the defaults. MaxLineBytes may
 // not exceed PageBytes, so a successful stream never emits a page larger than
-// PageBytes.
+// PageBytes. TailBytes is separate from PageBytes: a single entry larger than
+// the tail budget remains eligible without lowering the record read limit.
 type Options struct {
 	// ResolveResume can map an engine-only tip onto the validated disk leaf.
 	ResolveResume func(Metadata) (*ResumeCursor, error)
@@ -82,7 +83,11 @@ type Options struct {
 	MaxLineBytes  int
 	PageBytes     int
 	PageEntries   int
-	IndexBytes    int64
+	// TailBytes limits the aggregate entry JSON in a fresh StreamTailFirst
+	// tail. Zero leaves the count-only tail unchanged; resume ranges and warm
+	// pages are not truncated.
+	TailBytes  int
+	IndexBytes int64
 	// SkipWarm stops StreamTailFirst after its newest range: with an accepted
 	// resume cursor only the entries after the cursor are emitted, otherwise
 	// only the tail. Backward warm chunks are never emitted; the last emitted
@@ -308,6 +313,7 @@ type normalizedOptions struct {
 	maxLineBytes  int
 	pageBytes     int
 	pageEntries   int
+	tailBytes     int
 	indexBytes    int64
 	skipWarm      bool
 	noCache       bool
@@ -321,6 +327,7 @@ func normalizeOptions(options Options) (normalizedOptions, error) {
 		maxLineBytes:  options.MaxLineBytes,
 		pageBytes:     options.PageBytes,
 		pageEntries:   options.PageEntries,
+		tailBytes:     options.TailBytes,
 		indexBytes:    options.IndexBytes,
 		skipWarm:      options.SkipWarm,
 		noCache:       options.NoCache,
@@ -342,6 +349,9 @@ func normalizeOptions(options Options) (normalizedOptions, error) {
 	}
 	if opts.chunkBytes < 1 || opts.maxLineBytes < 1 || opts.pageBytes < 1 || opts.pageEntries < 1 || opts.indexBytes < 1 {
 		return normalizedOptions{}, fmt.Errorf("%w: all bounds must be positive", ErrInvalidOptions)
+	}
+	if opts.tailBytes < 0 {
+		return normalizedOptions{}, fmt.Errorf("%w: TailBytes must not be negative", ErrInvalidOptions)
 	}
 	if opts.maxLineBytes > opts.pageBytes {
 		return normalizedOptions{}, fmt.Errorf("%w: MaxLineBytes (%d) exceeds PageBytes (%d)", ErrInvalidOptions, opts.maxLineBytes, opts.pageBytes)
@@ -559,6 +569,24 @@ func emitBranch(ctx context.Context, file io.ReadSeeker, opts normalizedOptions,
 func emitTailFirst(ctx context.Context, file io.ReadSeeker, opts normalizedOptions, metadata Metadata, branch []entryRef, tailEntries, warmChunk int, emit func(Metadata, Page) error) error {
 	n := len(branch)
 	tailStart := max(0, n-tailEntries)
+	if opts.tailBytes > 0 {
+		used := 0
+		for i := n - 1; i >= tailStart; i-- {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			ref := branch[i]
+			raw, err := readRecord(file, ref, opts.chunkBytes)
+			if err != nil {
+				return lineError(ErrCorruptLine, ref.line, ref.offset, err)
+			}
+			if i < n-1 && used+len(raw) > opts.tailBytes {
+				tailStart = i + 1
+				break
+			}
+			used += len(raw)
+		}
+	}
 	if err := emitRange(ctx, file, opts, metadata, branch, tailStart, n, false, tailStart == 0 || opts.skipWarm, emit); err != nil {
 		return err
 	}

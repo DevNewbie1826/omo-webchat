@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -198,6 +199,82 @@ func TestPreviewUsesActiveBranch(t *testing.T) {
 	}
 	if got, want := wirePageIDs(t, wire[0]), []string{"entry-0000", "entry-0001", "branch-tip"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("active branch = %v, want %v", got, want)
+	}
+}
+
+func TestPreviewBoundsFreshTailByEntryBytes(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		count    int
+		padding  int
+		wantTail int
+	}{
+		{name: "300 KiB entries", count: 8, padding: 300 << 10, wantTail: 3},
+		{name: "entry over 1 MiB", count: 1, padding: 2 << 20, wantTail: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Given a saved chat with a small root and a large active branch tail.
+			h := newHistoryBridgeHarness(t, historyE2ETestBudget)
+			rec := savePreviewChat(t, h, 1)
+			file, err := os.OpenFile(rec.SessionFile, os.O_APPEND|os.O_WRONLY, 0600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parent := "entry-0000"
+			for i := 1; i <= tc.count; i++ {
+				id := fmt.Sprintf("wide-%04d", i)
+				if _, err := fmt.Fprintf(file, `{"type":"message","id":%q,"parentId":%q,"message":{"role":"user","content":"%s"}}`+"\n",
+					id, parent, strings.Repeat("x", tc.padding)); err != nil {
+					file.Close()
+					t.Fatal(err)
+				}
+				parent = id
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+			release := h.daemon.BlockHandler(omorpc.CmdOpenSession)
+			t.Cleanup(release)
+			socket, frames := connectHistoryVersion(t, h, onDemandHistoryVersion, 0)
+
+			// When v4 opens without committed-history anchors.
+			writeClient(t, socket, wscontract.ChatCreateFrame{Type: "chat.create", WsID: rec.WorkspaceID, ChatID: rec.ID})
+			preview := frames.nextMatching(t, "entries", historyE2ETestBudget, func(frame map[string]any) bool {
+				return frame["segment"] == "preview"
+			})
+
+			// Then the provisional preview contains only the newest range.
+			if preview["historyComplete"] != false {
+				t.Fatalf("preview historyComplete = %v, want false", preview["historyComplete"])
+			}
+			var entries []json.RawMessage
+			encoded, err := json.Marshal(preview["entries"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(encoded, &entries); err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != tc.wantTail {
+				t.Fatalf("preview entries = %d, want %d", len(entries), tc.wantTail)
+			}
+			totalBytes := 0
+			for _, raw := range entries {
+				totalBytes += len(raw)
+			}
+			if totalBytes > 1<<20 && tc.wantTail != 1 {
+				t.Fatalf("preview entry JSON = %d bytes, want at most 1 MiB", totalBytes)
+			}
+			if tc.wantTail == 1 && totalBytes <= 1<<20 {
+				t.Fatalf("oversized preview entry = %d bytes, want over 1 MiB", totalBytes)
+			}
+			ids := wirePageIDs(t, preview)
+			for i, id := range ids {
+				if want := fmt.Sprintf("wide-%04d", tc.count-tc.wantTail+i+1); id != want {
+					t.Fatalf("preview id %d = %q, want %q", i, id, want)
+				}
+			}
+		})
 	}
 }
 

@@ -30,7 +30,7 @@ func (c *connection) previewHistory(ctx context.Context, f *wscontract.ChatCreat
 	defer cancel()
 	entries := make([]json.RawMessage, 0, coldhistory.DefaultTailEntries)
 	complete := false
-	metadata, err := streamPreviewHistory(ctx, rec.SessionFile, coldhistory.Options{SkipWarm: true},
+	metadata, err := streamPreviewHistory(ctx, rec.SessionFile, coldhistory.Options{SkipWarm: true, TailBytes: 1 << 20},
 		coldhistory.DefaultTailEntries, 0, func(meta coldhistory.Metadata, page coldhistory.Page) error {
 			if meta.Header.ID != rec.DurableSessionID {
 				return coldhistory.ErrInvalidHeader
