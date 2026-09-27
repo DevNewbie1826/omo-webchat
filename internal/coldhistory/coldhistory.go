@@ -4,7 +4,11 @@
 // session header is followed by entries linked through id and parentId. The
 // final entry in file order is the active leaf. Stream indexes only graph
 // coordinates on its first bounded pass, then seeks through the active branch
-// and emits the opaque entry JSON on a second bounded pass.
+// and emits the opaque entry JSON on a second bounded pass. StreamBefore
+// returns one bounded page preceding a cursor entry, StreamTailFirst with
+// Options.SkipWarm stops after the newest range, and index results are kept
+// in a small identity-fenced process-wide LRU so repeated opens of an
+// unchanged file skip the index pass.
 package coldhistory
 
 import (
@@ -78,6 +82,15 @@ type Options struct {
 	PageBytes     int
 	PageEntries   int
 	IndexBytes    int64
+	// SkipWarm stops StreamTailFirst after its newest range: with an accepted
+	// resume cursor only the entries after the cursor are emitted, otherwise
+	// only the tail. Backward warm chunks are never emitted; the last emitted
+	// page still carries Final, and Start stays absolute so the first emitted
+	// page's Start==0 reveals a complete branch. Other readers ignore it.
+	SkipWarm bool
+	// NoCache bypasses the process-wide index cache and leaves it untouched,
+	// so every call re-indexes the file.
+	NoCache bool
 }
 
 // Header contains the known session-header fields and its original JSON. The
@@ -128,21 +141,48 @@ func Stream(ctx context.Context, sessionPath string, options Options, emit func(
 		return Metadata{}, err
 	}
 
-	return withSessionFile(sessionPath, func(source io.ReadSeeker) (Metadata, error) {
-		return stream(ctx, source, opts, emit)
+	return withSessionFile(ctx, sessionPath, opts, func(metadata Metadata, branch []entryRef, source io.ReadSeeker) (Metadata, error) {
+		if err := emitBranch(ctx, source, opts, metadata, branch, emit); err != nil {
+			return Metadata{}, err
+		}
+		return metadata, nil
 	})
 }
 
-// withSessionFile owns the single open/close/error-wrapping path shared by the
-// public entry points.
-func withSessionFile(sessionPath string, read func(io.ReadSeeker) (Metadata, error)) (Metadata, error) {
+// withSessionFile owns the open/stat/index/cache/close path shared by the
+// file-based entry points. read receives the index result — the caller's own
+// copies, served from the cache or a fresh bounded pass — and the open file.
+// Records are read through explicit seeks, so the handle position is
+// unspecified. On an identity-fenced cache hit the index pass is skipped.
+func withSessionFile(ctx context.Context, sessionPath string, opts normalizedOptions, read func(Metadata, []entryRef, io.ReadSeeker) (Metadata, error)) (Metadata, error) {
 	f, err := fileio.Open(sessionPath)
 	if err != nil {
 		return Metadata{}, fmt.Errorf("coldhistory: open %q: %w", sessionPath, err)
 	}
 	defer f.Close()
 
-	metadata, err := read(f)
+	info, err := f.Stat()
+	if err != nil {
+		return Metadata{}, fmt.Errorf("coldhistory: stat %q: %w", sessionPath, err)
+	}
+	identity := newFileIdentity(info)
+	if !opts.noCache {
+		if metadata, branch, ok := sessionIndexCache.get(sessionPath, identity); ok {
+			metadata, err := read(metadata, branch, f)
+			if err != nil {
+				return Metadata{}, fmt.Errorf("coldhistory: read %q: %w", sessionPath, err)
+			}
+			return metadata, nil
+		}
+	}
+	metadata, branch, err := index(ctx, f, opts)
+	if err != nil {
+		return Metadata{}, fmt.Errorf("coldhistory: read %q: %w", sessionPath, err)
+	}
+	if !opts.noCache {
+		sessionIndexCache.put(sessionPath, identity, metadata, branch)
+	}
+	metadata, err = read(metadata, branch, f)
 	if err != nil {
 		return Metadata{}, fmt.Errorf("coldhistory: read %q: %w", sessionPath, err)
 	}
@@ -157,7 +197,9 @@ func withSessionFile(sessionPath string, read func(io.ReadSeeker) (Metadata, err
 // that prepends each page rebuilds the branch in arrival order. Page.Start
 // is the absolute branch index of Entries. Page.Final is true on the page that
 // reaches the root. Page.Head is true on backward warm chunks. Zero tailEntries
-// or warmChunk select DefaultTailEntries and DefaultWarmChunk.
+// or warmChunk select DefaultTailEntries and DefaultWarmChunk. With
+// Options.SkipWarm only the newest range is emitted — the tail, or the entries
+// after an accepted resume cursor — and its last page carries Final.
 func StreamTailFirst(ctx context.Context, sessionPath string, options Options, tailEntries, warmChunk int, emit func(Metadata, Page) error) (Metadata, error) {
 	if ctx == nil {
 		return Metadata{}, fmt.Errorf("coldhistory: nil context")
@@ -174,8 +216,8 @@ func StreamTailFirst(ctx context.Context, sessionPath string, options Options, t
 		return Metadata{}, err
 	}
 
-	return withSessionFile(sessionPath, func(source io.ReadSeeker) (Metadata, error) {
-		return streamTailFirst(ctx, source, opts, tailEntries, warmChunk, emit)
+	return withSessionFile(ctx, sessionPath, opts, func(metadata Metadata, branch []entryRef, source io.ReadSeeker) (Metadata, error) {
+		return tailFirst(ctx, source, opts, metadata, branch, tailEntries, warmChunk, emit)
 	})
 }
 
@@ -190,17 +232,18 @@ func stream(ctx context.Context, source io.ReadSeeker, opts normalizedOptions, e
 	return metadata, nil
 }
 
-func streamTailFirst(ctx context.Context, source io.ReadSeeker, opts normalizedOptions, tailEntries, warmChunk int, emit func(Metadata, Page) error) (Metadata, error) {
-	metadata, branch, err := index(ctx, source, opts)
-	if err != nil {
-		return Metadata{}, err
-	}
+// tailFirst resumes or tails the already-indexed branch. metadata is the
+// caller's own copy: accepted cursors are recorded on it, never on a value
+// shared through the index cache.
+func tailFirst(ctx context.Context, source io.ReadSeeker, opts normalizedOptions, metadata Metadata, branch []entryRef, tailEntries, warmChunk int, emit func(Metadata, Page) error) (Metadata, error) {
 	cursor := opts.resume
+	var err error
 	if opts.resolveResume != nil {
-		cursor, err = opts.resolveResume(metadata)
+		resolved, err := opts.resolveResume(metadata)
 		if err != nil {
 			return Metadata{}, err
 		}
+		cursor = resolved
 	}
 	if cursor != nil && cursor.SessionID == metadata.Header.ID {
 		first, last := -1, -1
@@ -214,14 +257,18 @@ func streamTailFirst(ctx context.Context, source io.ReadSeeker, opts normalizedO
 		}
 		if first >= 0 && last >= first && (!cursor.HistoryComplete || first == 0) {
 			metadata.Resume = cursor
+			final := opts.skipWarm || first == 0
 			// An empty callback still validates the session and fetches the engine tail.
 			if last+1 == len(branch) {
-				err = emit(metadata, Page{Entries: []json.RawMessage{}, Start: last + 1, Final: first == 0})
+				err = emit(metadata, Page{Entries: []json.RawMessage{}, Start: last + 1, Final: final})
 			} else {
-				err = emitRange(ctx, source, opts, metadata, branch, last+1, len(branch), false, first == 0, emit)
+				err = emitRange(ctx, source, opts, metadata, branch, last+1, len(branch), false, final, emit)
 			}
 			if err != nil {
 				return Metadata{}, err
+			}
+			if opts.skipWarm {
+				return metadata, nil
 			}
 			if err := emitWarmRanges(ctx, source, opts, metadata, branch, first, warmChunk, emit); err != nil {
 				return Metadata{}, err
@@ -243,6 +290,8 @@ type normalizedOptions struct {
 	pageBytes     int
 	pageEntries   int
 	indexBytes    int64
+	skipWarm      bool
+	noCache       bool
 }
 
 func normalizeOptions(options Options) (normalizedOptions, error) {
@@ -254,6 +303,8 @@ func normalizeOptions(options Options) (normalizedOptions, error) {
 		pageBytes:     options.PageBytes,
 		pageEntries:   options.PageEntries,
 		indexBytes:    options.IndexBytes,
+		skipWarm:      options.SkipWarm,
+		noCache:       options.NoCache,
 	}
 	if opts.chunkBytes == 0 {
 		opts.chunkBytes = DefaultChunkBytes
@@ -489,8 +540,11 @@ func emitBranch(ctx context.Context, file io.ReadSeeker, opts normalizedOptions,
 func emitTailFirst(ctx context.Context, file io.ReadSeeker, opts normalizedOptions, metadata Metadata, branch []entryRef, tailEntries, warmChunk int, emit func(Metadata, Page) error) error {
 	n := len(branch)
 	tailStart := max(0, n-tailEntries)
-	if err := emitRange(ctx, file, opts, metadata, branch, tailStart, n, false, tailStart == 0, emit); err != nil {
+	if err := emitRange(ctx, file, opts, metadata, branch, tailStart, n, false, tailStart == 0 || opts.skipWarm, emit); err != nil {
 		return err
+	}
+	if opts.skipWarm {
+		return nil
 	}
 	return emitWarmRanges(ctx, file, opts, metadata, branch, tailStart, warmChunk, emit)
 }
