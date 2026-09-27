@@ -379,10 +379,11 @@ describe("reader ownership provenance and contacts", () => {
   let top: number;
   let height: number;
   let notifyResize: () => void;
-  function Harness({ focused = false }: { focused?: boolean }) {
+  function Harness({ focused = false, disclosure = false }: { focused?: boolean; disclosure?: boolean }) {
     state = useChatScroll(0, focused, undefined, false);
     return <div ref={state.scrollRef} onScroll={state.onScroll}>
       <div ref={state.contentRef} />
+      {disclosure && <button aria-label="disclosure" onClick={state.holdDisclosurePosition}>disclosure</button>}
       {state.showScrollToBottom && <button onClick={() => state.scrollToBottom()}>jump</button>}
     </div>;
   }
@@ -423,6 +424,49 @@ describe("reader ownership provenance and contacts", () => {
     expect(top).toBe(6600);
     scroll();
   }
+
+  it.each(["pointer", "Enter", " "])("holds the jump reserve through a %s disclosure and its resize scroll", (input) => {
+    twoBottoms();
+    body.scrollTop = 6200;
+    scroll();
+    act(() => root.render(<Harness disclosure />));
+    const head = container.querySelector<HTMLButtonElement>('[aria-label="disclosure"]');
+    if (!head) throw new Error("missing disclosure");
+    expect(container.querySelector("button:last-child")?.textContent).toBe("jump");
+    act(() => {
+      if (input === "pointer") head.dispatchEvent(pointer("pointerdown", 1));
+      else head.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: input }));
+      head.click();
+    });
+    // A near-end collapse changes the scrollport geometry while the
+    // activation still counts as physical input, without reader movement.
+    body.scrollTop = 6600;
+    scroll();
+    expect(container.querySelector("button:last-child")?.textContent).toBe("jump");
+  });
+
+  it.each(["reader scroll", "explicit jump"])("releases the disclosure hold on %s", (release) => {
+    twoBottoms();
+    body.scrollTop = 6200;
+    scroll();
+    act(() => root.render(<Harness disclosure />));
+    const head = container.querySelector<HTMLButtonElement>('[aria-label="disclosure"]');
+    if (!head) throw new Error("missing disclosure");
+    act(() => head.click());
+    if (release === "reader scroll") {
+      dispatch(new WheelEvent("wheel", { deltaY: -100 }));
+      body.scrollTop = 6100;
+      scroll();
+      body.scrollTop = 6600;
+      scroll();
+    } else {
+      act(() => state.scrollToBottom());
+    }
+    expect(container.querySelector("button:last-child")?.textContent).toBe("disclosure");
+    height += 100;
+    automaticBottom();
+    expect(top).toBe(6700);
+  });
 
   it.each([1, 20])("reader signal alone cannot authorize an app-written streak (delta=%s)", (delta) => {
     automaticBottom();
