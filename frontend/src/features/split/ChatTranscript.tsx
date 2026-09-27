@@ -676,7 +676,50 @@ export function ChatTranscript({
   // shifts any other row's key and no visible row remounts. Only after
   // identity assignment are zero-renderable-block rows hidden from the
   // virtualized window.
-  const itemKeys = useMemo(() => transcriptItemKeys(items), [items]);
+  const committedIdentityRef = useRef<{
+    readonly items: readonly TranscriptItem[];
+    readonly keys: readonly string[];
+  }>({ items: [], keys: [] });
+  const itemKeys = useMemo(() => {
+    const canonical = transcriptItemKeys(items);
+    const previous = committedIdentityRef.current;
+    const previousCanonical = transcriptItemKeys(previous.items);
+    const currentIds = new Set(canonical);
+    const retained = new Map(previousCanonical.map((key, index) => [key, previous.keys[index] ?? key]));
+    const foldedTools = new Map<string, string>();
+    const scroll = scrollRef.current;
+    const visibleKey = [...scroll?.querySelectorAll<HTMLElement>(".th-chat-row[data-entry-key]") ?? []]
+      .find((row) => row.getBoundingClientRect().bottom > (scroll?.getBoundingClientRect().top ?? 0))?.dataset["entryKey"];
+    previous.items.forEach((item, index) => {
+      if (item.kind !== "message" || currentIds.has(previousCanonical[index] ?? "")) return;
+      const key = previous.keys[index];
+      if (key === undefined) return;
+      for (const block of item.message.blocks ?? []) {
+        if (block.id === undefined || !["tool", "toolCall", "toolResult"].includes(block.kind)) continue;
+        if (!foldedTools.has(block.id) || key === visibleKey) foldedTools.set(block.id, key);
+      }
+    });
+    // A standalone result at a page boundary becomes part of its invocation.
+    // Keep its presentation identity, not its canonical message id (which
+    // reconciliation still needs). Existing invocations always keep their key.
+    const claimed = new Set(canonical.flatMap((key) => retained.get(key) ?? []));
+    return items.map((item, index) => {
+      const key = canonical[index] ?? "missing";
+      const existing = retained.get(key);
+      if (existing !== undefined) return existing;
+      if (item.kind !== "message") return key;
+      const candidates = (item.message.blocks ?? []).flatMap((block) =>
+        block.id === undefined ? [] : foldedTools.get(block.id) ?? []);
+      const inherited = candidates.find((candidate) => candidate === visibleKey && !claimed.has(candidate))
+        ?? candidates.find((candidate) => !claimed.has(candidate));
+      if (inherited === undefined) return key;
+      claimed.add(inherited);
+      return inherited;
+    });
+  }, [items, scrollRef]);
+  useLayoutEffect(() => {
+    committedIdentityRef.current = { items, keys: itemKeys };
+  }, [items, itemKeys]);
   const { rows, keys } = useMemo(() => {
     const allKeys = itemKeys;
     const rows: TranscriptItem[] = [];
@@ -794,6 +837,7 @@ export function ChatTranscript({
   );
   const measuringPrepend = measuringPrependRef.current;
   const retainedWindow = retainedWindowRef.current;
+  const restoringAnchorRef = useRef(false);
   const rangeExtractor = useCallback((range: Parameters<typeof defaultRangeExtractor>[0]) => {
     const indexes = new Set(defaultRangeExtractor(range));
     for (const key of [...measuringPrepend, ...retainedWindow]) {
@@ -846,7 +890,7 @@ export function ChatTranscript({
         // parked since the request: only current follow intent authorizes the
         // write (jump/focus/restore hand that intent back before positioning).
         // A rejected stale request must not discard measurement compensation.
-        if (!isFollowing()) return;
+        if (!isFollowing() && !restoringAnchorRef.current) return;
         // Explicit jump/focus/restore relinquishes reader ownership and clears
         // our queue in scrollToBottom. A library retry does neither. Its delta
         // is already queued: do not write it early or accumulate it twice.
@@ -976,7 +1020,16 @@ export function ChatTranscript({
     const start = rowStart + (historyRef.current?.offsetTop ?? 0);
     if (start === anchor.start) return;
     const previous = element.scrollTop;
-    element.scrollTop += start - anchor.start;
+    if (!virtualizer.elementsCache.get(anchor.key)?.isConnected) {
+      // Re-enter the anchor's window before correcting its saved offset.
+      // This is a one-shot reader restoration, never a new follow intent or
+      // a numeric-index reconciliation that may outlive the next prepend.
+      restoringAnchorRef.current = true;
+      virtualizer.scrollToIndex(anchor.index, { align: "start" });
+      restoringAnchorRef.current = false;
+      virtualizer.scrollBy(0);
+    }
+    element.scrollTop = previous + start - anchor.start;
     // Ref measurements can advance before the DOM sizer's next commit. Only
     // retire the applied delta; browser clamping leaves the rest for that
     // commit even when the measurement itself no longer changes.

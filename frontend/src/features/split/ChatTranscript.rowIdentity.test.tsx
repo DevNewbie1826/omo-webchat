@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { Virtualizer } from "@tanstack/react-virtual";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ChatTranscript, transcriptItemKeys } from "./ChatTranscript";
+import { parseEntries } from "./chatEntries";
 import type { TranscriptItem } from "./useChatFrameState";
 
 const observed = vi.hoisted(() => ({ current: undefined as Virtualizer<Element, Element> | undefined }));
@@ -230,4 +231,57 @@ it("preserves the anchor when loading chrome disappears with the measured page",
   await render([...rows("head", 20), ...tail]);
   expect(Math.abs(offset(anchor) - before)).toBeLessThan(4);
   expect(row(anchor.dataset["entryKey"] ?? "")).toBe(anchor);
+});
+
+it("keeps the visible orphan result's key and DOM when its invocation arrives outside the window", async () => {
+  const result = {
+    type: "message", id: "result",
+    message: { role: "toolResult", toolCallId: "lookup-1", toolName: "read", content: "kept output" },
+  };
+  const invocation = {
+    type: "message", id: "invocation",
+    message: { role: "assistant", content: [{ type: "toolCall", id: "lookup-1", name: "read" }] },
+  };
+  const tail = rows("tail", 60);
+  const parsed = (entries: readonly unknown[]): TranscriptItem[] =>
+    parseEntries(entries).map((message) => ({ kind: "message", message }));
+  await render([...parsed([result]), ...tail]);
+  park(0);
+  const anchor = firstVisible();
+  const before = offset(anchor);
+  const key = anchor.dataset["entryKey"] ?? "";
+  // A hundred mixed-height rows put the seam far outside the old window.
+  const head = rows("head", 100);
+  for (let index = 0; index < 100; index += 1) {
+    heights.set(`message:head-${index}`, index % 3 === 0 ? 900 : 70);
+  }
+  const merged = [...head, ...parsed([invocation, result]), ...tail];
+  await render(merged);
+  expect(row(key)).toBe(anchor);
+  expect(Math.abs(offset(anchor) - before)).toBeLessThan(4);
+  expect(anchor.textContent).toContain("read");
+  expect(Number(anchor.dataset["index"])).toBe(100);
+  expect(container.querySelector(".th-chat-history--settling")).toBeNull();
+  // Re-parsing fresh entries must not revert the inherited presentation key.
+  await render([...head, ...parsed(structuredClone([invocation, result])), ...tail]);
+  expect(row(key)).toBe(anchor);
+  expect(Math.abs(offset(anchor) - before)).toBeLessThan(4);
+});
+
+it("restores the first visible row when the old seam is outside the mounted window", async () => {
+  const tail = rows("tail", 100);
+  await render(tail);
+  park(4000);
+  expect(container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+  expect(container.querySelector('[data-entry-key="message:tail-0"]')).toBeNull();
+  const anchor = firstVisible();
+  const key = anchor.dataset["entryKey"] ?? "";
+  const before = offset(anchor);
+  const retained = [...container.querySelectorAll<HTMLElement>(".th-chat-row")];
+  const head = rows("head", 100);
+  for (let index = 0; index < 100; index += 1) heights.set(`message:head-${index}`, index % 2 ? 70 : 900);
+  await render([...head, ...tail]);
+  expect(row(key)).toBe(anchor);
+  expect(Math.abs(offset(anchor) - before)).toBeLessThan(4);
+  for (const element of retained) expect(row(element.dataset["entryKey"] ?? "")).toBe(element);
 });
