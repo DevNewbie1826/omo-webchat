@@ -71,6 +71,7 @@ go test ./...
 go test -race ./internal/...
 npx vitest run                # in frontend/
 sh test/install_checksum_test.sh
+bun test --isolate test/qa     # whole QA suite; per-file isolation (never --parallel: fixed-port fixtures)
 ```
 
 ## NOTES

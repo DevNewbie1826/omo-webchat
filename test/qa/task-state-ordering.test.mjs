@@ -12,7 +12,9 @@ import { observeSockets } from './heartbeat-liveness.mjs';
 import { parseChatServerFrame } from '../../frontend/src/lib/chatWsParse.ts';
 import { parseTaskUpdated } from '../../frontend/src/features/split/activityParseTask.ts';
 import { parseTaskDigest } from '../../frontend/src/features/workspace/activityDigest.ts';
+import { qaDriverSkipOption, resolveQaDriver } from './qa-driver.mjs';
 
+const qaDriver = await resolveQaDriver();
 const output = process.env.QA_HELPER_EVIDENCE;
 const save = async (name, body) => { if (output) { await mkdir(output, { recursive: true }); await writeFile(resolve(output, name), JSON.stringify(body, null, 2) + '\n'); } };
 
@@ -91,7 +93,7 @@ test('failed fulfillment and abort remain observable while every route is draine
   assert.equal(receipt.requests[0].state, 'abort-failed');
 });
 
-test('actual Chrome native socket forwarding preserves overview identity, channel isolation and reconnect history', { timeout: 30_000 }, async () => {
+test('actual Chrome native socket forwarding preserves overview identity, channel isolation and reconnect history', { timeout: 30_000, ...qaDriverSkipOption(qaDriver) }, async () => {
   assert.ok(globalThis.Bun, 'Run this helper suite with bun test');
   const assetsDir = await mkdtemp(join(tmpdir(), 'task-native-helper-'));
   await writeFile(join(assetsDir, 'index.html'), '<!doctype html><html><body>native transport helper</body></html>');
@@ -100,7 +102,7 @@ test('actual Chrome native socket forwarding preserves overview identity, channe
   const cleanup = {};
   try {
     assert.deepEqual(await (await fetch(fixture.url + '/api/providers')).json(), [{ id: 'omo', label: 'omo', available: true }]);
-    const { chromium } = await import(pathToFileURL(process.env.QA_PLAYWRIGHT ?? '/private/tmp/omo-asar/node_modules/playwright-core/index.mjs').href);
+    const { chromium } = await import(pathToFileURL(qaDriver.entry).href);
     browser = await chromium.launch({ executablePath: process.env.QA_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
     context = await browser.newContext(); const page = await context.newPage(); observed = observeSockets(page);
     await page.goto(fixture.url, { waitUntil: 'domcontentloaded' });
@@ -154,13 +156,13 @@ test('actual Chrome native socket forwarding preserves overview identity, channe
   }
 });
 
-test('real Chrome request barriers and DOM probes fail on rollback, count mismatch and wrong permanent tab', { timeout: 30_000 }, async () => {
+test('real Chrome request barriers and DOM probes fail on rollback, count mismatch and wrong permanent tab', { timeout: 30_000, ...qaDriverSkipOption(qaDriver) }, async () => {
   const assetsDir = await mkdtemp(join(tmpdir(), 'task-dom-helper-'));
   await writeFile(join(assetsDir, 'index.html'), '<!doctype html><html><body><div class="th-chat-body">ordering-entry-159</div><div class="th-chat-input"><textarea></textarea></div></body></html>');
   const fixture = startTaskFixture({ assetsDir, layout: 'single' }), gate = createTaskRequestGate();
   let browser, page;
   try {
-    const { chromium } = await import(pathToFileURL(process.env.QA_PLAYWRIGHT ?? '/private/tmp/omo-asar/node_modules/playwright-core/index.mjs').href);
+    const { chromium } = await import(pathToFileURL(qaDriver.entry).href);
     browser = await chromium.launch({ executablePath: process.env.QA_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
     page = await browser.newPage(); await installDOMSignals(page);
     await page.route('**/api/**', gate.handle); await page.goto(fixture.url, { waitUntil: 'domcontentloaded' });
