@@ -20,7 +20,7 @@ import type { ActivityDagNode, ActivityDagRun } from "./activityTypes";
  * reel at 1280 on first paint (E9; the painted width scales with the measured
  * Label font — 120px at the default 13px setting — so the constant keeps five
  * cards whole at the default type setting), and the compact PADDING/GAP_Y keep
- * the run plus its footer expander inside the panel's 280px cap (E11). The
+ * more of the run visible before the panel scrolls (E11). The
  * card's radius/padding/gap are NOT constants: they resolve from the --th-*
  * radius/spacing tokens below, so a token change moves the painted card, the
  * glyph lane and the label clips together.
@@ -37,7 +37,7 @@ const COMPACT_GAP_X = 8;
 const COMPACT_GAP_Y = 4;
 const COMPACT_PADDING = 8;
 const COMPACT_PAD_X = 6;
-const COMPACT_PAD_Y = 2;
+const COMPACT_PAD_Y = 6;
 const COMPACT_GLYPH_GAP = 2;
 const COMPACT_RADIUS = 8;
 const COMPACT_ROW_LINE = 1;
@@ -67,6 +67,7 @@ interface CardSpacing {
   /* Phone cards use tighter lines to fit branch rows in the panel. */
   readonly rowLine?: number;
   readonly stateLine?: number;
+  readonly compact?: boolean;
 }
 
 function resolveCardSpacing(): CardSpacing {
@@ -165,10 +166,20 @@ function cardGeometry(fontPx: number, stateFontPx: number, spacing: CardSpacing,
   const stateRow = Math.ceil(stateFontPx * (spacing.stateLine ?? 1.4));
   // A dense wave of one-line titles needs no empty second title row. Allow
   // three extra baseline pixels so the title and state ink do not overlap.
-  const stateGap = titleRows === 1 ? 3 : 0;
-  const height = padY * 2 + row * titleRows + stateGap + stateRow;
-  const firstBaseline = padY + Math.round(row * 0.75);
-  const stateBaseline = padY + row * titleRows + stateGap + Math.round(stateRow * 0.75);
+  const stateGap = titleRows === 1 && !spacing.compact ? 3 : 0;
+  // Chrome's 11px SVG text has a roughly 13px painted box. Consecutive
+  // baselines therefore need a full text box, not the compact 11px row pitch;
+  // the extra room belongs outside the ink, and tall runs scroll in the
+  // tabpanel rather than compressing the cards.
+  const height = spacing.compact
+    ? padY * 2 + row * titleRows + Math.ceil(stateFontPx * 1.4)
+    : padY * 2 + row * titleRows + stateGap + stateRow;
+  // Pretendard's SVG ink sits slightly lower than its nominal baseline:
+  // raising both compact rows one pixel balances the measured outer edges.
+  const firstBaseline = padY + (spacing.compact ? row - 1 : Math.round(row * 0.75));
+  const stateBaseline = spacing.compact
+    ? padY + row * (titleRows + 1) + 2
+    : padY + row * titleRows + stateGap + Math.round(stateRow * 0.75);
   const r = round(fontPx * 0.4);
   const labelX = Math.ceil(padX + r * 2 + glyphGap);
   return {
@@ -436,6 +447,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
         width: Math.max(COMPACT_MIN_CARD, type.width),
         rowLine: COMPACT_ROW_LINE,
         stateLine: COMPACT_STATE_LINE,
+        compact: true,
       }
     : { ...desktopSpacing, ...(type.width > 0 ? { width: type.width } : {}) };
   const layoutFontPx = compact ? compactFontPx : type.fontPx;
@@ -590,9 +602,9 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
     };
   }, []);
   const layers = dagLayers(run);
-  const denseOneLine = compact && Math.max(0, ...layers.map(layer => layer.length)) >= 4
+  const oneLineCards = compact
     && run.nodes.every(node => (type.labels.get(node.id) ?? [dagNodeTitle(node)]).length === 1);
-  const geometry = cardGeometry(layoutFontPx, stateFontPx, spacing, denseOneLine ? 1 : 2);
+  const geometry = cardGeometry(layoutFontPx, stateFontPx, spacing, oneLineCards ? 1 : 2);
   const { width: nodeWidth, height: nodeHeight, row, glyph } = geometry;
   const { radius } = spacing;
   const positions = new Map<
@@ -761,6 +773,13 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
             ...(motion?.settling ? ["th-activity-gnode--settle"] : []),
           ].join(" ");
           const lines = type.labels.get(node.id) ?? [dagNodeTitle(node)];
+          // A one-line title can sit in a two-row card when another node in
+          // the run wraps. Share the same card/grid geometry, but centre its
+          // smaller ink group around the state instead of leaving a blank
+          // title row between them.
+          const singleLineInTallCard = compact && lines.length === 1 && !oneLineCards;
+          const titleShift = singleLineInTallCard ? Math.ceil(row / 2) : 0;
+          const stateShift = singleLineInTallCard ? Math.floor(row / 2) : 0;
           return [
             // The outer group owns position (transform attribute) and never
             // animates; enter/settle motion plays on the inner body so a CSS
@@ -792,7 +811,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
                     className="th-activity-glabel"
                     style={{ fontSize: `${layoutFontPx}px` }}
                     x={geometry.labelX}
-                    y={geometry.firstBaseline + lineIndex * row}
+                    y={geometry.firstBaseline + titleShift + lineIndex * row}
                     clipPath={`url(#${rowClipId(clipIdPrefix, runIndex, lineIndex)})`}
                   >
                     {line}
@@ -802,12 +821,12 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
                   className="th-activity-gstate"
                   style={{ fontSize: `${stateFontPx}px` }}
                   x={geometry.labelX}
-                  y={geometry.stateBaseline}
+                  y={geometry.stateBaseline - stateShift}
                   clipPath={`url(#${rowClipId(clipIdPrefix, runIndex, 2)})`}
                 >
                   {statusLabel(t, node.state)}
                 </text>
-                <StatusGlyph state={node.state} cx={glyph.cx} cy={glyph.cy} r={glyph.r} />
+                <StatusGlyph state={node.state} cx={glyph.cx} cy={glyph.cy + titleShift} r={glyph.r} />
               </g>
             </g>,
           ];

@@ -8,16 +8,22 @@ import english from '../../frontend/src/i18n/locales/en.json' with { type: 'json
 import { JSDOM } from '../../frontend/node_modules/jsdom/lib/api.js';
 import { buildScenarioRegistry, loadScenarioPlugins } from './visual-redesign.mjs';
 import { pageKit } from './visual-redesign-probes.mjs';
+import { t4StageSpec } from './visual-redesign-scenarios-t4.mjs';
 import {
   scenarios, probeToolEmphasis, toolVerdict, probeStatusEmphasis, statusVerdict,
-  dagVerdict, probeSidebarEmphasis, sidebarVerdict, probeHeadings, headingVerdict,
+  dagVerdict, probeSidebarEmphasis, sidebarVerdict, probeHeadingRunningCount, headingRunningCountVerdict,
+  probeHeadings, headingVerdict,
+  probeLiveCardInk, liveCardInkVerdict,
   probeDagRunningPaint, dagRunningPaintVerdict,
   sidebarStatesVerdict,
   probeActionSurface, actionVerdict, probeOverlayEmphasis, overlayVerdict,
   probeSecondary, secondaryVerdict, probeEmptyPane, probeSplitApplicability, emptyVerdict, probeMobileDag,
   mobileDagVerdict, dagAncestorVerdict, dagTypographyVerdict, dagGraphScaleVerdict, dagListScaleVerdict,
+  compactDagPaddingVerdict,
   probeDagListText, phoneToolVerdict, probeDisclosureGeometry, disclosureVerdict,
   probeWorkspaceLabels, workspaceLabelVerdict,
+  probeWorkspaceContinuity, workspaceContinuityVerdict,
+  probeWorkspaceColumns, workspaceColumnsVerdict,
 } from './emphasis-restore-scenarios.mjs';
 
 const tokens = {
@@ -64,7 +70,8 @@ describe('emphasis scenario registry', () => {
     const plugins = await loadScenarioPlugins(import.meta.dir);
     const mine = plugins.find(item => item.file === 'emphasis-restore-scenarios.mjs');
     expect(mine?.skipped).toBeUndefined();
-    const ids = ['Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10', 'Q14', 'Q15', 'Q17'];
+    const ids = ['Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10',
+      'Q14', 'Q15', 'Q17', 'Q23', 'Q24', 'Q25', 'Q26', 'Q27'];
     for (const id of ids) expect(typeof scenarios[id]).toBe('function');
     const registry = buildScenarioRegistry(plugins);
     for (const id of ids) {
@@ -328,6 +335,26 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     console.log(`Q5 top-pinned control: ${output.failures.join('; ')}`);
   });
 
+  test('Q23 rejects name ink centred in a button but high in the card border box', () => {
+    const measure = (cardBottom, inkTop, inkBottom) => serialized(probeLiveCardInk,
+      `<div class="th-sidebar-live-list"><div class="th-overview-card">
+        <button class="th-overview-card-open"><span class="th-overview-card-name">Stored A</span></button>
+      </div></div>`, (window, document) => {
+        document.querySelector('.th-overview-card').getBoundingClientRect = () => ({
+          left: 0, right: 200, top: 77.3, bottom: cardBottom,
+          width: 200, height: cardBottom - 77.3, toJSON() { return this; },
+        });
+        window.Range.prototype.getBoundingClientRect = () => ({
+          left: 8, right: 56, top: inkTop, bottom: inkBottom,
+          width: 48, height: inkBottom - inkTop, toJSON() { return this; },
+        });
+      });
+    expect(liveCardInkVerdict(measure(112.5, 87.9, 101.9), 1).pass).toBe(true);
+    const output = liveCardInkVerdict(measure(112.5, 86.4, 100.4), 1);
+    expect(output.failures).toContain('Q23 card "Stored A" name ink off border-box centre (9.1/12.1px)');
+    console.log(`Q23 9.1/12.2 card-border control: ${output.failures.join('; ')}`);
+  });
+
   test('Q5 parent label aligns with heading and card text', () => {
     const facts = q5Geometry({ cardLeft: 17, parentLabelLeft: 16 });
     expect(sidebarVerdict(facts, { cards: 1, geometry: true }).pass).toBe(true);
@@ -422,16 +449,19 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
       ({ ...row, ellipsized: false })) }).pass).toBe(true);
   });
 
-  test('Q19 font24 serialized probe rejects a hidden number while preserving its accessible name', () => {
-    const valid = workspaceProbe({ fontSize: 24 });
-    expect(valid.fontSize).toBe('24px');
-    expect(valid.persistedFontSize).toBe('24');
-    expect(workspaceLabelVerdict(valid).pass).toBe(true);
-    const damaged = workspaceProbe({ fontSize: 24, hiddenTail: true });
-    expect(damaged.rows[11].accessibleName).toBe('Earlier workspace 12');
-    const output = workspaceLabelVerdict(damaged);
-    expect(output.failures).toContain('Q19 "Earlier workspace 12" tail is not fully visible');
-    console.log(`Q19 font24 tail control: ${output.failures.join('; ')}`);
+  test('Q19 font13 and font24 reject a hidden number and accept its restoration', () => {
+    for (const fontSize of [13, 24]) {
+      const valid = workspaceProbe({ fontSize });
+      expect(valid.fontSize).toBe(`${fontSize}px`);
+      expect(valid.persistedFontSize).toBe(fontSize === 24 ? '24' : null);
+      expect(workspaceLabelVerdict(valid).pass).toBe(true);
+      const damaged = workspaceProbe({ fontSize, hiddenTail: true });
+      expect(damaged.rows[11].accessibleName).toBe('Earlier workspace 12');
+      expect(damaged.rows[11].ellipsized).toBe(false);
+      const output = workspaceLabelVerdict(damaged);
+      expect(output.failures).toContain('Q19 "Earlier workspace 12" tail is not fully visible');
+      console.log(`Q19 font${fontSize} tail control: ${output.failures.join('; ')}`);
+    }
   });
 
   test('Q19 serialized probe rejects a collapsed space before the number', () => {
@@ -453,6 +483,135 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     const output = workspaceLabelVerdict(damaged);
     expect(output.failures).toContain('Q19 "Earlier workspace 12" folder glyph outside content box or 4px left gutter');
     console.log(`Q19 glyph -6px control: ${output.failures.join('; ')}`);
+  });
+
+  test('Q25 rejects the 68px head floor despite an untruncated 65.9px word', () => {
+    const names = ['omo-desktop-app', 'ai-token-monitor', 'omo-zcode-oauth', 'Earlier workspace 12'];
+    const measure = spare => serialized(probeWorkspaceContinuity,
+      `<div class="th-sidebar-body">${names.map(name =>
+        `<div class="th-tree-workspace"><div class="th-tree-node">
+          <button class="th-tree-activation"><span class="th-tree-label-text"><span class="th-tree-label-head">${name.slice(0, -5)}</span><span class="th-tree-label-tail">${name.slice(-5)}</span></span></button>
+        </div></div>`).join('')}</div>`, (window, document) => {
+        const bounds = (element, left, right, top, bottom) => {
+          element.getBoundingClientRect = () => ({
+            left, right, top, bottom, width: right - left, height: bottom - top,
+            toJSON() { return this; },
+          });
+        };
+        bounds(document.querySelector('.th-sidebar-body'), 0, 264, 0, 500);
+        document.querySelectorAll('.th-tree-node').forEach((row, index) => {
+          const top = index * 40, head = row.querySelector('.th-tree-label-head');
+          const tail = row.querySelector('.th-tree-label-tail');
+          bounds(row, 0, 264, top, top + 30);
+          bounds(head, 20, 85.9 + (index === 0 ? spare : 0), top, top + 20);
+          bounds(tail, 85.9 + (index === 0 ? spare : 0), 110 + (index === 0 ? spare : 0), top, top + 20);
+          bounds(row.querySelector('.th-tree-label-text'), 20, 150, top, top + 20);
+          Object.defineProperties(head, {
+            clientWidth: { value: index === 3 ? 40 : 68 },
+            scrollWidth: { value: index === 3 ? 80 : 68 },
+          });
+        });
+        window.Range.prototype.getBoundingClientRect = function () {
+          const top = this.startContainer.parentElement.getBoundingClientRect().top;
+          return { left: 20, right: 85.9, top, bottom: top + 20, width: 65.9,
+            height: 20, toJSON() { return this; } };
+        };
+      });
+    expect(workspaceContinuityVerdict(measure(0)).pass).toBe(true);
+    const output = workspaceContinuityVerdict(measure(2.1));
+    expect(output.failures).toContain(
+      'Q25 "omo-desktop-app" head/tail gap or spare width 0.0/2.1px');
+    console.log(`Q25 68px/65.9px head control: ${output.failures.join('; ')}`);
+  });
+
+  test('Q26 rejects a shifted running badge even when its hidden count stays aligned', () => {
+    const measure = ({ chevronShift = 0, badgeShift = 0, badgeVisible = true, badgeOpacity = 1 } = {}) =>
+      serialized(probeWorkspaceColumns,
+      `<div class="th-sidebar-body">${['Idle', 'Running'].map((name, index) =>
+        `<div class="th-tree-workspace"><div class="th-tree-node">
+          <button class="th-tree-workspace-activation"><span class="th-tree-label-text">${name}</span>
+            <span class="th-tree-chevron"></span></button>
+          <span class="th-tree-count-slot">
+            <span class="th-tree-count${index ? ' th-tree-count--running' : ''}"
+              style="${index ? 'visibility:hidden' : ''}">1</span>
+            ${index ? `<span class="th-tree-running th-tree-running--workspace"
+              style="visibility:${badgeVisible ? 'visible' : 'hidden'};opacity:${badgeOpacity}">1</span>` : ''}
+          </span>
+        </div></div>`).join('')}</div>`, (_window, document) => {
+        const bounds = (element, left, right, top, bottom) => {
+          element.getBoundingClientRect = () => ({
+            left, right, top, bottom, width: right - left, height: bottom - top,
+            toJSON() { return this; },
+          });
+        };
+        bounds(document.querySelector('.th-sidebar-body'), 0, 264, 0, 500);
+        document.querySelectorAll('.th-tree-node').forEach((row, index) => {
+          bounds(row, 0, 264, index * 40, index * 40 + 30);
+          bounds(row.querySelector('.th-tree-count'), 204, 224, index * 40, index * 40 + 20);
+          if (index) bounds(row.querySelector('.th-tree-running--workspace'),
+            204 - badgeShift, 224 - badgeShift, index * 40, index * 40 + 20);
+          const offset = index ? chevronShift : 0;
+          bounds(row.querySelector('.th-tree-chevron'), 170 - offset, 182 - offset,
+            index * 40, index * 40 + 20);
+        });
+      });
+    expect(workspaceColumnsVerdict(measure()).pass).toBe(true);
+    const output = workspaceColumnsVerdict(measure({ chevronShift: 34 }));
+    expect(output.failures).toContain('Q26 chevron left edges drift: 170,136');
+    const shiftedBadge = workspaceColumnsVerdict(measure({ badgeShift: 34 }));
+    expect(shiftedBadge.failures).toContain('Q26 count right edges drift: 224,190');
+    const hidden = workspaceColumnsVerdict(measure({ badgeVisible: false }));
+    expect(hidden.failures).toContain('Q26 visible count pill or chevron box missing');
+    const transparent = workspaceColumnsVerdict(measure({ badgeOpacity: 0 }));
+    expect(transparent.failures).toContain('Q26 visible count pill or chevron box missing');
+    console.log(`Q26 visible running badge -34px control: ${shiftedBadge.failures.join('; ')}`);
+  });
+
+  function headingCount({ spinner = true, duration = 700, headingRight = 247, reduced = false } = {}) {
+    const pillStyle = 'color:rgb(157, 144, 248);background-color:rgba(139, 124, 246, 0.12)';
+    const dot = '<span class="th-overview-card-running-dot" style="width:8px;height:8px;'
+      + 'opacity:1;visibility:visible;background-color:rgb(139, 124, 246)"></span>';
+    return serialized(probeHeadingRunningCount, `<div class="th-sidebar-live">
+      <div class="th-sidebar-live-label">Sessions
+        <span class="th-sidebar-live-count" aria-label="2 running" style="${pillStyle}">
+          ${spinner ? dot : ''}2</span>
+      </div>
+      <div class="th-sidebar-live-list"><div class="th-overview-card">
+        <span class="th-overview-card-running" style="${pillStyle}">${dot}2</span>
+      </div></div></div>`, (window, document) => {
+      window.matchMedia = query => ({ matches: reduced && query.includes('prefers-reduced-motion') });
+      const box = right => ({ left: right - 20, right, top: 0, bottom: 20,
+        width: 20, height: 20, toJSON() { return this; } });
+      document.querySelector('.th-sidebar-live-count').getBoundingClientRect = () => box(headingRight);
+      document.querySelector('.th-overview-card-running').getBoundingClientRect = () => box(247);
+      document.querySelectorAll('.th-overview-card-running-dot').forEach(marker => {
+        marker.getBoundingClientRect = () => box(8);
+        marker.getAnimations = () => reduced ? [] : [{
+          effect: { getComputedTiming: () => ({ duration }) },
+        }];
+      });
+    });
+  }
+
+  test('Q27 rejects a bare heading count without a spinner child', () => {
+    expect(headingRunningCountVerdict(headingCount()).failures).toEqual([]);
+    const output = headingRunningCountVerdict(headingCount({ spinner: false }));
+    expect(output.failures).toContain('Q27 heading pill has no visible spinner marker');
+    console.log(`Q27 bare number control: ${output.failures.join('; ')}`);
+  });
+
+  test('Q27 rejects a spinner whose period is 1280ms', () => {
+    const output = headingRunningCountVerdict(headingCount({ duration: 1280 }));
+    expect(output.failures).toContain(
+      'Q27 heading spinner must animate in <=800ms or remain static under reduced motion');
+    expect(headingRunningCountVerdict(headingCount({ reduced: true })).failures).toEqual([]);
+    console.log(`Q27 slow spinner control: ${output.failures.join('; ')}`);
+  });
+
+  test('Q27 rejects a heading pill six pixels left of the card chips', () => {
+    const output = headingRunningCountVerdict(headingCount({ headingRight: 241 }));
+    expect(output.failures).toContain('Q27 heading/card chip right edges drift: 241,247');
+    console.log(`Q27 right-edge -6px control: ${output.failures.join('; ')}`);
   });
 
   test('Q6 dim uppercase headings and metadata fail contrast/hierarchy', () => {
@@ -646,7 +805,7 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     expect(emptyVerdict(measure(450), 'split').pass).toBe(false);
   });
 
-  test('Q14 two visible tall nodes, vertical scroll and reversed chain fail', () => {
+  test('Q14 two visible tall nodes and reversed chain fail', () => {
     const data = serialized(probeMobileDag, `<div class="th-activity-graph"><svg>
       <g data-node="k0"><rect class="th-activity-gnode-card"></rect><text class="th-activity-gstate">Complete</text></g>
       <g data-node="k1"><rect class="th-activity-gnode-card"></rect><text class="th-activity-gstate">Complete</text></g>
@@ -656,9 +815,36 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     });
     const result = mobileDagVerdict(data, 80);
     expect(result.pass).toBe(false);
-    expect(result.failures.some(reason => reason.includes('scrolls vertically'))).toBe(true);
     expect(result.failures.some(reason => reason.includes('whole mobile'))).toBe(true);
     expect(result.failures.some(reason => reason.includes('wraps or reverses'))).toBe(true);
+  });
+
+  test('Q24 rejects a compact node with zero top padding and a larger internal gap', () => {
+    const measure = (titleTop, titleBottom, stateTop, stateBottom, cardBottom = 370.5) =>
+      serialized(probeMobileDag, `<div class="th-activity-graph"><svg>
+        <g data-node="k0"><rect class="th-activity-gnode-card"></rect>
+          <text class="th-activity-glabel">Title</text><text class="th-activity-gstate">completed</text>
+        </g></svg></div>`, (_window, document) => {
+        for (const [selector, top, bottom] of [
+          ['rect', 332.5, cardBottom], ['.th-activity-glabel', titleTop, titleBottom],
+          ['.th-activity-gstate', stateTop, stateBottom],
+        ]) document.querySelector(selector).getBoundingClientRect = () => ({
+          left: 0, right: 100, top, bottom, width: 100, height: bottom - top,
+          toJSON() { return this; },
+        });
+      });
+    const good = measure(337.5, 350.5, 351.5, 365.5);
+    expect(compactDagPaddingVerdict({ nodes: Array.from({ length: 11 }, (_, index) =>
+      ({ ...good.nodes[0], id: `k${index}` })) }, 'mixed').pass).toBe(true);
+    const bad = measure(332.5, 345.5, 354.5, 368.5);
+    const output = compactDagPaddingVerdict({ nodes: Array.from({ length: 11 }, (_, index) =>
+      ({ ...bad.nodes[0], id: `k${index}` })) }, 'mixed');
+    expect(output.failures).toContain('Q24 mixed k0 compact node padding top/bottom/gap 0.0/2.0/9.0px');
+    const overlapping = measure(337.5, 350.5, 343.5, 357.5, 362.5);
+    expect(compactDagPaddingVerdict({ nodes: Array.from({ length: 11 }, (_, index) =>
+      ({ ...overlapping.nodes[0], id: `k${index}` })) }, 'mixed').failures)
+      .toContain('Q24 mixed k0 compact node padding top/bottom/gap 5.0/5.0/-7.0px');
+    console.log(`Q24 0/9/2 compact-node control: ${output.failures[0]}`);
   });
 
   test('Q14 and Q15 serialized rendered font and vertical ink clipping fail', () => {
@@ -721,8 +907,8 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     expect(clipped.nodes[0].words[0].clipped).toBe(false);
     expect(dagAncestorVerdict(valid).pass).toBe(true);
     expect(dagAncestorVerdict(clipped).failures).toContain(
-      'Q14/Q15 mixed k0 card outside visible ancestor 0.0..90.0');
-    expect(mobileDagVerdict(clipped, 150).failures.join(' ')).toContain('outside visible ancestor');
+      'Q14/Q15 mixed k0 card outside reachable ancestor 0.0..90.0');
+    expect(mobileDagVerdict(clipped, 150).failures.join(' ')).toContain('outside reachable ancestor');
   });
 
   test('Q14/Q15 a clip above the panel rejects otherwise valid reel and words', () => {
@@ -767,12 +953,12 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     expect(dagAncestorVerdict(valid).pass).toBe(true);
     const rejected = dagAncestorVerdict(clipped);
     expect(rejected.pass).toBe(false);
-    expect(rejected.failures.join(' ')).toContain('k0 card outside visible ancestor');
+    expect(rejected.failures.join(' ')).toContain('k0 card outside reachable ancestor');
     console.log('Q14/Q15 above-panel clip control:', rejected.failures.join('; '));
     console.log('Q14/Q15 restored above-panel control: PASS');
   });
 
-  test('Q14/Q15 desktop scrollport reaches a card below its viewport but hidden parent rejects it', () => {
+  test('Q14/Q15 scrollport reaches a card below its viewport but hidden parent rejects it', () => {
     const markup = overflow => `<section class="th-activity-panel">
       <div class="th-activity-tabpanel" data-activity-tabpanel="dag" style="overflow-y:${overflow}">
         <div class="th-activity-graph" style="overflow-y:hidden"><svg><defs>
@@ -815,12 +1001,62 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     expect(scrolling.nodes[0].card.top).toBe(80);
     expect(scrolling.nodes[0].words[0].clipped).toBe(false);
     expect(scrolling.scrollChecks).toEqual([{ id: 'k0', visible: true }]);
-    expect(dagAncestorVerdict(scrolling, 'mixed', false).pass).toBe(true);
-    expect(dagAncestorVerdict(scrolling, 'mixed', true).pass).toBe(false);
-    expect(dagAncestorVerdict(hidden, 'mixed', false).failures.join(' '))
+    expect(dagAncestorVerdict(scrolling, 'mixed').pass).toBe(true);
+    expect(dagAncestorVerdict(hidden, 'mixed').failures.join(' '))
       .toContain('k0 card outside reachable ancestor');
     expect(hidden.scrollChecks).toEqual([]);
-    console.log('Q14/Q15 control: scrollable desktop PASS; phone scroll FAIL; hidden desktop FAIL');
+    console.log('Q14/Q15 control: scrollable ancestor PASS; hidden parent FAIL');
+  });
+
+  test('Q14/Q15 phone dense graph scrolls to every card but a hidden parent fails', () => {
+    const stage = t4StageSpec('dense16');
+    const markup = overflow => `<section class="th-activity-panel">
+      <div class="th-activity-tabpanel" data-activity-tabpanel="dag" style="overflow-y:${overflow}">
+        <div class="th-activity-graph" style="overflow-y:hidden"><svg><defs>
+          <clipPath id="word-clip"><rect x="0" y="0" width="110" height="120"></rect></clipPath>
+        </defs>${stage.map(node => `<g data-node="${node.id}">
+          <rect class="th-activity-gnode-card"></rect>
+          <text class="th-activity-glabel" clip-path="url(#word-clip)" style="font-size:11px">${node.label}</text>
+          <text class="th-activity-gstate" clip-path="url(#word-clip)" style="font-size:11px">${english[`activity.status.${node.state}`]}</text>
+        </g>`).join('')}</svg></div></div></section>`;
+    const measure = overflow => serialized(probeMobileDag, markup(overflow), (_window, document) => {
+      const tab = document.querySelector('.th-activity-tabpanel');
+      const bounds = (el, left, top, width, height, shifted = false) => {
+        el.getBoundingClientRect = () => {
+          const y = top - (shifted ? tab.scrollTop : 0);
+          return { left, right: left + width, top: y, bottom: y + height,
+            width, height, toJSON() { return this; } };
+        };
+      };
+      bounds(document.querySelector('.th-activity-panel'), 0, 0, 390, 200);
+      bounds(tab, 0, 0, 390, 80);
+      bounds(document.querySelector('.th-activity-graph'), 0, 0, 390, 200);
+      for (const [index, group] of [...document.querySelectorAll('g[data-node]')].entries()) {
+        const left = stage[index].wave * 160;
+        const top = 10 + (index % 4) * 40;
+        bounds(group.querySelector('rect'), left, top, 110, 38, true);
+        bounds(group.querySelector('.th-activity-glabel'), left + 4, top + 4, 100, 12, true);
+        bounds(group.querySelector('.th-activity-gstate'), left + 4, top + 22, 100, 12, true);
+        for (const word of group.querySelectorAll('text')) {
+          word.getComputedTextLength = () => 80;
+          word.getBBox = () => ({ x: 0, y: 4, width: 80, height: 12 });
+        }
+      }
+      for (const [el, clientHeight, scrollHeight] of [
+        [tab, 80, 200], [document.querySelector('.th-activity-graph'), 200, 200],
+      ]) Object.defineProperties(el, {
+        clientHeight: { value: clientHeight }, scrollHeight: { value: scrollHeight },
+      });
+    }, { scroll: true });
+    const scrolling = measure('auto'), hidden = measure('hidden');
+    expect(scrolling.scrollChecks).toHaveLength(stage.length);
+    expect(scrolling.scrollChecks.every(item => item.visible)).toBe(true);
+    expect(mobileDagVerdict(scrolling, 80, 'dense16').pass).toBe(true);
+    expect(hidden.scrollChecks).toEqual([]);
+    const rejected = mobileDagVerdict(hidden, 80, 'dense16');
+    expect(rejected.failures).toContain('Q14/Q15 dense16 w0n2 card outside reachable ancestor 0.0..80.0');
+    console.log('Q14/Q15 390 dense16 scrollable control: PASS (16/16 cards and words reachable)');
+    console.log(`Q14/Q15 390 dense16 hidden-parent control: ${rejected.failures[0]}`);
   });
 
   test('Q14/Q15 scrolling requires the full card and word to paint after scroll', () => {
@@ -831,8 +1067,10 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     ], nodes: [{ id: 'k0', card: { top: 80, bottom: 100 }, words: [
       { kind: 'state', box: { top: 84, bottom: 96 } },
     ] }], scrollChecks: [{ id: 'k0', visible: false }] };
-    expect(dagAncestorVerdict(facts, 'mixed', false).failures.join(' '))
+    expect(dagAncestorVerdict(facts, 'mixed').failures.join(' '))
       .toContain('k0 not fully painted when scrolled into view');
+    expect(mobileDagVerdict({ ...facts, reel: { box: { left: 0, right: 120, top: 0, bottom: 120 } } },
+      80).failures.join(' ')).toContain('k0 not fully painted when scrolled into view');
     console.log('Q14/Q15 control: partially painted scrolled card FAIL');
   });
 

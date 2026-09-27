@@ -294,7 +294,7 @@ export function SessionTree({
                   onClick={() => onToggle(ws.id)}
                 >
                   <span className="th-tree-label-text" aria-hidden="true">
-                    <span className={`th-tree-label-head${Array.from(nameHead).length > 8 ? " th-tree-label-head--long" : ""}`}>{nameHead}</span>
+                    <span className="th-tree-label-head">{nameHead}</span>
                     <span className="th-tree-label-tail">{nameTail}</span>
                   </span>
                   <span className={`th-tree-chevron${isOpen ? " th-tree-chevron--open" : ""}`} aria-hidden="true">
@@ -302,11 +302,6 @@ export function SessionTree({
                   </span>
                 </button>
               )}
-              <span
-                className={`th-tree-count${workspaceRunning > 0 || workspaceMainRunning ? " th-tree-count--running" : ""}`}
-              >
-                {mergedSessionIds.size}
-              </span>
               {touchActions ? (
                 <span className="th-tree-actions th-tree-actions--overflow">
                   <button
@@ -399,19 +394,19 @@ export function SessionTree({
                   </button>
                 </span>
               )}
-              {/* The running chip owns the row's trailing edge on every
-                  pointer and hover state; the row actions (inline icons or the
-                  coarse kebab) sit immediately left of it, so revealing them
-                  never pushes the badge off the shared right-hand column
-                  (Q5 badge alignment). */}
-              {workspaceRunning > 0 || workspaceMainRunning ? (
-                <RunningChip
-                  className="th-tree-running th-tree-running--workspace"
-                  count={workspaceRunning}
-                  countLabelKey="sidebar.ws.runningAgents"
-                  mainRunning={workspaceMainRunning}
-                />
-              ) : null}
+              <span className="th-tree-count-slot">
+                <span className={`th-tree-count${workspaceRunning > 0 || workspaceMainRunning ? " th-tree-count--running" : ""}`}>
+                  {mergedSessionIds.size}
+                </span>
+                {workspaceRunning > 0 || workspaceMainRunning ? (
+                  <RunningChip
+                    className="th-tree-running th-tree-running--workspace"
+                    count={workspaceRunning}
+                    countLabelKey="sidebar.ws.runningAgents"
+                    mainRunning={workspaceMainRunning}
+                  />
+                ) : null}
+              </span>
             </div>
 
             <fieldset className={`th-tree-children${isOpen ? "" : " th-tree-children--closed"}`}>

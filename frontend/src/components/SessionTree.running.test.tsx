@@ -150,6 +150,8 @@ describe("SessionTree running-agent badge", () => {
 
     const workspaceRow = row("Workspace");
     const chip = workspaceRow.querySelector(".th-tree-running");
+    expect(chip?.parentElement).toBe(workspaceRow.querySelector(".th-tree-count-slot"));
+    expect(chip?.querySelector(".th-tree-running-dot")).not.toBeNull();
     expect(chip?.textContent).toBe("2");
     expect(chip?.getAttribute("aria-label")).toBe("sidebar.ws.runningAgents 2");
   });
@@ -168,6 +170,7 @@ describe("SessionTree running-agent badge", () => {
     const workspaceRow = row("Workspace");
     expect(workspaceRow.querySelector(".th-tree-count")?.textContent).toBe("1");
     expect(workspaceRow.querySelector(".th-tree-running")?.textContent).toBe("1");
+    expect(workspaceRow.querySelector(".th-tree-running")?.getAttribute("aria-label")).toBe("sidebar.ws.runningAgents 1");
   });
 
   it("counts a running cursor-only session beyond the visible first page", () => {
@@ -184,6 +187,7 @@ describe("SessionTree running-agent badge", () => {
     const workspaceRow = row("Workspace");
     expect(workspaceRow.querySelector(".th-tree-count")?.textContent).toBe("3");
     expect(workspaceRow.querySelector(".th-tree-running")?.textContent).toBe("2");
+    expect(workspaceRow.querySelector(".th-tree-running")?.getAttribute("aria-label")).toBe("sidebar.ws.runningAgents 2");
   });
 
   it("renders the workspace aggregate and per-session badges when expanded", () => {
@@ -194,6 +198,7 @@ describe("SessionTree running-agent badge", () => {
 
     const workspaceRow = row("Workspace");
     expect(workspaceRow.querySelector(".th-tree-running")?.textContent).toBe("3");
+    expect(workspaceRow.querySelector(".th-tree-running")?.getAttribute("aria-label")).toBe("sidebar.ws.runningAgents 3");
     expect(container.querySelectorAll(".th-tree-running")).toHaveLength(3);
   });
 
@@ -203,18 +208,27 @@ describe("SessionTree running-agent badge", () => {
     expect(row("Workspace").querySelector(".th-tree-running")).toBeNull();
   });
 
-  it("keeps the workspace chat-count pill beside the running aggregate", () => {
-    tree(container, new Map([["tm-live", 1]]));
+  it("places the running spinner inside the existing chat-count pill", () => {
+    tree(container, new Map([["tm-live", 1]]), true);
 
     const workspaceRow = row("Workspace");
+    const actions = workspaceRow.querySelector(".th-tree-actions--overflow");
+    const countSlot = workspaceRow.querySelector(".th-tree-count-slot");
+    expect(workspaceRow.querySelector(".th-tree-workspace-activation")?.nextElementSibling).toBe(actions);
+    expect(actions?.nextElementSibling).toBe(countSlot);
     expect(workspaceRow.querySelector(".th-tree-count")?.textContent).toBe("2");
+    expect(workspaceRow.querySelector(".th-tree-count-slot .th-tree-running-dot")).not.toBeNull();
     expect(workspaceRow.querySelector(".th-tree-running")?.textContent).toBe("1");
+    expect(workspaceRow.querySelector(".th-tree-running")?.getAttribute("aria-label")).toBe("sidebar.ws.runningAgents 1");
+    expect(workspaceRow.querySelectorAll(".th-tree-count-slot")).toHaveLength(1);
   });
 
   it("keeps the workspace chat-count pill when no agents run", () => {
-    tree(container);
+    tree(container, undefined, true);
 
     const workspaceRow = row("Workspace");
+    const actions = workspaceRow.querySelector(".th-tree-actions--overflow");
+    expect(actions?.nextElementSibling).toBe(workspaceRow.querySelector(".th-tree-count-slot"));
     expect(workspaceRow.querySelector(".th-tree-count")?.textContent).toBe("2");
     expect(workspaceRow.querySelector(".th-tree-running")).toBeNull();
   });
