@@ -73,6 +73,12 @@ permanent no-op now that no v1 `state.json` exists anywhere; deletion is pure ch
 3. Design is validated against live daemon event names captured in the Explore-phase
    probe before the contract schema is edited.
 
+## Later stages (post-cutover)
+
+- Stage 15: contract v4 on-demand history; tail-only hydration, `entry.appended`,
+  REST history paging, overflow-recovery hardening. See
+  [stage15-on-demand-history.md](stage15-on-demand-history.md) (invariant 23).
+
 ## Constraints (all phases)
 
 - Public artifacts (PR text, commits, docs, comments) must attribute protocol facts to
