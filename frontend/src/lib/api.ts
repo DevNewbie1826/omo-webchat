@@ -120,3 +120,52 @@ export function qs(params: Readonly<Record<string, string | undefined>>): string
   const s = usp.toString();
   return s.length > 0 ? `?${s}` : "";
 }
+
+export type OlderHistoryResult =
+  | { readonly kind: "page"; readonly sessionId: string; readonly entries: unknown[]; readonly historyComplete: boolean }
+  | { readonly kind: "stale" }
+  | { readonly kind: "gone" }
+  | { readonly kind: "busy" }
+  | { readonly kind: "error"; readonly status?: number }
+  | { readonly kind: "aborted" };
+
+export async function fetchOlderHistory(
+  wsId: string,
+  chatId: string,
+  params: { readonly session: string; readonly before: string; readonly limit?: number },
+  signal?: AbortSignal,
+): Promise<OlderHistoryResult> {
+  const query = new URLSearchParams({ session: params.session, before: params.before });
+  if (params.limit !== undefined) query.set("limit", String(params.limit));
+  if (signal?.aborted) return { kind: "aborted" };
+  try {
+    const response = await fetch(
+      `/api/workspaces/${encodeURIComponent(wsId)}/chats/${encodeURIComponent(chatId)}/history?${query}`,
+      buildInit(signal ? { signal } : {}),
+    );
+    if (response.status === 401) {
+      onUnauthorized?.();
+      return { kind: "error", status: 401 };
+    }
+    if (response.status === 409) return { kind: "stale" };
+    if (response.status === 404) return { kind: "gone" };
+    if (response.status === 503) return { kind: "busy" };
+    if (!response.ok) return { kind: "error", status: response.status };
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      return { kind: "error", status: response.status };
+    }
+    if (
+      typeof body !== "object" || body === null
+      || !("sessionId" in body) || typeof body.sessionId !== "string"
+      || !("entries" in body) || !Array.isArray(body.entries)
+      || !("historyComplete" in body) || typeof body.historyComplete !== "boolean"
+    ) return { kind: "error", status: response.status };
+    return { kind: "page", sessionId: body.sessionId, entries: body.entries, historyComplete: body.historyComplete };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") return { kind: "aborted" };
+    return { kind: "error" };
+  }
+}

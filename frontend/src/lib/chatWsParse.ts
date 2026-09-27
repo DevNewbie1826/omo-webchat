@@ -1,7 +1,8 @@
 import type { ChatServerFrame } from "./chatWs";
 import { parseFallbackApprovalFrame } from "./chatWsParseFallback";
+import type { EntryAppendedFrame } from "./chatWs";
 import { parseConversationFrame } from "./chatWsParseConversation";
-import { isRecord, reqString } from "./chatWsParseFields";
+import { isRecord, optString, reqString, sanitizeJson } from "./chatWsParseFields";
 import { parseLifecycleFrame } from "./chatWsParseLifecycle";
 import { parseSessionFrame } from "./chatWsParseSession";
 import { parseTodoFrame } from "./chatWsParseTodo";
@@ -39,6 +40,32 @@ export function parseChatServerFrame(msg: unknown): ChatServerFrame | null {
   // by passing the original object to the notice seam; never fabricate a
   // schema-valid replacement and mistake rewritten input for validation.
   const validated = generated ?? (isRecord(msg) && msg["type"] === "notice" ? msg : null);
+  // The checked-in generated schema can lag the v4 additive frame. Validate
+  // its complete wire shape directly until the generated contract is updated.
+  if (isRecord(msg) && msg["type"] === "entry.appended") {
+    const safe = sanitizeJson(msg);
+    if (!isRecord(safe) || Object.keys(safe).length !== Object.keys(msg).length) return null;
+    const sessionId = reqString(msg, "sessionId");
+    const id = reqString(msg, "id");
+    const role = reqString(msg, "role");
+    const textPrefix = reqString(msg, "textPrefix");
+    const parentId = msg["parentId"];
+    const bindingId = optString(msg, "bindingId");
+    if (
+      sessionId === null || id === null || role === null || textPrefix === null
+      || (parentId !== null && typeof parentId !== "string")
+      || bindingId === null
+    ) return null;
+    return {
+      type: "entry.appended",
+      sessionId,
+      id,
+      parentId,
+      role,
+      textPrefix,
+      ...(bindingId === undefined ? {} : { bindingId }),
+    } satisfies EntryAppendedFrame;
+  }
   if (validated === null || !isRecord(validated)) {
     // Safety net: a request frame the schema rejected (e.g. a method this
     // contract does not know) must not vanish — surface the minimal fallback.

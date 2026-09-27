@@ -5,6 +5,7 @@ import {
   apiJson,
   apiRaw,
   apiVoid,
+  fetchOlderHistory,
   notifyUnauthorized,
   setUnauthorizedHandler,
 } from "./api";
@@ -89,5 +90,67 @@ describe("api unauthorized handling", () => {
     setUnauthorizedHandler(undefined);
     expect(() => notifyUnauthorized()).not.toThrow();
     expect(handler).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("fetchOlderHistory", () => {
+  afterEach(() => {
+    setUnauthorizedHandler(undefined);
+    vi.unstubAllGlobals();
+  });
+
+  it("requests an encoded history page and returns its payload", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ sessionId: "durable", entries: [{ id: "e1" }], historyComplete: false }),
+    }) as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fetchOlderHistory("ws /", "chat?", { session: "session/1", before: "entry 2", limit: 50 })).resolves.toEqual({
+      kind: "page", sessionId: "durable", entries: [{ id: "e1" }], historyComplete: false,
+    });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/api/workspaces/ws%20%2F/chats/chat%3F/history?session=session%2F1&before=entry+2&limit=50",
+    );
+  });
+
+  it.each([
+    [409, { kind: "stale" }],
+    [404, { kind: "gone" }],
+    [503, { kind: "busy" }],
+    [500, { kind: "error", status: 500 }],
+  ] as const)("maps HTTP %s", async (status, expected) => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status }) as Response));
+    await expect(fetchOlderHistory("w", "c", { session: "s", before: "e" })).resolves.toEqual(expected);
+  });
+
+  it("routes 401 through unauthorized handling and returns an error result", async () => {
+    const handler = vi.fn();
+    setUnauthorizedHandler(handler);
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 401 }) as Response));
+    await expect(fetchOlderHistory("w", "c", { session: "s", before: "e" })).resolves.toEqual({
+      kind: "error", status: 401,
+    });
+    expect(handler).toHaveBeenCalledExactlyOnceWith();
+  });
+
+  it("classifies network and abort failures", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("offline"); }));
+    await expect(fetchOlderHistory("w", "c", { session: "s", before: "e" })).resolves.toEqual({ kind: "error" });
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(fetchOlderHistory("w", "c", { session: "s", before: "e" }, controller.signal)).resolves.toEqual({
+      kind: "aborted",
+    });
+  });
+
+  it("rejects malformed success payloads as errors", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true, status: 200, json: async () => ({ sessionId: "s", entries: "not-an-array", historyComplete: false }),
+    }) as Response));
+    await expect(fetchOlderHistory("w", "c", { session: "s", before: "e" })).resolves.toEqual({
+      kind: "error", status: 200,
+    });
   });
 });
