@@ -67,11 +67,54 @@ npx omo-webchat@latest --password <비밀번호> --port 8080 --root <작업 폴�
 | `--password` | 웹 화면에 들어갈 때 입력하는 비밀번호입니다. | 없음 (**필수**) | 항상 직접 정하세요. 서버를 다시 켜면 다시 로그인해야 합니다. |
 | `--port` | 브라우저 주소 `http://127.0.0.1:<포트>`의 숫자입니다. | `8080` | 다른 프로그램이 이미 8080을 쓰고 있을 때만 바꾸세요. |
 | `--root` | 파일 브라우저와 워크스페이스에서 보이는 가장 바깥 폴더입니다. 이 폴더 바깥은 웹에서 보이지 않습니다. | 홈 폴더 | 평소 작업하는 폴더(예: 프로젝트들이 모여 있는 폴더)로 좁히는 것을 권장합니다. |
-| `--host` | 서버가 어느 주소에서 접속을 받을지 정합니다. 기본값은 이 컴퓨터에서만 접속할 수 있습니다. | `127.0.0.1` | 보통은 그대로 두세요. 바꾸려면 반드시 TLS 역프록시 뒤에 두세요([보안](#보안) 참고). |
+| `--host` | 서버가 어느 주소에서 접속을 받을지 정합니다. 기본값은 이 컴퓨터에서만 접속할 수 있습니다. | `127.0.0.1` | 보통은 그대로 두세요. 다른 기기에서 접속하려면 이 값을 바꾸지 말고 [외부에서 접속하기](#외부에서-접속하기)를 따르세요. |
 | `--state-dir` | 워크스페이스·채팅 목록 같은 앱 상태를 저장하는 폴더입니다. | `$XDG_STATE_HOME/omo-webchat` 또는 `~/.local/state/omo-webchat` | 거의 바꿀 일이 없습니다. 상태를 따로 분리하고 싶을 때만 쓰세요. |
 
 - 모든 파라미터는 환경 변수로도 줄 수 있습니다(`TH_PASSWORD`, `TH_PORT`, `TH_ROOT`, `TH_HOST`, `TH_STATE_DIR`). 둘 다 있으면 명령줄 파라미터가 우선합니다.
 - `PATH`에 다른 `omo`가 있거나 특정 빌드를 쓰고 싶다면 `CHAT_PI_BINARY`에 omo 실행 파일의 절대 경로를 지정하세요. 이 값이 항상 가장 먼저 쓰입니다.
+
+### 외부에서 접속하기
+
+휴대폰이나 다른 컴퓨터에서 쓰고 싶다면 서버는 위 명령 그대로 켜 두고, 아래 도구 중 하나로 HTTPS 주소를 만드세요. `--host`는 바꿀 필요가 없습니다.
+
+#### 방법 1. Tailscale (권장)
+
+내 기기끼리만 연결되는 사설망입니다. 나만 쓴다면 이 방법이 가장 안전하고 간단합니다.
+
+1. 서버 컴퓨터와 접속할 기기(휴대폰 등)에 [Tailscale](https://tailscale.com/download)을 설치하고 같은 계정으로 로그인합니다.
+2. 서버 컴퓨터에서 실행합니다.
+
+   ```sh
+   tailscale serve --bg 8080
+   ```
+
+3. 출력된 `https://<기기 이름>.<tailnet 이름>.ts.net` 주소를 접속할 기기의 브라우저에서 엽니다.
+
+- 처음 실행하면 tailnet에서 HTTPS를 켜라는 안내가 나올 수 있습니다. 안내된 링크에서 허용하면 됩니다.
+- 공유를 끄려면 `tailscale serve reset`을 실행하세요.
+- `tailscale funnel`은 인터넷 전체에 공개하는 기능이니 쓰지 마세요.
+- 자세한 내용: [Tailscale Serve 문서](https://tailscale.com/docs/features/tailscale-serve)
+
+#### 방법 2. Cloudflare Tunnel
+
+Tailscale을 설치할 수 없는 기기에서 접속해야 할 때 씁니다. **주소를 아는 누구나 로그인 화면까지 들어올 수 있습니다.**
+
+1. [cloudflared](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/)를 설치합니다.
+2. 서버 컴퓨터에서 실행합니다.
+
+   ```sh
+   cloudflared tunnel --url http://127.0.0.1:8080
+   ```
+
+3. 출력된 `https://<임의의 이름>.trycloudflare.com` 주소로 접속합니다. 이 주소는 실행할 때마다 바뀌고, 명령을 끄면 사라집니다.
+
+- 잠깐 쓰는 용도로만 쓰세요. 계속 쓰려면 이름 있는 터널에 [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/)로 이메일 인증 등을 앞에 두는 것을 권장합니다.
+- 자세한 내용: [Quick Tunnels 문서](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/)
+
+#### 외부에 열 때 주의할 점
+
+- **비밀번호를 길고 추측하기 어렵게 정하세요.** 로그인하면 파일을 편집할 수 있고 omo가 이 컴퓨터에서 명령을 실행할 수 있습니다.
+- **터널을 쓰면 로그인 차단이 모든 사람에게 함께 걸립니다.** 서버는 한 IP에서 1시간 안에 비밀번호를 10번 틀리면 그 IP를 1시간 동안 막습니다. 그런데 터널을 거친 접속은 모두 같은 IP(`127.0.0.1`)로 보이기 때문에, 누군가 10번 틀리면 본인도 1시간 동안 로그인할 수 없습니다. 공개 주소를 오래 열어 둘 때 Cloudflare Access를 권하는 이유입니다.
 
 ### 주요 기능
 
@@ -232,11 +275,54 @@ You need:
 | `--password` | The password you type to enter the web UI. | none (**required**) | Always set your own. Restarting the server requires logging in again. |
 | `--port` | The number in the browser address `http://127.0.0.1:<port>`. | `8080` | Only when another program already uses 8080. |
 | `--root` | The outermost folder visible in the file browser and workspaces. Nothing outside it is visible from the web. | home directory | Recommended: narrow it to the folder you work in (for example, the folder holding your projects). |
-| `--host` | Which address the server accepts connections on. The default allows connections from this computer only. | `127.0.0.1` | Usually leave it. If you change it, always put a TLS reverse proxy in front (see [Security](#security)). |
+| `--host` | Which address the server accepts connections on. The default allows connections from this computer only. | `127.0.0.1` | Usually leave it. To reach it from other devices, keep this value and follow [Access from other devices](#access-from-other-devices) instead. |
 | `--state-dir` | Where app state such as workspaces and chat lists is stored. | `$XDG_STATE_HOME/omo-webchat` or `~/.local/state/omo-webchat` | Rarely. Only when you want to keep state separate. |
 
 - Every parameter can also come from an environment variable (`TH_PASSWORD`, `TH_PORT`, `TH_ROOT`, `TH_HOST`, `TH_STATE_DIR`). When both are set, the command-line parameter wins.
 - If a different `omo` is on your `PATH`, or you want a specific build, set `CHAT_PI_BINARY` to the absolute path of the omo executable. That variable always wins.
+
+### Access from other devices
+
+To use it from your phone or another computer, keep the server running with the command above and create an HTTPS address with one of these tools. You do not need to change `--host`.
+
+#### Option 1. Tailscale (recommended)
+
+A private network that connects only your own devices. If you are the only user, this is the safest and simplest option.
+
+1. Install [Tailscale](https://tailscale.com/download) on the server computer and on the device you will connect from (for example, your phone), and sign in with the same account.
+2. On the server computer, run:
+
+   ```sh
+   tailscale serve --bg 8080
+   ```
+
+3. Open the printed `https://<machine-name>.<tailnet-name>.ts.net` address in the browser on your other device.
+
+- The first run may ask you to enable HTTPS for your tailnet; allow it from the link it prints.
+- To stop sharing, run `tailscale serve reset`.
+- Do not use `tailscale funnel`: it publishes the server to the whole internet.
+- More: [Tailscale Serve docs](https://tailscale.com/docs/features/tailscale-serve)
+
+#### Option 2. Cloudflare Tunnel
+
+Use this when the device you connect from cannot run Tailscale. **Anyone who knows the address can reach the login page.**
+
+1. Install [cloudflared](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/).
+2. On the server computer, run:
+
+   ```sh
+   cloudflared tunnel --url http://127.0.0.1:8080
+   ```
+
+3. Open the printed `https://<random-name>.trycloudflare.com` address. It changes on every run and disappears when you stop the command.
+
+- Use it only for short sessions. For regular use, put [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) (for example, email verification) in front of a named tunnel.
+- More: [Quick Tunnels docs](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/)
+
+#### Before you expose it
+
+- **Use a long, hard-to-guess password.** Once logged in, someone can edit files and omo can run commands on this computer.
+- **Behind a tunnel, a login ban locks out everyone.** The server bans an IP for one hour after 10 wrong passwords within an hour. Every request through a tunnel arrives from the same IP (`127.0.0.1`), so if someone else fails 10 times, you are locked out for an hour too. That is why Cloudflare Access is recommended when a public address stays open.
 
 ### Features
 
