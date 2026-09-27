@@ -266,6 +266,9 @@
 
 .th-tree-label-tail {
   flex: none;
+  /* The tail starts with the word separator (" 12"); a flex item collapses
+     leading whitespace, which would render "workspace12". */
+  white-space: pre;
 }
 
 /* The selected row reads at a glance: the sliding indicator paints the
