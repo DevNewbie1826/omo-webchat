@@ -276,10 +276,17 @@
 /* A workspace's single disclosure owns both its name and caret. Its folder
    is decoration in the leading gutter rather than an in-flow column; the
    name therefore starts with the live heading/card titles without reducing
-   the E33 label width or doubling the row height. */
+   the E33 label width or doubling the row height. The row box reaches back
+   over that gutter (the name stays where it was), so hover, selection and
+   the focus ring enclose the folder too. */
+.th-tree-workspace > .th-tree-node {
+  margin-inline-start: calc(-1 * var(--th-space-3));
+  padding-inline-start: calc(var(--th-space-2) + var(--th-space-3));
+}
+
 .th-tree-workspace > .th-tree-node > .th-tree-icon {
   position: absolute;
-  left: calc(-1 * var(--th-space-2));
+  left: var(--th-space-1);
   width: calc(var(--th-space-3) - var(--th-space-0-5));
   pointer-events: none;
 }
@@ -297,8 +304,13 @@
   flex: 1;
 }
 
+.th-tree--touch .th-tree-workspace > .th-tree-node {
+  margin-inline-start: calc(-1 * var(--th-space-2));
+  padding-inline-start: calc(var(--th-space-2) + var(--th-space-2));
+}
+
 .th-tree--touch .th-tree-workspace > .th-tree-node > .th-tree-icon {
-  left: calc(-1 * var(--th-space-1));
+  left: var(--th-space-1);
 }
 
 .th-tree-source {
