@@ -326,12 +326,29 @@
   text-align: center;
 }
 
-/* A workspace with running work carries the state on its inventory count
-   too (DESIGN.md Sidebar: when agents are running, .th-tree-count takes
-   accent numerals on the matching tint). */
+.th-tree-count-slot {
+  display: grid;
+  flex: none;
+  width: var(--th-space-8);
+  align-items: center;
+}
+
+.th-tree-count-slot > * {
+  grid-area: 1 / 1;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.th-tree-count-slot .th-tree-running--workspace {
+  justify-content: center;
+  gap: var(--th-space-0-5);
+  padding: 0 var(--th-space-0-5);
+}
+
+/* The inventory count stays in the same grid cell while the running pill
+   replaces its paint with the exact agent count and spinner. */
 .th-tree-count--running {
-  color: var(--th-accent-ink);
-  background: var(--th-accent-bg);
+  visibility: hidden;
 }
 
 .th-tree-actions {
@@ -351,8 +368,8 @@
   display: inline-flex;
 }
 
-.th-tree-node:hover .th-tree-count,
-.th-tree-node:focus-within .th-tree-count {
+.th-tree-node:hover .th-tree-count-slot:not(:has(.th-tree-running)),
+.th-tree-node:focus-within .th-tree-count-slot:not(:has(.th-tree-running)) {
   display: none;
 }
 
@@ -452,8 +469,38 @@
   display: inline-flex;
 }
 
-.th-tree--touch .th-tree-count {
-  display: none;
+.th-tree--touch .th-tree-workspace > .th-tree-node > .th-tree-actions {
+  margin-right: calc(var(--th-space-6) + var(--th-space-1));
+}
+
+.th-tree--touch .th-tree-count-slot {
+  display: grid;
+  position: absolute;
+  right: var(--th-space-2);
+  top: 50%;
+  width: calc(var(--th-space-6) + var(--th-space-1));
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+/* The badge shares the 44px disclosure target with its caret on touch
+   screens; neither takes space from the name or the 44px action target. */
+.th-tree--touch .th-tree-workspace-activation .th-tree-chevron {
+  box-sizing: border-box;
+  justify-content: flex-start;
+  padding-inline-start: var(--th-space-0-5);
+}
+
+.th-tree--touch .th-tree-workspace-activation .th-tree-chevron--open {
+  transform: none;
+}
+
+.th-tree--touch .th-tree-workspace-activation .th-tree-chevron svg {
+  transition: transform var(--th-dur) var(--th-ease);
+}
+
+.th-tree--touch .th-tree-workspace-activation .th-tree-chevron--open svg {
+  transform: rotate(90deg);
 }
 
 /* Nesting reads through indentation alone; no guide line. */
