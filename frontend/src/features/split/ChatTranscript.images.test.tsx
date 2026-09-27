@@ -71,8 +71,8 @@ const i18n: I18nValue = {
 	t: (key, vars) => translate("en", key, vars),
 };
 
-function messageItem(blocks: readonly ContentBlock[]) {
-	return { kind: "message" as const, message: { role: "assistant", blocks, ts: 0 } };
+function messageItem(blocks: readonly ContentBlock[], id?: string) {
+	return { kind: "message" as const, message: { ...(id === undefined ? {} : { id }), role: "assistant", blocks, ts: 0 } };
 }
 
 function okImageResponse() {
@@ -173,7 +173,7 @@ describe("ChatTranscript preserved image blocks", () => {
 		act(() => {
 			root.render(
 				<I18nContext.Provider value={i18n}>
-					<ChatTranscript {...baseProps} items={[messageItem([block])]} />
+					<ChatTranscript {...baseProps} items={[messageItem([block], "entry-image")]} />
 				</I18nContext.Provider>,
 			);
 		});
@@ -192,18 +192,22 @@ describe("ChatTranscript preserved image blocks", () => {
 		);
 		const img = container.querySelector<HTMLImageElement>("img.th-chat-image");
 		expect(img?.getAttribute("src")).toBe("blob:mock-media");
+		const originalRow = img?.closest(".th-chat-row");
+		expect(originalRow?.getAttribute("data-entry-key")).toBe("message:entry-image");
 
-		// Re-render and remount of the row must not refetch: the cache is keyed
-		// per (toolCallId, contentIndex).
+		// Reconstructed entries with the same id retain the row and image DOM.
+		// The media cache remains keyed per (toolCallId, contentIndex).
 		act(() => {
 			root.render(
 				<I18nContext.Provider value={i18n}>
-					<ChatTranscript {...baseProps} items={[messageItem([block])]} restoreVersion={1} />
+					<ChatTranscript {...baseProps} items={[messageItem([block], "entry-image")]} restoreVersion={1} />
 				</I18nContext.Provider>,
 			);
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 		expect(container.querySelector("img.th-chat-image")).not.toBeNull();
+		expect(container.querySelector("img.th-chat-image")).toBe(img);
+		expect(container.querySelector("img.th-chat-image")?.closest(".th-chat-row")).toBe(originalRow);
 
 		// A committed collapse keeps the image visible; re-expanding never
 		// refetches — the disclosure no longer gates the media DOM.
@@ -228,7 +232,7 @@ describe("ChatTranscript preserved image blocks", () => {
 		act(() => {
 			root.render(
 				<I18nContext.Provider value={i18n}>
-					<ChatTranscript {...baseProps} items={[messageItem([block])]} />
+					<ChatTranscript {...baseProps} items={[messageItem([block], "entry-image")]} />
 				</I18nContext.Provider>,
 			);
 		});
