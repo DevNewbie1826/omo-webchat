@@ -293,6 +293,12 @@ func (s *Session) acquisitionError() error {
 	return err
 }
 
+// HistoryQuarantined reports whether an external write invalidated this route.
+func (s *Session) HistoryQuarantined() bool {
+	var drift *ExternalWriteError
+	return errors.As(s.acquisitionError(), &drift)
+}
+
 func (s *Session) operationOwner() *sendOperationOwner {
 	if s.sendOwner == nil {
 		s.sendOwner = &sendOperationOwner{operations: make(map[string]sendOperation), sessions: map[*Session]struct{}{s: {}}}
@@ -2097,9 +2103,14 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 	compactionCount := 0
 	var noticeCandidate transcriptNoticeReplay
 	progressive := false
+	onDemand := false
 	if target != nil {
 		if capable, ok := target.sub.(ProgressiveHistorySubscriber); ok {
 			progressive = capable.ProgressiveHistory()
+		}
+		if capable, ok := target.sub.(OnDemandHistorySubscriber); ok {
+			onDemand = capable.OnDemandHistory()
+			progressive = progressive || onDemand
 		}
 	}
 	var resume, acceptedResume *coldhistory.ResumeCursor
@@ -2288,6 +2299,8 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 	prepared := false
 	terminalEmitted := false
 	terminalFailure := error(nil)
+	firstBranchIndex := -1
+	rootEntryID := ""
 	streamCallback := func(metadata coldhistory.Metadata, page coldhistory.Page) error {
 		if metadata.Header.ID != s.durableID {
 			return fmt.Errorf("%w: disk session id %q does not match durable session %q", errIncompleteHistory, metadata.Header.ID, s.durableID)
@@ -2332,11 +2345,13 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 				acceptedResume = resume
 			}
 			if acceptedResume != nil {
-				if deriveErr := s.deriveCompleteHistoryBranch(ctx, sessionPath, &noticeCandidate); deriveErr != nil {
+				var deriveErr error
+				rootEntryID, deriveErr = s.deriveCompleteHistoryBranch(ctx, sessionPath, &noticeCandidate)
+				if deriveErr != nil {
 					return deriveErr
 				}
 			}
-			if progressive && (metadata.Total > hydrationTailBudget || acceptedResume != nil) {
+			if onDemand || progressive && (metadata.Total > hydrationTailBudget || acceptedResume != nil) {
 				// Pages arrive tail-first; derivation resumes only around the
 				// complete-branch fold that precedes the terminal commit.
 				deriveSuspended = true
@@ -2346,12 +2361,15 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 		if metadata.LeafID == "" {
 			return nil
 		}
+		if onDemand && firstBranchIndex < 0 {
+			firstBranchIndex = page.Start
+		}
 		if progressive && page.Head && !terminalEmitted {
 			// The bounded branch tail is on the wire. Fold the complete branch
 			// root-to-leaf so the terminal commit derives from the whole
 			// transcript, then paint the live engine tail exactly as today.
 			if acceptedResume == nil {
-				if deriveErr := s.deriveCompleteHistoryBranch(ctx, sessionPath, &noticeCandidate); deriveErr != nil {
+				if _, deriveErr := s.deriveCompleteHistoryBranch(ctx, sessionPath, &noticeCandidate); deriveErr != nil {
 					return deriveErr
 				}
 			}
@@ -2403,6 +2421,7 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 			ResolveResume: resolveResume,
 			Resume:        resume,
 			PageEntries:   entriesPageMaxCount,
+			SkipWarm:      onDemand,
 		}, hydrationTailBudget, hydrationWarmChunk, streamCallback)
 	} else {
 		_, err = streamSessionHistory(ctx, sessionPath, coldhistory.Options{
@@ -2458,11 +2477,23 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 		return publishErr(routeErr)
 	}
 	if !terminalEmitted {
+		if onDemand && acceptedResume == nil {
+			if _, deriveErr := s.deriveCompleteHistoryBranch(ctx, sessionPath, &noticeCandidate); deriveErr != nil {
+				return publishErr(deriveErr)
+			}
+		}
 		deriveSuspended = false
 		compactionCount = persistedCompactions
 		noticeCandidate.replayingTail = true
-		// No head page followed: the emitted tail already begins at the root.
-		if err := s.emitTailEntries(tail, emit, terminalHistoryComplete(progressive)); err != nil {
+		complete := terminalHistoryComplete(progressive)
+		if onDemand {
+			startsAtRoot := firstBranchIndex == 0
+			if acceptedResume != nil {
+				startsAtRoot = acceptedResume.FirstEntryID == rootEntryID
+			}
+			complete = &startsAtRoot
+		}
+		if err := s.emitTailEntries(tail, emit, complete); err != nil {
 			return publishErr(err)
 		}
 	}
@@ -2472,7 +2503,8 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 // deriveCompleteHistoryBranch folds notice derivation over the complete
 // branch root-to-leaf without emitting pages, so progressive delivery's
 // terminal commit matches a whole-stream attach.
-func (s *Session) deriveCompleteHistoryBranch(ctx context.Context, sessionPath string, candidate *transcriptNoticeReplay) error {
+func (s *Session) deriveCompleteHistoryBranch(ctx context.Context, sessionPath string, candidate *transcriptNoticeReplay) (string, error) {
+	rootEntryID := ""
 	_, err := streamSessionHistory(ctx, sessionPath, coldhistory.Options{
 		PageEntries: entriesPageMaxCount,
 	}, func(metadata coldhistory.Metadata, page coldhistory.Page) error {
@@ -2482,6 +2514,15 @@ func (s *Session) deriveCompleteHistoryBranch(ctx context.Context, sessionPath s
 		if metadata.LeafID == "" {
 			return nil
 		}
+		if page.Start == 0 && len(page.Entries) > 0 {
+			var root struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(page.Entries[0], &root); err != nil {
+				return err
+			}
+			rootEntryID = root.ID
+		}
 		s.lifecycleMu.Lock()
 		if !s.closed && !s.resumable {
 			s.deriveReplayPageLocked(page.Entries, candidate)
@@ -2489,7 +2530,7 @@ func (s *Session) deriveCompleteHistoryBranch(ctx context.Context, sessionPath s
 		s.lifecycleMu.Unlock()
 		return nil
 	})
-	return err
+	return rootEntryID, err
 }
 
 // terminalHistoryComplete is the terminal page's tri-state marker: a
