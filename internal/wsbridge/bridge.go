@@ -1419,6 +1419,7 @@ func (c *connection) createWithTransfer(routeCtx context.Context, f *wscontract.
 		c.sendError("unsupported_provider", ErrUnsupportedProvider.Error(), "", "")
 		return
 	}
+	c.previewHistory(ctx, f, rec, sub)
 	// A second-device attach rejected by the in-place activity gate can be
 	// retried explicitly: force authorizes this create attempt's acquisition
 	// at CursorForOpen exactly like the REST open path does. The attempt owns

@@ -355,7 +355,7 @@ type EntriesFrame struct {
 	// Present only on the terminal page
 	LeafID *string              `json:"leafId,omitempty"`
 	Resume *HistoryResumeCursor `json:"resume,omitempty"`
-	// Backward warm chunk of earlier history; the only value is head. Absent keeps today's meaning.
+	// head is a backward warm chunk; preview is an uncommitted v4 disk tail sent before engine acquisition. Absent keeps today's meaning.
 	Segment   *string `json:"segment,omitempty"`
 	SessionID string  `json:"sessionId"`
 	Type      string  `json:"type"`
@@ -2796,7 +2796,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "entries":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"entries": validationSchema{Type: "array", Items: &validationSchema{}}, "final": validationSchema{Type: "boolean"}, "historyComplete": validationSchema{Type: "boolean"}, "historySessionId": validationSchema{Type: "string"}, "leafId": validationSchema{Type: "string"}, "resume": validationSchema{Type: "object", Properties: map[string]validationSchema{"firstEntryId": validationSchema{Type: "string"}, "historyComplete": validationSchema{Type: "boolean"}, "lastEntryId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}}, Required: []string{"sessionId", "firstEntryId", "lastEntryId", "historyComplete"}}, "segment": validationSchema{Type: "string", Const: "head"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "entries"}}, Required: []string{"type", "sessionId", "entries", "final"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"entries": validationSchema{Type: "array", Items: &validationSchema{}}, "final": validationSchema{Type: "boolean"}, "historyComplete": validationSchema{Type: "boolean"}, "historySessionId": validationSchema{Type: "string"}, "leafId": validationSchema{Type: "string"}, "resume": validationSchema{Type: "object", Properties: map[string]validationSchema{"firstEntryId": validationSchema{Type: "string"}, "historyComplete": validationSchema{Type: "boolean"}, "lastEntryId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}}, Required: []string{"sessionId", "firstEntryId", "lastEntryId", "historyComplete"}}, "segment": validationSchema{Type: "string", Enum: []string{"head", "preview"}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "entries"}}, Required: []string{"type", "sessionId", "entries", "final"}}); err != nil {
 				return nil, err
 			}
 		case "entry.appended":

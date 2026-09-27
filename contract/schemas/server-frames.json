@@ -715,8 +715,8 @@
         },
         "segment": {
           "type": "string",
-          "const": "head",
-          "description": "Backward warm chunk of earlier history; the only value is head. Absent keeps today's meaning."
+          "enum": ["head", "preview"],
+          "description": "head is a backward warm chunk; preview is an uncommitted v4 disk tail sent before engine acquisition. Absent keeps today's meaning."
         },
         "historyComplete": {
           "type": "boolean",
