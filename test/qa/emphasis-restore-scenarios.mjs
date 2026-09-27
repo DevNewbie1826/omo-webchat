@@ -312,18 +312,39 @@ export function sidebarStatesVerdict(running, connected, idle) {
 export function probeWorkspaceLabels() {
   const owner = document.querySelector('.th-sidebar-body');
   const ownerBox = owner?.getBoundingClientRect();
+  const drawerLeft = document.querySelector('.th-sidebar')?.getBoundingClientRect().left ?? null;
+  const ownerStyle = owner && getComputedStyle(owner);
+  const content = ownerBox && { left: ownerBox.left + parseFloat(ownerStyle.borderLeftWidth)
+    + parseFloat(ownerStyle.paddingLeft),
+  right: ownerBox.right - parseFloat(ownerStyle.borderRightWidth) - parseFloat(ownerStyle.paddingRight),
+  top: ownerBox.top + parseFloat(ownerStyle.borderTopWidth) + parseFloat(ownerStyle.paddingTop),
+  bottom: ownerBox.bottom - parseFloat(ownerStyle.borderBottomWidth) - parseFloat(ownerStyle.paddingBottom) };
   const rows = [];
   for (const row of document.querySelectorAll('.th-tree-workspace > .th-tree-node')) {
     if (!isVisibleElement(row)) continue;
     const label = row.querySelector('.th-tree-label-text');
     const column = row.querySelector('.th-tree-activation');
+    const glyph = row.querySelector('.th-tree-icon svg');
     if (!label || !column) continue;
     const box = column.getBoundingClientRect();
     if (ownerBox && (box.bottom < ownerBox.top || box.top > ownerBox.bottom)) continue;
+    const tail = label.querySelector('.th-tree-label-tail');
+    const tailBox = tail?.getBoundingClientRect();
+    const labelBox = label.getBoundingClientRect();
     rows.push({ text: label.textContent.trim(), box: box.toJSON(),
+      accessibleName: column.getAttribute('aria-label'),
+      visibleTail: !!tailBox && tailBox.width > 0
+        && tailBox.left >= labelBox.left - 1 && tailBox.right <= labelBox.right + 1
+        && tailBox.left >= box.left - 1 && tailBox.right <= box.right + 1
+        && (!content || (tailBox.left >= content.left - 1 && tailBox.right <= content.right + 1)),
+      tail: tail?.textContent.trim() ?? null,
+      glyph: glyph?.getBoundingClientRect().toJSON() ?? null,
       ellipsized: label.scrollWidth > label.clientWidth + 1 });
   }
-  return { rows, coarsePointer: window.matchMedia('(pointer: coarse)').matches };
+  return { rows, content, drawerLeft,
+    fontSize: getComputedStyle(document.documentElement).getPropertyValue('--th-font-size').trim(),
+    persistedFontSize: localStorage.getItem('th-font-size'),
+    coarsePointer: window.matchMedia('(pointer: coarse)').matches };
 }
 
 export function workspaceLabelVerdict(facts, { minWidth = 124 } = {}) {
@@ -331,10 +352,25 @@ export function workspaceLabelVerdict(facts, { minWidth = 124 } = {}) {
   const tested = (facts.rows ?? []).filter(row => /Earlier workspace/.test(row.text));
   fail(tested.length >= 12, `Q19 expected 12+ "Earlier workspace N" rows, found ${tested.length}`, failures);
   for (const row of tested) {
-    fail(/(\d+)\s*$/.test(row.text), `Q19 row "${row.text}" has no trailing number`, failures);
+    const digits = /(\d+)\s*$/.exec(row.text)?.[1];
+    fail(!!digits, `Q19 row "${row.text}" has no trailing number`, failures);
     fail(row.box && row.box.width >= minWidth,
       `Q19 label box ${row.box ? row.box.width.toFixed(1) : '?'}px < main baseline ${minWidth}px ("${row.text}")`, failures);
     fail(!row.ellipsized, `Q19 "${row.text}" ellipsizes away its trailing number`, failures);
+    fail(!!digits && row.visibleTail && row.tail?.endsWith(digits),
+      `Q19 "${row.text}" tail is not fully visible`, failures);
+    fail(row.accessibleName === row.text, `Q19 "${row.text}" accessible name is incomplete`, failures);
+  }
+  fail(!!facts.content && (facts.rows ?? []).length >= 12,
+    'Q19 workspace glyph content box or rows missing', failures);
+  for (const row of facts.rows ?? []) {
+    const glyph = row.glyph, content = facts.content;
+    // The folder glyph deliberately sits in the body's leading padding gutter;
+    // the defect is clipping at the drawer edge, so the left bound is the
+    // drawer's own edge plus a 4px gutter, not the padding-inner line.
+    fail(!!glyph && !!content && facts.drawerLeft != null && glyph.left >= facts.drawerLeft + 4
+      && glyph.right <= content.right && glyph.top >= content.top && glyph.bottom <= content.bottom,
+    `Q19 "${row.text}" folder glyph outside content box or 4px left gutter`, failures);
   }
   return finish(facts, failures);
 }
@@ -688,7 +724,7 @@ async function setupCoarseLive(ctx, extra) {
         route.fulfill({ status: 200, contentType: 'application/json',
           body: JSON.stringify({ items: [], nextCursor: '' }) }));
     }
-    await installSignals(page, { theme: ctx.theme });
+    await installSignals(page, { theme: ctx.theme, fontSize: extra.fontSize ?? null });
     const attached = fixture.base.wait('frame', frame => frame.type === 'chat.stats');
     await page.goto(fixture.url);
     await attached;
@@ -803,46 +839,98 @@ export function dagVerdict(facts, roles, width) {
   return finish(facts, failures);
 }
 
-/** Screenshot pixels include the halo below the translucent SVG card; CSS
- * tokens and computed fills alone cannot describe that painted background. */
-export async function probeDagRunningPaint({ png }) {
-  const word = document.querySelector('.th-activity-gnode--running .th-activity-gstate');
-  const card = word?.closest('.th-activity-gnode')?.querySelector('.th-activity-gnode-card');
-  if (!word || !card) return null;
-  const text = word.getBoundingClientRect(), surface = card.getBoundingClientRect();
-  const right = Math.ceil(text.right + 3), left = Math.floor(text.left - 3);
-  const x = right < surface.right - 2 ? right : left > surface.left + 2 ? left : -1;
-  const y = Math.round((text.top + text.bottom) / 2);
-  const image = new Image();
-  image.src = `data:image/png;base64,${png}`;
-  await image.decode();
-  const canvas = document.createElement('canvas');
-  canvas.width = image.width;
-  canvas.height = image.height;
-  const context = canvas.getContext('2d');
-  context.drawImage(image, 0, 0);
-  const rgba = x >= 0 && y >= 0 && x < canvas.width && y < canvas.height
-    ? [...context.getImageData(x, y, 1, 1).data] : null;
-  return { color: getComputedStyle(word).fill, background: rgba
-    ? `rgb(${rgba[0]}, ${rgba[1]}, ${rgba[2]})` : null,
-  sample: { x, y }, card: surface.toJSON(), word: text.toJSON() };
+/** Paired rendered frames differ only in running-word visibility. A pixel
+ * where the glyph actually contributed gives its fully composited background
+ * in the hidden frame, including blurred strokes from adjacent nodes. */
+export async function probeDagRunningPaint({ normalPng, hiddenPng }) {
+  const pixels = async png => {
+    const image = new Image();
+    image.src = `data:image/png;base64,${png}`;
+    await image.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const context = canvas.getContext('2d');
+    context.drawImage(image, 0, 0);
+    return { width: canvas.width, height: canvas.height,
+      data: context.getImageData(0, 0, canvas.width, canvas.height).data };
+  };
+  const normal = await pixels(normalPng), hidden = await pixels(hiddenPng);
+  if (normal.width !== hidden.width || normal.height !== hidden.height) return [];
+  const reel = document.querySelector('.th-activity-graph')?.getBoundingClientRect();
+  const panel = document.querySelector('[data-activity-tabpanel="dag"]')?.getBoundingClientRect();
+  return [...document.querySelectorAll('.th-activity-gnode--running .th-activity-gstate')].map(word => {
+    const id = word.closest('g[data-node]')?.getAttribute('data-node');
+    const text = word.getBoundingClientRect();
+    const ink = parseColor(getComputedStyle(word).fill);
+    const left = Math.max(0, Math.ceil(text.left), Math.ceil(reel?.left ?? 0));
+    const right = Math.min(normal.width, Math.floor(text.right), Math.floor(reel?.right ?? normal.width));
+    const top = Math.max(0, Math.ceil(text.top), Math.ceil(panel?.top ?? 0));
+    const bottom = Math.min(normal.height, Math.floor(text.bottom), Math.floor(panel?.bottom ?? normal.height));
+    if (right <= left || bottom <= top) return null;
+    let glyphPixels = 0, darkest = null;
+    if (ink) for (let y = top; y < bottom; y++) for (let x = left; x < right; x++) {
+      const offset = (y * normal.width + x) * 4;
+      const background = { r: hidden.data[offset], g: hidden.data[offset + 1],
+        b: hidden.data[offset + 2], a: 1 };
+      const foreground = { r: normal.data[offset], g: normal.data[offset + 1],
+        b: normal.data[offset + 2] };
+      const channels = ['r', 'g', 'b'];
+      const weight = channels.reduce((sum, channel) =>
+        sum + (ink[channel] - background[channel]) ** 2, 0);
+      if (weight < 100) continue;
+      const coverage = channels.reduce((sum, channel) =>
+        sum + (foreground[channel] - background[channel]) * (ink[channel] - background[channel]), 0) / weight;
+      if (coverage < 0.6 || coverage > 1.1) continue;
+      glyphPixels++;
+      const contrast = contrastRatio(ink, background);
+      if (!darkest || contrast < darkest.contrast) darkest = {
+        color: getComputedStyle(word).fill,
+        background: `rgb(${background.r}, ${background.g}, ${background.b})`,
+        contrast, sample: { x, y, coverage },
+      };
+    }
+    return { id, glyphPixels, ...darkest };
+  }).filter(Boolean);
 }
 
-export function dagRunningPaintVerdict(samples) {
+export function dagRunningPaintVerdict(samples, stage = 'mixed') {
   const failures = [];
-  fail(samples?.length === 3, 'Q3 running halo cycle missing paint samples', failures);
-  for (const sample of samples ?? []) {
-    const measured = ratio(sample?.color, sample?.background);
-    fail(sample?.background && measured >= 4.5,
-      `Q3 running text contrast ${measured.toFixed(3)}:1 at halo ${sample?.time ?? '?'}ms`, failures);
+  fail(samples?.length === 3, `Q3 ${stage} halo cycle missing paint samples`, failures);
+  for (const frame of samples ?? []) {
+    const words = frame.words ?? [];
+    fail(words.length >= (stage === 'dense64' ? 3 : 1),
+      `Q3 ${stage} only ${words.length} painted running words at halo ${frame.time}ms`, failures);
+    if (stage === 'dense64') {
+      const indices = new Set(words.map(word => Number(/^w1n(\d+)$/.exec(word.id)?.[1])));
+      fail([...indices].some(index => indices.has(index + 1) && indices.has(index + 2)),
+        `Q3 dense64 lacks three vertically adjacent painted running words at ${frame.time}ms`, failures);
+    }
+    for (const word of words) {
+      const measured = ratio(word.color, word.background);
+      fail(word.glyphPixels > 0 && measured >= 4.5,
+        `Q3 ${stage} ${word.id} glyph contrast ${measured.toFixed(4)}:1 at halo ${frame.time}ms`, failures);
+    }
   }
   return finish(samples, failures);
 }
 
-export function probeMobileDag() {
+export function probeMobileDag({ scroll = false } = {}) {
   const reel = document.querySelector('.th-activity-graph');
   const svg = reel?.querySelector('svg');
+  const panel = reel?.closest('.th-activity-panel');
   const box = el => el?.getBoundingClientRect().toJSON() ?? null;
+  const ancestors = [];
+  for (let el = reel; el; el = el.parentElement) {
+    const style = getComputedStyle(el);
+    if (/(hidden|clip|auto|scroll)/.test(style.overflowY)) {
+      const rect = el.getBoundingClientRect();
+      ancestors.push({ owner: el.className, overflowY: style.overflowY,
+        top: rect.top + el.clientTop, bottom: rect.top + el.clientTop + el.clientHeight,
+        clientHeight: el.clientHeight, scrollHeight: el.scrollHeight, scrollTop: el.scrollTop });
+    }
+    if (el === panel) break;
+  }
   const nodes = [...(svg?.querySelectorAll('g[data-node]') ?? [])].map(group => {
     const card = group.querySelector('.th-activity-gnode-card');
     const words = [...group.querySelectorAll('text[class*="glabel"], text[class*="gstate"]')].map(el => {
@@ -854,7 +942,7 @@ export function probeMobileDag() {
       const clipY = Number(clip?.getAttribute('y'));
       const clipHeight = Number(clip?.getAttribute('height'));
       return { text: el.textContent.trim(), kind: el.classList.contains('th-activity-gstate') ? 'state' : 'title',
-        fontSize: parseFloat(style.fontSize),
+        fontSize: parseFloat(style.fontSize), box: box(el),
         scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
         measured, allowed, clipId: clipId ?? null,
         ink: ink ? { x: ink.x, y: ink.y, width: ink.width, height: ink.height } : null,
@@ -867,12 +955,102 @@ export function probeMobileDag() {
       title: words.filter(word => word.kind === 'title').map(word => word.text).join(''),
       stateWord: words.find(word => word.kind === 'state')?.text ?? null };
   });
+  let scrollport = null;
+  if (scroll) for (let el = reel; el && el !== panel; el = el.parentElement)
+    if (/^(auto|scroll)$/.test(getComputedStyle(el).overflowY)
+      && el.scrollHeight > el.clientHeight + 1) { scrollport = el; break; }
+  const scrollChecks = [];
+  if (scrollport) {
+    const original = scrollport.scrollTop;
+    try {
+      for (const node of nodes) {
+        const group = [...svg.querySelectorAll('g[data-node]')].find(el => el.dataset.node === node.id);
+        const elements = [group.querySelector('.th-activity-gnode-card'),
+          ...group.querySelectorAll('text[class*="glabel"], text[class*="gstate"]')];
+        const viewport = scrollport.getBoundingClientRect();
+        const card = elements[0].getBoundingClientRect();
+        scrollport.scrollTop += card.top - viewport.top - scrollport.clientTop - 1;
+        const visible = elements.every(el => {
+          const rect = el.getBoundingClientRect();
+          const view = scrollport.getBoundingClientRect();
+          return rect.top >= view.top + scrollport.clientTop - 1
+            && rect.bottom <= view.top + scrollport.clientTop + scrollport.clientHeight + 1;
+        });
+        scrollChecks.push({ id: node.id, visible });
+      }
+    } finally {
+      scrollport.scrollTop = original;
+    }
+  }
   return { reel: reel ? { box: box(reel), scrollHeight: reel.scrollHeight, clientHeight: reel.clientHeight,
-    scrollWidth: reel.scrollWidth, clientWidth: reel.clientWidth } : null, nodes };
+    scrollWidth: reel.scrollWidth, clientWidth: reel.clientWidth } : null,
+  panelFound: !!panel, ancestors, nodes, scrollChecks };
+}
+
+export function probeDagListText() {
+  const size = selector => {
+    const element = document.querySelector(selector);
+    return element ? parseFloat(getComputedStyle(element).fontSize) : 0;
+  };
+  return { label: size('.th-activity-dnode-label'), state: size('.th-activity-dnode-state') };
+}
+
+export function dagTypographyVerdict(facts, phone, fontSize) {
+  const failures = [];
+  for (const node of facts.nodes ?? []) for (const word of node.words ?? [])
+    fail(phone ? Math.abs(word.fontSize - 11) <= .2 : word.fontSize >= 11,
+      `Q14 decision 9 font${fontSize} ${node.id} ${word.kind} is ${word.fontSize}px, ${phone ? 'not 11px' : 'below 11px'}`, failures);
+  return finish(facts, failures);
+}
+
+export function dagListScaleVerdict(small, large) {
+  const failures = [];
+  fail(large?.label > small?.label && large?.state > small?.state,
+    `Q14 decision 9 List text does not grow with font setting (${JSON.stringify(small)} -> ${JSON.stringify(large)})`, failures);
+  return finish({ small, large }, failures);
+}
+
+export function dagAncestorVerdict(facts, stage = 'mixed', phone = true) {
+  const failures = [], ancestors = facts.ancestors ?? [];
+  fail(facts.panelFound && ancestors.some(row => String(row.owner).includes('th-activity-tabpanel')),
+    `Q14/Q15 ${stage} missing DAG tabpanel clipping boundary`, failures);
+  for (const row of ancestors) if (phone) fail(row.clientHeight > 0 && row.scrollHeight <= row.clientHeight + 1,
+    `Q14/Q15 ${stage} ${row.owner} scrolls vertically (${row.scrollHeight}>${row.clientHeight}px)`, failures);
+  const top = Math.max(...ancestors.map(row => row.top));
+  const bottom = Math.min(...ancestors.map(row => row.bottom));
+  fail(ancestors.length > 0 && Number.isFinite(top) && Number.isFinite(bottom) && bottom > top,
+    `Q14/Q15 ${stage} visible clipping intersection missing`, failures);
+  for (const node of facts.nodes ?? []) {
+    for (const item of [{ kind: 'card', box: node.card }, ...(node.words ?? [])]) {
+      const bounds = item.box;
+      let target = bounds;
+      let reachable = !!bounds;
+      for (const row of ancestors) {
+        const scrolling = !phone && /^(auto|scroll)$/.test(row.overflowY)
+          && row.scrollHeight > row.clientHeight + 1;
+        if (scrolling) {
+          reachable &&= target.top >= row.top - (row.scrollTop ?? 0) - 1
+            && target.bottom <= row.top - (row.scrollTop ?? 0) + row.scrollHeight + 1
+            && target.bottom - target.top <= row.clientHeight + 1;
+          target = { top: row.top, bottom: row.bottom };
+        } else {
+          reachable &&= target.top >= row.top - 1 && target.bottom <= row.bottom + 1;
+        }
+      }
+      fail(reachable,
+        `Q14/Q15 ${stage} ${node.id} ${item.kind} outside ${phone ? 'visible' : 'reachable'} ancestor ${top.toFixed(1)}..${bottom.toFixed(1)}`, failures);
+    }
+  }
+  if (!phone && ancestors.some(row => /^(auto|scroll)$/.test(row.overflowY)
+    && row.scrollHeight > row.clientHeight + 1))
+    for (const node of facts.nodes ?? []) fail(facts.scrollChecks?.find(row => row.id === node.id)?.visible,
+      `Q14/Q15 ${stage} ${node.id} not fully painted when scrolled into view`, failures);
+  return finish({ ancestors, visibleTop: top, visibleBottom: bottom }, failures);
 }
 
 export function mobileDagVerdict(facts, desktopHeight, stage = 'mixed') {
   const failures = [], reel = facts.reel, nodes = facts.nodes ?? [];
+  failures.push(...dagAncestorVerdict(facts, stage).failures);
   fail(reel && reel.scrollHeight <= reel.clientHeight + 1, `Q14 ${stage} reel scrolls vertically`, failures);
   const complete = nodes.filter(node => node.card && reel && inside(node.card, reel.box));
   if (stage === 'mixed') fail(complete.length >= 3, `Q14 only ${complete.length} whole mobile DAG nodes`, failures);
@@ -1147,59 +1325,86 @@ async function driveQ2(ctx) {
 
 async function driveQ3(ctx) {
   return withFixture(ctx, async (env, save) => {
-    await dag(env, 'mixed');
+    const update = await dag(env, 'mixed');
     const facts = await ctx.probe(env.page, probeDagGraph, { runningId: 'k6', sourceId: 'k5' });
     const verdict = dagVerdict(facts, t4StageRoles('mixed'), ctx.viewport.width);
     const motion = await ctx.probe(env.page, probeDagRunningMotion);
     verdict.failures.push(...dagRunningMotionVerdict(motion).failures);
     await save('-mixed');
-    const halo = env.page.locator('.th-activity-gnode--running .th-activity-gnode-halo').first();
-    const samples = [];
-    const paintAt = async time => {
-      await halo.evaluate((element, time) => {
-        const animation = element.getAnimations().find(item => item.animationName === 'th-dag-halo-breathe'
-          || item.effect?.getKeyframes().some(frame => frame.opacity !== undefined));
-        if (!animation) throw new Error('Q3 running halo animation missing');
-        animation.pause();
-        animation.currentTime = time;
-      }, time);
-      const png = (await env.page.screenshot({ scale: 'css' })).toString('base64');
-      return { ...await ctx.probe(env.page, probeDagRunningPaint, { png }), time };
-    };
-    try {
-      const duration = await halo.evaluate(element => element.getAnimations()
+    const measureStage = async stage => {
+      await settleFinite(env.page, '.th-activity-graph');
+      const halos = env.page.locator('.th-activity-gnode--running .th-activity-gnode-halo');
+      const words = env.page.locator('.th-activity-gnode--running .th-activity-gstate');
+      const count = await halos.count();
+      if (count !== t4StageRoles(stage).running.length) throw new Error(`Q3 ${stage} missing running halos`);
+      const duration = await halos.first().evaluate(element => element.getAnimations()
         .find(animation => animation.effect?.getKeyframes().some(frame => frame.opacity !== undefined))
         ?.effect?.getComputedTiming().duration);
-      if (!Number.isFinite(duration) || duration <= 0) throw new Error('Q3 halo duration missing');
-      for (const time of [0, duration / 2, duration]) samples.push(await paintAt(time));
-      verdict.failures.push(...dagRunningPaintVerdict(samples).failures);
-      const original = await halo.evaluate(element => ({ fill: element.style.fill, stroke: element.style.stroke }));
+      if (!Number.isFinite(duration) || duration <= 0) throw new Error(`Q3 ${stage} halo duration missing`);
+      const paintAt = async time => {
+        await halos.evaluateAll((elements, time) => elements.forEach(element => {
+          const animation = element.getAnimations()
+            .find(item => item.effect?.getKeyframes().some(frame => frame.opacity !== undefined));
+          if (!animation) throw new Error('Q3 running halo animation missing');
+          animation.pause();
+          animation.currentTime = time;
+        }), time);
+        const normalPng = (await env.page.screenshot({ scale: 'css' })).toString('base64');
+        const original = await words.evaluateAll(elements => elements.map(element => element.style.visibility));
+        let hiddenPng;
+        try {
+          await words.evaluateAll(elements => elements.forEach(element => { element.style.visibility = 'hidden'; }));
+          hiddenPng = (await env.page.screenshot({ scale: 'css' })).toString('base64');
+        } finally {
+          await words.evaluateAll((elements, values) => elements.forEach((element, index) => {
+            element.style.visibility = values[index];
+          }), original);
+        }
+        return { time, words: await ctx.probe(env.page, probeDagRunningPaint, { normalPng, hiddenPng }) };
+      };
+      const samples = [];
       try {
-        await halo.evaluate(element => {
-          element.style.fill = 'var(--th-accent-glow)';
-          element.style.stroke = 'none';
-        });
-        const oldPaint = await paintAt(duration);
-        fail(!dagRunningPaintVerdict([oldPaint, oldPaint, oldPaint]).pass,
-          'Q3 control: old filled halo must fail composited contrast', verdict.failures);
-        verdict.measurements = { ...verdict.measurements, oldPaint };
+        for (const time of [0, duration / 2, duration]) samples.push(await paintAt(time));
+        verdict.failures.push(...dagRunningPaintVerdict(samples, stage).failures);
+        return { samples, paintAt, duration };
       } finally {
-        await halo.evaluate((element, value) => {
-          element.style.fill = value.fill;
-          element.style.stroke = value.stroke;
-        }, original);
+        await halos.evaluateAll(elements => elements.forEach(element =>
+          element.getAnimations().forEach(animation => animation.play())));
       }
+    };
+    const mixed = await measureStage('mixed');
+    const halo = env.page.locator('.th-activity-gnode--running .th-activity-gnode-halo').first();
+    const original = await halo.evaluate(element => ({ fill: element.style.fill, stroke: element.style.stroke }));
+    let oldPaint;
+    try {
+      await halo.evaluate(element => {
+        element.style.fill = 'var(--th-accent-glow)';
+        element.style.stroke = 'none';
+      });
+      oldPaint = await mixed.paintAt(mixed.duration);
+      fail(!dagRunningPaintVerdict([oldPaint, oldPaint, oldPaint]).pass,
+        'Q3 control: old filled halo must fail composited contrast', verdict.failures);
     } finally {
-      await halo.evaluate(element => element.getAnimations().forEach(animation => animation.play()));
+      await halo.evaluate((element, value) => {
+        element.style.fill = value.fill;
+        element.style.stroke = value.stroke;
+        element.getAnimations().forEach(animation => animation.play());
+      }, original);
     }
+    await update('dense64');
+    await env.page.waitForFunction(count => document.querySelectorAll('.th-activity-graph [data-node]').length === count,
+      t4StageSpec('dense64').length, { timeout: 9000 });
+    await env.page.locator('.th-activity-gnode--running').first().scrollIntoViewIfNeeded();
+    const dense = await measureStage('dense64');
+    await save('-dense64');
     await env.page.emulateMedia({ reducedMotion: 'reduce' });
     const reduced = await ctx.probe(env.page, probeDagRunningMotion);
     verdict.failures.push(...dagReducedMotionVerdict(reduced).failures);
     verdict.pass = verdict.failures.length === 0;
-    verdict.measurements = { ...facts, motion, reduced, paint: samples, oldPaint: verdict.measurements.oldPaint };
-    await save('-mixed-reduced');
+    verdict.measurements = { ...facts, motion, reduced, paint: mixed.samples, densePaint: dense.samples, oldPaint };
+    await save('-dense64-reduced');
     return verdict;
-  });
+  }, { fontSize: 13 });
 }
 
 async function driveQ4(ctx) {
@@ -1577,7 +1782,7 @@ async function driveQ10(ctx) {
 
 async function driveQ14(ctx) {
   const results = [];
-  for (const fontSize of [13, 24]) results.push(await withFixture(ctx, async (env, save) => {
+  for (const fontSize of [13, 14, 24]) results.push(await withFixture(ctx, async (env, save) => {
     const update = await dag(env, 'mixed');
     const measurements = {}, failures = [];
     const desktop = ctx.viewport.width === 1280 ? null
@@ -1596,15 +1801,18 @@ async function driveQ14(ctx) {
             t4StageSpec(stage).length, { timeout: 9000 });
           }
         }
-        const facts = await ctx.probe(env.page, probeMobileDag);
+        const facts = await ctx.probe(env.page, probeMobileDag, { scroll: ctx.viewport.width !== 390 });
         const desktopHeight = desktop
           ? (await ctx.probe(desktop.page, probeMobileDag)).nodes[0]?.card?.height ?? 0
           : facts.nodes[0]?.card?.height ?? 0;
         const verdict = ctx.viewport.width === 390
           ? mobileDagVerdict(facts, desktopHeight, stage)
-          : finish(facts, facts.nodes.length === t4StageSpec(stage).length
-            && facts.nodes.every(node => node.words.every(word => word.fontSize >= 10.99 && !word.clipped))
-            ? [] : [`Q14 ${stage} missing nodes or clipped/sub-11px text`]);
+          : finish(facts, [...dagAncestorVerdict(facts, stage, false).failures,
+            ...(facts.nodes.length === t4StageSpec(stage).length
+              && facts.nodes.every(node => node.words.every(word => word.fontSize >= 10.99 && !word.clipped))
+              ? [] : [`Q14 ${stage} missing nodes or clipped/sub-11px text`])]);
+        verdict.failures.push(...dagTypographyVerdict(facts, ctx.viewport.width === 390, fontSize).failures);
+        verdict.pass = verdict.failures.length === 0;
         measurements[stage] = verdict.measurements;
         failures.push(...verdict.failures);
         if (stage === 'mixed') {
@@ -1615,13 +1823,28 @@ async function driveQ14(ctx) {
         }
         await save(`-font${fontSize}-${stage}`);
       }
+      if (ctx.viewport.width === 390 && (fontSize === 13 || fontSize === 24)) {
+        await env.page.click('[data-view="list"]');
+        await env.page.waitForSelector('.th-activity-dnode-label', { timeout: 4000 });
+        const list = await ctx.probe(env.page, probeDagListText);
+        measurements.list = list;
+        fail(list.label > 0 && list.state > 0,
+          `Q14 decision 9 font${fontSize} List text missing`, failures);
+        await save(`-font${fontSize}-list`);
+      }
     } finally {
       if (desktop) await desktop.close();
     }
     return finish(measurements, failures);
   }, { fontSize }));
-  return { ...finish(Object.fromEntries(results.map((result, index) => [[13, 24][index], result.measurements])),
-    results.flatMap((result, index) => result.failures.map(reason => `font${[13, 24][index]}: ${reason}`))),
+  const failures = results.flatMap((result, index) =>
+    result.failures.map(reason => `font${[13, 14, 24][index]}: ${reason}`));
+  if (ctx.viewport.width === 390) {
+    const small = results[0].measurements.list, large = results[2].measurements.list;
+    failures.push(...dagListScaleVerdict(small, large).failures);
+  }
+  return { ...finish(Object.fromEntries(results.map((result, index) => [[13, 14, 24][index], result.measurements])),
+    failures),
   screenshots: results.flatMap(result => result.screenshots), teardown: results.map(result => result.teardown) };
 }
 
@@ -1642,15 +1865,24 @@ async function driveQ15(ctx) {
   });
   const graph = [];
   for (const fontSize of [13, 24]) graph.push(await withFixture(ctx, async (env, save) => {
-    await dag(env, 'mixed');
-    const facts = await ctx.probe(env.page, probeMobileDag);
-    const failures = [];
-    for (const node of facts.nodes) for (const word of node.words)
-      fail(word.fontSize >= 10.99 && !word.clipped
-        && (word.allowed === 0 || word.measured <= word.allowed + 1),
-        `Q15 font${fontSize} ${node.id} ${word.text} clipped or sub-11px`, failures);
-    await save(`-font${fontSize}-graph`);
-    return finish(facts, failures);
+    const update = await dag(env, 'mixed');
+    const measurements = {}, failures = [];
+    for (const stage of ['mixed', 'dense16', 'dense64']) {
+      if (stage !== 'mixed') {
+        await update(stage);
+        await env.page.waitForFunction(count => document.querySelectorAll('.th-activity-graph [data-node]').length === count,
+          t4StageSpec(stage).length, { timeout: 9000 });
+      }
+      const facts = await ctx.probe(env.page, probeMobileDag, { scroll: ctx.viewport.width !== 390 });
+      failures.push(...dagAncestorVerdict(facts, stage, ctx.viewport.width === 390).failures);
+      for (const node of facts.nodes) for (const word of node.words)
+        fail(word.fontSize >= 10.99 && !word.clipped
+          && (word.allowed === 0 || word.measured <= word.allowed + 1),
+          `Q15 font${fontSize} ${stage} ${node.id} ${word.text} clipped or sub-11px`, failures);
+      measurements[stage] = facts;
+      await save(`-font${fontSize}-${stage}-graph`);
+    }
+    return finish(measurements, failures);
   }, { fontSize }));
   return { ...finish({ tools: tools.measurements,
     graph: Object.fromEntries(graph.map((result, index) => [[13, 24][index], result.measurements])) },
@@ -1772,15 +2004,16 @@ async function driveQ18(ctx) {
   });
 }
 
-/** Q19 (E33): drawer workspace rows must keep their trailing number at the
- * main-baseline label width, on every theme/width. Runs on the coarse live
- * fixture with 12 "Earlier workspace N" rows; includes a serialized negative
- * control proving a truncated row fails the verdict. */
+/** Q19 (E33): both the default and persisted 24px font must preserve drawer
+ * numbers, accessible names and folder containment at every theme/width. */
 async function driveQ19(ctx) {
-  return withFixture(ctx, async (env, save) => {
+  const results = [];
+  for (const fontSize of [null, 24]) results.push(await withFixture(ctx, async (env, save) => {
     await drawer(env.page);
     const facts = await ctx.probe(env.page, probeWorkspaceLabels);
     const failures = workspaceLabelVerdict(facts).failures;
+    fail(facts.fontSize === `${fontSize ?? 13}px` && facts.persistedFontSize === (fontSize === null ? null : '24'),
+      `Q19 font setting ${fontSize ?? 'default'} not applied`, failures);
     const label = env.page.locator('.th-tree-workspace > .th-tree-node .th-tree-label-text')
       .filter({ hasText: 'Earlier workspace 12' }).first();
     const previous = await label.evaluate(element => element.style.maxWidth);
@@ -1795,9 +2028,49 @@ async function driveQ19(ctx) {
       'Q19 control: a row truncated before its number must fail the verdict', failures);
     const restored = workspaceLabelVerdict(await ctx.probe(env.page, probeWorkspaceLabels));
     fail(restored.pass, 'Q19 control: restored label must pass the verdict', failures);
-    await save('-drawer');
+    if (fontSize === 24) {
+      const tail = label.locator('.th-tree-label-tail');
+      const tailStyle = await tail.evaluate(element => ({
+        maxWidth: element.style.maxWidth, overflow: element.style.overflow,
+      }));
+      let hiddenTail;
+      try {
+        await tail.evaluate(element => { element.style.maxWidth = '0px'; element.style.overflow = 'hidden'; });
+        hiddenTail = workspaceLabelVerdict(await ctx.probe(env.page, probeWorkspaceLabels));
+      } finally {
+        await tail.evaluate((element, style) => {
+          element.style.maxWidth = style.maxWidth; element.style.overflow = style.overflow;
+        }, tailStyle);
+      }
+      fail(hiddenTail.failures.some(reason => reason.includes('tail is not fully visible')),
+        'Q19 control: a font24 row with its tail ellipsized away must fail', failures);
+      const glyph = env.page.locator('.th-tree-workspace > .th-tree-node .th-tree-icon svg').first();
+      const transform = await glyph.evaluate(element => element.style.transform);
+      let escapedGlyph;
+      try {
+        const distance = facts.rows[0].glyph.left - facts.drawerLeft + 6;
+        await glyph.evaluate((element, distance) => { element.style.transform = `translateX(-${distance}px)`; }, distance);
+        escapedGlyph = workspaceLabelVerdict(await ctx.probe(env.page, probeWorkspaceLabels));
+      } finally {
+        await glyph.evaluate((element, value) => { element.style.transform = value; }, transform);
+      }
+      fail(escapedGlyph.measurements.rows[0]?.glyph?.left <= facts.drawerLeft - 5.9
+        && escapedGlyph.failures.some(reason => reason.includes('folder glyph outside content box')),
+        'Q19 control: a glyph 6px beyond the drawer left edge must fail', failures);
+      const recovered = workspaceLabelVerdict(await ctx.probe(env.page, probeWorkspaceLabels));
+      fail(recovered.pass, 'Q19 controls: restored drawer must pass', failures);
+      await save('-font24-drawer');
+      return finish({ ...facts, controlFailures: control.failures, restored: restored.pass,
+        hiddenTailFailures: hiddenTail.failures, escapedGlyphFailures: escapedGlyph.failures,
+        recovered: recovered.pass }, failures);
+    }
+    await save('-default-drawer');
     return finish({ ...facts, controlFailures: control.failures, restored: restored.pass }, failures);
-  }, { touchLive: true, earlierWorkspaces: true });
+  }, { touchLive: true, earlierWorkspaces: true, fontSize }));
+  return { ...finish(Object.fromEntries(results.map((result, index) =>
+    [[13, 24][index], result.measurements])),
+  results.flatMap((result, index) => result.failures.map(reason => `font${[13, 24][index]}: ${reason}`))),
+  screenshots: results.flatMap(result => result.screenshots), teardown: results.map(result => result.teardown) };
 }
 
 export const scenarios = Object.freeze({

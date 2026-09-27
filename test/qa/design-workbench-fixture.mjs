@@ -32,7 +32,9 @@ export function designSeed(layout = 'single') {
 export async function installSignals(page, { theme = 'dark', fontSize = 14, lang = 'en' } = {}) {
   await page.addInitScript(({ theme, fontSize, lang }) => {
     localStorage.setItem('th-lang', lang); localStorage.setItem('th-theme', theme);
-    localStorage.setItem('th-ws-expanded', '["ws"]'); localStorage.setItem('th-font-size', String(fontSize));
+    localStorage.setItem('th-ws-expanded', '["ws"]');
+    if (fontSize === null) localStorage.removeItem('th-font-size');
+    else localStorage.setItem('th-font-size', String(fontSize));
     window.qaSignal = predicate => new Promise((done, fail) => {
       const mo = new MutationObserver(check), ro = new ResizeObserver(check);
       const timer = setTimeout(() => { mo.disconnect(); ro.disconnect(); fail(new Error('Design DOM/geometry deadline')); }, 8000);

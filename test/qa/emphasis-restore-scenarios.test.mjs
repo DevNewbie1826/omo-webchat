@@ -15,7 +15,8 @@ import {
   sidebarStatesVerdict,
   probeActionSurface, actionVerdict, probeOverlayEmphasis, overlayVerdict,
   probeSecondary, secondaryVerdict, probeEmptyPane, probeSplitApplicability, emptyVerdict, probeMobileDag,
-  mobileDagVerdict, phoneToolVerdict, probeDisclosureGeometry, disclosureVerdict,
+  mobileDagVerdict, dagAncestorVerdict, dagTypographyVerdict, dagListScaleVerdict,
+  probeDagListText, phoneToolVerdict, probeDisclosureGeometry, disclosureVerdict,
   probeWorkspaceLabels, workspaceLabelVerdict,
 } from './emphasis-restore-scenarios.mjs';
 
@@ -193,24 +194,59 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     expect(result.failures.some(reason => reason.includes('fulfilled'))).toBe(true);
   });
 
-  test('Q3 screenshot paint probe rejects the old halo behind a translucent card', async () => {
-    const facts = await serialized(probeDagRunningPaint, `<svg><g class="th-activity-gnode th-activity-gnode--running">
-      <rect class="th-activity-gnode-card"></rect>
-      <text class="th-activity-gstate" style="fill:rgb(157,144,248)">Running</text>
-    </g></svg>`, (window, document) => {
-      const word = document.querySelector('text');
-      word.getBoundingClientRect = () => ({ left: 170, right: 195, top: 580, bottom: 600,
-        toJSON() { return this; } });
-      document.querySelector('rect').getBoundingClientRect = () => ({ left: 160, right: 250, top: 570, bottom: 620,
-        toJSON() { return this; } });
+  async function paintedWords(ids, backgrounds) {
+    return serialized(probeDagRunningPaint, `<svg>${ids.map(id =>
+      `<g class="th-activity-gnode th-activity-gnode--running" data-node="${id}">
+        <text class="th-activity-gstate" style="fill:rgb(157,144,248)">running</text>
+      </g>`).join('')}</svg>`, (window, document) => {
+      const targetY = ids.map((_, index) => 350 + index * 41);
+      document.querySelectorAll('text').forEach((word, index) => {
+        word.getBoundingClientRect = () => ({ left: 170, right: 195,
+          top: targetY[index] - 8, bottom: targetY[index] + 8 });
+      });
       window.Image = class { width = 390; height = 844; decode() { return Promise.resolve(); } };
       window.HTMLCanvasElement.prototype.getContext = () => ({
-        drawImage() {}, getImageData() { return { data: [65, 60, 102, 255] }; },
+        drawImage(image) { this.normal = image.src.includes('normal'); },
+        getImageData() {
+          const normal = this.normal;
+          return { data: new Proxy({}, { get(_target, property) {
+            const offset = Number(property);
+            if (!Number.isInteger(offset)) return undefined;
+            const x = Math.floor(offset / 4) % 390, y = Math.floor(offset / 4 / 390);
+            const channel = offset % 4;
+            if (channel === 3) return 255;
+            const index = targetY.indexOf(y);
+            const background = backgrounds[index] ?? [29, 30, 34];
+            return normal && x === 180 && index >= 0
+              ? Math.round(background[channel] + 0.824 * ([157, 144, 248][channel] - background[channel]))
+              : background[channel];
+          } }) };
+        },
       });
-    }, { png: 'serialized-paint' });
-    expect(facts.sample).toEqual({ x: 198, y: 590 });
-    expect(dagRunningPaintVerdict([0, 350, 700].map(time => ({ ...facts, time }))).failures)
-      .toContain('Q3 running text contrast 3.770:1 at halo 700ms');
+    }, { normalPng: 'normal', hiddenPng: 'hidden' });
+  }
+
+  test('Q3 serialized glyph-pixel probe rejects the old filled halo', async () => {
+    const words = await paintedWords(['k6'], [[65, 60, 102]]);
+    expect(words[0].glyphPixels).toBe(1);
+    expect(words[0].sample).toMatchObject({ x: 180, y: 350 });
+    expect(dagRunningPaintVerdict([0, 350, 700].map(time => ({ time, words }))).failures)
+      .toContain('Q3 mixed k6 glyph contrast 3.7705:1 at halo 700ms');
+  });
+
+  test('Q3 adjacent dense running words reject the overlapping ring at their glyphs', async () => {
+    const ids = ['w1n0', 'w1n1', 'w1n2'];
+    const overlapping = await paintedWords(ids, [[54, 51, 81], [48, 46, 70], [48, 46, 70]]);
+    const frame = words => [0, 350, 700].map(time => ({ time, words }));
+    expect(overlapping.map(word => word.glyphPixels)).toEqual([1, 1, 1]);
+    expect(dagRunningPaintVerdict(frame(overlapping), 'dense64').failures)
+      .toContain('Q3 dense64 w1n0 glyph contrast 4.4468:1 at halo 700ms');
+    expect(dagRunningPaintVerdict(frame(overlapping.slice(0, 2)), 'dense64').failures.join(' '))
+      .toContain('only 2 painted running words');
+    expect(dagRunningPaintVerdict(frame([{ ...overlapping[0], glyphPixels: 0 }, ...overlapping.slice(1)]),
+      'dense64').failures.join(' ')).toContain('w1n0 glyph contrast');
+    const separated = await paintedWords(ids, [[48, 46, 70], [48, 46, 70], [48, 46, 70]]);
+    expect(dagRunningPaintVerdict(frame(separated), 'dense64').pass).toBe(true);
   });
 
   test('Q4 a grey nonmoving running count and weak selection fail', () => {
@@ -325,32 +361,78 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
       .toContain('Q5 badge edges drift: 247,247,247');
   });
 
-  test('Q19 serialized probe rejects a real label truncated before its number', () => {
-    const markup = `<div class="th-sidebar-body"><div class="th-tree-workspace">
+  function workspaceProbe({ truncated = false, hiddenTail = false,
+    glyphOutside = false, fontSize = 13 } = {}) {
+    const markup = `<div class="th-sidebar"><div class="th-sidebar-body" style="padding:8px 12px;border:0 solid">
+      <div class="th-tree-workspace">
       ${Array.from({ length: 12 }, (_, index) => `<div class="th-tree-node">
-        <button class="th-tree-activation"><span class="th-tree-label-text">
-          Earlier workspace ${index + 1}</span></button></div>`).join('')}
-      </div></div>`;
-    const measure = truncated => serialized(probeWorkspaceLabels, markup, (_window, document) => {
-      const labels = document.querySelectorAll('.th-tree-label-text');
-      labels.forEach((label, index) => {
+        <span class="th-tree-icon"><svg></svg></span>
+        <button class="th-tree-activation" aria-label="Earlier workspace ${index + 1}">
+          <span class="th-tree-label-text"><span class="th-tree-label-head">Earlier workspace </span><span class="th-tree-label-tail">${index + 1}</span></span></button></div>`).join('')}
+      </div></div></div>`;
+    return serialized(probeWorkspaceLabels, markup, (window, document) => {
+      document.documentElement.style.setProperty('--th-font-size', `${fontSize}px`);
+      if (fontSize === 24) window.localStorage.setItem('th-font-size', '24');
+      const rectangle = (element, left, right, top = 20, bottom = 40) => {
+        element.getBoundingClientRect = () => ({
+          left, right, top, bottom, width: right - left, height: bottom - top,
+          toJSON() { return this; },
+        });
+      };
+      rectangle(document.querySelector('.th-sidebar'), 0, 264, 0, 700);
+      rectangle(document.querySelector('.th-sidebar-body'), 0, 264, 0, 700);
+      document.querySelectorAll('.th-tree-node').forEach((row, index) => {
+        const top = 20 + index * 44, bottom = top + 20;
+        rectangle(row, 12, 252, top, bottom);
+        rectangle(row.querySelector('.th-tree-activation'), 32, 157, top, bottom);
+        const label = row.querySelector('.th-tree-label-text');
+        rectangle(label, 32, 157, top, bottom);
         Object.defineProperties(label, {
           scrollWidth: { value: index === 11 && truncated ? 160 : 120 },
           clientWidth: { value: index === 11 && truncated ? 64 : 125 },
         });
-        label.parentElement.getBoundingClientRect = () => ({
-          left: 0, right: 125, top: 0, bottom: 20, width: 125, height: 20,
-          toJSON() { return this; },
-        });
+        const tail = row.querySelector('.th-tree-label-tail');
+        if (index === 11 && hiddenTail) { tail.style.maxWidth = '0px'; tail.style.overflow = 'hidden'; }
+        rectangle(tail, 130, index === 11 && hiddenTail ? 130 : 155, top, bottom);
+        const glyph = row.querySelector('svg');
+        if (index === 11 && glyphOutside) glyph.style.transform = 'translateX(-22px)';
+        rectangle(glyph, index === 11 && glyphOutside ? -6 : 16,
+          index === 11 && glyphOutside ? 8 : 30, top, bottom);
       });
     });
-    expect(workspaceLabelVerdict(measure(false)).pass).toBe(true);
-    const damaged = measure(true);
+  }
+
+  test('Q19 serialized probe rejects a real label truncated before its number', () => {
+    expect(workspaceLabelVerdict(workspaceProbe()).pass).toBe(true);
+    const damaged = workspaceProbe({ truncated: true });
     expect(damaged.rows[11].ellipsized).toBe(true);
     expect(workspaceLabelVerdict(damaged).failures)
       .toContain('Q19 "Earlier workspace 12" ellipsizes away its trailing number');
     expect(workspaceLabelVerdict({ ...damaged, rows: damaged.rows.map(row =>
       ({ ...row, ellipsized: false })) }).pass).toBe(true);
+  });
+
+  test('Q19 font24 serialized probe rejects a hidden number while preserving its accessible name', () => {
+    const valid = workspaceProbe({ fontSize: 24 });
+    expect(valid.fontSize).toBe('24px');
+    expect(valid.persistedFontSize).toBe('24');
+    expect(workspaceLabelVerdict(valid).pass).toBe(true);
+    const damaged = workspaceProbe({ fontSize: 24, hiddenTail: true });
+    expect(damaged.rows[11].accessibleName).toBe('Earlier workspace 12');
+    const output = workspaceLabelVerdict(damaged);
+    expect(output.failures).toContain('Q19 "Earlier workspace 12" tail is not fully visible');
+    console.log(`Q19 font24 tail control: ${output.failures.join('; ')}`);
+  });
+
+  test('Q19 serialized probe rejects a folder glyph translated past the drawer edge', () => {
+    const valid = workspaceProbe();
+    expect(workspaceLabelVerdict(valid).pass).toBe(true);
+    const damaged = workspaceProbe({ glyphOutside: true });
+    expect(damaged.drawerLeft).toBe(0);
+    expect(damaged.rows[11].glyph.left).toBe(-6);
+    const output = workspaceLabelVerdict(damaged);
+    expect(output.failures).toContain('Q19 "Earlier workspace 12" folder glyph outside content box or 4px left gutter');
+    console.log(`Q19 glyph -6px control: ${output.failures.join('; ')}`);
   });
 
   test('Q6 dim uppercase headings and metadata fail contrast/hierarchy', () => {
@@ -578,6 +660,131 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     expect(clipped.nodes[0].words[0].clipped).toBe(true);
     expect(mobileDagVerdict(clipped, 80).failures.join(' ')).toContain('clipped word "Complete"');
     expect(measure(11, 2).nodes[0].words[0].clipped).toBe(false);
+  });
+
+  test('Q14/Q15 a clipped parent rejects valid reel metrics and local SVG ink', () => {
+    const html = `<section class="th-activity-panel"><div class="th-activity-tabpanel"
+      data-activity-tabpanel="dag" style="overflow-y:hidden">
+      <div class="th-activity-graph" style="overflow-y:hidden"><svg><defs>
+        <clipPath id="state-clip"><rect x="17" y="0" width="81" height="120"></rect></clipPath>
+      </defs><g data-node="k0"><rect class="th-activity-gnode-card"></rect>
+        <text class="th-activity-gstate" clip-path="url(#state-clip)"
+          style="font-size:11.1px">completed</text>
+      </g></svg></div></div></section>`;
+    const measure = parentBottom => serialized(probeMobileDag, html, (_window, document) => {
+      const rect = (selector, top, bottom) => {
+        document.querySelector(selector).getBoundingClientRect = () => ({
+          left: 0, right: 120, top, bottom, width: 120, height: bottom - top,
+          toJSON() { return this; },
+        });
+      };
+      rect('.th-activity-panel', 0, 120);
+      rect('.th-activity-tabpanel', 0, parentBottom);
+      rect('.th-activity-graph', 0, 120);
+      rect('.th-activity-gnode-card', 80, 100);
+      rect('text', 84, 96);
+      for (const selector of ['.th-activity-tabpanel', '.th-activity-graph']) {
+        const el = document.querySelector(selector);
+        Object.defineProperties(el, {
+          scrollHeight: { value: selector === '.th-activity-graph' ? 120 : parentBottom },
+          clientHeight: { value: selector === '.th-activity-graph' ? 120 : parentBottom },
+        });
+      }
+      const word = document.querySelector('text');
+      word.getComputedTextLength = () => 55;
+      word.getBBox = () => ({ x: 17, y: 84, width: 55, height: 12 });
+    });
+    const valid = measure(120), clipped = measure(90);
+    expect(valid.reel.scrollHeight).toBe(valid.reel.clientHeight);
+    expect(clipped.reel.scrollHeight).toBe(valid.reel.scrollHeight);
+    expect(clipped.reel.clientHeight).toBe(valid.reel.clientHeight);
+    expect(clipped.nodes[0].words[0].clipped).toBe(false);
+    expect(dagAncestorVerdict(valid).pass).toBe(true);
+    expect(dagAncestorVerdict(clipped).failures).toContain(
+      'Q14/Q15 mixed k0 card outside visible ancestor 0.0..90.0');
+    expect(mobileDagVerdict(clipped, 150).failures.join(' ')).toContain('outside visible ancestor');
+  });
+
+  test('Q14/Q15 desktop scrollport reaches a card below its viewport but hidden parent rejects it', () => {
+    const markup = overflow => `<section class="th-activity-panel">
+      <div class="th-activity-tabpanel" data-activity-tabpanel="dag" style="overflow-y:${overflow}">
+        <div class="th-activity-graph" style="overflow-y:hidden"><svg><defs>
+          <clipPath id="state-clip"><rect x="0" y="0" width="110" height="120"></rect></clipPath>
+        </defs><g data-node="k0"><rect class="th-activity-gnode-card"></rect>
+          <text class="th-activity-gstate" clip-path="url(#state-clip)"
+            style="font-size:11px">completed</text>
+        </g></svg></div></div></section>`;
+    const measure = overflow => serialized(probeMobileDag, markup(overflow), (_window, document) => {
+      const tab = document.querySelector('.th-activity-tabpanel');
+      const rect = (selector, top, bottom) => {
+        document.querySelector(selector).getBoundingClientRect = () => ({
+          left: 0, right: 120, top, bottom, width: 120, height: bottom - top,
+          toJSON() { return this; },
+        });
+      };
+      rect('.th-activity-panel', 0, 120);
+      rect('.th-activity-tabpanel', 0, 60);
+      rect('.th-activity-graph', 0, 120);
+      const shifted = (selector, top, bottom) => {
+        document.querySelector(selector).getBoundingClientRect = () => ({
+          left: 0, right: 120, top: top - tab.scrollTop, bottom: bottom - tab.scrollTop,
+          width: 120, height: bottom - top, toJSON() { return this; },
+        });
+      };
+      shifted('.th-activity-gnode-card', 80, 100);
+      shifted('text', 84, 96);
+      for (const selector of ['.th-activity-tabpanel', '.th-activity-graph']) {
+        const el = document.querySelector(selector);
+        Object.defineProperties(el, {
+          scrollHeight: { value: 120 },
+          clientHeight: { value: selector === '.th-activity-tabpanel' ? 60 : 120 },
+        });
+      }
+      const word = document.querySelector('text');
+      word.getComputedTextLength = () => 55;
+      word.getBBox = () => ({ x: 0, y: 84, width: 55, height: 12 });
+    }, { scroll: true });
+    const scrolling = measure('auto'), hidden = measure('hidden');
+    expect(scrolling.nodes[0].card.top).toBe(80);
+    expect(scrolling.nodes[0].words[0].clipped).toBe(false);
+    expect(scrolling.scrollChecks).toEqual([{ id: 'k0', visible: true }]);
+    expect(dagAncestorVerdict(scrolling, 'mixed', false).pass).toBe(true);
+    expect(dagAncestorVerdict(scrolling, 'mixed', true).pass).toBe(false);
+    expect(dagAncestorVerdict(hidden, 'mixed', false).failures.join(' '))
+      .toContain('k0 card outside reachable ancestor');
+    expect(hidden.scrollChecks).toEqual([]);
+    console.log('Q14/Q15 control: scrollable desktop PASS; phone scroll FAIL; hidden desktop FAIL');
+  });
+
+  test('Q14/Q15 scrolling requires the full card and word to paint after scroll', () => {
+    const facts = { panelFound: true, ancestors: [
+      { owner: 'th-activity-graph', overflowY: 'hidden', top: 0, bottom: 120, clientHeight: 120, scrollHeight: 120 },
+      { owner: 'th-activity-tabpanel', overflowY: 'auto', top: 0, bottom: 60, clientHeight: 60, scrollHeight: 120, scrollTop: 0 },
+      { owner: 'th-activity-panel', overflowY: 'hidden', top: 0, bottom: 120, clientHeight: 120, scrollHeight: 120 },
+    ], nodes: [{ id: 'k0', card: { top: 80, bottom: 100 }, words: [
+      { kind: 'state', box: { top: 84, bottom: 96 } },
+    ] }], scrollChecks: [{ id: 'k0', visible: false }] };
+    expect(dagAncestorVerdict(facts, 'mixed', false).failures.join(' '))
+      .toContain('k0 not fully painted when scrolled into view');
+    console.log('Q14/Q15 control: partially painted scrolled card FAIL');
+  });
+
+  test('decision 9 rejects phone graph font drift, desktop sub-11px and unscaled List', () => {
+    const sample = fontSize => serialized(probeMobileDag, `<div class="th-activity-graph"><svg>
+      <g data-node="k0"><text class="th-activity-glabel" style="font-size:${fontSize}px">Node</text>
+      <text class="th-activity-gstate" style="font-size:${fontSize}px">completed</text></g>
+      </svg></div>`);
+    for (const setting of [13, 14, 24]) {
+      expect(dagTypographyVerdict(sample(11), true, setting).pass).toBe(true);
+      expect(dagTypographyVerdict(sample(12), true, setting).failures.join(' ')).toContain('not 11px');
+      expect(dagTypographyVerdict(sample(10.8), false, setting).failures.join(' ')).toContain('below 11px');
+    }
+    const list = size => serialized(probeDagListText, `<ul class="th-activity-dagnodes">
+      <li><span class="th-activity-dnode-label" style="font-size:${size}px">Node</span>
+      <span class="th-activity-dnode-state" style="font-size:${size}px">completed</span></li></ul>`);
+    expect(dagListScaleVerdict(list(13), list(24)).pass).toBe(true);
+    expect(dagListScaleVerdict(list(13), list(13)).failures.join(' ')).toContain('does not grow');
+    console.log('decision 9 control: phone 13/14/24 drift FAIL; desktop sub-11 FAIL; static List FAIL');
   });
 
   test('Q15 clipped tool status and node state are rejected', () => {
