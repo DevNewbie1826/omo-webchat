@@ -1387,6 +1387,19 @@ describe("pinned live-session section contracts", () => {
     expect(numericToken(blockToken)).toBeGreaterThanOrEqual(blockStep);
   });
 
+  it("centres the compact activation across the pinned card without changing shared cards", () => {
+    const card = ruleBody(overview, ".th-overview-card");
+    const sharedOpen = ruleBody(overview, ".th-overview-card-open");
+    const compactOpen = ruleBody(sidebarLive, ".th-sidebar-live-list .th-overview-card-open");
+    expect(declarationValue(card, "display")).toBe("flex");
+    expect(declarationValue(card, "flex-direction")).toBe("column");
+    expect(declarationValue(compactOpen, "flex")).toBe("1");
+    expect(sharedOpen).toMatch(/justify-content:\s*center\s*;/);
+    expect(declarationValue(sharedOpen, "flex")).toBe("");
+    expect(declarationValue(ruleBody(overview, ".th-overview-card-open:focus-visible"), "box-shadow"))
+      .toBe("0 0 0 3px var(--th-ring)");
+  });
+
   it("pins the compact head row to the running pill's height", () => {
     // Once activation content grows a card past its pinned minimum, the card
     // min-height stops normalizing anything; the head row must then carry its

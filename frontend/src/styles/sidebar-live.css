@@ -82,7 +82,10 @@
   min-height: calc(var(--th-type-micro-size) * var(--th-type-micro-line) + 2px);
 }
 
+/* Fill the pinned card interior so the centred head row is centred in the
+   card, not in a shorter button with unused space underneath. */
 .th-sidebar-live-list .th-overview-card-open {
+  flex: 1;
   padding: var(--th-space-2);
 }
 
@@ -90,6 +93,9 @@
   font-size: var(--th-type-label-size);
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
+  /* Pretendard's text range sits about half a pixel above its centred line
+     box; correct the ink alone without moving the head row or running pill. */
+  transform: translateY(calc(var(--th-space-0-5) / 4));
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
