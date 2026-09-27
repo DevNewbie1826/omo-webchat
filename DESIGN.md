@@ -506,15 +506,23 @@ Choose a tested foreground/background token pair instead.
   forward flow, including branches, with no row wrap, snake or zigzag
   return. The graph reel owns horizontal scrolling only and never scrolls
   vertically. At phone width,
-  compact node-card height and row/column gaps let the graph's full
-  vertical extent, including branch rows, fit the panel without any vertical
-  scrollport through its ancestors. At desktop/tablet widths, a dense graph
+  compact node-card height and row/column gaps keep the one left-to-right
+  flow far more visible than before; a phone graph taller than the panel
+  may scroll vertically inside its tabpanel, retaining its own scroll state,
+  with every card and word reachable and never cut by a non-scrolling clip.
+  At desktop/tablet widths, a dense graph
   taller than the shelf may scroll vertically inside its tabpanel, which
   retains its own scroll state; every card remains reachable and no
-  non-scrolling ancestor clips it. At least three WHOLE nodes are visible on
+  non-scrolling ancestor clips it. At least three WHOLE mixed-stage nodes are visible on
   first paint at 390px; phone Graph node titles and state words stay fixed at
   11px and are NEVER clipped or ellipsized. Compact sizing reduces padding and
-  gaps, not content visibility. Desktop density and graph structure are not changed
+  gaps, not content visibility: inside every compact phone node the top
+  inner padding (node top edge to title ink top) and the bottom inner
+  padding (state ink bottom to node bottom edge) are equal within 1px and
+  at least 4px each, and the gap between the title and the state is no
+  larger than that padding, at every compact stage and font setting; the
+  fixed 11px text and the three-whole-node density gate are unchanged.
+  Desktop density and graph structure are not changed
   by the phone treatment.
   Edges are directional (arrowhead markers).
   An edge leaving a completed source is fulfilled: its neutral edge and
@@ -622,7 +630,7 @@ implicitly because an ancestor does.
 | Reading column | content limiter | a `min(760px, 100%)` constraint on message content, never a scroller itself |
 | Split panes | independent panes | each pane owns its transcript scroll independently; no cross-pane scroll sharing |
 | Activity shelf | supporting pane | each tabpanel keeps its own scroll state and stays mounted; hidden panels scroll nothing; a desktop/tablet dense DAG taller than the shelf may scroll vertically in its tabpanel so every card is reachable, never clipped by a non-scrolling ancestor |
-| DAG graph | graph reel | the graph reel owns horizontal scroll only over one left-to-right flow and never scrolls vertically; at phone width the complete graph, including branch rows, fits without any vertical scrollport; the vertical page scroll never moves the graph |
+| DAG graph | graph reel | the graph reel owns horizontal scroll only over one left-to-right flow and never scrolls vertically; at phone width the compact flow shows far more than before, at least three whole mixed-stage nodes on first paint at 390, and a taller graph scrolls vertically in its tabpanel with every card and word reachable, never cut by a non-scrolling clip; the vertical page scroll never moves the graph |
 | Palettes, menus, modals, docks | imposter | overlay surfaces render above the region that summoned them, trap their own internal scroll, and never propagate wheel events into the transcript beneath |
 
 ## Pane focus and session routing
@@ -684,14 +692,27 @@ The column is the fixed Surface shell in Geometry. Its chrome:
   accessible running name; main-session work needs no child-agent count.
 - Pinned live cards and home-live cards are raised surfaces. Their running
   pill uses the same `--th-accent-ink` text on `--th-accent-bg` and cadence
-  as the tree and transcript.
+  as the tree and transcript. The name row's ink is vertically
+  centred in the card's own border box within 1px, not merely centred inside
+  its activation button, at every pointer, width and theme.
   The last-output preview alone uses mono, because it is output.
 - Open-sessions heading text, live-card title text, and the parent tree-label
   column share a left edge; all right-hand count badges share a right edge,
-  within 1px with one or three cards on fine and coarse pointers. Workspace
+  within 1px with one or three cards on fine and coarse pointers. The running
+  total beside the open-sessions heading is a violet running pill with a
+  spinner plus the number, matching the card chips and the workspace count
+  pill. Workspace
   rename/add/delete actions appear inline on fine pointers when hovered,
   focused or selected. On coarse pointers only the `⋮` menu exposes those
   actions, each with a 44px target.
+- A workspace name renders as one continuous run: when the full name fits,
+  its spans sit flush so the name reads as a single word with no gap or
+  kerning break mid-word. Only when truncation is unavoidable does the
+  middle elide, and the distinguishing tail, including any trailing
+  workspace number, always stays visible.
+- A running workspace row keeps its spinner inside the count pill: one
+  violet running pill shows the spinner plus the count, so the count pill
+  and chevron columns line up within 1px on every row, running or not.
 - Below 768px the same column is the dismissible drawer: Overlay fill, a hairline `--th-border-overlay`, the overlay shadow, entering and leaving on transform.
 
 ## Empty panes and session opening
@@ -1106,8 +1127,10 @@ At 390x844 and comparable narrow sizes:
   without clipping or ellipsis;
 - the DAG graph keeps one left-to-right desktop flow, never wraps rows or
   reverses direction; the reel scrolls horizontally, not vertically.
-  Reduced node height and gaps fit all branch rows inside the panel while
-  three whole nodes show at first paint and every label stays at least 11px;
+  Reduced node height and gaps show far more than before, with three whole
+  nodes at first paint and every label at least 11px; a taller phone graph
+  may scroll vertically, with every card and word reachable and never cut by
+  a non-scrolling clip;
 - the workspace path may hide; the current model name and thinking level stay
   visible in the compact model control, which shares the status row above the
   capsule with the selector pinned to its right edge (see Model control
@@ -1320,12 +1343,16 @@ widths confirms:
     the prose edge at all widths, with rail and glyph in the outer gutter
     clear of cards, summaries and thinking text;
 15. DAG completed paths contrast at least 3:1 and five whole mixed-stage
-    nodes fit at 1280 at the default app font setting (13px); on phones one left-to-right flow fits every branch
-    row vertically without vertical scrolling and shows at least three
-    whole nodes at first paint, with labels at least 11px; sidebar
-    open-session columns align within 1px;
-    workspace actions are inline for fine pointers and in a 44px-target
-    menu for coarse pointers;
+    nodes fit at 1280 at the default app font setting (13px); on phones one left-to-right flow shows far more than
+    before, at least three whole mixed-stage nodes on first paint at 390,
+    with labels at least 11px; a taller phone graph may scroll vertically
+    with every card and word reachable, never cut by a non-scrolling clip; sidebar
+    open-session columns align within 1px, and each open-session card's
+    name ink is vertically centred in the card border box within 1px at
+    every pointer and width; compact phone DAG nodes keep equal top and
+    bottom inner padding of at least 4px (within 1px) with a title-state
+    gap no larger than that padding; workspace actions are inline for
+    fine pointers and in a 44px-target menu for coarse pointers;
 16. overlays do not show competing text behind rows; active options and
     segments differ by at least 1.3:1, headings use emphasis weight without
     uppercase, and secondary controls have a visible fill or neutral hairline;
@@ -1334,10 +1361,15 @@ widths confirms:
     the pane content box at all widths. Expand/collapse re-measures the
     transcript immediately, paints subsequent rows and anchors the toggled
     record without a blank band;
-18. emphasis-restore Q1-Q10 and Q14-Q19 pass on the built SPA and the
+18. emphasis-restore Q1-Q10, Q14-Q19 and Q23-Q26 pass on the built SPA and the
     contract, surface styles and QA probes agree without a drained-state rule.
     Q18 checks the first painted output line, initial scroll position and
     absence of an output-well mask, rejecting injected blank-band and
     mid-record starts. Q19 must check the drawer's distinguishing trailing
     workspace numbers and label width, rejecting a truncated DOM label
-    through the same serialized probe used for the real rows.
+    through the same serialized probe used for the real rows. Untruncated
+    workspace names render as one continuous run with no mid-word gap;
+    only unavoidable truncation elides the middle while keeping the
+    distinguishing tail. A running workspace row keeps its spinner inside
+    the count pill so the count and chevron columns align within 1px
+    across all rows.
