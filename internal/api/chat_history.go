@@ -196,7 +196,8 @@ func (s *Server) readHistoryPage(sessionPath, before string, limit int) func(con
 // non-numeric limit; 401 via middleware; 404 unknown workspace/chat,
 // cross-workspace chat, unconfined cwd, or a missing session file; 409
 // history_cursor_stale when session is stale, before is off the active
-// branch, or the live session is quarantined by an external write; 503
+// branch, the file header id differs from the requested durable id, or
+// the live session is quarantined by an external write; 503
 // history_busy when no read slot freed before the request context ended.
 func (s *Server) handleGetChatHistory(w http.ResponseWriter, r *http.Request) {
 	sessionParam := strings.TrimSpace(r.URL.Query().Get("session"))
@@ -263,6 +264,12 @@ func (s *Server) handleGetChatHistory(w http.ResponseWriter, r *http.Request) {
 			s.logger.Error("reading chat history failed", "chat_id", chat.ID, "err", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 		}
+		return
+	}
+	// The file can be replaced after the cursor check. A page whose header
+	// id is not the requested durable session is another session's history.
+	if result.sessionID != sessionParam {
+		writeError(w, http.StatusConflict, "history_cursor_stale")
 		return
 	}
 	response, err := newHistoryResponse(result)

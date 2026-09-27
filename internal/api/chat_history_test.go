@@ -249,6 +249,26 @@ func TestChatHistoryRejectsStaleSessionCursor(t *testing.T) {
 	}
 }
 
+func TestChatHistoryRejectsReplacedSessionFileHeader(t *testing.T) {
+	s, store, ws := newChatCreateTestServer(t)
+	path := writeHistorySessionFile(t, ws.Path, "durable-session", historyChainLines(3)...)
+	chat := saveHistoryChat(t, store, ws, "chat-replaced-header", "durable-session", path)
+	token, err := s.sessions.Create(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Same path and the before cursor still exists; only the session header id changed.
+	replaced := append([]string{fmt.Sprintf(`{"type":"session","id":%q,"version":3,"timestamp":"2026-09-27T00:00:00Z","cwd":%q}`, "replaced-session", ws.Path)}, historyChainLines(3)...)
+	if err := os.WriteFile(path, []byte(strings.Join(replaced, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := serveHistoryRequest(t, s, token, ws.ID, chat.ID, "session=durable-session&before=e-002")
+	if rec.Code != http.StatusConflict || historyErrorBody(t, rec) != "history_cursor_stale" {
+		t.Fatalf("replaced header status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestChatHistoryRejectsOffBranchBeforeCursor(t *testing.T) {
 	s, store, ws := newChatCreateTestServer(t)
 	root := `{"type":"message","id":"root","parentId":null}`
@@ -477,8 +497,9 @@ func TestHistoryReadSlotLimiterWaitsForAFreedSlotAndHonorsContextEnd(t *testing.
 	}
 
 	releases[0]()
-	releases[0] = nil
-	if _, ok := acquireHistoryReadSlot(context.Background()); !ok {
+	release, ok := acquireHistoryReadSlot(context.Background())
+	releases[0] = release
+	if !ok {
 		t.Fatal("freed slot not reusable")
 	}
 }
