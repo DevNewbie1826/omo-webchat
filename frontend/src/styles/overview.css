@@ -31,6 +31,9 @@
 .th-overview-card-open {
   display: flex;
   flex-direction: column;
+  /* Centre the rows when the activation grows past its content (the 44px
+     coarse touch target), instead of pinning them to the top edge. */
+  justify-content: center;
   gap: var(--th-space-1);
   width: 100%;
   padding: var(--th-space-2) var(--th-space-3);
