@@ -1051,6 +1051,78 @@ export function ChatTranscript({
     pinTailBeforePaint();
   }, [rows.length, isFollowing, pinTailBeforePaint]);
 
+  // Measurement-gated paint for batch admissions. A hydrating tail, an
+  // on-demand older page, or a session restore first lays its rows out with
+  // frozen estimates; real heights land a frame or two later and re-flow the
+  // whole window (live QA on a 44 MB session: rendered/visible rows 19/10 ->
+  // 12/4 right after open, and a 10 -> 6 dip on 3 of 39 prepended pages).
+  // Hold the history layer visually hidden — visibility, NOT display, so the
+  // absolute rows still mount and measure — for the commits it takes to apply
+  // the tail pin / warm-anchor compensation on measured geometry, then reveal.
+  // Measurement is synchronous in the row refs (offsetHeight -> itemSizeCache)
+  // before any layout effect runs, so by the verification commit every mounted
+  // row already reports its real height and the revealed frame IS the measured
+  // layout. The reveal is a layout-effect setState: it commits before paint,
+  // the first visible frame never shows estimated positions, and the commit
+  // budget guarantees the layer is never held hidden (no tail-position
+  // condition the pin could fail to satisfy). Live appends (leading key
+  // unchanged) never arm the gate, so streaming content is never gated.
+  const settleSnapshotRef = useRef<{
+    readonly leading: string | undefined;
+    readonly length: number;
+    readonly restoreVersion: number;
+  } | null>(null);
+  const settleActiveRef = useRef(false);
+  const settleRunsRef = useRef(0);
+  const [, setSettleVersion] = useState(0);
+  const settleSnapshot = settleSnapshotRef.current;
+  // A batch admission arms the gate: the very first population, a population
+  // after an empty mount, a session restore (any replacement carries a new
+  // restoreVersion), or a prepend (the list grew and its leading key changed).
+  // Identity comes from the same keys the virtualizer keys its rows by.
+  const admissionArmed = keys.length > 0 && (
+    settleSnapshot === null
+    || settleSnapshot.restoreVersion !== restoreVersion
+    || settleSnapshot.length === 0
+    || (keys.length > settleSnapshot.length && keys[0] !== settleSnapshot.leading)
+  );
+  settleSnapshotRef.current = { leading: keys[0], length: keys.length, restoreVersion };
+  if (admissionArmed) {
+    settleActiveRef.current = true;
+    settleRunsRef.current = 0;
+  }
+  const settling = settleActiveRef.current;
+  const revealSettled = useCallback(() => {
+    settleActiveRef.current = false;
+    settleRunsRef.current = 0;
+    setSettleVersion((version) => version + 1);
+  }, []);
+  useLayoutEffect(() => {
+    if (!settleActiveRef.current) return;
+    settleRunsRef.current += 1;
+    // rows emptied (chat cleared mid-settle): nothing to hide.
+    if (rows.length === 0) {
+      revealSettled();
+      return;
+    }
+    const rendered = virtualizer.getVirtualItems();
+    if (rendered.length === 0) {
+      // No window yet: poll until it exists, but the budget always reveals.
+      if (settleRunsRef.current >= 4) revealSettled();
+      else setSettleVersion((version) => version + 1);
+      return;
+    }
+    // Apply (or converge) the tail pin on the current geometry. The pin's own
+    // scrollOffset mirror bumps state when it moves the window, which schedules
+    // the next verification run before paint.
+    if (isFollowing()) pinTailBeforePaint();
+    // The armed commit pins and schedules a verification pass; the
+    // verification commit — whose row refs have all measured by the time this
+    // effect runs — reveals. The budget caps the hidden frames no matter what.
+    if (settleRunsRef.current >= 2) revealSettled();
+    else setSettleVersion((version) => version + 1);
+  });
+
   return (
     <div className="th-chat-scrollport">
       <div className="th-chat-body" ref={scrollRef} onScroll={onTranscriptScroll}
@@ -1086,7 +1158,10 @@ export function ChatTranscript({
           {!historyLoaded && rows.length === 0 && !streaming && Object.keys(toolCalls).length === 0 && !error && !doneReason && (
             <div className="th-chat-loading" role="status">{t("chat.loading")}</div>
           )}
-          <div className="th-chat-history" style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+          <div
+            className={`th-chat-history${settling ? " th-chat-history--settling" : ""}`}
+            style={{ height: virtualizer.getTotalSize(), position: "relative" }}
+          >
             {virtualizer.getVirtualItems().map((virtualItem) => {
               const item = rows[virtualItem.index];
               if (!item) return null;

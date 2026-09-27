@@ -37,6 +37,15 @@
   min-width: 0;
 }
 
+/* Measurement-gated paint (ChatTranscript settle gate): a batch admission
+   lays its rows out with frozen estimates for a frame or two while real
+   heights measure in. Keep the layer invisible — but laid out, unlike
+   display:none — until the gate reveals it, so the first visible frame
+   already shows measured geometry and nothing visibly jumps. */
+.th-chat-history--settling {
+  visibility: hidden;
+}
+
 /* On-demand older-history rows (G9 view): the sentinel is a zero-height
    observer target above the virtualized list while idle; the loading and
    error rows it carries are compact centered status lines in the same lane
