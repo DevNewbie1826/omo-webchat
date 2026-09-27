@@ -369,33 +369,21 @@ export function ChatTranscript({
   const sentinelMounted = olderHistory !== undefined && olderState !== "complete" && olderState !== "unavailable";
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const sentinelInViewRef = useRef(false);
-  const olderRequestPendingRef = useRef(false);
   const olderHistoryRef = useRef(olderHistory);
   olderHistoryRef.current = olderHistory;
-  const maybeLoadOlder = useCallback((fillViewport = false) => {
+  const maybeLoadOlder = useCallback((upwardIntent = false) => {
     const handle = olderHistoryRef.current;
-    if (!historyLoaded || handle === undefined || handle.state !== "idle" || olderRequestPendingRef.current) return;
-    if (!fillViewport && isFollowing()) return;
-    olderRequestPendingRef.current = true;
-    handle.loadOlder();
-  }, [historyLoaded, isFollowing]);
-  useEffect(() => {
-    if (olderState !== "idle") olderRequestPendingRef.current = false;
-  }, [olderState]);
-  useEffect(() => {
-    if (!sentinelMounted || olderState !== "idle") return;
+    if (!historyLoaded || handle === undefined || handle.state !== "idle") return;
     const scrollport = scrollRef.current;
-    const content = contentRef.current;
-    if (scrollport === null || content === null) return;
-    const fillViewport = (): void => {
-      if (scrollport.clientHeight > 0 && scrollport.scrollHeight <= scrollport.clientHeight) maybeLoadOlder(true);
-    };
-    fillViewport();
-    const observer = new ResizeObserver(fillViewport);
-    observer.observe(scrollport);
-    observer.observe(content);
-    return () => observer.disconnect();
-  }, [sentinelMounted, olderState, items.length, scrollRef, contentRef, maybeLoadOlder]);
+    // A short/empty tail cannot emit an upward scroll. Only its explicit
+    // wheel, touch or keyboard path may request a page, never mount/resize
+    // or the previous page's idle transition.
+    if (!upwardIntent && (isFollowing() || scrollport === null
+      || scrollport.scrollHeight <= scrollport.clientHeight)) return;
+    // The hook owns synchronous single-flight admission. It may decline
+    // while disconnected, so a view-side pending flag can never be sound.
+    handle.loadOlder();
+  }, [historyLoaded, isFollowing, scrollRef]);
   useEffect(() => {
     const scrollport = scrollRef.current;
     if (!sentinelMounted || scrollport === null) return;

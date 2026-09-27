@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { Virtualizer } from "@tanstack/react-virtual";
@@ -52,11 +53,11 @@ function rows(prefix: string, count: number): TranscriptItem[] {
   }));
 }
 
-async function render(items: readonly TranscriptItem[], loading = false) {
+async function render(items: readonly TranscriptItem[], loading: boolean | "error" = false) {
   await act(async () => {
     root.render(<ChatTranscript items={items} streaming="" thinking="" toolCalls={{}}
       doneReason={null} error="" restoreVersion={0} focused={false} historyLoaded
-      olderHistory={{ state: loading ? "loading" : "idle", loadOlder: () => undefined }} />);
+      olderHistory={{ state: loading === "error" ? "error" : loading ? "loading" : "idle", loadOlder: () => undefined }} />);
   });
 }
 
@@ -227,6 +228,36 @@ it("measures a second prepend while the previous measured anchor remains armed",
   expect(row(anchor.dataset["entryKey"] ?? "")).toBe(anchor);
   for (let index = 0; index < 20; index += 1) {
     expect(instance().itemSizeCache.get(`message:earlier-${index}`)).toBe(instance().options.estimateSize(index) * 3);
+  }
+});
+
+it.each([true, "error"] as const)("preserves the anchor when older chrome appears and disappears (%s)", async (status) => {
+  const style = document.createElement("style");
+  style.textContent = readFileSync("src/styles/chat-transcript.css", "utf8");
+  document.head.append(style);
+  // JSDOM has no layout engine. Model normal-flow displacement from the
+  // shipped positioning rule, not from the expected result of this test.
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (!this.matches(".th-chat-history")) return 0;
+    const indicator = container.querySelector(".th-chat-history-loading, .th-chat-history-error");
+    if (!indicator) return 0;
+    const position = getComputedStyle(indicator).position;
+    return position === "absolute" || position === "fixed" ? 0 : 31;
+  });
+  try {
+    const tail = rows("tail", 60);
+    await render(tail);
+    park(2000);
+    const anchor = firstVisible();
+    const before = offset(anchor);
+    await render(tail, status);
+    expect(container.querySelector('[role="status"]')).not.toBeNull();
+    expect(offset(anchor)).toBe(before);
+    await render(tail);
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    expect(offset(anchor)).toBe(before);
+  } finally {
+    style.remove();
   }
 });
 

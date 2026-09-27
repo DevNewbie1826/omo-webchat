@@ -46,11 +46,17 @@
   visibility: hidden;
 }
 
-/* On-demand older-history rows (G9 view): the sentinel is a zero-height
-   observer target above the virtualized list while idle; the loading and
-   error rows it carries are compact centered status lines in the same lane
-   as the transcript, never bordered boxes. The failed-empty row opens the
-   transcript when history failed before any message committed. */
+/* The sentinel never contributes height. Older-history status floats above
+   the scrollport without moving its rows; failed-empty status stays in flow
+   because there is no committed message to anchor. */
+.th-chat-history-loading,
+.th-chat-history-error {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 1;
+  background: var(--th-bg);
+}
+
 .th-chat-history-loading,
 .th-chat-history-error,
 .th-chat-history-failed {

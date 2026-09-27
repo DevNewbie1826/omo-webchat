@@ -5,6 +5,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { I18nContext, type I18nValue } from "../../i18n";
 import { ChatTranscript } from "./ChatTranscript";
 import type { TranscriptItem } from "./useChatFrameState";
+import type { ChatClientFrame, ChatConnector, ChatServerFrame } from "../../lib/chatWs";
+import { useChatSession } from "./useChatSession";
 
 const observed = vi.hoisted(() => ({ current: undefined as Virtualizer<Element, Element> | undefined }));
 vi.mock("@tanstack/react-virtual", async (importOriginal) => {
@@ -184,7 +186,7 @@ it("keeps paging while the reader parks inside the margin as pages land", async 
   expect(loadOlder).toHaveBeenCalledTimes(2);
 });
 
-it("automatically fills a short tail with one older page at a time", async () => {
+it("loads a short tail one page per upward intent", async () => {
   const loadOlder = vi.fn();
   const element = await mount(() => render([message("short")], { olderHistory: { state: "loading", loadOlder } }));
   Object.defineProperties(element, {
@@ -193,7 +195,10 @@ it("automatically fills a short tail with one older page at a time", async () =>
   });
 
   render([message("short")], { olderHistory: { state: "idle", loadOlder } });
+  expect(loadOlder).not.toHaveBeenCalled();
+  act(() => element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true })));
   expect(loadOlder).toHaveBeenCalledTimes(1);
+  render([message("short")], { olderHistory: { state: "loading", loadOlder } });
   act(() => {
     element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
     element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
@@ -201,6 +206,8 @@ it("automatically fills a short tail with one older page at a time", async () =>
   expect(loadOlder).toHaveBeenCalledTimes(1);
   render([message("short")], { olderHistory: { state: "loading", loadOlder } });
   render([message("older"), message("short")], { olderHistory: { state: "idle", loadOlder } });
+  expect(loadOlder).toHaveBeenCalledTimes(1);
+  act(() => element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true })));
   expect(loadOlder).toHaveBeenCalledTimes(2);
 });
 
@@ -217,6 +224,8 @@ it("waits for initial history before requesting an older short-tail page", async
   expect(loadOlder).not.toHaveBeenCalled();
 
   render([message("preview")], { olderHistory: { state: "idle", loadOlder }, historyLoaded: true });
+  expect(loadOlder).not.toHaveBeenCalled();
+  act(() => element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true })));
   expect(loadOlder).toHaveBeenCalledTimes(1);
 });
 
@@ -233,6 +242,8 @@ it("loads older history on upward input when hidden entries leave no visible row
   });
   render([message("last"), ...hidden], { olderHistory: { state: "idle", loadOlder } });
   expect(container.querySelectorAll(".th-chat-history .th-chat-row")).toHaveLength(1);
+  expect(loadOlder).not.toHaveBeenCalled();
+  act(() => element.dispatchEvent(new WheelEvent("wheel", { deltaY: -50, bubbles: true })));
   expect(loadOlder).toHaveBeenCalledTimes(1);
   render([message("last"), ...hidden], { olderHistory: { state: "loading", loadOlder } });
   act(() => element.dispatchEvent(new WheelEvent("wheel", { deltaY: -50, bubbles: true })));
@@ -252,6 +263,8 @@ it("requests an older page when every loaded entry hides its row", async () => {
   });
   render(hidden, { olderHistory: { state: "idle", loadOlder } });
   expect(container.querySelectorAll(".th-chat-history .th-chat-row")).toHaveLength(0);
+  expect(loadOlder).not.toHaveBeenCalled();
+  act(() => element.dispatchEvent(new WheelEvent("wheel", { deltaY: -50, bubbles: true })));
   expect(loadOlder).toHaveBeenCalledTimes(1);
 });
 
@@ -330,4 +343,99 @@ it("stays pinned to the bottom through a prepend that brings the newest message 
   expect(instance().options.count).toBe(6);
   expect([...container.querySelectorAll(".th-chat-row")].some((row) => row.textContent === "latest")).toBe(true);
   expect(element.scrollHeight - element.clientHeight - element.scrollTop).toBe(0);
+});
+
+async function mountSession(hidden = false, short = false) {
+  const session = { id: "older-chat", wsId: "workspace", name: "Chat", cwd: "/work", provider: "omo" } as const;
+  let handlers: Parameters<ChatConnector>[0] | undefined;
+  const sent: ChatClientFrame[] = [];
+  const requests: Array<{ url: string; finish: (response: Response) => void }> = [];
+  vi.stubGlobal("fetch", (url: string) => {
+    if (!url.includes("/history?")) return Promise.resolve(new Response("{}", { status: 200 }));
+    return new Promise<Response>((finish) => requests.push({ url, finish }));
+  });
+  if (short) {
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(400);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(400);
+  }
+  const connect: ChatConnector = (next) => {
+    handlers = next;
+    next.onOpen?.();
+    return { send: (frame) => { sent.push(frame); return true; }, close: () => undefined };
+  };
+  function Probe() {
+    const chat = useChatSession(session, connect);
+    return <ChatTranscript items={chat.messages.map((message) => ({ kind: "message", message }))} streaming={chat.streaming} thinking={chat.thinking}
+      toolCalls={chat.toolCalls} doneReason={chat.doneReason} error={chat.error}
+      restoreVersion={chat.restoreVersion} focused={false} historyLoaded={chat.historyLoaded}
+      olderHistory={chat.olderHistory} />;
+  }
+  await act(async () => root.render(<I18nContext.Provider value={i18n}><Probe /></I18nContext.Provider>));
+  if (!handlers) throw new Error("missing session connector");
+  const socket = handlers;
+  const deliver = (frame: ChatServerFrame) => act(() => socket.onFrame(frame));
+  const entry = (id: string) => ({ type: "message", id, message: { role: hidden ? "assistant" : "user", content: hidden ? [] : id } });
+  const ready = () => deliver({ type: "ready", sessionId: session.id, piSessionId: "durable", resumed: true });
+  ready();
+  deliver({ type: "entries", sessionId: session.id, historySessionId: "durable",
+    entries: [entry("tail")], final: true, historyComplete: false });
+  const element = body();
+  Object.defineProperties(element, {
+    scrollHeight: { configurable: true, value: short ? 400 : 2400 },
+    clientHeight: { configurable: true, value: 400 },
+  });
+  return {
+    element, requests, socket, ready,
+    resume: () => {
+      const create = [...sent].reverse().find((frame) => frame.type === "chat.create");
+      if (create?.type !== "chat.create" || !create.resume) throw new Error("missing resume cursor");
+      deliver({ type: "entries", sessionId: session.id, historySessionId: "durable",
+        entries: [], final: true, historyComplete: false, resume: create.resume });
+    },
+    respond: async (index: number, complete: boolean) => {
+      const request = requests[index];
+      if (!request) throw new Error("missing older request");
+      await act(async () => request.finish(new Response(JSON.stringify({
+        sessionId: "durable", entries: [entry(complete ? "root" : "older")], historyComplete: complete,
+      }), { status: 200 })));
+    },
+  };
+}
+
+it("can read upward after close, ignored input, open, ready and resume terminal", async () => {
+  const h = await mountSession();
+  const observer = ControlledIntersectionObserver.instances.at(-1);
+  if (!observer) throw new Error("missing sentinel observer");
+  act(() => observer.trigger(true));
+  act(() => h.socket.onClose?.(1006));
+  releaseFollow(h.element);
+  expect(h.requests).toHaveLength(0);
+  act(() => h.socket.onOpen?.());
+  h.ready();
+  h.resume();
+  releaseFollow(h.element);
+  expect(h.requests).toHaveLength(1);
+  expect(h.requests[0]?.url).toContain("before=tail");
+  await h.respond(0, true);
+  expect(container.textContent).toContain("root");
+});
+
+it.each([false, true])("waits for upward intent and reaches root without duplicate requests (hidden=%s)", async (hidden) => {
+  const h = await mountSession(hidden, true);
+  expect(h.requests).toHaveLength(0);
+  expect(container.querySelectorAll(".th-chat-history .th-chat-row")).toHaveLength(hidden ? 0 : 1);
+  act(() => {
+    h.element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+    h.element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+  });
+  expect(h.requests).toHaveLength(1);
+  await h.respond(0, false);
+  expect(h.requests).toHaveLength(1);
+  act(() => h.element.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp", bubbles: true })));
+  expect(h.requests).toHaveLength(2);
+  expect(h.requests[1]?.url).toContain("before=older");
+  await h.respond(1, true);
+  act(() => h.element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
+  expect(h.requests).toHaveLength(2);
+  expect(container.querySelector(".th-chat-history-sentinel")).toBeNull();
 });
