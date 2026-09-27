@@ -524,6 +524,83 @@ describe("token contrast contracts (WCAG 2.1)", () => {
     expect(failures).toEqual([]);
   });
 
+  it("keeps the running SVG word legible over the painted halo and card throughout its opacity cycle", () => {
+    const css = postcss.parse(readFileSync("src/styles/activity-shelf.css", "utf8"));
+    const declaration = (selector: string, property: string): string => {
+      let value: string | undefined;
+      css.walkRules(selector, (rule) => {
+        rule.walkDecls(property, (decl) => { value = decl.value; });
+      });
+      return must(value);
+    };
+    const paintedToken = (selector: string, property: string): string => {
+      const value = declaration(selector, property);
+      const token = /^var\(\s*(--th-[\w-]+)\s*\)$/.exec(value)?.[1];
+      return must(token);
+    };
+    const ink = paintedToken(".th-activity-gnode--running .th-activity-gstate", "fill");
+    const halo = paintedToken(".th-activity-gnode-halo", "stroke");
+    const haloFill = declaration(".th-activity-gnode-halo", "fill");
+    const card = paintedToken(".th-activity-gnode--running .th-activity-gnode-card", "fill");
+    const backdrop = paintedToken(".th-activity-panel", "background");
+    expect(declaration(".th-activity-gnode-halo", "animation")).toContain("th-dag-halo-breathe");
+    const keyframes = css.nodes.find(
+      (node): node is postcss.AtRule => node.type === "atrule" && node.name === "keyframes" && node.params === "th-dag-halo-breathe",
+    );
+    const opacity = (step: string): number => {
+      const frame = keyframes?.nodes?.find((node): node is postcss.Rule => node.type === "rule" && node.selector === step);
+      const value = frame?.nodes?.find((node): node is postcss.Declaration => node.type === "decl" && node.prop === "opacity")?.value;
+      return Number(must(value));
+    };
+    const from = opacity("from");
+    const to = opacity("to");
+    expect(from).toBeGreaterThanOrEqual(0);
+    expect(to).toBeLessThanOrEqual(1);
+
+    // Settled browser pixels beside the running word at the halo peak (review item 3).
+    // They remain a negative control even if the product's colours later change.
+    const currentPaint = [
+      { selector: ":root", word: "rgb(157, 144, 248)", behind: "rgb(65, 60, 102)", ratio: 3.7705 },
+      { selector: '[data-theme="light"]', word: "rgb(91, 73, 194)", behind: "rgb(196, 188, 234)", ratio: 3.6919 },
+    ] as const;
+    const failures: string[] = [];
+    for (const reference of currentPaint) {
+      const observed = contrastRatio(parseColor(reference.word), parseColor(reference.behind));
+      expect(observed).toBeCloseTo(reference.ratio, 4);
+      expect(observed).toBeLessThan(NORMAL_TEXT);
+
+      const scope = must(scopes.find((candidate) => candidate.selector === reference.selector));
+      const word = scopeColor(scope, ink);
+      const glow = scopeColor(scope, halo);
+      const wash = scopeColor(scope, card);
+      const pane = scopeColor(scope, backdrop);
+      let minimum = Infinity;
+      let atOpacity = from;
+      // The ring has no fill under the word. A filled halo was the old
+      // compositing defect; Q3 also samples the actual blurred edge pixels.
+      for (let frame = 0; frame <= 1000; frame += 1) {
+        const alpha = from + (to - from) * frame / 1000;
+        const behind = compositeOver(wash, compositeOver({ ...glow, a: haloFill === "none" ? 0 : glow.a * alpha }, pane));
+        const paintedWord = word.a === 1 ? word : compositeOver(word, behind);
+        const measured = contrastRatio(paintedWord, behind);
+        if (measured < minimum) {
+          minimum = measured;
+          atOpacity = alpha;
+        }
+      }
+      if (minimum < NORMAL_TEXT) {
+        failures.push(
+          `[${reference.selector}] running SVG word over halo/card/panel: ${minimum.toFixed(4)}:1 ` +
+            `at halo opacity ${atOpacity.toFixed(2)} < ${NORMAL_TEXT}:1 ` +
+            `(settled painted pixel: ${observed.toFixed(4)}:1)`,
+        );
+      }
+      const oldBackground = compositeOver(wash, compositeOver({ ...glow, a: glow.a * to }, pane));
+      expect(contrastRatio(word, oldBackground)).toBeLessThan(NORMAL_TEXT);
+    }
+    expect(failures).toEqual([]);
+  });
+
   // --th-faint is the METADATA-ONLY tier (the >=3.0:1 rule above). Every
   // selector that paints any property with it must be enumerated here with
   // its metadata role; a new usage fails the allowlist test until it is

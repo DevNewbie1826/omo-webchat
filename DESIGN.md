@@ -80,7 +80,7 @@ contrast rules in the theme contract. `--th-bg` and `--th-accent` are pinned.
 | `--th-accent-solid` | `#6d5bd0` | `#6d5bd0` | Filled controls: send, primary button, toggles |
 | `--th-accent-solid-hover` | `#5b49c2` | `#5b49c2` | Filled control hover |
 | `--th-accent-fg` | `#ffffff` | `#ffffff` | Text on `--th-accent-solid`, 4.5:1 |
-| `--th-accent-soft` | `color-mix(in srgb, var(--th-accent) 14%, transparent)` | same | Selection wash |
+| `--th-accent-soft` | `color-mix(in srgb, var(--th-accent) 14%, transparent)` | same | Text selection and subtle option wash |
 | `--th-accent-select` | `color-mix(in srgb, var(--th-accent) 22%, var(--th-active))` | same | Selected-row wash |
 | `--th-accent-bg` | `color-mix(in srgb, var(--th-accent) 12%, transparent)` | same | Running status tint, 4.5:1 with `--th-accent-ink` text over the pane and tool card |
 | `--th-accent-ink` | `#9d90f8` | `#5b49c2` | Running status word and count text on `--th-accent-bg` |
@@ -269,14 +269,17 @@ halo). No other surface may copy this exception. The coloured
 keyboard `:focus-visible` ring (`box-shadow: 0 0 0 3px var(--th-ring)`)
 communicates focus, not status.
 
-Selected options in a list (palette row, approval option, provider card,
-file row) take the `--th-accent-soft` wash plus a check or active glyph; the
-selected option's fill must remain distinguishable from its neighbours by
-at least 1.3:1. A segmented control (theme, language, List/Graph, shelf
-tabs) marks its current segment with a neutral raised thumb
-(`--th-surface-raised` or `--th-active`, `--th-shadow-surface` and
-`--th-highlight`) distinguishable from its track by at least 1.3:1 in both
-themes and at 390px. Neither idiom uses a status-coloured border.
+Selected palette and model rows and the active Thinking level use
+`--th-accent-select`; approval options and provider cards use the subtler
+`--th-accent-soft` wash. A check, active glyph or selected label distinguishes
+the option without colour; selected options differ from their neighbours by
+at least 1.3:1 where Q8 measures them. Segmented controls (theme, language,
+List/Graph, shelf tabs) use a neutral thumb and track, not a status-coloured
+border. Dark thumbs use `--th-active` over their neutral tracks; in light,
+shelf tabs use `--th-surface-raised`, settings use `--th-active` over a
+`--th-tool-record-border` track, and List/Graph uses `--th-muted` over
+`--th-active`. Their active segments differ from the track by at least
+1.3:1 in both themes and at 390px.
 Section headings in the sidebar, files, settings and activity shelf use
 emphasize weight and a text tier with at least 4.5:1, never uppercase.
 Secondary actions (Cancel, Next, New folder, Choose files and Save) need a
@@ -480,7 +483,10 @@ Choose a tested foreground/background token pair instead.
   border exception in State encoding, completed node cards use a subtle
   green `--th-success` stroke, failed/cancelled/errored cards a red
   `--th-error` stroke, and pending/running cards keep neutral strokes. At
-  1280px the mixed stage shows at least five whole node cards on first
+  every reachable halo opacity, the running word must keep at least 4.5:1
+  against the painted halo, translucent node card and graph background;
+  token-pair contrast over the pane alone does not establish this. The
+  mixed stage shows at least five whole node cards at 1280px on first
   paint; its footer expander remains completely inside the panel. On
   phones the graph keeps this SAME left-to-right desktop structure: ONE
   forward flow, including branches, with no row wrap, snake or zigzag
@@ -899,9 +905,11 @@ The body contains:
   tool material, capped at `min(360px, 45dvh)`, so a long execution cannot
   take over the conversation scrollport. The well reports its real overflow
   state from a layout measure (ResizeObserver and scroll events, never
-  timers); while clipped, a 20px bottom fade — an alpha-only `mask-image`
-  gradient — signals more output below, and it clears once the reader reaches
-  the bottom.
+  timers); while clipped, a 20px bottom overlay gradient on the enclosing
+  section signals more output below, and it clears once the reader reaches
+  the bottom. The scrolling output well itself has no `mask-image` or
+  `-webkit-mask-image`: masking its scroll layer can hide the first lines
+  after another disclosure changes the virtual row's height.
 
 Do not render an empty body merely to fill space. Failure output remains
 available and is never replaced by a generic error label. The status glyph
@@ -966,7 +974,7 @@ dashed or coloured border.
   `--th-ease-out` via `@starting-style`. A keyboard hint row rides the top:
   key caps as small `--th-hover` chips at `--th-radius-xs` with Micro copy,
   separated from the options by the surface hairline. The active option
-  takes the `--th-accent-soft` selection wash and a glyph, distinguishable
+  takes the `--th-accent-select` selected-row wash and a glyph, distinguishable
   from neighbours by at least 1.3:1; command names stay mono at the text
   tier and descriptions stay sans at the muted tier.
 - Arrow Up/Down changes the active option; Enter/Tab selects; Escape closes.
@@ -1308,5 +1316,10 @@ widths confirms:
     the pane content box at all widths. Expand/collapse re-measures the
     transcript immediately, paints subsequent rows and anchors the toggled
     record without a blank band;
-18. emphasis-restore Q1-Q17 passes on the built SPA and the contract, surface
-    styles and QA probes agree without a drained-state rule.
+18. emphasis-restore Q1-Q10 and Q14-Q19 pass on the built SPA and the
+    contract, surface styles and QA probes agree without a drained-state rule.
+    Q18 checks the first painted output line, initial scroll position and
+    absence of an output-well mask, rejecting injected blank-band and
+    mid-record starts. Q19 must check the drawer's distinguishing trailing
+    workspace numbers and label width, rejecting a truncated DOM label
+    through the same serialized probe used for the real rows.
