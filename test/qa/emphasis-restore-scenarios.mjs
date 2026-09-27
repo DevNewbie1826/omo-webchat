@@ -223,6 +223,16 @@ export function probeSidebarEmphasis() {
     headingBadges: row('.th-sidebar-live-count', 'heading-badge'),
     cards: row('.th-sidebar-live-list .th-overview-card-name', 'card'),
     cardBadges: row('.th-sidebar-live-list .th-overview-card-running', 'card-badge'),
+    // Vertical centring of each live card's rows inside its activation's
+    // content box (the coarse 44px target makes the box taller than the rows).
+    cardCentering: [...document.querySelectorAll('.th-sidebar-live-list .th-overview-card-open')]
+      .filter(isVisibleElement).map(button => {
+        const rect = button.getBoundingClientRect(), s = getComputedStyle(button);
+        const kids = [...button.children].filter(isVisibleElement).map(el => el.getBoundingClientRect());
+        return { text: button.textContent.trim().slice(0, 40),
+          contentTop: rect.top + parseFloat(s.paddingTop), contentBottom: rect.bottom - parseFloat(s.paddingBottom),
+          rowsTop: Math.min(...kids.map(k => k.top)), rowsBottom: Math.max(...kids.map(k => k.bottom)) };
+      }),
     treeRows,
     treeBadges: row('.th-tree-workspace > .th-tree-node .th-tree-running--workspace', 'tree-badge'),
     running: row('.th-sidebar-live-list .th-overview-card-running, .th-tree-running--count', 'running'),
@@ -255,6 +265,11 @@ export function sidebarVerdict(facts, { cards = 1, geometry = false } = {}) {
   }
   if (geometry) {
     fail(facts.cards?.length === cards, `Q5 expected ${cards} live cards`, failures);
+    for (const card of facts.cardCentering ?? []) {
+      const offset = (card.rowsTop + card.rowsBottom) / 2 - (card.contentTop + card.contentBottom) / 2;
+      fail(Number.isFinite(offset) && Math.abs(offset) <= 1,
+        `Q5 live card "${card.text}" rows are ${Number.isFinite(offset) ? offset.toFixed(1) : '?'}px off vertical centre`, failures);
+    }
     const treeRows = facts.treeRows ?? [];
     const parents = treeRows.filter(row => row.depth === 0);
     const lefts = [...(facts.liveHeading ?? []).map(row => row.box.left),
@@ -338,6 +353,14 @@ export function probeWorkspaceLabels() {
         && tailBox.left >= box.left - 1 && tailBox.right <= box.right + 1
         && (!content || (tailBox.left >= content.left - 1 && tailBox.right <= content.right + 1)),
       tail: tail?.textContent.trim() ?? null,
+      // Rendered width of the separator the tail starts with (" 12"); 0 means
+      // the space collapsed and the row reads "workspace12".
+      tailSeparatorWidth: (() => {
+        const text = tail?.firstChild;
+        if (!text || text.nodeType !== Node.TEXT_NODE || !/^\s/.test(text.data)) return null;
+        const range = document.createRange(); range.setStart(text, 0); range.setEnd(text, 1);
+        return range.getBoundingClientRect().width;
+      })(),
       glyph: glyph?.getBoundingClientRect().toJSON() ?? null,
       ellipsized: label.scrollWidth > label.clientWidth + 1 });
   }
@@ -360,6 +383,8 @@ export function workspaceLabelVerdict(facts, { minWidth = 124 } = {}) {
     fail(!!digits && row.visibleTail && row.tail?.endsWith(digits),
       `Q19 "${row.text}" tail is not fully visible`, failures);
     fail(row.accessibleName === row.text, `Q19 "${row.text}" accessible name is incomplete`, failures);
+    fail(row.tailSeparatorWidth === null || row.tailSeparatorWidth > 1,
+      `Q19 "${row.text}" loses the space before its number`, failures);
   }
   fail(!!facts.content && (facts.rows ?? []).length >= 12,
     'Q19 workspace glyph content box or rows missing', failures);

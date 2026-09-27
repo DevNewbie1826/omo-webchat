@@ -318,6 +318,16 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     });
   }
 
+  test('Q5 rejects live-card rows pinned to the top of a taller touch target', () => {
+    const base = q5Geometry({ cardLeft: 17, parentLabelLeft: 16 });
+    const centred = { ...base, cardCentering: [{ text: 'stored-a', contentTop: 108, contentBottom: 136, rowsTop: 113, rowsBottom: 131 }] };
+    expect(sidebarVerdict(centred, { cards: 1, geometry: true }).pass).toBe(true);
+    const pinned = { ...base, cardCentering: [{ text: 'stored-a', contentTop: 108, contentBottom: 136, rowsTop: 108, rowsBottom: 126 }] };
+    const output = sidebarVerdict(pinned, { cards: 1, geometry: true });
+    expect(output.failures).toContain('Q5 live card "stored-a" rows are -5.0px off vertical centre');
+    console.log(`Q5 top-pinned control: ${output.failures.join('; ')}`);
+  });
+
   test('Q5 parent label aligns with heading and card text', () => {
     const facts = q5Geometry({ cardLeft: 17, parentLabelLeft: 16 });
     expect(sidebarVerdict(facts, { cards: 1, geometry: true }).pass).toBe(true);
@@ -422,6 +432,16 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     const output = workspaceLabelVerdict(damaged);
     expect(output.failures).toContain('Q19 "Earlier workspace 12" tail is not fully visible');
     console.log(`Q19 font24 tail control: ${output.failures.join('; ')}`);
+  });
+
+  test('Q19 serialized probe rejects a collapsed space before the number', () => {
+    const valid = workspaceProbe();
+    const spaced = { ...valid, rows: valid.rows.map(row => ({ ...row, tailSeparatorWidth: 3.6 })) };
+    expect(workspaceLabelVerdict(spaced).pass).toBe(true);
+    const collapsed = { ...valid, rows: valid.rows.map(row => ({ ...row, tailSeparatorWidth: 0 })) };
+    const output = workspaceLabelVerdict(collapsed);
+    expect(output.failures).toContain('Q19 "Earlier workspace 12" loses the space before its number');
+    console.log(`Q19 collapsed-space control: ${output.failures.length} failures`);
   });
 
   test('Q19 serialized probe rejects a folder glyph translated past the drawer edge', () => {
