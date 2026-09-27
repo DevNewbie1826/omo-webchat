@@ -28,14 +28,17 @@ import (
 )
 
 const (
-	ContractVersion = 3
-	// MinContractVersion is the oldest client dialect this server serves. A
-	// version-2 client keeps the complete root-to-leaf stream: only clients at
-	// ContractVersion or newer receive segmented head pages.
-	MinContractVersion  = 2
-	defaultWriteTimeout = 10 * time.Second
-	controlFrameTimeout = 15 * time.Second
-	closeFrameTimeout   = 2 * time.Second
+	ContractVersion = 4
+	// MinContractVersion is the oldest client dialect this server serves.
+	// Version 2 keeps the complete root-to-leaf stream. Segmented head pages
+	// start at progressiveHistoryVersion; bounded tails without those pages
+	// start at onDemandHistoryVersion.
+	MinContractVersion        = 2
+	progressiveHistoryVersion = 3
+	onDemandHistoryVersion    = 4
+	defaultWriteTimeout       = 10 * time.Second
+	controlFrameTimeout       = 15 * time.Second
+	closeFrameTimeout         = 2 * time.Second
 	// openFrameTimeout preserves the previous effective HistoryTimeout maximum
 	// while making the route-layer opening budget explicit.
 	openFrameTimeout          = 120 * time.Second

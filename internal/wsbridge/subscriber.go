@@ -120,14 +120,22 @@ func (s *subscriber) ReplayBackpressure() (<-chan struct{}, bool) {
 	return s.attempt.detachSignal, s.replaying
 }
 
+func (s *subscriber) HistoryResume() *coldhistory.ResumeCursor { return s.resume }
+
 // ProgressiveHistory reports whether the socket's client hello negotiated a
 // contract version that accepts segmented head pages after the terminal tail
 // page.
-func (s *subscriber) HistoryResume() *coldhistory.ResumeCursor { return s.resume }
-
 func (s *subscriber) ProgressiveHistory() bool {
-	return s.conn.clientHelloVersion() >= ContractVersion
+	return s.conn.clientHelloVersion() >= progressiveHistoryVersion
 }
+
+// OnDemandHistory reports whether the socket's client hello negotiated a
+// bounded tail without warm head pages.
+func (s *subscriber) OnDemandHistory() bool {
+	return s.conn.clientHelloVersion() >= onDemandHistoryVersion
+}
+
+var _ session.OnDemandHistorySubscriber = (*subscriber)(nil)
 
 func (s *subscriber) Deliver(f session.Frame) { _ = s.DeliverFrame(f) }
 func (s *subscriber) DeliverFrame(f session.Frame) error {
@@ -368,7 +376,7 @@ func (s *subscriber) SubscriberOverflowTransfer() *session.SubscriberOverflowTra
 
 func (s *subscriber) deliver(f session.Frame) error {
 	s.historyWritten = false
-	wire, err := mapFrame(f, s.claim.chatID, s.treatAsResumed)
+	wire, err := mapFrame(f, s.claim.chatID, s.treatAsResumed, s.conn.clientHelloVersion())
 	if err != nil {
 		return err
 	}
@@ -460,7 +468,43 @@ func (c *connection) subscriberClaim(s *subscriber) (queryBinding, bool) {
 	return claim, ok
 }
 
-func mapFrame(f session.Frame, chatID string, reattach bool) (any, error) {
+func mapFrame(f session.Frame, chatID string, reattach bool, helloVersion ...int) (any, error) {
+	// Callers that omit helloVersion are mapped as the current contract.
+	// deliver passes the socket hello so older clients skip entry.appended.
+	version := ContractVersion
+	if len(helloVersion) > 0 {
+		version = helloVersion[0]
+	}
+	if f.Kind == session.FrameEntryAppended {
+		if version < onDemandHistoryVersion {
+			return nil, nil
+		}
+		if chatID == "" {
+			chatID = f.SessionID
+		}
+		info, ok := f.Data.(session.EntryAppendedInfo)
+		if !ok {
+			if pointed, pointedOK := f.Data.(*session.EntryAppendedInfo); pointedOK && pointed != nil {
+				info, ok = *pointed, true
+			}
+		}
+		if !ok {
+			return mergedFrame("entry.appended", chatID, f.Data)
+		}
+		out := wscontract.EntryAppendedFrame{
+			Type:       "entry.appended",
+			SessionID:  chatID,
+			ID:         info.ID,
+			ParentID:   info.ParentID,
+			Role:       info.Role,
+			TextPrefix: info.TextPrefix,
+		}
+		if f.BindingID != "" {
+			bindingID := f.BindingID
+			out.BindingID = &bindingID
+		}
+		return out, nil
+	}
 	typ, ok := wscontract.FrameKindToWireName[string(f.Kind)]
 	if !ok {
 		return nil, nil
