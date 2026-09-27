@@ -89,6 +89,15 @@ describe("parseEntries", () => {
 		expect(messages[0]?.blocks).toEqual([{ kind: "tool", id: "t1", name: "lookup", text: "done" }]);
 	});
 
+	it("preserves the timestamp of a standalone tool result", () => {
+		const messages = parseEntries([{
+			type: "message",
+			id: "orphan",
+			message: { role: "toolResult", toolCallId: "t1", toolName: "lookup", content: "done", timestamp: 3000 },
+		}]);
+		expect(messages[0]?.ts).toBe(3000);
+	});
+
 	it("preserves image and image_ref blocks in restored message content", () => {
 		const messages = parseEntries([
 			{

@@ -103,12 +103,12 @@ interface OlderHandle {
 
 function render(
   items: readonly TranscriptItem[],
-  extra: { readonly olderHistory?: OlderHandle; readonly historyFailedEmpty?: boolean; readonly onRetryHistory?: () => void } = {},
+  extra: { readonly olderHistory?: OlderHandle; readonly historyFailedEmpty?: boolean; readonly onRetryHistory?: () => void; readonly historyLoaded?: boolean } = {},
 ): void {
   act(() => root.render(
     <I18nContext.Provider value={i18n}>
       <ChatTranscript items={items} streaming="" thinking="" toolCalls={{}}
-        doneReason={null} error="" restoreVersion={0} focused={false} historyLoaded
+        doneReason={null} error="" restoreVersion={0} focused={false} historyLoaded={extra.historyLoaded ?? true}
         {...(extra.olderHistory !== undefined ? { olderHistory: extra.olderHistory } : {})}
         {...(extra.historyFailedEmpty !== undefined ? { historyFailedEmpty: extra.historyFailedEmpty } : {})}
         {...(extra.onRetryHistory !== undefined ? { onRetryHistory: extra.onRetryHistory } : {})} />
@@ -182,6 +182,103 @@ it("keeps paging while the reader parks inside the margin as pages land", async 
   render(tail, { olderHistory: { state: "loading", loadOlder } });
   render(tail, { olderHistory: { state: "idle", loadOlder } });
   expect(loadOlder).toHaveBeenCalledTimes(2);
+});
+
+it("automatically fills a short tail with one older page at a time", async () => {
+  const loadOlder = vi.fn();
+  const element = await mount(() => render([message("short")], { olderHistory: { state: "loading", loadOlder } }));
+  Object.defineProperties(element, {
+    scrollHeight: { configurable: true, value: 200 },
+    clientHeight: { configurable: true, value: 400 },
+  });
+
+  render([message("short")], { olderHistory: { state: "idle", loadOlder } });
+  expect(loadOlder).toHaveBeenCalledTimes(1);
+  act(() => {
+    element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
+    element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
+  });
+  expect(loadOlder).toHaveBeenCalledTimes(1);
+  render([message("short")], { olderHistory: { state: "loading", loadOlder } });
+  render([message("older"), message("short")], { olderHistory: { state: "idle", loadOlder } });
+  expect(loadOlder).toHaveBeenCalledTimes(2);
+});
+
+it("waits for initial history before requesting an older short-tail page", async () => {
+  const loadOlder = vi.fn();
+  const element = await mount(() => render([message("preview")], {
+    olderHistory: { state: "idle", loadOlder }, historyLoaded: false,
+  }));
+  Object.defineProperties(element, {
+    scrollHeight: { configurable: true, value: 200 },
+    clientHeight: { configurable: true, value: 400 },
+  });
+  act(() => element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true })));
+  expect(loadOlder).not.toHaveBeenCalled();
+
+  render([message("preview")], { olderHistory: { state: "idle", loadOlder }, historyLoaded: true });
+  expect(loadOlder).toHaveBeenCalledTimes(1);
+});
+
+it("loads older history on upward input when hidden entries leave no visible rows", async () => {
+  const loadOlder = vi.fn();
+  const hidden = Array.from({ length: 59 }, (_, index): TranscriptItem => ({
+    kind: "message",
+    message: { id: `hidden-${index}`, role: "assistant", blocks: [] },
+  }));
+  const element = await mount(() => render([message("last"), ...hidden], { olderHistory: { state: "loading", loadOlder } }));
+  Object.defineProperties(element, {
+    scrollHeight: { configurable: true, value: 400 },
+    clientHeight: { configurable: true, value: 400 },
+  });
+  render([message("last"), ...hidden], { olderHistory: { state: "idle", loadOlder } });
+  expect(container.querySelectorAll(".th-chat-history .th-chat-row")).toHaveLength(1);
+  expect(loadOlder).toHaveBeenCalledTimes(1);
+  render([message("last"), ...hidden], { olderHistory: { state: "loading", loadOlder } });
+  act(() => element.dispatchEvent(new WheelEvent("wheel", { deltaY: -50, bubbles: true })));
+  expect(loadOlder).toHaveBeenCalledTimes(1);
+});
+
+it("requests an older page when every loaded entry hides its row", async () => {
+  const loadOlder = vi.fn();
+  const hidden = Array.from({ length: 60 }, (_, index): TranscriptItem => ({
+    kind: "message",
+    message: { id: `blank-${index}`, role: "assistant", blocks: [] },
+  }));
+  const element = await mount(() => render(hidden, { olderHistory: { state: "loading", loadOlder } }));
+  Object.defineProperties(element, {
+    scrollHeight: { configurable: true, value: 400 },
+    clientHeight: { configurable: true, value: 400 },
+  });
+  render(hidden, { olderHistory: { state: "idle", loadOlder } });
+  expect(container.querySelectorAll(".th-chat-history .th-chat-row")).toHaveLength(0);
+  expect(loadOlder).toHaveBeenCalledTimes(1);
+});
+
+it.each(["PageUp", "Home", "ArrowUp"])("requests history for %s at a non-scrollable focused viewport", async (key) => {
+  const loadOlder = vi.fn();
+  const element = await mount(() => render(tail, { olderHistory: { state: "idle", loadOlder } }));
+  Object.defineProperties(element, {
+    scrollHeight: { configurable: true, value: 400 },
+    clientHeight: { configurable: true, value: 400 },
+  });
+  element.focus();
+  act(() => element.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true })));
+  expect(loadOlder).toHaveBeenCalledTimes(1);
+});
+
+it("requests history on a downward touch drag without scroll overflow", async () => {
+  const loadOlder = vi.fn();
+  const element = await mount(() => render(tail, { olderHistory: { state: "idle", loadOlder } }));
+  Object.defineProperties(element, {
+    scrollHeight: { configurable: true, value: 400 },
+    clientHeight: { configurable: true, value: 400 },
+  });
+  act(() => {
+    element.dispatchEvent(new TouchEvent("touchstart", { touches: [{ identifier: 1, clientY: 80 } as Touch] }));
+    element.dispatchEvent(new TouchEvent("touchmove", { touches: [{ identifier: 1, clientY: 120 } as Touch] }));
+  });
+  expect(loadOlder).toHaveBeenCalledTimes(1);
 });
 
 it("renders a spinner row while loading and nothing once complete or unavailable", async () => {

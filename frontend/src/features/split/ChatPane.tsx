@@ -169,10 +169,15 @@ export function ChatPane({
     // rendering it now would pile it at the top of the transcript (G11). It
     // appears once its range is loaded. With the root known, every retained
     // notice is in range and renders exactly as before.
-    const boundary = chat.historyRootKnown ? undefined : chat.messages[0]?.ts;
-    const inRange = boundary === undefined
+    // Parsed entries use 0 only as a display fallback for a missing time. An
+    // unknown leading timestamp must not admit older notices before a real
+    // timestamp establishes the loaded range.
+    const boundary = chat.historyRootKnown ? undefined
+      : chat.messages.find((message) => typeof message.ts === "number"
+        && Number.isFinite(message.ts) && message.ts !== 0)?.ts;
+    const inRange = chat.historyRootKnown || chat.messages.length === 0
       ? notices
-      : notices.filter((notice) => notice.at >= boundary);
+      : boundary === undefined ? [] : notices.filter((notice) => notice.at >= boundary);
     return mergeTranscriptItems(
       // Zero-block assistant completions stay in transcript state (they anchor
       // current-turn tool results for run.done materialization, live and

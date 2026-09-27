@@ -208,7 +208,7 @@ function toolEffect(message: RawEntry, entryId: unknown): ToolEffect {
       ...(typeof entryId === "string" ? { id: entryId } : {}),
       role: "assistant",
       blocks: [result, ...extraImages],
-      ts: 0,
+      ts: parseTimestamp(message["timestamp"]),
     },
     next: new WeakMap(),
   };

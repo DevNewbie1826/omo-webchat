@@ -83,6 +83,61 @@ it("hides notices stamped before the first loaded message until their range is l
   expect(container.querySelectorAll(".th-chat-history .th-chat-row")).toHaveLength(4);
 });
 
+it("hides an older notice when the incomplete tail starts with a standalone tool result", () => {
+  const { deliver } = renderChatPane(root);
+  act(() => {
+    deliver({
+      type: "entries",
+      sessionId: "chat-1",
+      historySessionId: "durable",
+      entries: [{
+        type: "message",
+        id: "result",
+        message: { role: "toolResult", toolCallId: "orphan", toolName: "read", content: "output", timestamp: 3000 },
+      }],
+      historyComplete: false,
+      final: true,
+    } as unknown as ChatServerFrame);
+    deliverWire(deliver, wireNoticeFrame(1, 1000));
+  });
+  expect(container.textContent).toContain("read");
+  expect(container.textContent).not.toContain("n1");
+
+  act(() => {
+    deliver({
+      type: "entries",
+      sessionId: "chat-1",
+      segment: "head",
+      historySessionId: "durable",
+      entries: [entry("root", 500)],
+      historyComplete: true,
+      final: true,
+    } as unknown as ChatServerFrame);
+  });
+  expect(container.textContent).toContain("n1");
+});
+
+it("ignores a leading display timestamp fallback when bounding notices", () => {
+  const { deliver } = renderChatPane(root);
+  act(() => {
+    deliver({
+      type: "entries",
+      sessionId: "chat-1",
+      historySessionId: "durable",
+      entries: [
+        { type: "message", id: "unknown", message: { role: "user", content: "undated" } },
+        entry("dated", 3000),
+      ],
+      historyComplete: false,
+      final: true,
+    } as unknown as ChatServerFrame);
+    deliverWire(deliver, wireNoticeFrame(1, 1000));
+    deliverWire(deliver, wireNoticeFrame(2, 3500));
+  });
+  expect(container.textContent).not.toContain("n1");
+  expect(container.textContent).toContain("n2");
+});
+
 it("renders every notice once the history root is known, even before the oldest range loads", () => {
   const { deliver } = renderChatPane(root);
 

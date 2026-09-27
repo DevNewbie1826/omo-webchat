@@ -369,14 +369,64 @@ export function ChatTranscript({
   const sentinelMounted = olderHistory !== undefined && olderState !== "complete" && olderState !== "unavailable";
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const sentinelInViewRef = useRef(false);
+  const olderRequestPendingRef = useRef(false);
   const olderHistoryRef = useRef(olderHistory);
   olderHistoryRef.current = olderHistory;
-  const maybeLoadOlder = useCallback(() => {
+  const maybeLoadOlder = useCallback((fillViewport = false) => {
     const handle = olderHistoryRef.current;
-    if (handle === undefined || handle.state !== "idle") return;
-    if (isFollowing()) return;
+    if (!historyLoaded || handle === undefined || handle.state !== "idle" || olderRequestPendingRef.current) return;
+    if (!fillViewport && isFollowing()) return;
+    olderRequestPendingRef.current = true;
     handle.loadOlder();
-  }, [isFollowing]);
+  }, [historyLoaded, isFollowing]);
+  useEffect(() => {
+    if (olderState !== "idle") olderRequestPendingRef.current = false;
+  }, [olderState]);
+  useEffect(() => {
+    if (!sentinelMounted || olderState !== "idle") return;
+    const scrollport = scrollRef.current;
+    const content = contentRef.current;
+    if (scrollport === null || content === null) return;
+    const fillViewport = (): void => {
+      if (scrollport.clientHeight > 0 && scrollport.scrollHeight <= scrollport.clientHeight) maybeLoadOlder(true);
+    };
+    fillViewport();
+    const observer = new ResizeObserver(fillViewport);
+    observer.observe(scrollport);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [sentinelMounted, olderState, items.length, scrollRef, contentRef, maybeLoadOlder]);
+  useEffect(() => {
+    const scrollport = scrollRef.current;
+    if (!sentinelMounted || scrollport === null) return;
+    const readUp = (): void => {
+      if (!historyLoaded || scrollport.scrollHeight > scrollport.clientHeight) return;
+      holdDisclosurePosition();
+      maybeLoadOlder(true);
+    };
+    const wheel = (event: WheelEvent): void => { if (event.deltaY < 0) readUp(); };
+    let touchY: number | null = null;
+    const touchStart = (event: TouchEvent): void => { touchY = event.touches[0]?.clientY ?? null; };
+    const touchMove = (event: TouchEvent): void => {
+      const nextY = event.touches[0]?.clientY;
+      if (nextY === undefined) return;
+      if (touchY !== null && nextY > touchY) readUp();
+      touchY = nextY;
+    };
+    const keyDown = (event: KeyboardEvent): void => {
+      if (event.target === scrollport && ["PageUp", "Home", "ArrowUp"].includes(event.key)) readUp();
+    };
+    scrollport.addEventListener("wheel", wheel, { passive: true });
+    scrollport.addEventListener("touchstart", touchStart, { passive: true });
+    scrollport.addEventListener("touchmove", touchMove, { passive: true });
+    scrollport.addEventListener("keydown", keyDown);
+    return () => {
+      scrollport.removeEventListener("wheel", wheel);
+      scrollport.removeEventListener("touchstart", touchStart);
+      scrollport.removeEventListener("touchmove", touchMove);
+      scrollport.removeEventListener("keydown", keyDown);
+    };
+  }, [sentinelMounted, historyLoaded, scrollRef, holdDisclosurePosition, maybeLoadOlder]);
   useEffect(() => {
     if (!sentinelMounted) return;
     const element = sentinelRef.current;
@@ -1344,7 +1394,7 @@ export function ChatTranscript({
 
   return (
     <div className="th-chat-scrollport">
-      <div className="th-chat-body" ref={scrollRef} onScroll={onTranscriptScroll}
+      <div className="th-chat-body" ref={scrollRef} tabIndex={0} onScroll={onTranscriptScroll}
         onClickCapture={onDisclosureClickCapture} onClick={onDisclosureClick}
         onTransitionEndCapture={onDisclosureTransitionEnd}>
         <div className="th-chat-content" ref={contentRef}>
