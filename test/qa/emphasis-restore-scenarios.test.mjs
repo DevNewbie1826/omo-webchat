@@ -15,7 +15,7 @@ import {
   sidebarStatesVerdict,
   probeActionSurface, actionVerdict, probeOverlayEmphasis, overlayVerdict,
   probeSecondary, secondaryVerdict, probeEmptyPane, probeSplitApplicability, emptyVerdict, probeMobileDag,
-  mobileDagVerdict, dagAncestorVerdict, dagTypographyVerdict, dagListScaleVerdict,
+  mobileDagVerdict, dagAncestorVerdict, dagTypographyVerdict, dagGraphScaleVerdict, dagListScaleVerdict,
   probeDagListText, phoneToolVerdict, probeDisclosureGeometry, disclosureVerdict,
   probeWorkspaceLabels, workspaceLabelVerdict,
 } from './emphasis-restore-scenarios.mjs';
@@ -705,6 +705,53 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     expect(mobileDagVerdict(clipped, 150).failures.join(' ')).toContain('outside visible ancestor');
   });
 
+  test('Q14/Q15 a clip above the panel rejects otherwise valid reel and words', () => {
+    const html = `<div class="th-chat-pane" style="overflow-y:hidden"><main class="th-chat-main"
+      style="overflow-y:hidden"><div class="th-chat-main-content" style="overflow-y:hidden">
+      <div class="th-activity-shelf" style="overflow-y:hidden"><section class="th-activity-panel">
+      <div class="th-activity-tabpanel" style="overflow-y:hidden">
+      <div class="th-activity-graph" style="overflow-y:hidden"><svg><defs>
+        <clipPath id="state-clip"><rect x="0" y="0" width="110" height="120"></rect></clipPath>
+      </defs><g data-node="k0"><rect class="th-activity-gnode-card"></rect>
+      <text class="th-activity-gstate" clip-path="url(#state-clip)"
+        style="font-size:11.1px">completed</text>
+      </g></svg></div></div></section></div></div></main></div>`;
+    const measure = shelfBottom => serialized(probeMobileDag, html, (_window, document) => {
+      const rect = (el, top, bottom) => {
+        el.getBoundingClientRect = () => ({
+          left: 0, right: 120, top, bottom, width: 120, height: bottom - top,
+          toJSON() { return this; },
+        });
+      };
+      for (const selector of ['.th-chat-pane', '.th-chat-main', '.th-chat-main-content',
+        '.th-activity-shelf', '.th-activity-panel', '.th-activity-tabpanel', '.th-activity-graph']) {
+        const el = document.querySelector(selector);
+        const bottom = selector === '.th-activity-shelf' ? shelfBottom : 120;
+        rect(el, 0, bottom);
+        Object.defineProperties(el, {
+          scrollHeight: { value: bottom }, clientHeight: { value: bottom },
+        });
+      }
+      rect(document.querySelector('.th-activity-gnode-card'), 80, 100);
+      rect(document.querySelector('text'), 84, 96);
+      const word = document.querySelector('text');
+      word.getComputedTextLength = () => 55;
+      word.getBBox = () => ({ x: 0, y: 84, width: 55, height: 12 });
+    });
+    const valid = measure(120), clipped = measure(90);
+    expect(valid.reel.scrollHeight).toBe(valid.reel.clientHeight);
+    expect(clipped.reel.scrollHeight).toBe(clipped.reel.clientHeight);
+    expect(clipped.nodes[0].words[0].clipped).toBe(false);
+    expect(clipped.ancestors.map(row => row.owner)).toContain('th-chat-main-content');
+    expect(clipped.ancestors.map(row => row.owner)).toContain('viewport');
+    expect(dagAncestorVerdict(valid).pass).toBe(true);
+    const rejected = dagAncestorVerdict(clipped);
+    expect(rejected.pass).toBe(false);
+    expect(rejected.failures.join(' ')).toContain('k0 card outside visible ancestor');
+    console.log('Q14/Q15 above-panel clip control:', rejected.failures.join('; '));
+    console.log('Q14/Q15 restored above-panel control: PASS');
+  });
+
   test('Q14/Q15 desktop scrollport reaches a card below its viewport but hidden parent rejects it', () => {
     const markup = overflow => `<section class="th-activity-panel">
       <div class="th-activity-tabpanel" data-activity-tabpanel="dag" style="overflow-y:${overflow}">
@@ -785,6 +832,26 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     expect(dagListScaleVerdict(list(13), list(24)).pass).toBe(true);
     expect(dagListScaleVerdict(list(13), list(13)).failures.join(' ')).toContain('does not grow');
     console.log('decision 9 control: phone 13/14/24 drift FAIL; desktop sub-11 FAIL; static List FAIL');
+  });
+
+  test('decision 9 rejects capped desktop title and fixed state but accepts setting tiers', () => {
+    const sample = (title, state) => serialized(probeMobileDag, `<div class="th-activity-graph"><svg>
+      <g data-node="k0"><text class="th-activity-glabel" style="font-size:${title}px">Node</text>
+      <text class="th-activity-gstate" style="font-size:${state}px">completed</text></g>
+      </svg></div>`);
+    const capped = {
+      13: sample(11.1423, 11.1), 14: sample(11.9994, 11.1), 24: sample(12, 11.1),
+    };
+    const scaled = {
+      13: sample(11.1423, 11), 14: sample(11.9994, 11), 24: sample(20.5704, 18.8568),
+    };
+    const rejected = dagGraphScaleVerdict(capped);
+    expect(rejected.pass).toBe(false);
+    expect(rejected.failures.join(' ')).toContain('desktop title font24');
+    expect(rejected.failures.join(' ')).toContain('desktop state font24');
+    expect(dagGraphScaleVerdict(scaled).pass).toBe(true);
+    console.log('Q14 capped control:', rejected.failures.join('; '));
+    console.log('Q14 scaled control: PASS (title 11.1423/11.9994/20.5704; state 11/11/18.8568)');
   });
 
   test('Q15 clipped tool status and node state are rejected', () => {

@@ -929,8 +929,9 @@ export function probeMobileDag({ scroll = false } = {}) {
         top: rect.top + el.clientTop, bottom: rect.top + el.clientTop + el.clientHeight,
         clientHeight: el.clientHeight, scrollHeight: el.scrollHeight, scrollTop: el.scrollTop });
     }
-    if (el === panel) break;
   }
+  ancestors.push({ owner: 'viewport', overflowY: 'hidden', top: 0, bottom: window.innerHeight,
+    clientHeight: window.innerHeight, scrollHeight: window.innerHeight, scrollTop: 0 });
   const nodes = [...(svg?.querySelectorAll('g[data-node]') ?? [])].map(group => {
     const card = group.querySelector('.th-activity-gnode-card');
     const words = [...group.querySelectorAll('text[class*="glabel"], text[class*="gstate"]')].map(el => {
@@ -956,7 +957,7 @@ export function probeMobileDag({ scroll = false } = {}) {
       stateWord: words.find(word => word.kind === 'state')?.text ?? null };
   });
   let scrollport = null;
-  if (scroll) for (let el = reel; el && el !== panel; el = el.parentElement)
+  if (scroll) for (let el = reel; el; el = el.parentElement)
     if (/^(auto|scroll)$/.test(getComputedStyle(el).overflowY)
       && el.scrollHeight > el.clientHeight + 1) { scrollport = el; break; }
   const scrollChecks = [];
@@ -1001,6 +1002,28 @@ export function dagTypographyVerdict(facts, phone, fontSize) {
     fail(phone ? Math.abs(word.fontSize - 11) <= .2 : word.fontSize >= 11,
       `Q14 decision 9 font${fontSize} ${node.id} ${word.kind} is ${word.fontSize}px, ${phone ? 'not 11px' : 'below 11px'}`, failures);
   return finish(facts, failures);
+}
+
+export function dagGraphScaleVerdict(samples) {
+  const failures = [];
+  const tiers = { title: .8571, state: .7857 };
+  for (const [kind, tier] of Object.entries(tiers)) {
+    for (const setting of [13, 14, 24]) {
+      const expected = Math.max(11, setting * tier);
+      const words = (samples?.[setting]?.nodes ?? []).flatMap(node =>
+        (node.words ?? []).filter(word => word.kind === kind));
+      fail(words.length > 0 && words.every(word => Number.isFinite(word.fontSize)
+        && Math.abs(word.fontSize - expected) <= .25),
+      `Q14 desktop ${kind} font${setting} does not follow its ${tier} tier with 11px floor (${words.map(word => word.fontSize).join(',')} vs ${expected.toFixed(2)}px)`, failures);
+    }
+    const sizes = [13, 14, 24].map(setting =>
+      samples?.[setting]?.nodes?.flatMap(node => node.words ?? [])
+        .find(word => word.kind === kind)?.fontSize);
+    fail(sizes.every(Number.isFinite) && sizes[2] > sizes[0] + 1
+      && sizes[2] > sizes[1] + 1 && sizes[1] >= sizes[0] - .2,
+    `Q14 desktop ${kind} does not grow with font setting (${sizes.join(' -> ')})`, failures);
+  }
+  return finish(samples, failures);
 }
 
 export function dagListScaleVerdict(small, large) {
@@ -1815,11 +1838,49 @@ async function driveQ14(ctx) {
         verdict.pass = verdict.failures.length === 0;
         measurements[stage] = verdict.measurements;
         failures.push(...verdict.failures);
+        if (ctx.theme === 'light' && ctx.viewport.width === 390 && fontSize === 24 && stage === 'dense64') {
+          const shelf = env.page.locator('.th-activity-shelf');
+          const previous = await shelf.evaluate(el => {
+            const transform = el.style.transform;
+            el.style.transform = 'translateY(300px)';
+            return transform;
+          });
+          let moved;
+          try {
+            moved = await ctx.probe(env.page, probeMobileDag);
+          } finally {
+            await shelf.evaluate((el, transform) => { el.style.transform = transform; }, previous);
+          }
+          const restored = await ctx.probe(env.page, probeMobileDag);
+          const rejected = dagAncestorVerdict(moved, stage);
+          const recovered = dagAncestorVerdict(restored, stage);
+          measurements.outerClipControl = { moved: { reel: moved.reel, failures: rejected.failures },
+            restored: { reel: restored.reel, pass: recovered.pass } };
+          fail(moved.reel?.scrollHeight === facts.reel?.scrollHeight
+            && moved.reel?.clientHeight === facts.reel?.clientHeight
+            && moved.nodes?.every(node => node.words.every(word => !word.clipped))
+            && rejected.failures.some(reason => reason.includes('outside visible ancestor')),
+          'Q14 real-DOM translated shelf outside outer clip was not rejected', failures);
+          fail(recovered.pass, `Q14 real-DOM shelf restoration failed: ${recovered.failures.join('; ')}`, failures);
+        }
         if (stage === 'mixed') {
           const state = await ctx.probe(env.page, probeDagGraph, { runningId: 'k6', sourceId: 'k5' });
           const semantic = dagVerdict(state, t4StageRoles(stage), ctx.viewport.width);
-          failures.push(...semantic.failures.map(reason => `Q14/Q3 ${reason}`));
-          measurements.mixedSemantic = { pass: semantic.pass, nodes: state.nodes, tokens: state.tokens };
+          // User decision 10: desktop/tablet Graph text follows the font setting,
+          // so the five-whole-card density bar binds at the default font (13)
+          // only; larger settings keep at least one whole card on first paint,
+          // and ancestor reachability above still covers every card.
+          const densityReason = /whole mixed-stage cards inside the 1280px graph reel/;
+          const wholeCount = state.nodes?.filter(node => node.cardRect && state.scroller?.rect
+            && node.cardRect.left >= state.scroller.rect.left - 1
+            && node.cardRect.right <= state.scroller.rect.right + 1).length ?? 0;
+          failures.push(...semantic.failures
+            .filter(reason => fontSize === 13 || !densityReason.test(reason))
+            .map(reason => `Q14/Q3 ${reason}`));
+          if (fontSize !== 13) fail(wholeCount >= 1,
+            `Q14/Q3 font${fontSize} shows no whole mixed-stage card on first paint`, failures);
+          measurements.mixedSemantic = { pass: semantic.pass, nodes: state.nodes, tokens: state.tokens,
+            wholeCount, densityBinding: fontSize === 13 };
         }
         await save(`-font${fontSize}-${stage}`);
       }
@@ -1842,6 +1903,12 @@ async function driveQ14(ctx) {
   if (ctx.viewport.width === 390) {
     const small = results[0].measurements.list, large = results[2].measurements.list;
     failures.push(...dagListScaleVerdict(small, large).failures);
+  } else {
+    for (const stage of ['mixed', 'dense16', 'dense64']) {
+      const samples = Object.fromEntries(results.map((result, index) =>
+        [[13, 14, 24][index], result.measurements[stage]]));
+      failures.push(...dagGraphScaleVerdict(samples).failures.map(reason => `${stage}: ${reason}`));
+    }
   }
   return { ...finish(Object.fromEntries(results.map((result, index) => [[13, 14, 24][index], result.measurements])),
     failures),
