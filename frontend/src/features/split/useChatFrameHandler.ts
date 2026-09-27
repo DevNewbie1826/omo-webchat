@@ -28,6 +28,7 @@ type HistoryPage = Extract<ChatServerFrame, { type: "entries" }>;
 
 interface ChatFrameHandlerBindings {
   readonly acceptHistoryPage?: (frame: HistoryPage) => { frame: HistoryPage; resumed: boolean } | null;
+  readonly showHistoryPreview: (frame: HistoryPage) => void;
   readonly t: Translate;
   readonly controls: ReturnType<typeof useConfirmedControls>;
   readonly streaming: ReturnType<typeof useStreamingBuffer>;
@@ -603,6 +604,15 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         bindings.setModels(frame.models);
         return;
       case "entries": {
+        // Disk-tail preview is display-only: it cannot claim a terminal or
+        // contribute pages/anchors to the authoritative hydration stream.
+        if (frame.segment === "preview") {
+          const generation = bindings.claimHistoryGeneration(connectionGeneration, false);
+          if (bindings.resyncGenerationRef.current !== null
+            && bindings.resyncGenerationRef.current !== generation) return;
+          bindings.showHistoryPreview(frame);
+          return;
+        }
         // A backward warm chunk of earlier history: it never opens the pane,
         // never ends a replay, and never re-pins the viewport. Its entries
         // join the front of this binding's ordered list, which reconciles as

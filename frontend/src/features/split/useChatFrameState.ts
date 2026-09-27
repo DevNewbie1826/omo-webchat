@@ -4,7 +4,7 @@ import type { ChatClient, ChatServerFrame, CommandEntry, ContextUsage, JsonObjec
 import type { ApprovalRequest } from "./QuestionWindow";
 import type { ApprovalFrame } from "../../lib/contract/types_gen";
 import { useConfirmedControls } from "./chatConfirmedControls";
-import { concatEntries, messageText, type UiMessage } from "./chatEntries";
+import { concatEntries, messageText, parseEntries, type UiMessage } from "./chatEntries";
 import type { HistoryResumeCursor } from "../../lib/contract/types_gen";
 import {
   applyActivityEvent,
@@ -219,6 +219,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const controls = useConfirmedControls();
   const ledger = controls.ledger;
   const [messages, setMessages] = useState<readonly UiMessage[]>([]);
+  const [previewMessages, setPreviewMessages] = useState<readonly UiMessage[] | null>(null);
   const streaming = useStreamingBuffer();
   const entriesBuffer = useEntriesPageBuffer();
   const resumeCoverage = useRef(createHistoryResumeCoverage());
@@ -226,6 +227,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const pageBuffer = {
     ...entriesBuffer,
     reset: () => {
+      setPreviewMessages(null);
       entriesBuffer.reset();
       resumeCoverage.current.reconnect();
       historyPageCommittedRef.current = false;
@@ -252,7 +254,10 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     const next = typeof value === "function" ? value(historyStatusRef.current) : value;
     historyStatusRef.current = next;
     updateHistoryStatus(next);
-    if (next !== "loading") clearHistoryStall();
+    if (next !== "loading") {
+      setPreviewMessages(null);
+      clearHistoryStall();
+    }
   };
   const setHistoryWarming: typeof updateHistoryWarming = (value) => {
     const next = typeof value === "function" ? value(historyWarmingRef.current) : value;
@@ -643,6 +648,12 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   };
 
   const baseHandleFrame = createChatFrameHandler({
+    showHistoryPreview: (frame) => {
+      if (!socketOpenRef.current || historyStatusRef.current !== "loading"
+        || historyPageCommittedRef.current || messagesRef.current.length > 0
+        || resumeCoverage.current.entries().length > 0) return;
+      setPreviewMessages(parseEntries(frame.entries));
+    },
     acceptHistoryPage: (frame) => {
       if (frame.segment === "head" && !historyPageCommittedRef.current) return null;
       const accepted = resumeCoverage.current.accept(frame);
@@ -746,7 +757,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   // browser socket stays open, so it is the only cycle start that flow gets.
   const handleFrame = (frame: ChatServerFrame, connectionGeneration = 0): "refresh_stats" | void => {
     if (frame.type === "ready") applyRecovery(recoveryAfterReady(recoveryRef.current, frame.resumed));
-    else if (frame.type === "entries") applyRecovery(recoveryAfterHistory(recoveryRef.current, frame.final !== false));
+    else if (frame.type === "entries" && frame.segment !== "preview") applyRecovery(recoveryAfterHistory(recoveryRef.current, frame.final !== false));
     else if (frame.type === "error") {
       applyRecovery(frame.code === "provider_disconnected"
         ? recoveryAfterProviderLoss(recoveryRef.current)
@@ -909,6 +920,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     return connectionGeneration;
   };
   const markClose = (): void => {
+    setPreviewMessages(null);
     olderHistoryInvalidationRef.current?.(true);
     todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
     applyRecovery(recoveryAfterClose(recoveryRef.current, socketOpenRef.current));
@@ -964,7 +976,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   }, []);
 
   return {
-    messages,
+    messages: previewMessages ?? messages,
     streaming: streaming.streaming,
     thinking,
     toolCalls,

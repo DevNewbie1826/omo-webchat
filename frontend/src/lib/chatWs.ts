@@ -78,10 +78,10 @@ type NoticeFrameSeam = Omit<ct.NoticeFrame, "at" | "payload"> & {
  * `entries` stays `unknown` because features construct page payloads from
  * untyped history records (the parser still emits the generated array type).
  */
-type EntriesFrameSeam = Omit<ct.EntriesFrame, "entries" | "final"> & {
+type EntriesFrameSeam = Omit<ct.EntriesFrame, "entries" | "final" | "segment"> & {
   readonly entries: unknown;
   readonly final?: boolean;
-  readonly segment?: "head";
+  readonly segment?: "head" | "preview";
   readonly historyComplete?: boolean;
 };
 

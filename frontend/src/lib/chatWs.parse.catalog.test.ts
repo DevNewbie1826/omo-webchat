@@ -74,6 +74,8 @@ describe("parseChatServerFrame", () => {
     const base = { type: "entries", sessionId: "c1", entries: [], final: false };
     expect(parseChatServerFrame(base)).toEqual({ type: "entries", sessionId: "c1", entries: [], final: false });
     expect(parseChatServerFrame({ ...base, segment: "head" })).toMatchObject({ segment: "head" });
+    expect(parseChatServerFrame({ ...base, segment: "preview", historySessionId: "durable" }))
+      .toMatchObject({ segment: "preview", historySessionId: "durable", final: false });
     expect(parseChatServerFrame({ ...base, historyComplete: true })).toMatchObject({ historyComplete: true });
     expect(parseChatServerFrame({ ...base, segment: "tail" })).toBeNull();
     expect(parseChatServerFrame({ ...base, segment: 5 })).toBeNull();
