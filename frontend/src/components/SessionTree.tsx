@@ -262,6 +262,8 @@ export function SessionTree({
         const workspaceMainRunning = Array.from(mergedSessionIds).some((id) => activeSessions?.has(id));
         const renamingWs =
           rename && rename.kind === "workspace" && rename.wsId === ws.id ? rename : null;
+        const nameTail = ws.name.match(/\s\S{1,4}$/u)?.[0] ?? Array.from(ws.name).slice(-5).join("");
+        const nameHead = ws.name.slice(0, ws.name.length - nameTail.length);
         return (
           <div key={ws.id} className="th-tree-workspace">
             <div className="th-tree-node">
@@ -291,7 +293,10 @@ export function SessionTree({
                   aria-expanded={isOpen}
                   onClick={() => onToggle(ws.id)}
                 >
-                  <span className="th-tree-label-text">{ws.name}</span>
+                  <span className="th-tree-label-text" aria-hidden="true">
+                    <span className={`th-tree-label-head${Array.from(nameHead).length > 8 ? " th-tree-label-head--long" : ""}`}>{nameHead}</span>
+                    <span className="th-tree-label-tail">{nameTail}</span>
+                  </span>
                   <span className={`th-tree-chevron${isOpen ? " th-tree-chevron--open" : ""}`} aria-hidden="true">
                     <IconChevron size={13} />
                   </span>

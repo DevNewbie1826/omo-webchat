@@ -240,13 +240,32 @@
   text-overflow: ellipsis;
 }
 
-/* The workspace label is a flex button, where text-overflow does not apply
-   to its bare text; the name span carries the truncation instead. */
+/* Keep the final short word (or five final characters) outside the shrinkable head
+   so a narrow drawer ellipsizes the middle rather than hiding row identities.
+   The head stays at intrinsic width until there is actual overflow. */
 .th-tree-label-text {
+  display: flex;
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
+}
+
+.th-tree-label-head {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Leave a readable prefix on long names. If even that and the tail cannot
+   fit, the label genuinely overflows instead of silently clipping its tail. */
+.th-tree-label-head--long {
+  min-width: calc(var(--th-space-12) + var(--th-space-5));
+}
+
+.th-tree-label-tail {
+  flex: none;
 }
 
 /* The selected row reads at a glance: the sliding indicator paints the

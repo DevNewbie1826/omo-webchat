@@ -11,14 +11,14 @@
   max-height: min(30vh, 216px);
   overflow-y: auto;
   overflow-x: hidden;
-  padding: var(--th-space-2);
+  padding: var(--th-space-2) var(--th-space-4);
 }
 
-/* E33: coarse drawers tighten the horizontal inset with the body above, so
-   the live cards keep the same 12px text column as the headings and tree. */
+/* The shared coarse inset leaves the folder glyph an 8px edge gutter while
+   live card titles still meet the heading and workspace text column. */
 @media (pointer: coarse) {
   .th-sidebar-live {
-    padding: var(--th-space-2) var(--th-space-1);
+    padding: var(--th-space-2) var(--th-space-3);
   }
 }
 

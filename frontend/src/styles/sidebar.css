@@ -69,16 +69,15 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
   }
 }
 
-/* Toolbar: brand leading, icon actions trailing. The brand starts on the
-   same 16px column as the tree's leading glyphs (body inset + row inset);
-   the actions keep the footer's 12px trailing inset. */
+/* Toolbar: brand on the shared heading/card/workspace text column, icon
+   actions trailing. The actions keep the footer's 12px trailing inset. */
 .th-sidebar-nav {
   flex: none;
   display: flex;
   align-items: center;
   gap: var(--th-space-2);
   height: var(--th-header-h);
-  padding: 0 var(--th-space-3) 0 var(--th-space-4);
+  padding: 0 var(--th-space-3) 0 var(--th-space-6);
 }
 
 .th-sidebar-logo {
@@ -119,7 +118,7 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: var(--th-space-2);
+  padding: var(--th-space-2) var(--th-space-4);
 }
 
 .th-sidebar-section-label {
@@ -177,17 +176,16 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
    buttons clear of the safe-area inset band the shell reserves below it.
    Fine-pointer geometry is untouched.
    E33: the drawer's fixed 44px chevron and kebab squeeze the workspace label
-   column until the trailing number ellipsizes away, so on coarse pointers
-   the section insets tighten from 16px to 12px: the label column matches
-   the main baseline width while nav, headings, live cards and tree text
-   shift together and keep one shared left column (Q5). */
+   column until the trailing number ellipsizes away. Coarse sections use a
+   12px inset so the absolute folder glyph retains an 8px edge gutter while
+   nav, headings, live cards and tree text share one column (Q5). */
 @media (pointer: coarse) {
   .th-sidebar-nav {
-    padding-left: var(--th-space-3);
+    padding-left: var(--th-space-5);
   }
 
   .th-sidebar-body {
-    padding: var(--th-space-2) var(--th-space-1);
+    padding: var(--th-space-2) var(--th-space-3);
   }
 
   .th-sidebar-footer {
