@@ -3,6 +3,7 @@ import { useT, type Translate } from "../../i18n";
 import { useMediaQuery } from "../../lib/useMediaQuery";
 import { statusKind, statusLabel, type DagView } from "./activityShelfModel";
 import { ActivityChip } from "./activityShelfSections";
+import { dagNodeTitle } from "./dagNodeTitle";
 import type { ActivityDagNode, ActivityDagRun } from "./activityTypes";
 
 /*
@@ -190,8 +191,14 @@ interface GraphType {
 }
 
 /**
- * Titles use at most two complete lines. The graph measures their required
- * width first, so neither line needs an ellipsis or a clip.
+ * Titles use at most two lines. The first line takes the longest prefix
+ * that fits, breaking at a word boundary when the remainder fits the
+ * second line; when the capped card width cannot fit the second line, it
+ * is truncated and ends with an ellipsis (U+2026).
+ *
+ * Fitting is a binary search over code points, so one fit costs at most
+ * ceil(log2(n)) + 2 measure calls; the previous per-glyph loop measured
+ * every prefix on every node and froze the main thread on long titles.
  */
 export function splitNodeLabel(
   text: string,
@@ -201,19 +208,27 @@ export function splitNodeLabel(
 ): readonly string[] {
   if (measure(text) <= firstWidth) return [text];
   const fit = (value: string, width: number): string => {
-    let result = "";
-    for (const glyph of value) {
-      if (measure(result + glyph) > width) break;
-      result += glyph;
+    if (width <= 0) return "";
+    if (measure(value) <= width) return value;
+    const glyphs = Array.from(value);
+    let low = 0; // glyphs[0..low) fits.
+    let high = glyphs.length; // glyphs[0..high) overflows (the early return proves it for `high`).
+    while (low < high) {
+      const mid = (low + high + 1) >> 1;
+      if (measure(glyphs.slice(0, mid).join("")) <= width) low = mid;
+      else high = mid - 1;
     }
-    return result;
+    return glyphs.slice(0, low).join("");
   };
   let head = fit(text, firstWidth);
   const space = head.lastIndexOf(" ");
   if (space > head.length * 0.4 && measure(text.slice(space).trimStart()) <= secondWidth) {
     head = head.slice(0, space);
   }
-  const tail = text.slice(head.length).trimStart();
+  let tail = text.slice(head.length).trimStart();
+  if (measure(tail) > secondWidth) {
+    tail = `${fit(tail, secondWidth - measure("…"))}…`;
+  }
   return [head, tail];
 }
 
@@ -402,7 +417,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
     fontPx: DEFAULT_TYPE_PX, stateFontPx: MIN_GRAPH_TYPE_PX, width: 0, labels: new Map(),
   });
   const [viewWidth, setViewWidth] = useState(0);
-  const labelKey = JSON.stringify(run.nodes.map(node => [node.id, node.label ?? node.prompt]));
+  const labelKey = JSON.stringify(run.nodes.map(node => [node.id, dagNodeTitle(node)]));
   // The card metrics resolve once per render, so a token change lands on the
   // next paint together with the re-measured labels.
   const desktopSpacing = resolveCardSpacing();
@@ -470,7 +485,11 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
       const states = ["pending", "scheduled", "blocked", "running", "completed", "failed", "error", "cancelled", "canceled", "skipped"];
       const stateWidth = Math.max(...states.map(state => textWidth(statusLabel(t, state), stateProbe)));
       const titleWidth = Math.max(0, ...pairs.map(([, text]) => textWidth(text) / 2 + fontPx * 2));
-      const width = Math.max(base.width, Math.ceil(base.labelX + spacing.padX + Math.max(stateWidth, titleWidth) + 2));
+      // Titles are short ids/labels now (the multi-KB prompt never reaches
+      // this measurement), but keep a hard ceiling: the painted card may
+      // never exceed twice the default card width, scaled with the measured
+      // font the same way the base width is.
+      const width = Math.min(base.width * 2, Math.max(base.width, Math.ceil(base.labelX + spacing.padX + Math.max(stateWidth, titleWidth) + 2)));
       const { labelWidth } = cardGeometry(fontPx, stateFontPx, { ...spacing, width });
       const labels = new Map(pairs.map(([id, text]) => [id, splitNodeLabel(text, labelWidth, labelWidth, textWidth)]));
       probe.textContent = "";
@@ -572,7 +591,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
   }, []);
   const layers = dagLayers(run);
   const denseOneLine = compact && Math.max(0, ...layers.map(layer => layer.length)) >= 4
-    && run.nodes.every(node => (type.labels.get(node.id) ?? [node.label ?? node.prompt]).length === 1);
+    && run.nodes.every(node => (type.labels.get(node.id) ?? [dagNodeTitle(node)]).length === 1);
   const geometry = cardGeometry(layoutFontPx, stateFontPx, spacing, denseOneLine ? 1 : 2);
   const { width: nodeWidth, height: nodeHeight, row, glyph } = geometry;
   const { radius } = spacing;
@@ -741,7 +760,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
             ...(motion?.entering ? ["th-activity-gnode--enter"] : []),
             ...(motion?.settling ? ["th-activity-gnode--settle"] : []),
           ].join(" ");
-          const lines = type.labels.get(node.id) ?? [node.label ?? node.prompt];
+          const lines = type.labels.get(node.id) ?? [dagNodeTitle(node)];
           return [
             // The outer group owns position (transform attribute) and never
             // animates; enter/settle motion plays on the inner body so a CSS
@@ -811,7 +830,7 @@ function DagList({ run, live, t }: {
             <InlineGlyph state={node.state} />
           </span>
           <span className="th-activity-dnode-label" title={node.prompt}>
-            {node.label ?? node.prompt}
+            {dagNodeTitle(node)}
           </span>
           <span className={`th-activity-dnode-state th-activity-dnode-state--${nodeStatusKind(node.state)}`}>{statusLabel(t, node.state)}</span>
         </li>

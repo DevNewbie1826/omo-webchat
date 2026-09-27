@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ComponentProps } from "react";
 import { DAG_STATES } from "./activityCompleteParse";
 import { DagSection } from "./activityShelfDag";
+import { dagNodeTitle } from "./dagNodeTitle";
 import { statusLabel, type DagView } from "./activityShelfModel";
 import type { ActivityState } from "./activityTypes";
 import { useCompleteDagRun, type CompleteDagRow, type useCompleteDag } from "./useCompleteDag";
@@ -63,7 +64,7 @@ function CompleteDagRunRow({ row, index, base, active, connected, activities, fa
               </div>)}
             </dl>
             {run.nodes.map(node => <details key={node.id} className="th-activity-dag-node-detail" data-activity-dag-node={node.id}>
-              <summary>{node.label ?? node.id} - {statusLabel(t, node.state)}</summary>
+              <summary>{dagNodeTitle(node)} - {statusLabel(t, node.state)}</summary>
               <dl>
                 <dt>{t("activity.dagNodeId")}</dt><dd>{node.id}</dd>
                 <dt>{t("activity.dagDependencies")}</dt><dd>{node.dependsOn.length === 0 ? t("activity.dagNoDependencies") : node.dependsOn.map((id, index) => <div key={index}>{id}</div>)}</dd>

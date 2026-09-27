@@ -299,6 +299,7 @@ describe("complete DAG dashboard", () => {
     expect(harness.container.querySelector("[data-activity-dag-total]")?.getAttribute("data-activity-dag-total")).toBe("64");
     const disclosure = requireElement(harness.container.querySelector<HTMLDetailsElement>("details[data-activity-dag-node]"), "node disclosure");
     act(() => { disclosure.open = true; disclosure.dispatchEvent(new Event("toggle")); });
+    expect(disclosure.querySelector("summary")?.textContent).toContain("node-0");
     expect(disclosure.querySelector("[data-activity-dag-prompt]")?.textContent).toBe(document.run.nodes[0]?.prompt);
     expect(disclosure.querySelector("[data-activity-dag-attempt]")?.textContent).toBe("0");
     for (const state of states) expect(harness.container.querySelector(`[data-activity-dag-count="${state}"]`)?.getAttribute("data-count")).toBe("8");

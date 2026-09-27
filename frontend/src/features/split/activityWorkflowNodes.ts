@@ -1,4 +1,5 @@
 import type { ActivityDagRun, ActivityTask } from "./activityTypes";
+import { dagNodeTitle } from "./dagNodeTitle";
 
 /**
  * The omo runtime reports workflow children in TWO channels: dag run nodes
@@ -27,7 +28,7 @@ export function workflowNodeTasks(
         return node.taskId === undefined || !knownTaskIds.has(node.taskId);
       })
       .map((node): ActivityTask => {
-      const title = node.label ?? node.prompt;
+      const title = dagNodeTitle(node);
       const liveProgress
         = node.currentTool !== undefined
           || node.activity !== undefined
