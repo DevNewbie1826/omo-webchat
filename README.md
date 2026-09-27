@@ -17,24 +17,109 @@
 
 ## 실행 화면 · Screenshots
 
-### 데스크톱 · Desktop
-
 <p align="center">
-  <a href="docs/images/pc.png">
-    <img src="docs/images/pc.png" width="960" alt="omo-webchat 데스크톱 실행 화면 / Desktop screenshot" />
-  </a>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/hero-desktop-dark.webp" />
+    <img src="docs/images/readme/hero-desktop-light.webp" width="960" alt="omo-webchat 데스크톱 실행 화면 / Desktop screenshot" />
+  </picture>
 </p>
 
 ### 모바일 · Mobile
 
 <p align="center">
-  <a href="docs/images/mo.jpeg">
-    <img src="docs/images/mo.jpeg" width="320" alt="omo-webchat 모바일 실행 화면 / Mobile screenshot" />
-  </a>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/mobile-dark.webp" />
+    <img src="docs/images/readme/mobile-light.webp" width="860" alt="omo-webchat 모바일 실행 화면 / Mobile screenshots" />
+  </picture>
 </p>
 
+### 주요 기능 · Features
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/dag-dark.webp" />
+    <img src="docs/images/readme/dag-light.webp" width="480" alt="DAG 그래프 · DAG graph" />
+  </picture>
+  <br /><b>DAG 그래프 · DAG graph</b><br /><sub>여러 에이전트 작업 흐름을 실시간 그래프로 · Multi-agent runs as a live graph</sub>
+    </td>
+    <td width="50%" valign="top">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/agents-dark.webp" />
+    <img src="docs/images/readme/agents-light.webp" width="480" alt="하위 에이전트 · Subagents" />
+  </picture>
+  <br /><b>하위 에이전트 · Subagents</b><br /><sub>골 진행 상태와 하위 에이전트 목록 · Goal progress and the subagent roster</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/tools-dark.webp" />
+    <img src="docs/images/readme/tools-light.webp" width="480" alt="도구 카드 · Tool cards" />
+  </picture>
+  <br /><b>도구 카드 · Tool cards</b><br /><sub>실행 중·완료·실패가 한눈에 · Running, done and failed at a glance</sub>
+    </td>
+    <td width="50%" valign="top">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/split-dark.webp" />
+    <img src="docs/images/readme/split-light.webp" width="480" alt="분할 뷰 · Split panes" />
+  </picture>
+  <br /><b>분할 뷰 · Split panes</b><br /><sub>여러 세션을 나란히 · Several sessions side by side</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/files-tree-dark.webp" />
+    <img src="docs/images/readme/files-tree-light.webp" width="480" alt="파일 브라우저 · File browser" />
+  </picture>
+  <br /><b>파일 브라우저 · File browser</b><br /><sub>업로드·폴더 탐색 · Upload and browse folders</sub>
+    </td>
+    <td width="50%" valign="top">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/files-editor-dark.webp" />
+    <img src="docs/images/readme/files-editor-light.webp" width="480" alt="파일 편집 · File editor" />
+  </picture>
+  <br /><b>파일 편집 · File editor</b><br /><sub>브라우저에서 바로 편집·저장 · Edit and save in the browser</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/composer-dark.webp" />
+    <img src="docs/images/readme/composer-light.webp" width="480" alt="슬래시 명령 · Slash commands" />
+  </picture>
+  <br /><b>슬래시 명령 · Slash commands</b><br /><sub>`/`로 명령 검색 · Search commands with `/`</sub>
+    </td>
+    <td width="50%" valign="top">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/skills-dark.webp" />
+    <img src="docs/images/readme/skills-light.webp" width="480" alt="스킬 팔레트 · Skill palette" />
+  </picture>
+  <br /><b>스킬 팔레트 · Skill palette</b><br /><sub>`$`로 스킬 실행 · Run skills with `$`</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/models-dark.webp" />
+    <img src="docs/images/readme/models-light.webp" width="480" alt="모델 선택 · Model picker" />
+  </picture>
+  <br /><b>모델 선택 · Model picker</b><br /><sub>모델과 생각 수준 선택 · Pick a model and thinking level</sub>
+    </td>
+    <td width="50%" valign="top">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/settings-dark.webp" />
+    <img src="docs/images/readme/settings-light.webp" width="480" alt="설정 · Settings" />
+  </picture>
+  <br /><b>설정 · Settings</b><br /><sub>언어·테마·글꼴·글자 크기 · Language, theme, font and size</sub>
+    </td>
+  </tr>
+</table>
+
 <p align="center">
-  <sub>이미지를 클릭하면 원본 크기로 볼 수 있습니다. · Click an image to view it at full size.</sub>
+  <sub>GitHub 테마(다크/라이트)에 맞는 이미지가 표시됩니다. 화면 속 프로젝트와 대화는 데모용 예시입니다. · Images follow your GitHub theme; the projects and chats shown are demo examples.</sub>
 </p>
 
 ---
