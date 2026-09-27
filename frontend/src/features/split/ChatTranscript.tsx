@@ -315,8 +315,19 @@ interface ChatTranscriptProps {
   readonly restoreVersion: number;
   readonly focused: boolean;
   readonly historyLoaded: boolean;
-  readonly historyWarming?: boolean;
+  /** On-demand older-history loader owned by the session hook. The top
+   * sentinel calls loadOlder() when the reader scrolls into it and is not
+   * bottom-following; absent where no older history can exist (tests). */
+  readonly olderHistory?: { readonly state: OlderHistoryViewState; readonly loadOlder: () => void };
+  /** History failed with zero committed messages: an inline, retryable
+   * status row renders at the top of the transcript; notices still render
+   * below it. */
+  readonly historyFailedEmpty?: boolean;
+  /** Retry callback for the failed-empty row (resync/recreate history). */
+  readonly onRetryHistory?: () => void;
 }
+
+export type OlderHistoryViewState = "idle" | "loading" | "error" | "complete" | "unavailable";
 
 export function ChatTranscript({
   items,
@@ -328,7 +339,9 @@ export function ChatTranscript({
   restoreVersion,
   focused,
   historyLoaded,
-  historyWarming = false,
+  olderHistory,
+  historyFailedEmpty = false,
+  onRetryHistory,
   mediaSource,
 }: ChatTranscriptProps) {
   const { t, fontSize, font } = useT();
@@ -341,7 +354,49 @@ export function ChatTranscript({
   const clearDeferredAdjustment = useCallback(() => {
     deferredAdjustmentRef.current = 0;
   }, []);
-  const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom, holdDisclosurePosition, isFollowing, isReaderInputActive, noteProgrammaticWrite, isRecentProgrammaticWrite } = useChatScroll(restoreVersion, focused, clearDeferredAdjustment, historyWarming);
+  const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom, holdDisclosurePosition, isFollowing, isReaderInputActive, noteProgrammaticWrite, isRecentProgrammaticWrite } = useChatScroll(restoreVersion, focused, clearDeferredAdjustment);
+  // On-demand older history (G9 view): a sentinel above the virtualized rows
+  // is observed against the scrollport with a 600px top margin. When it
+  // enters the margin and the reader is not bottom-following, the next page
+  // loads. The observer only fires on crossings, so each landing while the
+  // reader parks inside the margin re-checks manually to keep paging.
+  const olderState = olderHistory?.state ?? "complete";
+  const sentinelMounted = olderHistory !== undefined && olderState !== "complete" && olderState !== "unavailable";
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const sentinelInViewRef = useRef(false);
+  const olderHistoryRef = useRef(olderHistory);
+  olderHistoryRef.current = olderHistory;
+  const maybeLoadOlder = useCallback(() => {
+    const handle = olderHistoryRef.current;
+    if (handle === undefined || handle.state !== "idle") return;
+    if (isFollowing()) return;
+    handle.loadOlder();
+  }, [isFollowing]);
+  useEffect(() => {
+    if (!sentinelMounted) return;
+    const element = sentinelRef.current;
+    const scrollport = scrollRef.current;
+    if (element === null || scrollport === null || typeof IntersectionObserver !== "function") return;
+    const observer = new IntersectionObserver((entries) => {
+      const entry = entries[entries.length - 1];
+      if (entry === undefined) return;
+      sentinelInViewRef.current = entry.isIntersecting;
+      if (entry.isIntersecting) maybeLoadOlder();
+    }, { root: scrollport, rootMargin: "600px 0px 0px 0px" });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [sentinelMounted, scrollRef, maybeLoadOlder]);
+  useEffect(() => {
+    if (!sentinelMounted || olderState !== "idle") return;
+    const element = sentinelRef.current;
+    const scrollport = scrollRef.current;
+    if (element === null || scrollport === null) return;
+    const rootRect = scrollport.getBoundingClientRect();
+    const rect = element.getBoundingClientRect();
+    const topMargin = 600;
+    if (rect.bottom < rootRect.top - topMargin || rect.top > rootRect.bottom) return;
+    maybeLoadOlder();
+  }, [sentinelMounted, olderState, scrollRef, maybeLoadOlder]);
   // Lane width feeding the row-height estimator. Tracked via ResizeObserver
   // so metrics recompute only on an actual width change, never per render.
   const [laneWidth, setLaneWidth] = useState(0);
@@ -610,20 +665,8 @@ export function ChatTranscript({
   // identity assignment are zero-renderable-block rows hidden from the
   // virtualized window.
   const itemKeys = useMemo(() => transcriptItemKeys(items), [items]);
-  // Mounting each earlier-history chunk changes the scrollport height before
-  // the bottom pin catches up. While following during fill, keep the same
-  // leading row instead; release on completion, reader takeover or a missing
-  // seam (for example an orphan result folded into its loaded invocation).
-  const fillHoldKeyRef = useRef<string | null>(null);
-  if (!historyWarming || !isFollowing()) fillHoldKeyRef.current = null;
-  else if (fillHoldKeyRef.current === null) fillHoldKeyRef.current = itemKeys[0] ?? null;
-  const holdIndex = fillHoldKeyRef.current === null ? 0 : itemKeys.indexOf(fillHoldKeyRef.current);
-  const heldItems = useMemo(() => holdIndex > 0 ? items.slice(holdIndex) : items, [items, holdIndex]);
-  const heldKeys = useMemo(() => holdIndex > 0 ? itemKeys.slice(holdIndex) : itemKeys, [itemKeys, holdIndex]);
-
   const { rows, keys } = useMemo(() => {
-    const items = heldItems;
-    const allKeys = heldKeys;
+    const allKeys = itemKeys;
     const rows: TranscriptItem[] = [];
     const keys: string[] = [];
     items.forEach((item, index) => {
@@ -687,7 +730,7 @@ export function ChatTranscript({
       leadingKeyRef.current = leading;
     }
     return { rows, keys };
-  }, [heldItems, heldKeys, rowMetrics, estimateCache]);
+  }, [items, itemKeys, rowMetrics, estimateCache]);
 
   // New-row entrance (chat-transcript.css .th-chat-enter): applied once per
   // new entry identity — appended live rows only, never history loads or
@@ -909,6 +952,9 @@ export function ChatTranscript({
       virtualizer.scrollBy(0);
     }
     if (isReaderInputActive() || !isRecentProgrammaticWrite(event.currentTarget.scrollTop)) anchorRef.current = null;
+    // The sentinel can already sit inside the margin when follow intent ends
+    // (short transcript): no crossing fires, so re-check after every scroll.
+    if (sentinelInViewRef.current) maybeLoadOlder();
   };
 
   // Replay the compensation dropped during a scroll gesture once that
@@ -985,6 +1031,32 @@ export function ChatTranscript({
         onClickCapture={onDisclosureClickCapture} onClick={onDisclosureClick}
         onTransitionEndCapture={onDisclosureTransitionEnd}>
         <div className="th-chat-content" ref={contentRef}>
+          {historyFailedEmpty && (
+            <div className="th-chat-history-failed" role="status">
+              <span>{t("chat.historyFailedEmpty")}</span>
+              <button type="button" className="th-btn th-btn--ghost th-chat-history-retry" onClick={onRetryHistory}>
+                {t("common.retry")}
+              </button>
+            </div>
+          )}
+          {sentinelMounted && (
+            <div ref={sentinelRef} className="th-chat-history-sentinel" data-state={olderState}>
+              {olderState === "loading" && (
+                <div className="th-chat-history-loading" role="status">
+                  <span className="th-chat-history-spinner" aria-hidden="true" />
+                  <span>{t("chat.loadingOlder")}</span>
+                </div>
+              )}
+              {olderState === "error" && (
+                <div className="th-chat-history-error" role="status">
+                  <span>{t("chat.historyOlderFailed")}</span>
+                  <button type="button" className="th-btn th-btn--ghost th-chat-history-retry" onClick={() => olderHistory?.loadOlder()}>
+                    {t("common.retry")}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
           {!historyLoaded && rows.length === 0 && !streaming && Object.keys(toolCalls).length === 0 && !error && !doneReason && (
             <div className="th-chat-loading" role="status">{t("chat.loading")}</div>
           )}

@@ -37,6 +37,44 @@
   min-width: 0;
 }
 
+/* On-demand older-history rows (G9 view): the sentinel is a zero-height
+   observer target above the virtualized list while idle; the loading and
+   error rows it carries are compact centered status lines in the same lane
+   as the transcript, never bordered boxes. The failed-empty row opens the
+   transcript when history failed before any message committed. */
+.th-chat-history-loading,
+.th-chat-history-error,
+.th-chat-history-failed {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--th-space-2);
+  padding: var(--th-space-2) 0;
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  color: var(--th-text-dim);
+}
+
+.th-chat-history-error,
+.th-chat-history-failed {
+  color: var(--th-error);
+}
+
+.th-chat-history-spinner {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border: 1px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: th-chat-status-spin 700ms linear infinite;
+}
+
+.th-chat-history-retry {
+  flex: none;
+}
+
 .th-chat-markdown {
   white-space: normal;
 }

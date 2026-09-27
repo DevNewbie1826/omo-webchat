@@ -162,8 +162,18 @@ export function ChatPane({
   // history lifecycle either completes or proves that history is unavailable.
   // Send-path command failures surface in the persistent banner below, so
   // they never also render as transcript notice blocks.
-  const transcriptItems = useMemo(
-    () => mergeTranscriptItems(
+  const transcriptItems = useMemo(() => {
+    const notices = chat.historyStatus !== "loading" ? chat.notices : [];
+    // While the loaded range's root is unknown, a notice stamped earlier than
+    // the first loaded message belongs to history no page has fetched yet;
+    // rendering it now would pile it at the top of the transcript (G11). It
+    // appears once its range is loaded. With the root known, every retained
+    // notice is in range and renders exactly as before.
+    const boundary = chat.historyRootKnown ? undefined : chat.messages[0]?.ts;
+    const inRange = boundary === undefined
+      ? notices
+      : notices.filter((notice) => notice.at >= boundary);
+    return mergeTranscriptItems(
       // Zero-block assistant completions stay in transcript state (they anchor
       // current-turn tool results for run.done materialization, live and
       // restored alike) and therefore flow into the merged list unfiltered,
@@ -172,10 +182,9 @@ export function ChatPane({
       // then hides blank rows, so an empty anchor appearing or disappearing
       // never shifts any other row's key — visible rows never remount.
       chat.messages,
-      chat.historyStatus !== "loading" ? chat.notices : [],
-    ),
-    [chat.messages, chat.notices, chat.historyStatus],
-  );
+      inRange,
+    );
+  }, [chat.messages, chat.notices, chat.historyStatus, chat.historyRootKnown]);
   const currentModel = chat.models.find((model) => `${model.provider}/${model.modelId}` === chat.currentModelKey);
   const imageSupported = currentModel ? (currentModel.input?.includes("image") ?? true) : true;
   const thinkingOptions = chat.thinkingLevel !== "" && !THINKING_LEVELS.includes(chat.thinkingLevel)
@@ -305,8 +314,10 @@ export function ChatPane({
           doneReason={chat.doneReason}
           error={chat.missingOriginal ? "" : chat.error}
           restoreVersion={chat.restoreVersion}
-          historyWarming={chat.historyWarming}
           focused={focused}
+          olderHistory={chat.olderHistory}
+          historyFailedEmpty={chat.historyFailedEmpty}
+          onRetryHistory={chat.retryHistory}
           mediaSource={{ wsId: chatSession.wsId, chatId: chatSession.id }}
         />
         <GoalBar goal={chat.goal} />
