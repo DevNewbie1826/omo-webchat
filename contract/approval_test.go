@@ -8,10 +8,10 @@ import (
 
 func TestApprovalFrameDeadlinesDecodeWithAndWithoutOptionalFields(t *testing.T) {
 	tests := []struct {
-		name                  string
-		data                  string
-		wantDeadlineAtMs      *int64
-		wantRemainingMs       *int64
+		name             string
+		data             string
+		wantDeadlineAtMs *int64
+		wantRemainingMs  *int64
 	}{
 		{
 			name:             "with deadlines",
