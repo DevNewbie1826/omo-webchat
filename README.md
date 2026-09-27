@@ -9,6 +9,10 @@
 
 앱 아이콘은 [@sanguneo](https://github.com/sanguneo)님이 만들어주셨습니다. 감사합니다! 🎨
 
+https://github.com/user-attachments/assets/b840fffa-9b70-40cb-b1df-a415d1337cbf
+
+<sub>▶ 15초 소개 영상 · 15-second intro film — <a href="docs/showreel/omo-webchat-showreel.mp4">MP4 원본</a> · <a href="docs/showreel/README.md">제작 방법</a></sub>
+
 로컬에서 omo CLI와 대화하는 웹 UI · A local web UI for the omo CLI
 
 [github.com/DevNewbie1826/omo-webchat](https://github.com/DevNewbie1826/omo-webchat)
