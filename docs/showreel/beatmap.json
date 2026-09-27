@@ -1,0 +1,543 @@
+{
+ "bpm": 128,
+ "beat": 0.46875,
+ "bar": 1.875,
+ "duration": 15.0,
+ "cues": [
+  {
+   "t": 0.234375,
+   "kind": "type",
+   "label": "0"
+  },
+  {
+   "t": 0.351562,
+   "kind": "type",
+   "label": "1"
+  },
+  {
+   "t": 0.46875,
+   "kind": "type",
+   "label": "2"
+  },
+  {
+   "t": 0.585938,
+   "kind": "type",
+   "label": "3"
+  },
+  {
+   "t": 0.703125,
+   "kind": "type",
+   "label": "4"
+  },
+  {
+   "t": 0.820312,
+   "kind": "type",
+   "label": "5"
+  },
+  {
+   "t": 0.9375,
+   "kind": "type",
+   "label": "6"
+  },
+  {
+   "t": 1.054688,
+   "kind": "type",
+   "label": "7"
+  },
+  {
+   "t": 1.171875,
+   "kind": "type",
+   "label": "8"
+  },
+  {
+   "t": 1.289062,
+   "kind": "type",
+   "label": "9"
+  },
+  {
+   "t": 1.40625,
+   "kind": "type",
+   "label": "10"
+  },
+  {
+   "t": 1.523438,
+   "kind": "pickup",
+   "label": ""
+  },
+  {
+   "t": 1.523438,
+   "kind": "type",
+   "label": "11"
+  },
+  {
+   "t": 1.640625,
+   "kind": "pickup",
+   "label": ""
+  },
+  {
+   "t": 1.699219,
+   "kind": "pickup",
+   "label": ""
+  },
+  {
+   "t": 1.757812,
+   "kind": "pickup",
+   "label": ""
+  },
+  {
+   "t": 1.816406,
+   "kind": "pickup",
+   "label": ""
+  },
+  {
+   "t": 1.875,
+   "kind": "impact",
+   "label": "logo"
+  },
+  {
+   "t": 1.875,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 1.875,
+   "kind": "stab",
+   "label": "Fm"
+  },
+  {
+   "t": 2.226562,
+   "kind": "stab",
+   "label": "Fm"
+  },
+  {
+   "t": 2.34375,
+   "kind": "clap",
+   "label": ""
+  },
+  {
+   "t": 2.34375,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 2.578125,
+   "kind": "stab",
+   "label": "Fm"
+  },
+  {
+   "t": 2.8125,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 2.8125,
+   "kind": "word",
+   "label": "sub"
+  },
+  {
+   "t": 3.046875,
+   "kind": "stab",
+   "label": "Fm"
+  },
+  {
+   "t": 3.28125,
+   "kind": "clap",
+   "label": ""
+  },
+  {
+   "t": 3.28125,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 3.28125,
+   "kind": "stab",
+   "label": "Fm"
+  },
+  {
+   "t": 3.75,
+   "kind": "impact",
+   "label": "invert-light-hero"
+  },
+  {
+   "t": 3.75,
+   "kind": "invert",
+   "label": "invert-light-hero"
+  },
+  {
+   "t": 3.75,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 3.75,
+   "kind": "stab",
+   "label": "Db"
+  },
+  {
+   "t": 4.101562,
+   "kind": "stab",
+   "label": "Db"
+  },
+  {
+   "t": 4.21875,
+   "kind": "clap",
+   "label": ""
+  },
+  {
+   "t": 4.21875,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 4.453125,
+   "kind": "stab",
+   "label": "Db"
+  },
+  {
+   "t": 4.6875,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 4.921875,
+   "kind": "stab",
+   "label": "Db"
+  },
+  {
+   "t": 5.15625,
+   "kind": "clap",
+   "label": ""
+  },
+  {
+   "t": 5.15625,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 5.15625,
+   "kind": "stab",
+   "label": "Db"
+  },
+  {
+   "t": 5.625,
+   "kind": "impact",
+   "label": "invert-dark-dag"
+  },
+  {
+   "t": 5.625,
+   "kind": "invert",
+   "label": "invert-dark-dag"
+  },
+  {
+   "t": 5.625,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 5.625,
+   "kind": "stab",
+   "label": "Ab"
+  },
+  {
+   "t": 5.976562,
+   "kind": "stab",
+   "label": "Ab"
+  },
+  {
+   "t": 6.09375,
+   "kind": "clap",
+   "label": ""
+  },
+  {
+   "t": 6.09375,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 6.328125,
+   "kind": "stab",
+   "label": "Ab"
+  },
+  {
+   "t": 6.5625,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 6.796875,
+   "kind": "stab",
+   "label": "Ab"
+  },
+  {
+   "t": 7.03125,
+   "kind": "clap",
+   "label": ""
+  },
+  {
+   "t": 7.03125,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 7.03125,
+   "kind": "stab",
+   "label": "Ab"
+  },
+  {
+   "t": 7.5,
+   "kind": "impact",
+   "label": "invert-light-split"
+  },
+  {
+   "t": 7.5,
+   "kind": "invert",
+   "label": "invert-light-split"
+  },
+  {
+   "t": 7.5,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 7.5,
+   "kind": "stab",
+   "label": "Eb"
+  },
+  {
+   "t": 7.851562,
+   "kind": "stab",
+   "label": "Eb"
+  },
+  {
+   "t": 7.96875,
+   "kind": "clap",
+   "label": ""
+  },
+  {
+   "t": 7.96875,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 8.203125,
+   "kind": "stab",
+   "label": "Eb"
+  },
+  {
+   "t": 8.4375,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 8.671875,
+   "kind": "stab",
+   "label": "Eb"
+  },
+  {
+   "t": 8.90625,
+   "kind": "clap",
+   "label": ""
+  },
+  {
+   "t": 8.90625,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 8.90625,
+   "kind": "stab",
+   "label": "Eb"
+  },
+  {
+   "t": 9.375,
+   "kind": "impact",
+   "label": "invert-dark-mobile"
+  },
+  {
+   "t": 9.375,
+   "kind": "invert",
+   "label": "invert-dark-mobile"
+  },
+  {
+   "t": 9.375,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 9.375,
+   "kind": "stab",
+   "label": "Fm"
+  },
+  {
+   "t": 9.726562,
+   "kind": "stab",
+   "label": "Fm"
+  },
+  {
+   "t": 9.84375,
+   "kind": "clap",
+   "label": ""
+  },
+  {
+   "t": 9.84375,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 10.078125,
+   "kind": "stab",
+   "label": "Fm"
+  },
+  {
+   "t": 10.3125,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 10.546875,
+   "kind": "stab",
+   "label": "Fm"
+  },
+  {
+   "t": 10.78125,
+   "kind": "clap",
+   "label": ""
+  },
+  {
+   "t": 10.78125,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 10.78125,
+   "kind": "stab",
+   "label": "Fm"
+  },
+  {
+   "t": 11.25,
+   "kind": "impact",
+   "label": "mosaic"
+  },
+  {
+   "t": 11.25,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 11.25,
+   "kind": "roll",
+   "label": "0"
+  },
+  {
+   "t": 11.484375,
+   "kind": "roll",
+   "label": "1"
+  },
+  {
+   "t": 11.71875,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 11.71875,
+   "kind": "roll",
+   "label": "2"
+  },
+  {
+   "t": 11.835938,
+   "kind": "roll",
+   "label": "3"
+  },
+  {
+   "t": 11.953125,
+   "kind": "roll",
+   "label": "4"
+  },
+  {
+   "t": 12.070312,
+   "kind": "roll",
+   "label": "5"
+  },
+  {
+   "t": 12.1875,
+   "kind": "roll",
+   "label": "6"
+  },
+  {
+   "t": 12.246094,
+   "kind": "roll",
+   "label": "7"
+  },
+  {
+   "t": 12.304688,
+   "kind": "roll",
+   "label": "8"
+  },
+  {
+   "t": 12.363281,
+   "kind": "roll",
+   "label": "9"
+  },
+  {
+   "t": 12.421875,
+   "kind": "roll",
+   "label": "10"
+  },
+  {
+   "t": 12.480469,
+   "kind": "roll",
+   "label": "11"
+  },
+  {
+   "t": 12.539062,
+   "kind": "roll",
+   "label": "12"
+  },
+  {
+   "t": 12.597656,
+   "kind": "roll",
+   "label": "13"
+  },
+  {
+   "t": 12.65625,
+   "kind": "roll",
+   "label": "14"
+  },
+  {
+   "t": 12.714844,
+   "kind": "roll",
+   "label": "15"
+  },
+  {
+   "t": 12.773438,
+   "kind": "roll",
+   "label": "16"
+  },
+  {
+   "t": 12.832031,
+   "kind": "roll",
+   "label": "17"
+  },
+  {
+   "t": 12.890625,
+   "kind": "gap",
+   "label": "drop-silence"
+  },
+  {
+   "t": 13.125,
+   "kind": "impact",
+   "label": "final"
+  },
+  {
+   "t": 13.125,
+   "kind": "kick",
+   "label": ""
+  },
+  {
+   "t": 14.0625,
+   "kind": "button",
+   "label": "command"
+  }
+ ]
+}
