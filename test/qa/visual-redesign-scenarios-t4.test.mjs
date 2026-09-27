@@ -296,14 +296,17 @@ describe('findRunningEdge + cometVerdict (S14 comet)', () => {
     expect(findRunningEdge(edges, rect(900, 400, 50, 50), toRect)).toBeNull();
   });
   test('comet verdict: animated + riding the running edge passes; static or off-edge fails; missing fails', () => {
-    const riding = [{ found: true, rect: rect(250, 65, 40, 18), runningAnimations: 2 }];
+    const riding = [{ found: true, d: edges[0].d, rect: edges[0].rect, movingAnimations: 1 }];
     expect(cometVerdict(riding, edges[0]).pass).toBe(true);
-    expect(cometVerdict([{ found: true, rect: rect(250, 65, 40, 18), runningAnimations: 0 }], edges[0]).pass).toBe(false);
-    expect(cometVerdict([{ found: true, rect: rect(700, 300, 40, 18), runningAnimations: 2 }], edges[0]).pass).toBe(false);
+    expect(cometVerdict([{ ...riding[0], movingAnimations: 0 }], edges[0]).pass).toBe(false);
+    expect(cometVerdict([{ ...riding[0], rect: rect(700, 300, 40, 18) }], edges[0]).pass).toBe(false);
+    expect(cometVerdict([{ ...riding[0], d: 'M0 0 C 1 1, 2 2, 3 3' }], edges[0]).pass).toBe(false);
     expect(cometVerdict([], edges[0]).pass).toBe(false);
     expect(cometVerdict(riding, null).pass).toBe(false);
-    expect(cometVerdict([], { ...edges[0], length: 23 }).measured.skipped).toContain('shorter than 24px');
+    expect(cometVerdict([], { ...edges[0], length: 8 }).pass).toBe(false);
+    expect(cometVerdict([], { ...edges[0], length: 16 }).pass).toBe(false);
     expect(cometVerdict([], { ...edges[0], length: 24 }).pass).toBe(false);
+    expect(cometVerdict([], { ...edges[0], length: 64 }).pass).toBe(false);
   });
 });
 
@@ -320,6 +323,14 @@ describe('haloVerdict (S14 running node halo)', () => {
     expect(haloVerdict([{ ...painted, opacity: '0' }], nodeRect, painted.fill).pass).toBe(false);
     expect(haloVerdict([{ ...painted, rect: rect(0, 0, 0, 0) }], nodeRect, painted.fill).pass).toBe(false);
     expect(haloVerdict([], nodeRect, painted.fill).pass).toBe(false);
+  });
+  test('hollow stroke halo passes; invisible or grey strokes fail', () => {
+    const ring = { ...painted, fill: 'none', stroke: painted.fill,
+      strokeWidth: '4px', strokeOpacity: '1' };
+    expect(haloVerdict([ring], nodeRect, painted.fill).pass).toBe(true);
+    expect(haloVerdict([{ ...ring, strokeWidth: '0px' }], nodeRect, painted.fill).pass).toBe(false);
+    expect(haloVerdict([{ ...ring, strokeOpacity: '0' }], nodeRect, painted.fill).pass).toBe(false);
+    expect(haloVerdict([{ ...ring, stroke: 'rgb(128,128,128)' }], nodeRect, painted.fill).pass).toBe(false);
   });
 });
 
@@ -1007,13 +1018,13 @@ function withBox(element, x, y, width, height) {
 function withAnimations(element, animations) {
   element.getAnimations = () => animations.map(({ playState = 'running', iterations = Infinity, duration = 700, name = 'th-fake' } = {}) => ({
     playState, kind: 'animation',
-    effect: { getComputedTiming: () => ({ iterations, duration }), getKeyframes: () => ({ [name]: true }) },
+    effect: { getComputedTiming: () => ({ iterations, duration }), getKeyframes: () => [{ [name]: true }] },
   }));
   return element;
 }
 
 const spin = () => ({ name: 'th-dag-run-spin', iterations: Infinity });
-const cometLoop = () => ({ name: 'th-dag-comet', iterations: Infinity });
+const cometLoop = () => ({ name: 'strokeDashoffset', iterations: Infinity });
 
 // ----- S13: shelf tabs through the ACTUAL serialized probeShelfTabs ------
 
@@ -1261,6 +1272,55 @@ describe('T4 S8 scope via the serialized probeT4RunningIndicators', () => {
 
 // ----- S14: DAG graph through the ACTUAL serialized probeDagGraph ---------
 
+describe('S14 short-edge comet controls through the serialized graph probe', () => {
+  const measure = async (length, variant) => {
+    const d = `M100 52 C ${100 + length / 3} 52, ${100 + 2 * length / 3} 52, ${100 + length} 52`;
+    const dom = buildDom(['div', { class: 'th-activity-graph' }, { children: [
+      ['svg', {}, { children: [
+        ['path', { class: 'th-activity-gedge th-activity-gedge--flow', d }],
+        ...(variant === 'missing' ? [] : [['path', { class: 'th-activity-gedge-comet', d }]]),
+        ['g', { class: 'th-activity-gnode th-activity-gnode--ok', 'data-node': 'source' }],
+        ['g', { class: 'th-activity-gnode th-activity-gnode--running', 'data-node': 'target' }],
+      ], host: { viewBox: undefined } }],
+    ] }]);
+    const svg = dom.document.querySelector('svg');
+    withBox(svg, 0, 0, 400, 100);
+    withBox(dom.document.querySelector('[data-node="source"]'), 80, 32, 20, 40);
+    withBox(dom.document.querySelector('[data-node="target"]'), 100 + length, 32, 20, 40);
+    const edge = dom.document.querySelector('.th-activity-gedge--flow');
+    withBox(edge, 100, 50, length, 4);
+    edge.getTotalLength = () => length;
+    edge.getPointAtLength = at => ({ x: 100 + at, y: 52 });
+    const comet = dom.document.querySelector('.th-activity-gedge-comet');
+    if (comet) {
+      withBox(comet, 100 + (variant === 'detached' ? Math.max(5, length / 2) : 0), 50, length, 4);
+      if (variant !== 'static') withAnimations(comet, [variant === 'unrelated' ? spin() : cometLoop()]);
+    }
+    const facts = await runProbe(probeDagGraph, { sourceId: 'source', runningId: 'target' }, dom, computedFromStyles());
+    const runningEdge = findRunningEdge(facts.edges, facts.nodes[0].rect, facts.runningRect);
+    return { facts, runningEdge, verdict: cometVerdict(facts.comets, runningEdge) };
+  };
+
+  for (const length of [8, 16, 64]) {
+    for (const variant of ['missing', 'static', 'detached', 'unrelated']) {
+      test(`${length}px ${variant} comet fails after serialization`, async () => {
+        const { facts, runningEdge, verdict } = await measure(length, variant);
+        expect(facts.edges[0].length).toBe(length);
+        expect(runningEdge).not.toBeNull();
+        expect(verdict.pass, `${length}px ${variant}: ${JSON.stringify(verdict.measured)}`).toBe(false);
+      });
+    }
+    test(`${length}px attached moving comet passes after serialization`, async () => {
+      const { facts, runningEdge, verdict } = await measure(length, 'valid');
+      expect(facts.comets[0].runningAnimations).toBe(1);
+      expect(runningEdge.length).toBe(length);
+      expect(verdict.pass, verdict.failures.join('; ')).toBe(true);
+      expect(verdict.measured.riding).toBe(1);
+      expect(verdict.measured.tolerance).toBe(Math.min(2, length / 8));
+    });
+  }
+});
+
 describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph', () => {
   const node = (id, state, stroke, glyphLeft, wave) => ['g', { class: `th-activity-gnode th-activity-gnode--${state}`, 'data-node': id }, {
     host: {
@@ -1285,11 +1345,11 @@ describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph
           redesigned
             ? ['path', { class: 'th-activity-gedge th-activity-gedge--flow', d: 'M166 36 C 190 36, 210 36, 234 36' }]
             : ['line', { class: 'th-activity-gedge', x1: 166, y1: 36, x2: 234, y2: 36 }],
-          redesigned ? ['circle', { class: 'th-dag-comet' }] : null,
+          redesigned ? ['path', { class: 'th-dag-comet', d: 'M166 36 C 190 36, 210 36, 234 36' }] : null,
           ['g', { class: 'th-activity-gnode th-activity-gnode--running', 'data-node': 'k6' }, {
             host: { transform: 'translate(1030, 6)' },
             children: [
-              ...(redesigned ? [['rect', { class: 'th-activity-gnode-halo', style: 'stroke: none; fill: rgba(139,124,246,0.35)' }]] : []),
+              ...(redesigned ? [['rect', { class: 'th-activity-gnode-halo', style: 'stroke: rgba(139,124,246,0.35); stroke-width: 4px; fill: none' }]] : []),
               ['rect', { class: 'th-activity-gnode-card', style: `stroke: ${redesigned ? 'rgba(255,255,255,0.06)' : 'rgb(217, 119, 6)'}` }],
               ['text', { class: 'th-activity-glabel', '#text': 'label k6' }],
               ['text', { class: 'th-activity-gstate', '#text': 'running' }],
@@ -1343,7 +1403,7 @@ describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph
       progress.children[0].style = { transform: `scaleX(${6 / 11})` };
     }
     const comet = dom.document.querySelector('[class*="comet" i]');
-    if (comet) { withBox(comet, 180, 28, 12, 12); withAnimations(comet, [cometLoop()]); }
+    if (comet) { withBox(comet, 166, 26, 68, 20); withAnimations(comet, [cometLoop()]); }
     const halo = dom.document.querySelector('[class*="halo" i]');
     if (halo) { withBox(halo, k6X - 5, 1, 170, 70); withAnimations(halo, [spin()]); }
     const glyph = dom.document.querySelector('.th-activity-gstatus--running');

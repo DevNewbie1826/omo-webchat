@@ -259,7 +259,7 @@ export function sidebarVerdict(facts, { cards = 1, geometry = false } = {}) {
     const parents = treeRows.filter(row => row.depth === 0);
     const lefts = [...(facts.liveHeading ?? []).map(row => row.box.left),
       ...(facts.cards ?? []).map(row => row.box.left),
-      ...parents.map(row => row.leading?.left)];
+      ...parents.map(row => row.label?.left)];
     const rights = [...(facts.headingBadges ?? []).map(row => row.box.right),
       ...(facts.cardBadges ?? []).map(row => row.box.right),
       ...(facts.treeBadges ?? []).map(row => row.box.right)];
@@ -803,6 +803,42 @@ export function dagVerdict(facts, roles, width) {
   return finish(facts, failures);
 }
 
+/** Screenshot pixels include the halo below the translucent SVG card; CSS
+ * tokens and computed fills alone cannot describe that painted background. */
+export async function probeDagRunningPaint({ png }) {
+  const word = document.querySelector('.th-activity-gnode--running .th-activity-gstate');
+  const card = word?.closest('.th-activity-gnode')?.querySelector('.th-activity-gnode-card');
+  if (!word || !card) return null;
+  const text = word.getBoundingClientRect(), surface = card.getBoundingClientRect();
+  const right = Math.ceil(text.right + 3), left = Math.floor(text.left - 3);
+  const x = right < surface.right - 2 ? right : left > surface.left + 2 ? left : -1;
+  const y = Math.round((text.top + text.bottom) / 2);
+  const image = new Image();
+  image.src = `data:image/png;base64,${png}`;
+  await image.decode();
+  const canvas = document.createElement('canvas');
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const context = canvas.getContext('2d');
+  context.drawImage(image, 0, 0);
+  const rgba = x >= 0 && y >= 0 && x < canvas.width && y < canvas.height
+    ? [...context.getImageData(x, y, 1, 1).data] : null;
+  return { color: getComputedStyle(word).fill, background: rgba
+    ? `rgb(${rgba[0]}, ${rgba[1]}, ${rgba[2]})` : null,
+  sample: { x, y }, card: surface.toJSON(), word: text.toJSON() };
+}
+
+export function dagRunningPaintVerdict(samples) {
+  const failures = [];
+  fail(samples?.length === 3, 'Q3 running halo cycle missing paint samples', failures);
+  for (const sample of samples ?? []) {
+    const measured = ratio(sample?.color, sample?.background);
+    fail(sample?.background && measured >= 4.5,
+      `Q3 running text contrast ${measured.toFixed(3)}:1 at halo ${sample?.time ?? '?'}ms`, failures);
+  }
+  return finish(samples, failures);
+}
+
 export function probeMobileDag() {
   const reel = document.querySelector('.th-activity-graph');
   const svg = reel?.querySelector('svg');
@@ -812,12 +848,20 @@ export function probeMobileDag() {
     const words = [...group.querySelectorAll('text[class*="glabel"], text[class*="gstate"]')].map(el => {
       const style = getComputedStyle(el), measured = el.getComputedTextLength?.() ?? 0;
       const clipId = /^url\(#([^)]+)\)$/.exec(el.getAttribute('clip-path') ?? '')?.[1];
-      const allowed = Number(document.getElementById(clipId)?.querySelector('rect')?.getAttribute('width'));
+      const clip = document.getElementById(clipId)?.querySelector('rect');
+      const allowed = Number(clip?.getAttribute('width'));
+      const ink = el.getBBox?.();
+      const clipY = Number(clip?.getAttribute('y'));
+      const clipHeight = Number(clip?.getAttribute('height'));
       return { text: el.textContent.trim(), kind: el.classList.contains('th-activity-gstate') ? 'state' : 'title',
         fontSize: parseFloat(style.fontSize),
         scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
         measured, allowed, clipId: clipId ?? null,
-        clipped: style.textOverflow === 'ellipsis' || !clipId || !allowed || measured > allowed + 1 };
+        ink: ink ? { x: ink.x, y: ink.y, width: ink.width, height: ink.height } : null,
+        clipY, clipHeight,
+        clipped: style.textOverflow === 'ellipsis' || !clipId || !allowed || measured > allowed + 1
+          || !ink || !Number.isFinite(clipY) || !clipHeight
+          || ink.y < clipY - 1 || ink.y + ink.height > clipY + clipHeight + 1 };
     });
     return { id: group.dataset.node, card: box(card), words,
       title: words.filter(word => word.kind === 'title').map(word => word.text).join(''),
@@ -1109,11 +1153,50 @@ async function driveQ3(ctx) {
     const motion = await ctx.probe(env.page, probeDagRunningMotion);
     verdict.failures.push(...dagRunningMotionVerdict(motion).failures);
     await save('-mixed');
+    const halo = env.page.locator('.th-activity-gnode--running .th-activity-gnode-halo').first();
+    const samples = [];
+    const paintAt = async time => {
+      await halo.evaluate((element, time) => {
+        const animation = element.getAnimations().find(item => item.animationName === 'th-dag-halo-breathe'
+          || item.effect?.getKeyframes().some(frame => frame.opacity !== undefined));
+        if (!animation) throw new Error('Q3 running halo animation missing');
+        animation.pause();
+        animation.currentTime = time;
+      }, time);
+      const png = (await env.page.screenshot({ scale: 'css' })).toString('base64');
+      return { ...await ctx.probe(env.page, probeDagRunningPaint, { png }), time };
+    };
+    try {
+      const duration = await halo.evaluate(element => element.getAnimations()
+        .find(animation => animation.effect?.getKeyframes().some(frame => frame.opacity !== undefined))
+        ?.effect?.getComputedTiming().duration);
+      if (!Number.isFinite(duration) || duration <= 0) throw new Error('Q3 halo duration missing');
+      for (const time of [0, duration / 2, duration]) samples.push(await paintAt(time));
+      verdict.failures.push(...dagRunningPaintVerdict(samples).failures);
+      const original = await halo.evaluate(element => ({ fill: element.style.fill, stroke: element.style.stroke }));
+      try {
+        await halo.evaluate(element => {
+          element.style.fill = 'var(--th-accent-glow)';
+          element.style.stroke = 'none';
+        });
+        const oldPaint = await paintAt(duration);
+        fail(!dagRunningPaintVerdict([oldPaint, oldPaint, oldPaint]).pass,
+          'Q3 control: old filled halo must fail composited contrast', verdict.failures);
+        verdict.measurements = { ...verdict.measurements, oldPaint };
+      } finally {
+        await halo.evaluate((element, value) => {
+          element.style.fill = value.fill;
+          element.style.stroke = value.stroke;
+        }, original);
+      }
+    } finally {
+      await halo.evaluate(element => element.getAnimations().forEach(animation => animation.play()));
+    }
     await env.page.emulateMedia({ reducedMotion: 'reduce' });
     const reduced = await ctx.probe(env.page, probeDagRunningMotion);
     verdict.failures.push(...dagReducedMotionVerdict(reduced).failures);
     verdict.pass = verdict.failures.length === 0;
-    verdict.measurements = { ...facts, motion, reduced };
+    verdict.measurements = { ...facts, motion, reduced, paint: samples, oldPaint: verdict.measurements.oldPaint };
     await save('-mixed-reduced');
     return verdict;
   });
@@ -1493,7 +1576,8 @@ async function driveQ10(ctx) {
 }
 
 async function driveQ14(ctx) {
-  return withFixture(ctx, async (env, save) => {
+  const results = [];
+  for (const fontSize of [13, 24]) results.push(await withFixture(ctx, async (env, save) => {
     const update = await dag(env, 'mixed');
     const measurements = {}, failures = [];
     const desktop = ctx.viewport.width === 1280 ? null
@@ -1518,7 +1602,9 @@ async function driveQ14(ctx) {
           : facts.nodes[0]?.card?.height ?? 0;
         const verdict = ctx.viewport.width === 390
           ? mobileDagVerdict(facts, desktopHeight, stage)
-          : finish(facts, facts.nodes.length === t4StageSpec(stage).length ? [] : [`Q14 ${stage} missing nodes`]);
+          : finish(facts, facts.nodes.length === t4StageSpec(stage).length
+            && facts.nodes.every(node => node.words.every(word => word.fontSize >= 10.99 && !word.clipped))
+            ? [] : [`Q14 ${stage} missing nodes or clipped/sub-11px text`]);
         measurements[stage] = verdict.measurements;
         failures.push(...verdict.failures);
         if (stage === 'mixed') {
@@ -1527,13 +1613,16 @@ async function driveQ14(ctx) {
           failures.push(...semantic.failures.map(reason => `Q14/Q3 ${reason}`));
           measurements.mixedSemantic = { pass: semantic.pass, nodes: state.nodes, tokens: state.tokens };
         }
-        await save(`-${stage}`);
+        await save(`-font${fontSize}-${stage}`);
       }
     } finally {
       if (desktop) await desktop.close();
     }
     return finish(measurements, failures);
-  });
+  }, { fontSize }));
+  return { ...finish(Object.fromEntries(results.map((result, index) => [[13, 24][index], result.measurements])),
+    results.flatMap((result, index) => result.failures.map(reason => `font${[13, 24][index]}: ${reason}`))),
+  screenshots: results.flatMap(result => result.screenshots), teardown: results.map(result => result.teardown) };
 }
 
 async function driveQ15(ctx) {
@@ -1551,19 +1640,23 @@ async function driveQ15(ctx) {
     }
     return phoneToolVerdict({ tools: rows });
   });
-  const graph = await withFixture(ctx, async (env, save) => {
+  const graph = [];
+  for (const fontSize of [13, 24]) graph.push(await withFixture(ctx, async (env, save) => {
     await dag(env, 'mixed');
     const facts = await ctx.probe(env.page, probeMobileDag);
     const failures = [];
     for (const node of facts.nodes) for (const word of node.words)
-      fail(!word.clipped && (word.allowed === 0 || word.measured <= word.allowed + 1),
-        `Q15 ${node.id} ${word.text} clipped`, failures);
-    await save('-graph');
+      fail(word.fontSize >= 10.99 && !word.clipped
+        && (word.allowed === 0 || word.measured <= word.allowed + 1),
+        `Q15 font${fontSize} ${node.id} ${word.text} clipped or sub-11px`, failures);
+    await save(`-font${fontSize}-graph`);
     return finish(facts, failures);
-  });
-  return { ...finish({ tools: tools.measurements, graph: graph.measurements },
-    [...tools.failures, ...graph.failures]), screenshots: [...tools.screenshots, ...graph.screenshots],
-  teardown: [tools.teardown, graph.teardown] };
+  }, { fontSize }));
+  return { ...finish({ tools: tools.measurements,
+    graph: Object.fromEntries(graph.map((result, index) => [[13, 24][index], result.measurements])) },
+  [...tools.failures, ...graph.flatMap(result => result.failures)]),
+  screenshots: [...tools.screenshots, ...graph.flatMap(result => result.screenshots)],
+  teardown: [tools.teardown, ...graph.map(result => result.teardown)] };
 }
 
 async function driveQ17(ctx) {
@@ -1588,7 +1681,7 @@ async function driveQ17(ctx) {
       const record = page.locator(selector), head = record.locator('button[aria-expanded]').first();
       await record.scrollIntoViewIfNeeded();
       const initiallyOpen = await head.getAttribute('aria-expanded') === 'true';
-      const toggle = async (open, label) => {
+      const toggle = async (open, label, keyboard = false) => {
         // A near-end record cannot remain at the viewport's top when its
         // collapse makes the entire remaining content shorter than the
         // viewport. Place it at the closest *reachable* anchor before click.
@@ -1606,9 +1699,11 @@ async function driveQ17(ctx) {
           scroll.scrollTop += card.top - desired;
         }, { selector, open });
         await frames();
+        if (keyboard) await head.focus();
         const before = await ctx.probe(page, probeDisclosureGeometry, { selector });
-        await page.evaluate(selector => document.querySelector(selector)
-          ?.querySelector('button[aria-expanded]')?.click(), selector);
+        if (keyboard) await head.press('Enter');
+        else if (ctx.viewport.width === 390) await head.tap();
+        else await head.click();
         await page.waitForFunction(({ selector, open }) => document.querySelector(selector)
           ?.querySelector('button[aria-expanded]')?.getAttribute('aria-expanded') === String(open), { selector, open });
         await page.evaluate(async selector => {
@@ -1625,11 +1720,11 @@ async function driveQ17(ctx) {
         await save(`-${index}-${label}`);
       };
       if (initiallyOpen) await toggle(false, 'initial-collapse');
-      await toggle(true, 'expanded');
+      await toggle(true, 'expanded', true);
       await toggle(false, 'collapsed');
     }
     return finish(measurements, failures);
-  });
+  }, { coarse: ctx.viewport.width === 390 });
 }
 
 async function driveQ18(ctx) {
@@ -1686,16 +1781,22 @@ async function driveQ19(ctx) {
     await drawer(env.page);
     const facts = await ctx.probe(env.page, probeWorkspaceLabels);
     const failures = workspaceLabelVerdict(facts).failures;
-    const control = workspaceLabelVerdict({ rows: [
-      ...Array.from({ length: 12 }, (_, index) => ({
-        text: `Earlier workspace ${index + 1}`, box: { width: 130 }, ellipsized: false,
-      })),
-      { text: 'Earlier workspace 13', box: { width: 96 }, ellipsized: true },
-    ] });
-    fail(control.failures.some(reason => /ellipsizes|label box/.test(reason)),
+    const label = env.page.locator('.th-tree-workspace > .th-tree-node .th-tree-label-text')
+      .filter({ hasText: 'Earlier workspace 12' }).first();
+    const previous = await label.evaluate(element => element.style.maxWidth);
+    let control;
+    try {
+      await label.evaluate(element => { element.style.maxWidth = '64px'; });
+      control = workspaceLabelVerdict(await ctx.probe(env.page, probeWorkspaceLabels));
+    } finally {
+      await label.evaluate((element, value) => { element.style.maxWidth = value; }, previous);
+    }
+    fail(control.failures.some(reason => reason.includes('ellipsizes away its trailing number')),
       'Q19 control: a row truncated before its number must fail the verdict', failures);
+    const restored = workspaceLabelVerdict(await ctx.probe(env.page, probeWorkspaceLabels));
+    fail(restored.pass, 'Q19 control: restored label must pass the verdict', failures);
     await save('-drawer');
-    return finish({ ...facts, controlFailures: control.failures }, failures);
+    return finish({ ...facts, controlFailures: control.failures, restored: restored.pass }, failures);
   }, { touchLive: true, earlierWorkspaces: true });
 }
 

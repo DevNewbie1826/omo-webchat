@@ -11,10 +11,12 @@ import { pageKit } from './visual-redesign-probes.mjs';
 import {
   scenarios, probeToolEmphasis, toolVerdict, probeStatusEmphasis, statusVerdict,
   dagVerdict, probeSidebarEmphasis, sidebarVerdict, probeHeadings, headingVerdict,
+  probeDagRunningPaint, dagRunningPaintVerdict,
   sidebarStatesVerdict,
   probeActionSurface, actionVerdict, probeOverlayEmphasis, overlayVerdict,
   probeSecondary, secondaryVerdict, probeEmptyPane, probeSplitApplicability, emptyVerdict, probeMobileDag,
   mobileDagVerdict, phoneToolVerdict, probeDisclosureGeometry, disclosureVerdict,
+  probeWorkspaceLabels, workspaceLabelVerdict,
 } from './emphasis-restore-scenarios.mjs';
 
 const tokens = {
@@ -48,8 +50,12 @@ function serialized(probe, html, patch = () => {}, arg = {}) {
   for (const [name, value] of Object.entries(tokens))
     window.document.documentElement.style.setProperty(name, value);
   patch(window, window.document);
-  try { return window.eval(`(function(){${pageKit()}\nreturn (${probe.toString()})(${JSON.stringify(arg)});})()`); }
-  finally { window.close(); }
+  try {
+    const facts = window.eval(`(function(){${pageKit()}\nreturn (${probe.toString()})(${JSON.stringify(arg)});})()`);
+    if (facts instanceof window.Promise) return facts.finally(() => window.close());
+    window.close();
+    return facts;
+  } catch (error) { window.close(); throw error; }
 }
 
 describe('emphasis scenario registry', () => {
@@ -187,6 +193,26 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     expect(result.failures.some(reason => reason.includes('fulfilled'))).toBe(true);
   });
 
+  test('Q3 screenshot paint probe rejects the old halo behind a translucent card', async () => {
+    const facts = await serialized(probeDagRunningPaint, `<svg><g class="th-activity-gnode th-activity-gnode--running">
+      <rect class="th-activity-gnode-card"></rect>
+      <text class="th-activity-gstate" style="fill:rgb(157,144,248)">Running</text>
+    </g></svg>`, (window, document) => {
+      const word = document.querySelector('text');
+      word.getBoundingClientRect = () => ({ left: 170, right: 195, top: 580, bottom: 600,
+        toJSON() { return this; } });
+      document.querySelector('rect').getBoundingClientRect = () => ({ left: 160, right: 250, top: 570, bottom: 620,
+        toJSON() { return this; } });
+      window.Image = class { width = 390; height = 844; decode() { return Promise.resolve(); } };
+      window.HTMLCanvasElement.prototype.getContext = () => ({
+        drawImage() {}, getImageData() { return { data: [65, 60, 102, 255] }; },
+      });
+    }, { png: 'serialized-paint' });
+    expect(facts.sample).toEqual({ x: 198, y: 590 });
+    expect(dagRunningPaintVerdict([0, 350, 700].map(time => ({ ...facts, time }))).failures)
+      .toContain('Q3 running text contrast 3.770:1 at halo 700ms');
+  });
+
   test('Q4 a grey nonmoving running count and weak selection fail', () => {
     const data = serialized(probeSidebarEmphasis, `<div class="th-sidebar-live">
       <div class="th-sidebar-live-count" style="color:#999">2</div></div>
@@ -256,22 +282,21 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     });
   }
 
-  test('Q5 row leading aligns despite its structurally indented parent label', () => {
-    for (const parentLabelLeft of [59, 82]) {
-      const facts = q5Geometry({ parentLabelLeft });
-      expect(facts.treeRows[0].leading.left).toBe(16);
-      expect(facts.treeRows[0].label.left).toBe(parentLabelLeft);
-      expect(sidebarVerdict(facts, { cards: 1, geometry: true }).pass).toBe(true);
-    }
+  test('Q5 parent label aligns with heading and card text', () => {
+    const facts = q5Geometry({ cardLeft: 17, parentLabelLeft: 16 });
+    expect(sidebarVerdict(facts, { cards: 1, geometry: true }).pass).toBe(true);
+    expect(sidebarVerdict(q5Geometry({ parentLabelLeft: 116 }),
+      { cards: 1, geometry: true }).failures)
+      .toContain('Q5 left columns drift: 16,17,116');
   });
 
   test('Q5 a three-pixel live-card versus heading drift fails', () => {
-    expect(sidebarVerdict(q5Geometry({ cardLeft: 19 }), { cards: 1, geometry: true }).failures)
+    expect(sidebarVerdict(q5Geometry({ cardLeft: 19, parentLabelLeft: 16 }), { cards: 1, geometry: true }).failures)
       .toContain('Q5 left columns drift: 16,19,16');
   });
 
-  test('Q5 a three-pixel workspace leading-column drift fails', () => {
-    expect(sidebarVerdict(q5Geometry({ parentLeadingLeft: 19 }),
+  test('Q5 a three-pixel workspace label-column drift fails', () => {
+    expect(sidebarVerdict(q5Geometry({ parentLabelLeft: 19 }),
       { cards: 1, geometry: true }).failures)
       .toContain('Q5 left columns drift: 16,17,19');
   });
@@ -298,6 +323,34 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     facts.treeBadges.push(facts.treeBadges[0]);
     expect(sidebarVerdict(facts, { cards: 1, geometry: true }).failures)
       .toContain('Q5 badge edges drift: 247,247,247');
+  });
+
+  test('Q19 serialized probe rejects a real label truncated before its number', () => {
+    const markup = `<div class="th-sidebar-body"><div class="th-tree-workspace">
+      ${Array.from({ length: 12 }, (_, index) => `<div class="th-tree-node">
+        <button class="th-tree-activation"><span class="th-tree-label-text">
+          Earlier workspace ${index + 1}</span></button></div>`).join('')}
+      </div></div>`;
+    const measure = truncated => serialized(probeWorkspaceLabels, markup, (_window, document) => {
+      const labels = document.querySelectorAll('.th-tree-label-text');
+      labels.forEach((label, index) => {
+        Object.defineProperties(label, {
+          scrollWidth: { value: index === 11 && truncated ? 160 : 120 },
+          clientWidth: { value: index === 11 && truncated ? 64 : 125 },
+        });
+        label.parentElement.getBoundingClientRect = () => ({
+          left: 0, right: 125, top: 0, bottom: 20, width: 125, height: 20,
+          toJSON() { return this; },
+        });
+      });
+    });
+    expect(workspaceLabelVerdict(measure(false)).pass).toBe(true);
+    const damaged = measure(true);
+    expect(damaged.rows[11].ellipsized).toBe(true);
+    expect(workspaceLabelVerdict(damaged).failures)
+      .toContain('Q19 "Earlier workspace 12" ellipsizes away its trailing number');
+    expect(workspaceLabelVerdict({ ...damaged, rows: damaged.rows.map(row =>
+      ({ ...row, ellipsized: false })) }).pass).toBe(true);
   });
 
   test('Q6 dim uppercase headings and metadata fail contrast/hierarchy', () => {
@@ -504,6 +557,27 @@ describe('serialized negative controls (old drained/overflowing state)', () => {
     expect(result.failures.some(reason => reason.includes('scrolls vertically'))).toBe(true);
     expect(result.failures.some(reason => reason.includes('whole mobile'))).toBe(true);
     expect(result.failures.some(reason => reason.includes('wraps or reverses'))).toBe(true);
+  });
+
+  test('Q14 and Q15 serialized rendered font and vertical ink clipping fail', () => {
+    const markup = `<div class="th-activity-graph"><svg><defs>
+      <clipPath id="state-clip"><rect x="17" y="0" width="81" height="37"></rect></clipPath>
+    </defs><g data-node="k0"><rect class="th-activity-gnode-card"></rect>
+      <text class="th-activity-gstate" clip-path="url(#state-clip)" style="font-size:10.2141px">Complete</text>
+    </g></svg></div>`;
+    const measure = (font, y) => serialized(probeMobileDag, markup, (window, document) => {
+      const word = document.querySelector('text');
+      word.style.fontSize = `${font}px`;
+      word.getComputedTextLength = () => 70;
+      word.getBBox = () => ({ x: 17, y, width: 70, height: 25 });
+    });
+    const small = measure(10.2141, 2);
+    expect(small.nodes[0].words[0].fontSize).toBeCloseTo(10.2141, 3);
+    expect(mobileDagVerdict(small, 80).failures.join(' ')).toContain('clipped word "Complete"');
+    const clipped = measure(20.5704, -10);
+    expect(clipped.nodes[0].words[0].clipped).toBe(true);
+    expect(mobileDagVerdict(clipped, 80).failures.join(' ')).toContain('clipped word "Complete"');
+    expect(measure(11, 2).nodes[0].words[0].clipped).toBe(false);
   });
 
   test('Q15 clipped tool status and node state are rejected', () => {

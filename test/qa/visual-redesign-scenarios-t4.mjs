@@ -451,22 +451,29 @@ function rectsIntersect(a, b, inflate = 0) {
 /** S14: a comet element exists, animates, and rides the running edge. */
 export function cometVerdict(cometFacts, runningEdge) {
   const failures = [];
-  if (Number.isFinite(runningEdge?.length) && runningEdge.length < 24) {
-    return { pass: true, failures, measured: { skipped: 'running edge shorter than 24px', edgeLength: runningEdge.length } };
-  }
   const comets = (cometFacts ?? []).filter(fact => fact && fact.found);
   if (comets.length === 0) {
-    return { pass: false, failures: ['no comet element (class/data ~ "comet") exists in the graph while an edge flows completed -> running'], measured: { comets: 0 } };
+    return { pass: false, failures: ['no comet element (class/data ~ "comet") exists in the graph while an edge flows completed -> running'], measured: { comets: 0, edgeLength: runningEdge?.length ?? null } };
   }
-  const animated = comets.filter(fact => (fact.runningAnimations ?? 0) > 0);
-  if (animated.length === 0) failures.push(`${comets.length} comet element(s) found but none carries a running animation`);
+  const animated = comets.filter(fact => (fact.movingAnimations ?? 0) > 0);
+  if (animated.length === 0) failures.push(`${comets.length} comet element(s) found but none carries a running stroke-dashoffset animation`);
   if (!runningEdge) {
     failures.push('could not identify the running edge geometrically (completed -> running node)');
     return { pass: false, failures, measured: { comets: comets.length, animated: 0 } };
   }
-  const riding = animated.filter(fact => rectsIntersect(fact.rect, runningEdge.rect, 12));
-  if (riding.length === 0 && animated.length > 0) failures.push(`animated comet does not intersect the running edge's bounding box (edge at ${JSON.stringify(runningEdge.rect)})`);
-  return { pass: failures.length === 0, failures, measured: { comets: comets.length, animated: animated.length, riding: riding.length } };
+  // The production comet traces the same SVG path. A 12px inflated bounding
+  // box could accept a detached comet on an 8px edge; compare the path and
+  // its screen-space bounds with tolerance capped by actual edge length.
+  const tolerance = Math.min(2, (runningEdge.length ?? 16) / 8);
+  const riding = animated.filter(fact => fact.d && fact.d === runningEdge.d
+    && fact.rect && runningEdge.rect
+    && ['left', 'top', 'right', 'bottom'].every(side =>
+      Math.abs(fact.rect[side] - runningEdge.rect[side]) <= tolerance));
+  if (riding.length === 0 && animated.length > 0) failures.push(`animated comet is detached from the running edge (length ${runningEdge.length ?? 'unknown'}px, tolerance ${tolerance}px)`);
+  return { pass: failures.length === 0, failures, measured: {
+    comets: comets.length, animated: animated.length, riding: riding.length,
+    edgeLength: runningEdge.length ?? null, tolerance,
+  } };
 }
 
 /** S14: the running node carries a visible halo element (in-group or
@@ -479,8 +486,10 @@ export function haloVerdict(haloFacts, runningNodeRect, glowRaw) {
   }
   const glow = parseColor(glowRaw);
   const visible = halos.filter(fact => (fact.rect?.width ?? 0) > 1 && (fact.rect?.height ?? 0) > 1
-    && fact.visible === true && Number(fact.opacity) > 0.02 && Number(fact.fillOpacity) > 0.02
-    && !!glow && glow.a > 0.02 && colorEquals(parseColor(fact.fill), glow));
+    && fact.visible === true && Number(fact.opacity) > 0.02 && !!glow && glow.a > 0.02
+    && (Number(fact.fillOpacity) > 0.02 && colorEquals(parseColor(fact.fill), glow)
+      || parseFloat(fact.strokeWidth) >= 1 && Number(fact.strokeOpacity) > 0.02
+        && colorEquals(parseColor(fact.stroke), glow)));
   if (visible.length === 0) failures.push('halo element(s) found but none visibly paints the computed accent glow');
   const onNode = visible.filter(fact => fact.insideRunningNode || rectsIntersect(fact.rect, runningNodeRect, 4));
   if (onNode.length === 0 && visible.length > 0) failures.push('no visible halo intersects the running node box');
@@ -831,13 +840,23 @@ export async function probeDagGraph(arg) {
   const runningElement = svg.querySelector(`[data-node="${arg.runningId}"]`);
   const comets = [], halos = [];
   for (const element of svg.querySelectorAll('[class*="comet" i], [data-comet]')) {
-    comets.push({ found: true, where: describeElement(element), rect: rectJson(element), runningAnimations: animJson(element).filter(a => a.playState === 'running').length, animations: animJson(element) });
+    const animations = element.getAnimations();
+    comets.push({
+      found: true, where: describeElement(element), d: element.getAttribute('d'),
+      rect: rectJson(element),
+      runningAnimations: animations.filter(animation => animation.playState === 'running').length,
+      movingAnimations: animations.filter(animation => animation.playState === 'running'
+        && animation.effect?.getKeyframes().some(frame => 'strokeDashoffset' in frame || 'stroke-dashoffset' in frame)).length,
+      animations: animJson(element),
+    });
   }
   for (const element of svg.querySelectorAll('[class*="halo" i], [data-halo]')) {
     halos.push({
       found: true, where: describeElement(element), rect: rectJson(element),
       insideRunningNode: !!(runningElement && runningElement.contains(element)),
       visible: isVisibleElement(element), fill: getComputedStyle(element).fill,
+      stroke: getComputedStyle(element).stroke, strokeWidth: getComputedStyle(element).strokeWidth,
+      strokeOpacity: getComputedStyle(element).strokeOpacity,
       opacity: getComputedStyle(element).opacity, fillOpacity: getComputedStyle(element).fillOpacity,
       runningAnimations: animJson(element).filter(a => a.playState === 'running').length, animations: animJson(element),
     });

@@ -1503,8 +1503,29 @@ async function screenshot(page, ctx, suffix) {
       } finally {
         clearTimeout(timer);
       }
+      // The 0s visibility transition starts after the transform transition.
+      // It may not be in getAnimations() yet when the inert attribute lands;
+      // subscribe to its actual completion rather than checking that frame.
       if (getComputedStyle(sidebar).visibility !== 'hidden') {
-        throw new Error('mobile drawer is inert but still visible after its exit animations');
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            cleanup();
+            reject(new Error('mobile drawer is inert but still visible after its exit animations'));
+          }, 2500);
+          function cleanup() {
+            clearTimeout(timer);
+            sidebar.removeEventListener('transitionend', settled);
+            sidebar.removeEventListener('transitioncancel', settled);
+          }
+          function settled() {
+            if (getComputedStyle(sidebar).visibility !== 'hidden') return;
+            cleanup();
+            resolve();
+          }
+          sidebar.addEventListener('transitionend', settled);
+          sidebar.addEventListener('transitioncancel', settled);
+          requestAnimationFrame(settled);
+        });
       }
     });
   }
