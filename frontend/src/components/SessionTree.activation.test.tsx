@@ -75,7 +75,10 @@ describe("SessionTree session-row activation target", () => {
     vi.unstubAllGlobals();
   });
 
-  function render(onOpen: SessionTreeProps["onOpen"] = async () => undefined): void {
+  function render(
+    onOpen: SessionTreeProps["onOpen"] = async () => undefined,
+    onToggle: SessionTreeProps["onToggle"] = () => undefined,
+  ): void {
     act(() => {
       root.render(
         <I18nContext.Provider value={i18n}>
@@ -87,7 +90,7 @@ describe("SessionTree session-row activation target", () => {
             expanded={new Set([workspace.id])}
             sessionLists={new Map([[workspace.id, sessions]])}
             sessionPages={new Map()}
-            onToggle={() => undefined}
+            onToggle={onToggle}
             onLoadMoreSessions={() => undefined}
             onSelect={() => undefined}
             onOpen={onOpen}
@@ -140,5 +143,21 @@ describe("SessionTree session-row activation target", () => {
     act(() => activation?.click());
     expect(onOpen).toHaveBeenCalledTimes(1);
     expect(onOpen).toHaveBeenCalledWith(workspace, discoveredSession, false);
+  });
+
+  it("toggles the workspace through one name-and-caret disclosure", () => {
+    const onToggle = vi.fn();
+    render(async () => undefined, onToggle);
+    const parent = container.querySelector(".th-tree-workspace > .th-tree-node");
+    const disclosure = parent?.querySelector<HTMLButtonElement>(".th-tree-workspace-activation");
+
+    expect(parent?.querySelectorAll("button[aria-expanded]")).toHaveLength(1);
+    expect(disclosure?.getAttribute("aria-expanded")).toBe("true");
+    expect(disclosure?.getAttribute("aria-label")).toBe(workspace.name);
+    expect(disclosure?.querySelector(".th-tree-chevron")?.getAttribute("aria-hidden")).toBe("true");
+
+    act(() => disclosure?.click());
+    expect(onToggle).toHaveBeenCalledTimes(1);
+    expect(onToggle).toHaveBeenCalledWith(workspace.id);
   });
 });

@@ -156,20 +156,10 @@
   }
 }
 
-/* Coarse pointers (G40) narrow the gaps only: rows keep the same 8px inline
-   padding as fine pointers so the heading, live-card and tree text columns
-   share one left edge and the count badges one right edge on both pointer
-   types (DESIGN.md Sidebar). */
+/* Coarse pointers (G40) narrow the gaps only; nested session rows retain
+   their own indentation and 44px controls. */
 .th-tree--touch .th-tree-node {
   gap: var(--th-space-1);
-}
-
-/* The selected row reads at a glance: the sliding indicator paints the
-   wash, and the label lifts to the text tier at emphasize weight (the
-   --th-active fill stays the state treatment, never a size or border). */
-.th-tree-node--active .th-tree-label {
-  font-weight: var(--th-weight-emphasize);
-  color: var(--th-text);
 }
 
 .th-tree-chevron {
@@ -257,6 +247,42 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* The selected row reads at a glance: the sliding indicator paints the
+   wash, and the label lifts to the text tier at emphasize weight (the
+   --th-active fill stays the state treatment, never a size or border). */
+.th-tree-node--active .th-tree-label {
+  font-weight: var(--th-weight-emphasize);
+  color: var(--th-text);
+}
+
+/* A workspace's single disclosure owns both its name and caret. Its folder
+   is decoration in the leading gutter rather than an in-flow column; the
+   name therefore starts with the live heading/card titles without reducing
+   the E33 label width or doubling the row height. */
+.th-tree-workspace > .th-tree-node > .th-tree-icon {
+  position: absolute;
+  left: calc(-1 * var(--th-space-2));
+  width: calc(var(--th-space-3) - var(--th-space-0-5));
+  pointer-events: none;
+}
+
+.th-tree-workspace > .th-tree-node > .th-tree-icon svg {
+  width: calc(var(--th-space-3) - var(--th-space-0-5));
+  height: calc(var(--th-space-3) - var(--th-space-0-5));
+}
+
+.th-tree-workspace-activation {
+  gap: var(--th-space-1);
+}
+
+.th-tree-workspace-activation .th-tree-label-text {
+  flex: 1;
+}
+
+.th-tree--touch .th-tree-workspace > .th-tree-node > .th-tree-icon {
+  left: calc(-1 * var(--th-space-1));
 }
 
 .th-tree-source {

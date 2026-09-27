@@ -265,30 +265,36 @@ export function SessionTree({
         return (
           <div key={ws.id} className="th-tree-workspace">
             <div className="th-tree-node">
-              <button
-                type="button"
-                className={`th-tree-chevron${isOpen ? " th-tree-chevron--open" : ""}`}
-                aria-label={isOpen ? t("sidebar.collapse") : t("sidebar.expand")}
-                aria-expanded={isOpen}
-                onClick={() => onToggle(ws.id)}
-              >
-                <IconChevron size={13} />
-              </button>
               <span className="th-tree-icon">
                 <IconFolder size={14} />
               </span>
               {renamingWs ? (
-                <RenameInput initial={ws.name} onCommit={(v) => commitRename(renamingWs, v)} />
+                <>
+                  <button
+                    type="button"
+                    className={`th-tree-chevron${isOpen ? " th-tree-chevron--open" : ""}`}
+                    aria-label={isOpen ? t("sidebar.collapse") : t("sidebar.expand")}
+                    aria-expanded={isOpen}
+                    onClick={() => onToggle(ws.id)}
+                  >
+                    <IconChevron size={13} />
+                  </button>
+                  <RenameInput initial={ws.name} onCommit={(v) => commitRename(renamingWs, v)} />
+                </>
               ) : (
                 <button
                   type="button"
-                  className="th-tree-label th-tree-activation"
+                  className="th-tree-label th-tree-chevron th-tree-activation th-tree-workspace-activation"
                   style={{ textAlign: "start" }}
                   title={ws.path}
                   aria-label={ws.name}
+                  aria-expanded={isOpen}
                   onClick={() => onToggle(ws.id)}
                 >
                   <span className="th-tree-label-text">{ws.name}</span>
+                  <span className={`th-tree-chevron${isOpen ? " th-tree-chevron--open" : ""}`} aria-hidden="true">
+                    <IconChevron size={13} />
+                  </span>
                 </button>
               )}
               <span
