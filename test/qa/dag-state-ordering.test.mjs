@@ -9,6 +9,9 @@ import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { activityPath, confirmPortReleased, createActivityGate, installDOMSignals,
   launchChild, parseArgs, snapshotAssets } from './dag-state-ordering.mjs';
+import { qaDriverSkipOption, resolveQaDriver } from './qa-driver.mjs';
+
+const qaDriver = await resolveQaDriver();
 
 function route({ path = activityPath, method = 'GET', fulfill, abort } = {}) {
   const calls = [];
@@ -126,14 +129,14 @@ test('child launcher preserves nonzero status and signal and removes parent sign
   assert.deepEqual([process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')], before);
 });
 
-test('real Chrome fetch gating and mutation barriers cannot finish before their exact release/action', { timeout: 30_000 }, async t => {
+test('real Chrome fetch gating and mutation barriers cannot finish before their exact release/action', { timeout: 30_000, ...qaDriverSkipOption(qaDriver) }, async t => {
   // A tiny document tests harness plumbing only; scenario QA separately uses frontend/dist.
   const server = createServer((_request, response) => { response.setHeader('Content-Type', 'text/html'); response.end('<!doctype html><html><body></body></html>'); });
   const listening = once(server, 'listening'); server.listen(0, '127.0.0.1'); await listening;
   const port = server.address().port, gate = createActivityGate();
   let browser, page;
   try {
-    const { chromium } = await import(pathToFileURL(process.env.QA_PLAYWRIGHT ?? '/private/tmp/omo-asar/node_modules/playwright-core/index.mjs').href);
+    const { chromium } = await import(pathToFileURL(qaDriver.entry).href);
     browser = await chromium.launch({ executablePath: process.env.QA_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
     page = await browser.newPage(); await installDOMSignals(page);
     await page.route(new RegExp(`${activityPath}(?:\\?.*)?$`), gate.handle);

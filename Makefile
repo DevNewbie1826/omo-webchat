@@ -1,7 +1,7 @@
 BINARY := omo-webchat
 PKG := ./cmd/server
 
-.PHONY: default build frontend clean run
+.PHONY: default build frontend clean run test-qa
 
 default: build
 
@@ -16,3 +16,6 @@ run: build
 
 clean:
 	rm -rf bin frontend/dist/assets frontend/dist/index.html
+
+test-qa:
+	bun test --isolate test/qa

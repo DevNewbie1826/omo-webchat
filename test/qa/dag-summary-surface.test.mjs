@@ -7,9 +7,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { startSummaryFixture, stages, viewports } from './dag-summary-fixture.mjs';
 import { armDOM, doneDOM, readSummaryDOM, assertSummaryDOM, assertVisibleBadge, settleCapture } from './dag-summary-surface.mjs';
 import { confirmPortReleased, installDOMSignals } from './dag-state-ordering.mjs';
+import { qaDriverSkipOption, resolveQaDriver } from './qa-driver.mjs';
 
+const qaDriver = await resolveQaDriver();
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-test('Chrome DOM machinery observes exact post-arm mutations, rejects false exact/hidden badges, and cancels pending signals', { timeout: 30000 }, async () => {
+test('Chrome DOM machinery observes exact post-arm mutations, rejects false exact/hidden badges, and cancels pending signals', { timeout: 30000, ...qaDriverSkipOption(qaDriver) }, async () => {
   const copy = JSON.parse(await readFile(join(root, 'frontend/src/i18n/locales/en.json'), 'utf8'));
   const assets = await mkdtemp(join(tmpdir(), 'dag-summary-dom-test-'));
   const profile = await mkdtemp(join(tmpdir(), 'dag-summary-dom-profile-'));
@@ -20,7 +22,7 @@ test('Chrome DOM machinery observes exact post-arm mutations, rejects false exac
     // Deliberately not a product surface. This tests the oracle and DOM barriers only.
     await writeFile(join(assets, 'index.html'), '<!doctype html><html><body><div class="th-chat-body">ordering-entry-159</div><div class="th-chat-input"><textarea></textarea></div></body></html>');
     fixture = startSummaryFixture({ assetsDir: assets });
-    const { chromium } = await import(pathToFileURL(process.env.QA_PLAYWRIGHT ?? '/private/tmp/omo-asar/node_modules/playwright-core/index.mjs').href);
+    const { chromium } = await import(pathToFileURL(qaDriver.entry).href);
     context = await chromium.launchPersistentContext(profile, { executablePath: process.env.QA_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true, timeout: 15000 });
     context.setDefaultTimeout(15000);
     const page = context.pages()[0]; await installDOMSignals(page);
