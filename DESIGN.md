@@ -496,7 +496,12 @@ Choose a tested foreground/background token pair instead.
   against the painted halo, translucent node card and graph background;
   token-pair contrast over the pane alone does not establish this. The
   mixed stage shows at least five whole node cards at 1280px on first
-  paint; its footer expander remains completely inside the panel. On
+  paint at the default app font setting (13px); its footer expander
+  remains completely inside the panel. At 768px and wider, Graph titles
+  and state words keep scaling with the font setting with an 11px floor,
+  and may show fewer whole nodes at larger settings, for example three
+  at 1280 and one at 768 at 24px, while horizontal scrolling reaches the
+  rest. On
   phones the graph keeps this SAME left-to-right desktop structure: ONE
   forward flow, including branches, with no row wrap, snake or zigzag
   return. The graph reel owns horizontal scrolling only and never scrolls
@@ -1315,7 +1320,7 @@ widths confirms:
     the prose edge at all widths, with rail and glyph in the outer gutter
     clear of cards, summaries and thinking text;
 15. DAG completed paths contrast at least 3:1 and five whole mixed-stage
-    nodes fit at 1280; on phones one left-to-right flow fits every branch
+    nodes fit at 1280 at the default app font setting (13px); on phones one left-to-right flow fits every branch
     row vertically without vertical scrolling and shows at least three
     whole nodes at first paint, with labels at least 11px; sidebar
     open-session columns align within 1px;
