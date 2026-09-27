@@ -6,13 +6,21 @@ import { ChatTranscript, transcriptItemKeys } from "./ChatTranscript";
 import { parseEntries } from "./chatEntries";
 import type { TranscriptItem } from "./useChatFrameState";
 
-const observed = vi.hoisted(() => ({ current: undefined as Virtualizer<Element, Element> | undefined }));
+const observed = vi.hoisted(() => ({
+  current: undefined as Virtualizer<Element, Element> | undefined,
+  outsideWindow: "",
+}));
 vi.mock("@tanstack/react-virtual", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-virtual")>();
   return {
     ...actual,
     useVirtualizer: (...args: Parameters<typeof actual.useVirtualizer>) => {
-      const instance = actual.useVirtualizer(...args);
+      const [options] = args;
+      const instance = actual.useVirtualizer({
+        ...options,
+        rangeExtractor: (range) => (options.rangeExtractor ?? actual.defaultRangeExtractor)(range)
+          .filter((index) => options.getItemKey?.(index) !== observed.outsideWindow),
+      });
       observed.current = instance;
       return instance;
     },
@@ -24,6 +32,7 @@ let root: Root;
 let originalScrollTo: typeof Element.prototype.scrollTo;
 let heights: Map<string, number>;
 let observers: Map<ResizeObserver, { callback: ResizeObserverCallback; targets: Set<Element> }>;
+let scrollCeiling: number;
 
 function instance() {
   if (!observed.current) throw new Error("missing virtualizer");
@@ -101,6 +110,8 @@ beforeEach(() => {
   Object.defineProperty(window, "onscrollend", { configurable: true, value: null });
   vi.spyOn(performance, "now").mockReturnValue(100);
   heights = new Map();
+  scrollCeiling = Infinity;
+  observed.outsideWindow = "";
   observers = new Map();
   const tops = new WeakMap<HTMLElement, number>();
   vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(400);
@@ -113,7 +124,7 @@ beforeEach(() => {
     return tops.get(this) ?? 0;
   });
   vi.spyOn(HTMLElement.prototype, "scrollTop", "set").mockImplementation(function (this: HTMLElement, value: number) {
-    tops.set(this, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight)));
+    tops.set(this, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight, scrollCeiling)));
   });
   originalScrollTo = Element.prototype.scrollTo;
   Element.prototype.scrollTo = function (this: Element, options?: ScrollToOptions | number) {
@@ -284,4 +295,58 @@ it("restores the first visible row when the old seam is outside the mounted wind
   expect(row(key)).toBe(anchor);
   expect(Math.abs(offset(anchor) - before)).toBeLessThan(4);
   for (const element of retained) expect(row(element.dataset["entryKey"] ?? "")).toBe(element);
+});
+
+it.each([true, false])("holds an out-of-window prepend until convergence or its frame budget (converges=%s)", async (converges) => {
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  vi.mocked(window.requestAnimationFrame).mockImplementation((callback) => {
+    frames.set(++frameId, callback);
+    return frameId;
+  });
+  vi.mocked(window.cancelAnimationFrame).mockImplementation((id) => { frames.delete(id); });
+  const tail = rows("tail", 100);
+  await render(tail);
+  park(4000);
+  const anchor = firstVisible();
+  const key = anchor.dataset["entryKey"] ?? "";
+  const before = offset(anchor);
+  // Model a window re-entry whose first scroll is clamped against the old
+  // DOM sizer. The real virtualizer must remount and measure the anchor.
+  observed.outsideWindow = key;
+  scrollCeiling = body().scrollTop + 100;
+  const prepended = [...rows("head", 100), ...tail];
+  await render(prepended);
+  expect(anchor.isConnected).toBe(false);
+  expect(container.querySelector(".th-chat-history--settling")).not.toBeNull();
+
+  let revealed = false;
+  for (let frame = 1; frame <= 6; frame += 1) {
+    if (converges && frame === 1) observed.outsideWindow = "";
+    if (converges && frame === 2) {
+      scrollCeiling = Infinity;
+    }
+    await act(async () => {
+      const callbacks = [...frames.values()];
+      frames.clear();
+      for (const callback of callbacks) callback(100 + frame * 16);
+    });
+    const hidden = container.querySelector(".th-chat-history--settling") !== null;
+    if (converges && frame === 1) {
+      expect(row(key).isConnected).toBe(true);
+      expect(Math.abs(offset(row(key)) - before)).toBeGreaterThan(1);
+      expect(hidden).toBe(true);
+    }
+    if (!hidden) {
+      revealed = true;
+      if (converges) {
+        expect(row(key).isConnected).toBe(true);
+        expect(Math.abs(offset(row(key)) - before)).toBeLessThanOrEqual(1);
+      } else {
+        expect(frame).toBe(6);
+      }
+      break;
+    }
+  }
+  expect(revealed).toBe(true);
 });

@@ -666,6 +666,12 @@ export function ChatTranscript({
   // only the estimated window can evict the reader's DOM before compensation.
   const measuringPrependRef = useRef<readonly string[]>([]);
   const retainedWindowRef = useRef<readonly string[]>([]);
+  const prependViewportRef = useRef<{
+    readonly key: string;
+    readonly top: number;
+    readonly started: number;
+    frames: number;
+  } | null>(null);
   const followMeasurementRef = useRef(false);
   const measuredRowsRef = useRef(new WeakMap<Element, number>());
   const historyRef = useRef<HTMLDivElement>(null);
@@ -793,6 +799,14 @@ export function ChatTranscript({
           });
           const visibleKey = visible?.dataset["entryKey"];
           const visibleStart = visibleKey === undefined ? undefined : previousStartsRef.current.get(visibleKey);
+          if (visible !== undefined && visibleKey !== undefined) {
+            prependViewportRef.current = {
+              key: visibleKey,
+              top: visible.getBoundingClientRect().top - (scrollRef.current?.getBoundingClientRect().top ?? 0),
+              started: performance.now(),
+              frames: 0,
+            };
+          }
           if (needsAnchor && visibleKey !== undefined && visibleStart !== undefined) {
             anchorRef.current = { key: visibleKey, index: keys.indexOf(visibleKey), start: visibleStart };
           }
@@ -1069,6 +1083,7 @@ export function ChatTranscript({
     if (isReaderInputActive() || !isRecentProgrammaticWrite(event.currentTarget.scrollTop)) {
       anchorRef.current = null;
       retainedWindowRef.current = [];
+      prependViewportRef.current = null;
     }
     // The sentinel can already sit inside the margin when follow intent ends
     // (short transcript): no crossing fires, so re-check after every scroll.
@@ -1224,11 +1239,30 @@ export function ChatTranscript({
     settleActiveRef.current = false;
     settleRunsRef.current = 0;
     measuringPrependRef.current = [];
+    prependViewportRef.current = null;
     setSettleVersion((version) => version + 1);
   }, []);
+  // A disconnected/clamped anchor may need another window/measurement frame.
+  // Count frames, not React commits: several layout commits can precede one
+  // paint. Cancel on every commit/unmount so no retired admission can reveal
+  // a newer one. The watchdog also advances when no measurement notifies.
+  useLayoutEffect(() => {
+    const target = prependViewportRef.current;
+    if (!settleActiveRef.current || target === null) return;
+    const frame = requestAnimationFrame(() => {
+      target.frames += 1;
+      flushSync(() => setSettleVersion((version) => version + 1));
+    });
+    return () => cancelAnimationFrame(frame);
+  });
   useLayoutEffect(() => {
     if (!settleActiveRef.current) return;
     settleRunsRef.current += 1;
+    const target = prependViewportRef.current;
+    if (target !== null && (target.frames >= 6 || performance.now() - target.started >= 100)) {
+      revealSettled();
+      return;
+    }
     // rows emptied (chat cleared mid-settle): nothing to hide.
     if (rows.length === 0) {
       revealSettled();
@@ -1237,6 +1271,7 @@ export function ChatTranscript({
     const rendered = virtualizer.getVirtualItems();
     if (rendered.length === 0) {
       // No window yet: poll until it exists, but the budget always reveals.
+      if (target !== null) return;
       if (settleRunsRef.current >= 4) revealSettled();
       else setSettleVersion((version) => version + 1);
       return;
@@ -1245,13 +1280,18 @@ export function ChatTranscript({
     // measure admitted rows here instead of revealing after a fixed number of
     // estimated commits. resizeItem schedules the measured sizer/positions.
     let measured = false;
-    for (const key of measuringPrependRef.current) {
-      if (virtualizer.itemSizeCache.has(key)) continue;
+    const measureKeys = target === null
+      ? measuringPrependRef.current
+      : rendered.map((item) => String(item.key));
+    for (const key of measureKeys) {
+      if (target === null && virtualizer.itemSizeCache.has(key)) continue;
       const row = virtualizer.elementsCache.get(key);
       const index = keys.indexOf(key);
       if (row instanceof HTMLElement && index >= 0) {
         const height = row.offsetHeight;
-        if (virtualizer.measurementsCache[index]?.size !== height) {
+        // A row without a layout box cannot replace a ResizeObserver
+        // measurement (for example while an ancestor pane is hidden).
+        if (height > 0 && virtualizer.measurementsCache[index]?.size !== height) {
           virtualizer.resizeItem(index, height);
           measured = true;
         }
@@ -1259,6 +1299,36 @@ export function ChatTranscript({
     }
     if (measured) {
       setSettleVersion((version) => version + 1);
+      return;
+    }
+    if (target !== null && !isFollowing()) {
+      const scroll = scrollRef.current;
+      const anchor = virtualizer.elementsCache.get(target.key);
+      if (scroll === null) return;
+      if (!anchor?.isConnected) {
+        const index = keys.indexOf(target.key);
+        if (index >= 0) {
+          restoringAnchorRef.current = true;
+          virtualizer.scrollToIndex(index, { align: "start" });
+          restoringAnchorRef.current = false;
+          virtualizer.scrollBy(0);
+        }
+      } else {
+        const delta = anchor.getBoundingClientRect().top - scroll.getBoundingClientRect().top - target.top;
+        if (Math.abs(delta) <= 1) {
+          revealSettled();
+          return;
+        }
+        const previous = scroll.scrollTop;
+        scroll.scrollTop += delta;
+        const warm = anchorRef.current;
+        if (warm !== null) anchorRef.current = { ...warm, start: warm.start + scroll.scrollTop - previous };
+        if (scroll.scrollTop !== previous) noteProgrammaticWrite("measurement");
+      }
+      if (virtualizer.scrollOffset !== scroll.scrollTop) {
+        virtualizer.scrollOffset = scroll.scrollTop;
+        setSettleVersion((version) => version + 1);
+      }
       return;
     }
     // Apply (or converge) the tail pin on the current geometry. The pin's own
