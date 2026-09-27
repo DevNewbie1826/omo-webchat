@@ -13,10 +13,11 @@ Known frame parsers validate required properties, constants, nested types, and c
 
 ## Contract v4: on-demand history
 
-Clients opt into v4 by sending `hello` with `version: 4`. On open, the server
-sends only the branch tail, bounded to 60 entries or 1 MiB; the terminal
-`entries` frame uses the `segment: "preview"` segment for the uncommitted disk
-tail. Live persisted message additions are announced with the server
+Clients opt into v4 by sending `hello` with `version: 4`. Before the engine
+attaches, the server sends a provisional `entries` frame with
+`segment: "preview"` and `final: false` for the uncommitted disk tail. The
+authoritative terminal is a separate `entries` frame with no segment and
+`final: true`. Live persisted message additions are announced with the server
 `entry.appended` frame.
 
 Older history is fetched with
