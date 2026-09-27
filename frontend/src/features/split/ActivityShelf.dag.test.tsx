@@ -295,6 +295,42 @@ describe("ActivityShelf", () => {
     expect(graph.querySelector('[data-node="c"] .th-activity-gstate')?.textContent).toBe("activity.status.running");
   });
 
+  it.each([
+    { reelWidth: 366, edgeLength: 8, dashLength: 4 },
+    { reelWidth: 900, edgeLength: 16, dashLength: 6 },
+  ])("keeps the comet visible on a $edgeLength px running edge", ({ reelWidth, edgeLength, dashLength }) => {
+    const clientWidth = vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
+      return this.classList.contains("th-activity-graph") ? reelWidth : 0;
+    });
+    try {
+      const chain = makeDag({
+        nodes: [
+          { id: "source", prompt: "Source", dependsOn: [], state: "completed" },
+          { id: "target", prompt: "Target", dependsOn: ["source"], state: "running" },
+        ],
+        edges: [{ from: "source", to: "target" }],
+        waves: [{ index: 0, nodeIds: ["source"] }, { index: 1, nodeIds: ["target"] }],
+      });
+      renderShelf(harness, activityState({ dags: [chain] }));
+      openShelf(harness.container);
+      click(requireElement(harness.container.querySelector('[data-activity-tab="dag"]'), "DAG tab"));
+      const edge = requireElement(harness.container.querySelector<SVGPathElement>(".th-activity-gedge--flow"), "running edge");
+      const comet = requireElement(harness.container.querySelector<SVGPathElement>(".th-activity-gedge-comet"), "comet");
+      const glow = requireElement(harness.container.querySelector<SVGPathElement>(".th-activity-gedge-glow"), "comet glow");
+      const coordinates = [...(edge.getAttribute("d") ?? "").matchAll(/-?\d+(?:\.\d+)?/g)].map(match => Number(match[0]));
+      expect(coordinates).toHaveLength(8);
+      expect((coordinates[6] ?? NaN) - (coordinates[0] ?? NaN)).toBe(edgeLength);
+      expect(comet.getAttribute("d")).toBe(edge.getAttribute("d"));
+      expect(glow.getAttribute("d")).toBe(edge.getAttribute("d"));
+      const paintedLength = Number.parseFloat(comet.style.strokeDasharray) * edgeLength / 100;
+      expect(paintedLength).toBeGreaterThanOrEqual(dashLength);
+      expect(paintedLength).toBeLessThanOrEqual(6);
+      expect(glow.style.strokeDasharray).toBe(comet.style.strokeDasharray);
+    } finally {
+      clientWidth.mockRestore();
+    }
+  });
+
   it("scrolls the first running node into view on the first visible paint, then leaves the reel to the user", () => {
     const frames: FrameRequestCallback[] = [];
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
@@ -370,10 +406,12 @@ describe("ActivityShelf", () => {
       // The same ordered chain extends horizontally; it never snakes back.
       expect(Number(svg.getAttribute("width"))).toBeGreaterThan(366);
       expect(graph.scrollLeft).toBe(0);
-      // Labels hold the 11px phone floor (the hidden measure probe is also a
-      // .th-activity-glabel, so scope to a rendered node's text)...
+      // Check the authored CSS font size rather than the SVG presentation
+      // attribute, which the stylesheet overrides in a real browser.
       const label = requireElement(graph.querySelector<SVGTextElement>('[data-node] .th-activity-glabel'), "node label");
-      expect(Number(label.getAttribute("font-size"))).toBeGreaterThanOrEqual(11);
+      const state = requireElement(graph.querySelector<SVGTextElement>('[data-node] .th-activity-gstate'), "node state");
+      expect(Number.parseFloat(getComputedStyle(label).fontSize)).toBeGreaterThanOrEqual(11);
+      expect(Number.parseFloat(getComputedStyle(state).fontSize)).toBeGreaterThanOrEqual(11);
       const card = requireElement(graph.querySelector(".th-activity-gnode-card"), "node card");
       const cardWidth = Number(card.getAttribute("width"));
       expect(Number(card.getAttribute("height"))).toBeLessThanOrEqual(40);

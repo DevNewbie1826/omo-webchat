@@ -1434,25 +1434,26 @@ button.th-activity-bar:hover {
   animation: th-dag-check-draw var(--th-dur) var(--th-ease-out);
 }
 
-/* Running halo: a blurred accent-glow card behind the card, breathing at
-   the shared running beat while the run is live. It is rendered only
-   then, and never under reduced motion. */
+/* Running halo: the blurred outer ring breathes at the shared running beat.
+   Its centre stays transparent so it cannot brighten the translucent card
+   underneath the status word. It exists only for live, non-reduced motion. */
 @keyframes th-dag-halo-breathe {
   from { opacity: 0.45; }
   to { opacity: 1; }
 }
 
 .th-activity-gnode-halo {
-  fill: var(--th-accent-glow);
-  stroke: none;
+  fill: none;
+  stroke: var(--th-accent-glow);
+  stroke-width: 4;
   animation: th-dag-halo-breathe var(--th-dur-run) var(--th-ease-in-out) infinite alternate;
 }
 
-/* Comet on a running edge: pathLength 100, one 24-unit dash and a 100-unit
-   gap, so exactly one dash is ever on the path; it enters before the source
-   and leaves past the destination. The resting offset hides it. */
+/* Comet on a running edge: pathLength 100, a per-edge dash and a 100-unit
+   gap. The 50-unit entrance starts fully before even the longest (half-edge)
+   dash; the trail passes the destination before the cycle restarts. */
 @keyframes th-dag-comet {
-  from { stroke-dashoffset: 24; }
+  from { stroke-dashoffset: 50; }
   to { stroke-dashoffset: -100; }
 }
 
@@ -1460,8 +1461,7 @@ button.th-activity-bar:hover {
 .th-activity-gedge-glow {
   fill: none;
   stroke-linecap: round;
-  stroke-dasharray: 24 100;
-  stroke-dashoffset: 24;
+  stroke-dashoffset: 50;
 }
 
 .th-activity-gedge-comet {

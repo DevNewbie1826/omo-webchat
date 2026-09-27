@@ -377,6 +377,7 @@ interface EdgeGeometry {
   readonly d: string;
   readonly fulfilled: boolean;
   readonly flowing: boolean;
+  readonly cometDash: number;
 }
 
 function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, active, t }: {
@@ -429,10 +430,11 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
     let disposed = false;
     const measure = (): void => {
       if (disposed) return;
-      // The probe paints the same size as the phone title and state text.
+      // Match the inline font sizes on the visible compact SVG text. SVG
+      // presentation attributes lose to the stylesheet's type-tier rules.
+      probe.style.fontSize = compact ? `${COMPACT_FONT_PX}px` : "";
       const measured = Number.parseFloat(getComputedStyle(probe).fontSize) || fontSize * LABEL_TIER;
       const fontPx = compact ? COMPACT_FONT_PX : measured;
-      probe.style.fontSize = compact ? `${COMPACT_FONT_PX}px` : "";
       const textWidth = (text: string): number => {
         probe.textContent = text;
         // SVG measurement includes actual fallback glyphs and letter spacing.
@@ -449,7 +451,9 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
       // Measure every localized state, rather than the current snapshot:
       // state flips must never move a card or clip its status word.
       const states = ["pending", "scheduled", "blocked", "running", "completed", "failed", "error", "cancelled", "canceled", "skipped"];
+      if (compact) probe.style.fontSize = `${COMPACT_STATE_FONT_PX}px`;
       const stateWidth = Math.max(...states.map(state => textWidth(statusLabel(t, state))));
+      if (compact) probe.style.fontSize = `${COMPACT_FONT_PX}px`;
       const titleWidth = Math.max(0, ...pairs.map(([, text]) => textWidth(text) / 2 + fontPx * 2));
       const width = Math.max(base.width, Math.ceil(base.labelX + spacing.padX + Math.max(stateWidth, titleWidth) + 2));
       const { labelWidth } = cardGeometry(fontPx, { ...spacing, width });
@@ -634,7 +638,10 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
     const y2 = to.y + nodeHeight / 2;
     const dx = Math.max(gapX / 2, Math.abs(x2 - x1) / 2);
     const d = `M${round(x1)} ${round(y1)}C${round(x1 + dx)} ${round(y1)} ${round(x2 - dx)} ${round(y2)} ${round(x2)} ${round(y2)}`;
-    return [{ edgeIndex, d, fulfilled, flowing }];
+    // pathLength=100 normalizes the dash to a fraction of this edge. Keep a
+    // short edge's comet at half its length, but cap longer trails near 6px.
+    const cometDash = round(Math.min(50, 600 / Math.hypot(x2 - x1, y2 - y1)));
+    return [{ edgeIndex, d, fulfilled, flowing, cometDash }];
   });
   return (
     <div ref={graphRef} className="th-activity-graph" data-live={live ? "true" : undefined}>
@@ -686,15 +693,17 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
         {/* The comet rides above every dependency line and dives under the
             destination card; reduced motion renders none (the fulfilled line
             and the running glyph and word still carry the state). */}
-        {reducedMotion ? null : edges.filter(edge => edge.flowing).flatMap(({ edgeIndex, d }) => [
+        {reducedMotion ? null : edges.filter(edge => edge.flowing).flatMap(({ edgeIndex, d, cometDash }) => [
           <path
             key={`glow-${edgeIndex}`}
             className="th-activity-gedge-glow"
             d={d}
             pathLength={100}
+            style={{ strokeDasharray: `${cometDash} 100` }}
             filter={`url(#${cometFilterId(clipIdPrefix, runIndex)})`}
           />,
-          <path key={`comet-${edgeIndex}`} className="th-activity-gedge-comet" d={d} pathLength={100} />,
+          <path key={`comet-${edgeIndex}`} className="th-activity-gedge-comet" d={d} pathLength={100}
+            style={{ strokeDasharray: `${cometDash} 100` }} />,
         ])}
         {run.nodes.flatMap((node) => {
           const position = positions.get(node.id);
@@ -741,7 +750,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
                   <text
                     key={lineIndex}
                     className="th-activity-glabel"
-                    fontSize={layoutFontPx}
+                    style={compact ? { fontSize: `${COMPACT_FONT_PX}px` } : undefined}
                     x={geometry.labelX}
                     y={geometry.firstBaseline + lineIndex * row}
                     clipPath={`url(#${rowClipId(clipIdPrefix, runIndex, lineIndex)})`}
@@ -751,7 +760,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
                 ))}
                 <text
                   className="th-activity-gstate"
-                  fontSize={compact ? COMPACT_STATE_FONT_PX : undefined}
+                  style={compact ? { fontSize: `${COMPACT_STATE_FONT_PX}px` } : undefined}
                   x={geometry.labelX}
                   y={geometry.stateBaseline}
                   clipPath={`url(#${rowClipId(clipIdPrefix, runIndex, 2)})`}
