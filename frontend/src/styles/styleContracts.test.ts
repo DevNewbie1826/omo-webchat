@@ -1422,8 +1422,9 @@ describe("scroll-to-bottom narrow placement contracts", () => {
   // D1 (s17 critique, QA S22 at 390): at narrow panes the reading column
   // fills the pane, and the inline-end anchored circle covered a collapsed
   // record's status word. Inside the chat pane's 600px container breakpoint
-  // the button centres in a reserved strip below the scroll body; the wide
-  // inline-end placement must stay unchanged.
+  // the button centres and the scroll body fades out over the button's band
+  // (no opaque reserved strip); the wide inline-end placement must stay
+  // unchanged.
   const narrowBlock =
     chatTranscript.match(/@container chat-pane \(max-width: 600px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
 
@@ -1453,15 +1454,19 @@ describe("scroll-to-bottom narrow placement contracts", () => {
     expect(declarationValue(base, "left"), "wide placement must not centre").toBe("");
   });
 
-  it("reserves a bottom strip that fits the button whenever it is mounted", () => {
+  it("fades the scroll body over the button band instead of reserving a strip", () => {
     expect(narrowBlock, "narrow container block").not.toBe("");
-    const strip = ruleBody(narrowBlock, ".th-chat-scrollport:has(> .th-chat-scroll-bottom)");
-    expect(strip, "reserved strip rule").not.toBe("");
-    const paddingBottom = declarationValue(strip, "padding-bottom");
-    expect(containsVarToken(paddingBottom, "--th-space-11")).toBe(true);
+    expect(narrowBlock, "no opaque reserved strip").not.toMatch(/padding-bottom/);
+    const fade = ruleBody(narrowBlock, ".th-chat-scrollport:has(> .th-chat-scroll-bottom) > .th-chat-body");
+    expect(fade, "bottom fade rule").not.toBe("");
+    const mask = declarationValue(fade, "mask-image");
+    expect(mask).toMatch(/^linear-gradient\(to bottom,/);
+    expect(mask).toMatch(/transparent\)$/);
+    // The fade band must cover the whole button: its height plus its offset.
+    const band = /calc\(100% - (.+)\), transparent\)$/.exec(mask)?.[1] ?? "";
     const button = ruleBody(narrowBlock, ".th-chat-pane .th-chat-scroll-bottom");
     const bottomOffset = evaluateCalc(declarationValue(button, "bottom"));
-    expect(evaluateCalc(paddingBottom)).toBeGreaterThanOrEqual(
+    expect(evaluateCalc(band.replace(/ - /g, " + "))).toBeGreaterThanOrEqual(
       numericToken("--th-space-11") + bottomOffset,
     );
   });
