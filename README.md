@@ -41,80 +41,41 @@
 
 ## 한국어
 
-`omo-webchat`은 Go 바이너리 하나로 동작하는 로컬 웹 채팅 UI입니다. 임베드된 React SPA를 서빙하고, 모든 채팅을 공유 omo 프로세스(`omo --mode rpc --multi-session`) 위의 논리 세션으로 실행합니다.
+### 바로 실행하기
 
-### 요구 사항
-
-- 채팅을 만들려면 `PATH`에 `omo`가 있어야 합니다.
-- macOS·Linux (amd64/arm64), Windows (amd64/arm64, zip 릴리스).
-- Windows RPC는 인증된 named pipe를 사용합니다. CI 런타임은 `omo-ai@5.0.0-0.beta.43` (senpi `2026.9.5`), Bun `1.3.10`, Node `24.15.0`으로 고정되어 있습니다. Bun의 `omo.exe` 또는 npm이 생성한 `omo.cmd`를 PATH에 두세요. npm 설치는 Node로 실제 `omo.js`를 실행하며, `CHAT_PI_BINARY`에 해당 `.js`의 절대 경로를 직접 지정할 수도 있습니다. 서버는 필요한 데몬을 시작하거나 호환 데몬을 재사용하며, 자신이 시작한 프로세스 트리만 종료합니다. 잘못된 크기·소유권·권한의 `.secret` 파일이나 reparse 경로는 자동 덮어쓰기 없이 거부합니다.
-
-### 설치 (macOS · Linux)
+설치 없이 명령 한 줄로 실행합니다. 둘 중 편한 쪽을 쓰세요.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.sh | sh
-```
-
-특정 버전·경로를 지정하려면:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.sh | VERSION=vX.Y.Z INSTALL_DIR=~/.local/bin sh
-```
-
-### 설치 (Windows)
-
-PowerShell 5.1 이상에서 실행하세요. 관리자 권한은 필요 없습니다.
-
-```powershell
-irm https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.ps1 | iex
-```
-
-릴리스 zip(`omo-webchat_windows_amd64.zip`)을 내려받아 `checksums.txt`의 SHA-256과 대조한 뒤 `%LOCALAPPDATA%\Programs\omo-webchat`에 설치하고, 그 경로를 사용자 PATH에 추가합니다(새 터미널부터 적용).
-
-특정 버전·경로를 지정하거나 PATH를 건드리지 않으려면 인자를 넘기세요:
-
-```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.ps1))) -Version vX.Y.Z -InstallDir C:\tools\omo-webchat -NoPathUpdate
-```
-
-Windows x64·arm64를 모두 지원하며, 호스트 아키텍처에 맞는 자산을 자동으로 받습니다.
-
-### npx / bunx
-
-npm 패키지는 래퍼(`omo-webchat`) 하나와 여섯 개의 플랫폼 바이너리 패키지(`omo-webchat-<os>-<arch>`)로 구성됩니다. `optionalDependencies`가 현재 플랫폼에 맞는 하나만 같은 버전으로 설치합니다.
-
-- npx에는 Node 18 이상이 필요합니다(래퍼의 `engines` 조건). Bun 사용자는 `bunx` 또는 `bunx --bun`을 쓸 수 있습니다. 단, 테스트한 호스티드 Windows 환경(Bun 1.4.2)에서 `bunx --bun`은 설치 후 래퍼를 실행하지 않고 종료되는 것이 관찰됐습니다. 해당 환경에서는 `npx` 또는 일반 `bunx`를 권장합니다.
-- 채팅을 만들려면 런타임에 공식 `omo` CLI가 필요합니다. 기본적으로 `PATH`에서 `omo`를 찾습니다. `PATH`에 다른 `omo`가 있거나 충돌이 있으면 `CHAT_PI_BINARY`에 원하는 바이너리의 절대 경로를 명시하세요. 이 변수가 항상 최우선입니다.
-
-```sh
-npx omo-webchat@latest --password <secret> --port <port> --root <root>
+bunx omo-webchat@latest --password <비밀번호> --port 8080 --root <작업 폴더>
 ```
 
 ```sh
-bunx omo-webchat@latest --password <secret> --port <port> --root <root>
+npx omo-webchat@latest --password <비밀번호> --port 8080 --root <작업 폴더>
 ```
 
-안정 버전은 `latest` 태그, 프리릴리스(예: `0.1.0-rc.1`)는 `next` 태그로 배포됩니다. 릴리스 파이프라인과 게시 절차는 [docs/releasing.md](docs/releasing.md)를 참고하세요.
+실행되면 브라우저에서 `http://127.0.0.1:8080`을 열고 `--password`로 정한 비밀번호로 로그인하세요.
 
-> 릴리스 상태: 게시 여부는 시점에 따라 달라집니다. 설치하려는 버전이 공개되어 있는지 npm 패키지 페이지와 GitHub Releases에서 확인하세요. 게시 절차와 첫 공개 부트스트랩은 [docs/releasing.md](docs/releasing.md)에 정의되어 있습니다.
+필요한 것:
 
-### 빠른 시작
+- `PATH`에 [omo](https://github.com/code-yeongyu/oh-my-openagent) CLI가 있어야 합니다. 실제 대답은 omo가 합니다.
+- `bunx`는 Bun, `npx`는 Node 18 이상이 필요합니다.
 
-```sh
-omo-webchat --password <secret>
-```
+### 파라미터 설명
 
-브라우저에서 `http://127.0.0.1:8080`을 열고 비밀번호로 로그인하세요.
+| 파라미터 | 무엇인가요 | 기본값 | 언제 바꾸나요 |
+|---|---|---|---|
+| `--password` | 웹 화면에 들어갈 때 입력하는 비밀번호입니다. | 없음 (**필수**) | 항상 직접 정하세요. 서버를 다시 켜면 다시 로그인해야 합니다. |
+| `--port` | 브라우저 주소 `http://127.0.0.1:<포트>`의 숫자입니다. | `8080` | 다른 프로그램이 이미 8080을 쓰고 있을 때만 바꾸세요. |
+| `--root` | 파일 브라우저와 워크스페이스에서 보이는 가장 바깥 폴더입니다. 이 폴더 바깥은 웹에서 보이지 않습니다. | 홈 폴더 | 평소 작업하는 폴더(예: 프로젝트들이 모여 있는 폴더)로 좁히는 것을 권장합니다. |
+| `--host` | 서버가 어느 주소에서 접속을 받을지 정합니다. 기본값은 이 컴퓨터에서만 접속할 수 있습니다. | `127.0.0.1` | 보통은 그대로 두세요. 바꾸려면 반드시 TLS 역프록시 뒤에 두세요([보안](#보안) 참고). |
+| `--state-dir` | 워크스페이스·채팅 목록 같은 앱 상태를 저장하는 폴더입니다. | `$XDG_STATE_HOME/omo-webchat` 또는 `~/.local/state/omo-webchat` | 거의 바꿀 일이 없습니다. 상태를 따로 분리하고 싶을 때만 쓰세요. |
 
-백그라운드 실행(darwin/linux):
-
-```sh
-omo-webchat --password <secret> --daemon   # 시작
-omo-webchat --status                       # 상태
-omo-webchat --stop                         # 중지
-```
+- 모든 파라미터는 환경 변수로도 줄 수 있습니다(`TH_PASSWORD`, `TH_PORT`, `TH_ROOT`, `TH_HOST`, `TH_STATE_DIR`). 둘 다 있으면 명령줄 파라미터가 우선합니다.
+- `PATH`에 다른 `omo`가 있거나 특정 빌드를 쓰고 싶다면 `CHAT_PI_BINARY`에 omo 실행 파일의 절대 경로를 지정하세요. 이 값이 항상 가장 먼저 쓰입니다.
 
 ### 주요 기능
+
+`omo-webchat`은 Go 바이너리 하나로 동작하는 로컬 웹 채팅 UI입니다. 임베드된 React SPA를 서빙하고, 모든 채팅을 공유 omo 프로세스(`omo --mode rpc --multi-session`) 위의 논리 세션으로 실행합니다.
 
 - 비밀번호 로그인 뒤의 채팅 SPA, WebSocket 스트리밍, GFM 마크다운
 - 워크스페이스별 채팅 관리, 파일 브라우저(업로드·편집·다운로드), `@` 파일 멘션
@@ -160,19 +121,71 @@ Windows에서는 모든 omo/senpi 프로세스와 웹챗을 종료한 뒤 터미
 거부합니다. 업데이트 없이도, 엔진을 오래 켜 둔 뒤 새로 시작하고 싶을 때
 단독으로 사용할 수 있습니다.
 
-### 주요 플래그
+### 보안
 
-| 플래그 | 환경 변수 | 기본값 | 역할 |
-|---|---|---|---|
-| `--host` | `TH_HOST` | `127.0.0.1` | 리슨 주소 |
-| `--port` | `TH_PORT` | `8080` | 리슨 포트 |
-| `--password` | `TH_PASSWORD` | — | 접속 비밀번호 (서빙 시 필수) |
-| `--root` | `TH_ROOT` | 홈 디렉터리 | 파일 브라우저·워크스페이스 루트 |
-| `--state-dir` | `TH_STATE_DIR` | `$XDG_STATE_HOME/omo-webchat` 또는 `~/.local/state/omo-webchat` | 상태 디렉터리 |
+기본 바인드는 루프백(`127.0.0.1`)이고 프로세스 안에 TLS는 없습니다. 비루프백에 바인드할 때는 TLS 역프록시 뒤에 두세요. 세션 토큰은 메모리에만 있어 재시작하면 다시 로그인합니다.
 
-플래그가 환경 변수보다 항상 우선합니다.
+### 기타 설치 방법
 
-### 소스 빌드
+위의 `bunx`/`npx` 실행을 권장합니다. 바이너리를 직접 설치하거나 소스에서 빌드하려면 아래를 참고하세요.
+
+#### 지원 환경과 세부 요구 사항
+
+- macOS·Linux (amd64/arm64), Windows (amd64/arm64, zip 릴리스).
+- Windows RPC는 인증된 named pipe를 사용합니다. CI 런타임은 `omo-ai@5.0.0-0.beta.43` (senpi `2026.9.5`), Bun `1.3.10`, Node `24.15.0`으로 고정되어 있습니다. Bun의 `omo.exe` 또는 npm이 생성한 `omo.cmd`를 PATH에 두세요. npm 설치는 Node로 실제 `omo.js`를 실행하며, `CHAT_PI_BINARY`에 해당 `.js`의 절대 경로를 직접 지정할 수도 있습니다. 서버는 필요한 데몬을 시작하거나 호환 데몬을 재사용하며, 자신이 시작한 프로세스 트리만 종료합니다. 잘못된 크기·소유권·권한의 `.secret` 파일이나 reparse 경로는 자동 덮어쓰기 없이 거부합니다.
+- 테스트한 호스티드 Windows 환경(Bun 1.4.2)에서 `bunx --bun`은 설치 후 래퍼를 실행하지 않고 종료되는 것이 관찰됐습니다. 해당 환경에서는 `npx` 또는 일반 `bunx`를 쓰세요.
+
+#### npm 패키지 구성과 배포 태그
+
+npm 패키지는 래퍼(`omo-webchat`) 하나와 여섯 개의 플랫폼 바이너리 패키지(`omo-webchat-<os>-<arch>`)로 구성됩니다. `optionalDependencies`가 현재 플랫폼에 맞는 하나만 같은 버전으로 설치합니다.
+
+안정 버전은 `latest` 태그, 프리릴리스(예: `0.1.0-rc.1`)는 `next` 태그로 배포됩니다. 게시 여부는 시점에 따라 달라지니 설치하려는 버전이 공개되어 있는지 npm 패키지 페이지와 GitHub Releases에서 확인하세요. 릴리스 파이프라인과 게시 절차는 [docs/releasing.md](docs/releasing.md)를 참고하세요.
+
+#### 설치 스크립트 (macOS · Linux)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.sh | sh
+```
+
+특정 버전·경로를 지정하려면:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.sh | VERSION=vX.Y.Z INSTALL_DIR=~/.local/bin sh
+```
+
+#### 설치 스크립트 (Windows)
+
+PowerShell 5.1 이상에서 실행하세요. 관리자 권한은 필요 없습니다.
+
+```powershell
+irm https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.ps1 | iex
+```
+
+릴리스 zip(`omo-webchat_windows_amd64.zip`)을 내려받아 `checksums.txt`의 SHA-256과 대조한 뒤 `%LOCALAPPDATA%\Programs\omo-webchat`에 설치하고, 그 경로를 사용자 PATH에 추가합니다(새 터미널부터 적용).
+
+특정 버전·경로를 지정하거나 PATH를 건드리지 않으려면 인자를 넘기세요:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.ps1))) -Version vX.Y.Z -InstallDir C:\tools\omo-webchat -NoPathUpdate
+```
+
+Windows x64·arm64를 모두 지원하며, 호스트 아키텍처에 맞는 자산을 자동으로 받습니다.
+
+#### 설치 후 실행
+
+```sh
+omo-webchat --password <비밀번호> --port 8080 --root <작업 폴더>
+```
+
+파라미터는 [파라미터 설명](#파라미터-설명)과 같습니다. 백그라운드 실행(darwin/linux):
+
+```sh
+omo-webchat --password <비밀번호> --daemon   # 시작
+omo-webchat --status                         # 상태
+omo-webchat --stop                           # 중지
+```
+
+#### 소스 빌드
 
 ```sh
 make build   # 프론트엔드(npm ci + vite build) 후 go build → bin/omo-webchat
@@ -180,11 +193,7 @@ make build   # 프론트엔드(npm ci + vite build) 후 go build → bin/omo-web
 
 Go 1.26, Node 22가 필요합니다. 로컬 실행은 `make run` (개발용 비밀번호 `dev123`).
 
-### 보안
-
-기본 바인드는 루프백(`127.0.0.1`)이고 프로세스 안에 TLS는 없습니다. 비루프백에 바인드할 때는 TLS 역프록시 뒤에 두세요. 세션 토큰은 메모리에만 있어 재시작하면 다시 로그인합니다.
-
-### 테스트
+#### 테스트
 
 ```sh
 go test ./...
@@ -197,80 +206,41 @@ pwsh -NoProfile -File test/install_ps1_test.ps1   # Windows installer
 
 ## English
 
-`omo-webchat` is a single Go binary that serves an embedded React SPA and runs every chat as a logical session on one shared omo process (`omo --mode rpc --multi-session`).
-
-### Requirements
-
-- `omo` on `PATH` to create chats.
-- macOS / Linux (amd64, arm64), Windows (amd64, arm64, zip release).
-- Windows RPC uses authenticated named pipes. CI pins `omo-ai@5.0.0-0.beta.43` (senpi `2026.9.5`), Bun `1.3.10`, and Node `24.15.0`. Put Bun's `omo.exe` or npm's `omo.cmd` on PATH. npm installs run the actual `omo.js` through Node; `CHAT_PI_BINARY` can also name the absolute `.js` entry path. The server starts a missing daemon or reuses a compatible one, and only terminates process trees it owns. Malformed, untrusted, or reparse-backed `.secret` files are rejected rather than overwritten; valid secrets are retained across shutdown and re-read on reconnect.
-
-### Install (macOS / Linux)
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.sh | sh
-```
-
-Pin a version or install path:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.sh | VERSION=vX.Y.Z INSTALL_DIR=~/.local/bin sh
-```
-
-### Install (Windows)
-
-Run in PowerShell 5.1 or newer; no administrator rights required.
-
-```powershell
-irm https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.ps1 | iex
-```
-
-It downloads the release zip (`omo-webchat_windows_amd64.zip`), verifies its SHA-256 against `checksums.txt`, installs into `%LOCALAPPDATA%\Programs\omo-webchat`, and adds that directory to your user PATH (effective in new terminals).
-
-Pass arguments to pin a version, choose a directory, or leave PATH alone:
-
-```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.ps1))) -Version vX.Y.Z -InstallDir C:\tools\omo-webchat -NoPathUpdate
-```
-
-Both Windows x64 and arm64 are supported; the matching asset is picked from your host architecture.
-
-### npx / bunx
-
-The npm distribution is one wrapper package (`omo-webchat`) plus six platform binary packages (`omo-webchat-<os>-<arch>`). `optionalDependencies` installs exactly the one matching your platform, at the same version as the wrapper.
-
-- npx needs Node 18 or newer (the wrapper's `engines` range). Bun users can run `bunx` or `bunx --bun`. Note: `bunx --bun` was observed on the tested hosted Windows setup with Bun 1.4.2 to exit after installation without running the wrapper; prefer `npx` or plain `bunx` there.
-- The official `omo` CLI is still required at runtime to answer chats. By default the shim looks for `omo` on `PATH`. If a different `omo` is on your `PATH`, or you want a specific build, set `CHAT_PI_BINARY` to the absolute path of the agent binary. That variable always wins.
-
-```sh
-npx omo-webchat@latest --password <secret> --port <port> --root <root>
-```
-
-```sh
-bunx omo-webchat@latest --password <secret> --port <port> --root <root>
-```
-
-Stable versions publish under the `latest` tag; prereleases (for example `0.1.0-rc.1`) publish under `next`. See [docs/releasing.md](docs/releasing.md) for the release pipeline and publication procedure.
-
-> Release status: publication state changes over time. Check the npm package page and GitHub Releases to confirm the version you want is public before installing. The publication procedure and first-time bootstrap are defined in [docs/releasing.md](docs/releasing.md).
-
 ### Quick start
 
-```sh
-omo-webchat --password <secret>
-```
-
-Open `http://127.0.0.1:8080` and log in with your password.
-
-Background daemon (darwin/linux):
+Run it with one command, no install needed. Use whichever you prefer.
 
 ```sh
-omo-webchat --password <secret> --daemon   # start
-omo-webchat --status                       # status
-omo-webchat --stop                         # stop
+bunx omo-webchat@latest --password <password> --port 8080 --root <work folder>
 ```
+
+```sh
+npx omo-webchat@latest --password <password> --port 8080 --root <work folder>
+```
+
+Then open `http://127.0.0.1:8080` in your browser and log in with the password you passed to `--password`.
+
+You need:
+
+- The [omo](https://github.com/code-yeongyu/oh-my-openagent) CLI on your `PATH`. omo is what actually answers the chats.
+- Bun for `bunx`, or Node 18+ for `npx`.
+
+### Parameters
+
+| Parameter | What it is | Default | When to change it |
+|---|---|---|---|
+| `--password` | The password you type to enter the web UI. | none (**required**) | Always set your own. Restarting the server requires logging in again. |
+| `--port` | The number in the browser address `http://127.0.0.1:<port>`. | `8080` | Only when another program already uses 8080. |
+| `--root` | The outermost folder visible in the file browser and workspaces. Nothing outside it is visible from the web. | home directory | Recommended: narrow it to the folder you work in (for example, the folder holding your projects). |
+| `--host` | Which address the server accepts connections on. The default allows connections from this computer only. | `127.0.0.1` | Usually leave it. If you change it, always put a TLS reverse proxy in front (see [Security](#security)). |
+| `--state-dir` | Where app state such as workspaces and chat lists is stored. | `$XDG_STATE_HOME/omo-webchat` or `~/.local/state/omo-webchat` | Rarely. Only when you want to keep state separate. |
+
+- Every parameter can also come from an environment variable (`TH_PASSWORD`, `TH_PORT`, `TH_ROOT`, `TH_HOST`, `TH_STATE_DIR`). When both are set, the command-line parameter wins.
+- If a different `omo` is on your `PATH`, or you want a specific build, set `CHAT_PI_BINARY` to the absolute path of the omo executable. That variable always wins.
 
 ### Features
+
+`omo-webchat` is a single Go binary that serves an embedded React SPA and runs every chat as a logical session on one shared omo process (`omo --mode rpc --multi-session`).
 
 - Password-gated chat SPA, WebSocket streaming, GFM markdown
 - Workspaces, file browser (upload / edit / download), `@` file mentions
@@ -317,19 +287,71 @@ to an engine someone else started, the request is refused because there is no sa
 way to stop a process this server does not own. A restart is also useful on its
 own, without an update, when the engine has been running for a long time.
 
-### Flags
+### Security
 
-| Flag | Env | Default | Purpose |
-|---|---|---|---|
-| `--host` | `TH_HOST` | `127.0.0.1` | Listen address |
-| `--port` | `TH_PORT` | `8080` | Listen port |
-| `--password` | `TH_PASSWORD` | — | Access password (required when serving) |
-| `--root` | `TH_ROOT` | home directory | File browser / workspace root |
-| `--state-dir` | `TH_STATE_DIR` | `$XDG_STATE_HOME/omo-webchat` or `~/.local/state/omo-webchat` | State directory |
+Binds to loopback (`127.0.0.1`) by default and has no in-process TLS — put a TLS reverse proxy in front when binding off loopback. Session tokens are memory-only, so a restart requires a new login.
 
-CLI flags always win over environment variables.
+### Other install options
 
-### Build from source
+Running with `bunx`/`npx` above is recommended. To install the binary directly or build from source, see below.
+
+#### Platforms and detailed requirements
+
+- macOS / Linux (amd64, arm64), Windows (amd64, arm64, zip release).
+- Windows RPC uses authenticated named pipes. CI pins `omo-ai@5.0.0-0.beta.43` (senpi `2026.9.5`), Bun `1.3.10`, and Node `24.15.0`. Put Bun's `omo.exe` or npm's `omo.cmd` on PATH. npm installs run the actual `omo.js` through Node; `CHAT_PI_BINARY` can also name the absolute `.js` entry path. The server starts a missing daemon or reuses a compatible one, and only terminates process trees it owns. Malformed, untrusted, or reparse-backed `.secret` files are rejected rather than overwritten; valid secrets are retained across shutdown and re-read on reconnect.
+- On the tested hosted Windows setup with Bun 1.4.2, `bunx --bun` was observed to exit after installation without running the wrapper; use `npx` or plain `bunx` there.
+
+#### npm packages and release tags
+
+The npm distribution is one wrapper package (`omo-webchat`) plus six platform binary packages (`omo-webchat-<os>-<arch>`). `optionalDependencies` installs exactly the one matching your platform, at the same version as the wrapper.
+
+Stable versions publish under the `latest` tag; prereleases (for example `0.1.0-rc.1`) publish under `next`. Publication state changes over time, so check the npm package page and GitHub Releases to confirm the version you want is public. See [docs/releasing.md](docs/releasing.md) for the release pipeline and publication procedure.
+
+#### Install script (macOS / Linux)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.sh | sh
+```
+
+Pin a version or install path:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.sh | VERSION=vX.Y.Z INSTALL_DIR=~/.local/bin sh
+```
+
+#### Install script (Windows)
+
+Run in PowerShell 5.1 or newer; no administrator rights required.
+
+```powershell
+irm https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.ps1 | iex
+```
+
+It downloads the release zip (`omo-webchat_windows_amd64.zip`), verifies its SHA-256 against `checksums.txt`, installs into `%LOCALAPPDATA%\Programs\omo-webchat`, and adds that directory to your user PATH (effective in new terminals).
+
+Pass arguments to pin a version, choose a directory, or leave PATH alone:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.ps1))) -Version vX.Y.Z -InstallDir C:\tools\omo-webchat -NoPathUpdate
+```
+
+Both Windows x64 and arm64 are supported; the matching asset is picked from your host architecture.
+
+#### Run after installing
+
+```sh
+omo-webchat --password <password> --port 8080 --root <work folder>
+```
+
+Parameters are the same as in [Parameters](#parameters). Background daemon (darwin/linux):
+
+```sh
+omo-webchat --password <password> --daemon   # start
+omo-webchat --status                         # status
+omo-webchat --stop                           # stop
+```
+
+#### Build from source
 
 ```sh
 make build   # frontend (npm ci + vite build), then go build → bin/omo-webchat
@@ -337,11 +359,7 @@ make build   # frontend (npm ci + vite build), then go build → bin/omo-webchat
 
 Requires Go 1.26 and Node 22. For local runs: `make run` (dev password `dev123`).
 
-### Security
-
-Binds to loopback (`127.0.0.1`) by default and has no in-process TLS — put a TLS reverse proxy in front when binding off loopback. Session tokens are memory-only, so a restart requires a new login.
-
-### Tests
+#### Tests
 
 ```sh
 go test ./...
