@@ -7,17 +7,17 @@ import type { ActivityDagNode, ActivityDagRun } from "./activityTypes";
 
 /*
  * Living-graph geometry (v2). Every value is at the default Label tier (13px
- * base) and the card scales with the measured Label font up to the desktop
- * density limit. Width, row pitch and glyph lane use that same bounded size.
+ * base) and the card scales with the measured Label and Micro fonts.
+ * Width, row pitch and glyph lane grow with the text, without a density cap.
  * Each node owns
  * one cell of the wave/layer grid, so dense runs (64 nodes) never overlap:
  * GAP_Y keeps stacked cards clear of a running neighbour's halo (HALO_SPREAD
  * plus the blur's visible falloff), GAP_X leaves room for the bezier
  * curvature and the arrowhead, and PADDING keeps an edge node's halo inside
- * the SVG viewport. The pitch (NODE_WIDTH + GAP_X = 144) is sized so the
+ * the SVG viewport. The pitch (NODE_WIDTH + GAP_X = 136) is sized so the
  * mixed stage shows at least five whole cards inside the 736px reading-column
  * reel at 1280 on first paint (E9; the painted width scales with the measured
- * Label font — 129px at the default 14px setting — so the constant keeps five
+ * Label font — 120px at the default 13px setting — so the constant keeps five
  * cards whole at the default type setting), and the compact PADDING/GAP_Y keep
  * the run plus its footer expander inside the panel's 280px cap (E11). The
  * card's radius/padding/gap are NOT constants: they resolve from the --th-*
@@ -45,6 +45,8 @@ const HALO_SPREAD = 2;
 const HALO_BLUR = 3;
 const COMET_BLUR = 1.5;
 const LABEL_TIER = 0.8571;
+const MICRO_TIER = 0.7857;
+const MIN_GRAPH_TYPE_PX = 11;
 /** The measured title font determines card size, row pitch and glyph lane. */
 const DEFAULT_TYPE_PX = 13 * LABEL_TIER;
 
@@ -182,6 +184,7 @@ function cardGeometry(fontPx: number, stateFontPx: number, spacing: CardSpacing,
 
 interface GraphType {
   readonly fontPx: number;
+  readonly stateFontPx: number;
   readonly width: number;
   readonly labels: ReadonlyMap<string, readonly string[]>;
 }
@@ -393,8 +396,11 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
   const graphRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<SVGTextElement>(null);
+  const stateMeasureRef = useRef<SVGTextElement>(null);
   const firstPaintDone = useRef(false);
-  const [type, setType] = useState<GraphType>({ fontPx: DEFAULT_TYPE_PX, width: 0, labels: new Map() });
+  const [type, setType] = useState<GraphType>({
+    fontPx: DEFAULT_TYPE_PX, stateFontPx: MIN_GRAPH_TYPE_PX, width: 0, labels: new Map(),
+  });
   const [viewWidth, setViewWidth] = useState(0);
   const labelKey = JSON.stringify(run.nodes.map(node => [node.id, node.label ?? node.prompt]));
   // The card metrics resolve once per render, so a token change lands on the
@@ -402,10 +408,10 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
   const desktopSpacing = resolveCardSpacing();
   const typeTokens = getComputedStyle(document.documentElement);
   const compactFontPx = Number.parseFloat(typeTokens.getPropertyValue("--th-type-dag-compact-graph-title-size")) || 11;
-  const stateFontPx = Number.parseFloat(typeTokens.getPropertyValue("--th-type-dag-compact-graph-state-size")) || 11.1;
-  const maxTitleFontPx = Number.parseFloat(typeTokens.getPropertyValue("--th-type-dag-desktop-graph-title-max-size")) || 12;
+  const compactStateFontPx = Number.parseFloat(typeTokens.getPropertyValue("--th-type-dag-compact-graph-state-size")) || 11.1;
   // Width selects only compact card anatomy, not a new graph topology.
   const compact = viewWidth > 0 && viewWidth < COMPACT_BREAKPOINT;
+  const stateFontPx = compact ? compactStateFontPx : type.stateFontPx;
   const spacing: CardSpacing = compact
     ? {
         radius: COMPACT_RADIUS,
@@ -430,25 +436,29 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
   }, []);
   useLayoutEffect(() => {
     const probe = measureRef.current;
-    if (!probe) return;
+    const stateProbe = stateMeasureRef.current;
+    if (!probe || !stateProbe) return;
     let disposed = false;
     const measure = (): void => {
       if (disposed) return;
-      // Read the theme's title tier before applying the same bounded size to
-      // the probe and visible SVG text. Presentation attributes lose to CSS.
+      // Measure each tier through its own CSS class. Only the compact phone
+      // overview is fixed; desktop text has a floor but no upper bound.
       probe.style.fontSize = compact ? `${compactFontPx}px` : "";
       const measured = Number.parseFloat(getComputedStyle(probe).fontSize) || fontSize * LABEL_TIER;
       const fontPx = compact ? compactFontPx
-        : Math.max(compactFontPx, Math.min(maxTitleFontPx, measured));
+        : Math.max(MIN_GRAPH_TYPE_PX, measured);
+      const measuredState = Number.parseFloat(getComputedStyle(stateProbe).fontSize) || fontSize * MICRO_TIER;
+      const stateFontPx = compact ? compactStateFontPx : Math.max(MIN_GRAPH_TYPE_PX, measuredState);
       probe.style.fontSize = `${fontPx}px`;
-      const textWidth = (text: string): number => {
-        probe.textContent = text;
+      stateProbe.style.fontSize = `${stateFontPx}px`;
+      const textWidth = (text: string, element = probe): number => {
+        element.textContent = text;
         // SVG measurement includes actual fallback glyphs and letter spacing.
         // Non-layout renderers cannot measure SVG text; browser QA owns pixels.
-        return typeof probe.getComputedTextLength === "function"
-          ? probe.getComputedTextLength()
+        return typeof element.getComputedTextLength === "function"
+          ? element.getComputedTextLength()
           : [...text].reduce((sum, glyph) => sum
-            + Number.parseFloat(probe.style.fontSize) * (/[^\u0000-\u007f]/.test(glyph) ? 1 : 0.62), 0);
+            + Number.parseFloat(element.style.fontSize) * (/[^\u0000-\u007f]/.test(glyph) ? 1 : 0.62), 0);
       };
       const pairs: [string, string][] = JSON.parse(labelKey);
       const base = cardGeometry(fontPx, stateFontPx, {
@@ -458,22 +468,22 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
       // Measure every localized state, rather than the current snapshot:
       // state flips must never move a card or clip its status word.
       const states = ["pending", "scheduled", "blocked", "running", "completed", "failed", "error", "cancelled", "canceled", "skipped"];
-      probe.style.fontSize = `${stateFontPx}px`;
-      const stateWidth = Math.max(...states.map(state => textWidth(statusLabel(t, state))));
-      probe.style.fontSize = `${fontPx}px`;
+      const stateWidth = Math.max(...states.map(state => textWidth(statusLabel(t, state), stateProbe)));
       const titleWidth = Math.max(0, ...pairs.map(([, text]) => textWidth(text) / 2 + fontPx * 2));
       const width = Math.max(base.width, Math.ceil(base.labelX + spacing.padX + Math.max(stateWidth, titleWidth) + 2));
       const { labelWidth } = cardGeometry(fontPx, stateFontPx, { ...spacing, width });
       const labels = new Map(pairs.map(([id, text]) => [id, splitNodeLabel(text, labelWidth, labelWidth, textWidth)]));
       probe.textContent = "";
-      const next: GraphType = { fontPx, width, labels };
-      setType(previous => previous.fontPx === next.fontPx && previous.width === next.width
+      stateProbe.textContent = "";
+      stateProbe.style.fontSize = "";
+      const next: GraphType = { fontPx, stateFontPx, width, labels };
+      setType(previous => previous.fontPx === next.fontPx && previous.stateFontPx === next.stateFontPx && previous.width === next.width
         && JSON.stringify([...previous.labels]) === JSON.stringify([...next.labels]) ? previous : next);
     };
     measure();
     void document.fonts?.ready.then(measure);
-    return () => { disposed = true; probe.style.fontSize = ""; };
-  }, [font, fontSize, lang, labelKey, active, compact, viewWidth, t, compactFontPx, stateFontPx, maxTitleFontPx]);
+    return () => { disposed = true; probe.style.fontSize = ""; stateProbe.style.fontSize = ""; };
+  }, [font, fontSize, lang, labelKey, active, compact, viewWidth, t, compactFontPx, compactStateFontPx]);
   useLayoutEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
@@ -570,8 +580,9 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
     string,
     { readonly x: number; readonly y: number; readonly layer: number }
   >();
-  const gapX = compact ? COMPACT_GAP_X : GAP_X;
-  const gapY = compact ? COMPACT_GAP_Y : GAP_Y;
+  const typeScale = Math.max(1, layoutFontPx / DEFAULT_TYPE_PX, stateFontPx / MIN_GRAPH_TYPE_PX);
+  const gapX = compact ? COMPACT_GAP_X : Math.round(GAP_X * typeScale);
+  const gapY = compact ? COMPACT_GAP_Y : Math.round(GAP_Y * typeScale);
   const pad = compact ? COMPACT_PADDING : PADDING;
   layers.forEach((layer, layerIndex) =>
     layer.forEach((node, nodeIndex) =>
@@ -656,6 +667,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
     <div ref={graphRef} className="th-activity-graph" data-live={live ? "true" : undefined}>
       <svg role="img" aria-label={run.name} width={svgWidth} height={svgHeight}>
         <text ref={measureRef} className="th-activity-glabel" visibility="hidden" aria-hidden="true" />
+        <text ref={stateMeasureRef} className="th-activity-gstate" visibility="hidden" aria-hidden="true" />
         <defs>
           {["", "-fulfilled"].map(variant => (
             <marker

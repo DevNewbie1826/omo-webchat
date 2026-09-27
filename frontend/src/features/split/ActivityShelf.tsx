@@ -38,7 +38,7 @@ const PANEL_STORAGE_KEY = "th-activity-panel-height";
  *  the default content-sized panel never grows past this, with or without
  *  a measured column clamp. */
 const PANEL_CONTENT_MAX_PX = 280;
-/* Desktop DAGs retain the compact 320px panel. A narrow pane can hold the
+/* Desktop DAGs start at 320px and grow with the user's type setting. A narrow pane can hold the
  * full eight-row graph (356px) plus header and footer in 480px instead of
  * clipping its lower branch rows behind the tabpanel scrollport. */
 const DAG_PANEL_CONTENT_MAX_PX = 320;
@@ -120,7 +120,7 @@ function detectPanelHeight(): number | null {
 }
 
 export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
-  const { t } = useT();
+  const { t, fontSize } = useT();
   const [open, setOpen] = useState(false);
   // Graph is the default; the choice survives tab and fold switches.
   const [view, setView] = useState<DagView>("graph");
@@ -213,7 +213,7 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
   const selectedTab: ShelfTab = chosenTab
     ?? (SHELF_TABS.find((tab) => availability[tab]) ?? "todo");
   const dagPanelCap = (shelfElement?.clientWidth || window.innerWidth) < 640
-    ? NARROW_DAG_PANEL_CONTENT_MAX_PX : DAG_PANEL_CONTENT_MAX_PX;
+    ? NARROW_DAG_PANEL_CONTENT_MAX_PX : DAG_PANEL_CONTENT_MAX_PX * Math.max(1, fontSize / 13);
   // Complete data/selection belong to the shelf, not its transient panel DOM.
   const completeDag = useCompleteDag(dagSource, open && selectedTab === "dag", activities);
   const taskRoster = useTaskRoster(dagSource, open && selectedTab === "agents");

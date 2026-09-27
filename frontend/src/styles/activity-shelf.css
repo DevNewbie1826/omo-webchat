@@ -340,9 +340,10 @@ button.th-activity-bar:hover {
   max-height: 60vh;
 }
 
-/* Desktop DAGs use a compact cap without changing other tab preferences. */
+/* Match the allocator's setting-scaled desktop cap so larger graph text
+   and the mixed-stage footer fit together. Dense runs still scroll inside. */
 .th-activity-panel--dag {
-  max-height: 320px;
+  max-height: max(320px, calc(320 * var(--th-font-size) / 13));
 }
 
 /* At phone/pane width, eight compact branch rows plus the header and footer
@@ -1057,7 +1058,7 @@ button.th-activity-bar:hover {
   fill: var(--th-muted);
   stroke: none;
   font-family: var(--th-font-sans);
-  font-size: var(--th-type-dag-compact-graph-state-size);
+  font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);

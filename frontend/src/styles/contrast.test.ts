@@ -444,7 +444,7 @@ describe("token contrast contracts (WCAG 2.1)", () => {
         "--th-type-micro-size", "--th-type-micro-line", "--th-type-micro-tracking",
         "--th-type-dag-compact-details-size", "--th-type-dag-compact-name-size",
         "--th-type-dag-compact-counts-size", "--th-type-dag-compact-graph-title-size",
-        "--th-type-dag-compact-graph-state-size", "--th-type-dag-desktop-graph-title-max-size",
+        "--th-type-dag-compact-graph-state-size",
         "--th-weight-read", "--th-weight-emphasize", "--th-weight-announce",
       ],
     },

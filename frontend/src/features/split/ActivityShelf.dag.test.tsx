@@ -333,7 +333,7 @@ describe("ActivityShelf", () => {
     }
   });
 
-  it.each([13, 14, 24])("keeps desktop DAG text readable and five cards visible at font%d", fontSize => {
+  it.each([10, 13, 14, 16, 20, 24])("scales desktop DAG text and geometry with an 11px floor at font%d", fontSize => {
     const localizedStatus = vi.spyOn(i18n, "t").mockImplementation(key =>
       key.startsWith("activity.status.") ? key.slice("activity.status.".length) : key);
     const clientWidth = vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
@@ -363,15 +363,25 @@ describe("ActivityShelf", () => {
         const node = requireElement(card.closest("[data-node]"), "DAG node");
         for (const title of node.querySelectorAll(".th-activity-glabel")) {
           const size = Number.parseFloat(getComputedStyle(title).fontSize);
-          expect(size).toBeGreaterThanOrEqual(11);
-          expect(size).toBeLessThanOrEqual(12);
+          expect(size).toBeCloseTo(Math.max(11, fontSize * 0.8571), 4);
         }
         const state = requireElement(node.querySelector(".th-activity-gstate"), "state word");
-        expect(Number.parseFloat(getComputedStyle(state).fontSize)).toBeGreaterThanOrEqual(11);
+        const stateSize = Number.parseFloat(getComputedStyle(state).fontSize);
+        expect(stateSize).toBeCloseTo(Math.max(11, fontSize * 0.7857), 4);
+        expect(Number(card.getAttribute("width"))).toBeGreaterThanOrEqual(
+          Math.round(120 * Math.max(11, fontSize * 0.8571) / (13 * 0.8571)),
+        );
+        expect(Number(card.getAttribute("height"))).toBe(
+          16 + 2 * Math.ceil(Math.max(11, fontSize * 0.8571) * 1.4) + Math.ceil(stateSize * 1.4),
+        );
       }
-      const fifth = requireElement(cards[4], "fifth card");
-      const x = Number(/translate\(([-\d.]+)/.exec(fifth.parentElement?.parentElement?.getAttribute("transform") ?? "")?.[1]);
-      expect(x + Number(fifth.getAttribute("width"))).toBeLessThanOrEqual(734);
+      // Density is guaranteed at the app's default setting, not by capping
+      // the user's larger text to force the same number of columns.
+      if (fontSize === 13) {
+        const fifth = requireElement(cards[4], "fifth card");
+        const x = Number(/translate\(([-\d.]+)/.exec(fifth.parentElement?.parentElement?.getAttribute("transform") ?? "")?.[1]);
+        expect(x + Number(fifth.getAttribute("width"))).toBeLessThanOrEqual(734);
+      }
     } finally {
       clientWidth.mockRestore();
       localizedStatus.mockRestore();

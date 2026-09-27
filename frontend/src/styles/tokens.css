@@ -205,7 +205,6 @@
   --th-type-dag-compact-counts-size: min(var(--th-type-micro-size), 11.1px);
   --th-type-dag-compact-graph-title-size: 11px;
   --th-type-dag-compact-graph-state-size: 11.1px;
-  --th-type-dag-desktop-graph-title-max-size: 12px;
 
   /* The only three text weights. Fonts without an exact intermediate weight
    * use the browser's nearest available face; components never substitute ad
