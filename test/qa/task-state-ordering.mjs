@@ -29,8 +29,12 @@ export function taskRow(status, minute, extra = {}) {
 export function taskSnapshot(rows, owner = chat) { return { parent_session_id: owner, truncated_tasks: false, tasks: rows }; }
 export function overviewFrame(rows, extra = {}) {
   const { sessionId = chat, durableSessionId = sessionId } = extra;
+  const running = rows.filter(row => row.status === 'running').length;
   return { type: 'sessions.activity', sessionId, durableSessionId,
-    snapshots: [{ name: 'omo.task.updated', data: taskSnapshot(rows, durableSessionId), oversized: false }], overflow: false, ...extra };
+    id: sessionId, title: sessionId === chat ? 'Stored A' : 'Newer', active: false,
+    running: { agents: running, tasks: running, dag: 0 }, done: rows.length - running,
+    last_activity_ms: Date.parse(rows[0]?.updated_at ?? stamp(0)),
+    truncated: { task: false, dag: false }, overflow: false, ...extra };
 }
 const taskFrame = rows => ({ type: 'extensionEvent', name: 'omo.task.updated', data: taskSnapshot(rows) });
 function dagFrame(status, minute) {

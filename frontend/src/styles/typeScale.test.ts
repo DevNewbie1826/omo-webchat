@@ -64,6 +64,8 @@ const FIXTURES: readonly Fixture[] = [
   { tier: "secondary", selector: ".th-tree-label", weight: null },
   { tier: "label", selector: ".th-tool-head", weight: 510 },
   { tier: "micro", selector: ".th-tool-status", weight: 510 },
+  { tier: "label", selector: ".th-activity-glabel", weight: 510 },
+  { tier: "micro", selector: ".th-activity-gstate", weight: 510 },
 ];
 
 const FIXTURE_HTML = `
@@ -76,6 +78,10 @@ const FIXTURE_HTML = `
     <button type="button" class="th-tool-head">tool</button>
     <span class="th-tool-status">Done</span>
   </div>
+  <svg class="th-activity-graph">
+    <text class="th-activity-glabel">Node title</text>
+    <text class="th-activity-gstate">completed</text>
+  </svg>
 `;
 
 const VAR_PATTERN = /var\(\s*(--[\w-]+)\s*(?:,\s*([^()]*))?\)/;
@@ -154,6 +160,7 @@ describe("type scale computed from the user's font-size setting", () => {
     "confirm-dialog.css",
     "session-tree.css",
     "tool-card.css",
+    "activity-shelf.css",
   ];
 
   let styleElements: HTMLStyleElement[] = [];
@@ -240,6 +247,14 @@ describe("type scale token block", () => {
     expect(tokens).toContain("--th-weight-announce: 590;");
     expect(tokens.match(/--th-weight-[\w-]+:/g) ?? []).toHaveLength(3);
   });
+
+  it("keeps phone DAG chrome capped and graph text fixed without changing the List scale", () => {
+    expect(tokens).toContain("--th-type-dag-compact-details-size: min(var(--th-type-secondary-size), 12px);");
+    expect(tokens).toContain("--th-type-dag-compact-name-size: min(var(--th-type-label-size), 13px);");
+    expect(tokens).toContain("--th-type-dag-compact-counts-size: min(var(--th-type-micro-size), 11.1px);");
+    expect(tokens).toContain("--th-type-dag-compact-graph-title-size: 11px;");
+    expect(tokens).toContain("--th-type-dag-compact-graph-state-size: 11.1px;");
+  });
 });
 
 describe("stylesheet type contracts", () => {
@@ -252,7 +267,7 @@ describe("stylesheet type contracts", () => {
     for (const { file, css } of componentCss) {
       for (const match of css.matchAll(/font-size\s*:\s*([^;}]+);/g)) {
         const value = (match[1] ?? "").trim();
-        if (!/^var\(--th-type-(?:display|title|input|body|secondary|label|micro)-size\)$/.test(value)) {
+        if (!/^var\(--th-type-(?:display|title|input|body|secondary|label|micro|dag-compact-(?:details|name|counts|graph-state))-size\)$/.test(value)) {
           offenders.push(`${file}: font-size: ${value}`);
         }
       }

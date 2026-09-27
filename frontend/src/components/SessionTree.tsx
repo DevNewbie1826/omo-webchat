@@ -262,44 +262,51 @@ export function SessionTree({
         const workspaceMainRunning = Array.from(mergedSessionIds).some((id) => activeSessions?.has(id));
         const renamingWs =
           rename && rename.kind === "workspace" && rename.wsId === ws.id ? rename : null;
+        const nameTail = ws.name.match(/\s\S{1,4}$/u)?.[0] ?? Array.from(ws.name).slice(-5).join("");
+        const nameHead = ws.name.slice(0, ws.name.length - nameTail.length);
         return (
           <div key={ws.id} className="th-tree-workspace">
             <div className="th-tree-node">
-              <button
-                type="button"
-                className={`th-tree-chevron${isOpen ? " th-tree-chevron--open" : ""}`}
-                aria-label={isOpen ? t("sidebar.collapse") : t("sidebar.expand")}
-                aria-expanded={isOpen}
-                onClick={() => onToggle(ws.id)}
-              >
-                <IconChevron size={13} />
-              </button>
               <span className="th-tree-icon">
                 <IconFolder size={14} />
               </span>
               {renamingWs ? (
-                <RenameInput initial={ws.name} onCommit={(v) => commitRename(renamingWs, v)} />
+                <>
+                  <button
+                    type="button"
+                    className={`th-tree-chevron${isOpen ? " th-tree-chevron--open" : ""}`}
+                    aria-label={isOpen ? t("sidebar.collapse") : t("sidebar.expand")}
+                    aria-expanded={isOpen}
+                    onClick={() => onToggle(ws.id)}
+                  >
+                    <IconChevron size={13} />
+                  </button>
+                  <RenameInput initial={ws.name} onCommit={(v) => commitRename(renamingWs, v)} />
+                </>
               ) : (
                 <button
                   type="button"
-                  className="th-tree-label th-tree-activation"
+                  className="th-tree-label th-tree-chevron th-tree-activation th-tree-workspace-activation"
                   style={{ textAlign: "start" }}
                   title={ws.path}
                   aria-label={ws.name}
+                  aria-expanded={isOpen}
                   onClick={() => onToggle(ws.id)}
                 >
-                  <span className="th-tree-label-text">{ws.name}</span>
+                  <span className="th-tree-label-text" aria-hidden="true">
+                    <span className={`th-tree-label-head${Array.from(nameHead).length > 8 ? " th-tree-label-head--long" : ""}`}>{nameHead}</span>
+                    <span className="th-tree-label-tail">{nameTail}</span>
+                  </span>
+                  <span className={`th-tree-chevron${isOpen ? " th-tree-chevron--open" : ""}`} aria-hidden="true">
+                    <IconChevron size={13} />
+                  </span>
                 </button>
               )}
-              <span className="th-tree-count">{mergedSessionIds.size}</span>
-              {workspaceRunning > 0 || workspaceMainRunning ? (
-                <RunningChip
-                  className="th-tree-running th-tree-running--workspace"
-                  count={workspaceRunning}
-                  countLabelKey="sidebar.ws.runningAgents"
-                  mainRunning={workspaceMainRunning}
-                />
-              ) : null}
+              <span
+                className={`th-tree-count${workspaceRunning > 0 || workspaceMainRunning ? " th-tree-count--running" : ""}`}
+              >
+                {mergedSessionIds.size}
+              </span>
               {touchActions ? (
                 <span className="th-tree-actions th-tree-actions--overflow">
                   <button
@@ -392,6 +399,19 @@ export function SessionTree({
                   </button>
                 </span>
               )}
+              {/* The running chip owns the row's trailing edge on every
+                  pointer and hover state; the row actions (inline icons or the
+                  coarse kebab) sit immediately left of it, so revealing them
+                  never pushes the badge off the shared right-hand column
+                  (Q5 badge alignment). */}
+              {workspaceRunning > 0 || workspaceMainRunning ? (
+                <RunningChip
+                  className="th-tree-running th-tree-running--workspace"
+                  count={workspaceRunning}
+                  countLabelKey="sidebar.ws.runningAgents"
+                  mainRunning={workspaceMainRunning}
+                />
+              ) : null}
             </div>
 
             <fieldset className={`th-tree-children${isOpen ? "" : " th-tree-children--closed"}`}>
@@ -491,14 +511,6 @@ export function SessionTree({
                         </button>
                       </span>
                     )}
-                    {(running > 0 || mainRunning) && (
-                      <RunningChip
-                        className="th-tree-running"
-                        count={running}
-                        countLabelKey="sidebar.tm.runningAgents"
-                        mainRunning={mainRunning}
-                      />
-                    )}
                     {tm ? (
                       <span className="th-tree-actions">
                         <button
@@ -519,6 +531,16 @@ export function SessionTree({
                         </button>
                       </span>
                     ) : null}
+                    {/* Same trailing-edge rule as the workspace row: actions
+                        left of the running chip. */}
+                    {(running > 0 || mainRunning) && (
+                      <RunningChip
+                        className="th-tree-running"
+                        count={running}
+                        countLabelKey="sidebar.tm.runningAgents"
+                        mainRunning={mainRunning}
+                      />
+                    )}
                   </div>
                 );
               })}

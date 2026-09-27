@@ -6,7 +6,7 @@ import { I18nContext } from "../../i18n";
 import type { ActivityState, ActivityTask } from "./activityTypes";
 import { i18n, requireElement } from "./chatPaneTestHarness";
 import { ActivityShelf } from "./ActivityShelf";
-import { openShelf as ensureShelfOpen } from "./ActivityShelf.support";
+import { makeDag, openShelf as ensureShelfOpen } from "./ActivityShelf.support";
 
 const PANEL_MIN = 120;
 /** 60vh against the jsdom viewport — the same ceiling as the sized-panel CSS. */
@@ -398,6 +398,34 @@ describe("ActivityShelf resize", () => {
       // The activity shelf no longer mounts a summary band; its measured
       // fixed bands are the tab strip and, while open, the grip.
     }
+
+    it("fits a dense phone DAG without enlarging the desktop panel", () => {
+      const width = vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element): number {
+        return this.classList.contains("th-activity-shelf") ? 390 : 0;
+      });
+      const viewport = vi.spyOn(window, "innerHeight", "get").mockReturnValue(844);
+      try {
+        const fixture = mountInColumn();
+        renderShelfWith({ ...activityState(), dags: new Map([["dag", makeDag()]]) });
+        act(() => {
+          requireElement(container.querySelector<HTMLButtonElement>('[data-activity-tab="dag"]'), "DAG tab").click();
+        });
+        fixtureRects(fixture);
+        mockRect(fixture.column, 844);
+        HeadroomResizeObserver.instances.at(-1)?.fireAt(fixture.column, 844);
+        expect(panelOf().style.maxHeight).toBe("480px");
+        expect(panelOf().classList.contains("th-activity-panel--dag")).toBe(true);
+
+        width.mockImplementation(function (this: Element): number {
+          return this.classList.contains("th-activity-shelf") ? 760 : 0;
+        });
+        renderShelfWith({ ...activityState(), dags: new Map([["dag", makeDag()]]) });
+        expect(panelOf().style.maxHeight).toBe("320px");
+      } finally {
+        width.mockRestore();
+        viewport.mockRestore();
+      }
+    });
 
     it("clamps the expanded panel to the column's real available space and stops the shelf yielding", () => {
       const fixture = mountInColumn();

@@ -14,29 +14,28 @@ function measurement({ actual, expected, token, backdropFilter, backdropSupporte
   };
 }
 
-test('open model overlay matches the resolved glass token and an active backdrop filter', () => {
-  // Custom properties serialize the token alpha as ".72"; computed style keeps "0.72".
+test('desktop model overlay resolves the opaque token without requiring backdrop blur', () => {
   expect(() => assertModelOverlayFollowsToken(measurement({
-    token: '--th-glass', expected: 'rgba(38, 39, 44, .72)', actual: glass,
-    backdropFilter: filter, backdropSupported: true, sheet: false,
+    token: '--th-surface-overlay', expected: overlay, actual: overlay,
+    backdropFilter: 'none', backdropSupported: true, sheet: false,
   }))).not.toThrow();
 });
 
-test('a non-token colour still fails when the floating filter is present', () => {
+test('a see-through glass popover fails even with matching glass token and blur', () => {
   expect(() => assertModelOverlayFollowsToken(measurement({
-    token: '--th-glass', expected: glass, actual: 'rgb(9, 9, 9)',
+    token: '--th-glass', expected: 'rgba(38, 39, 44, .72)', actual: glass,
     backdropFilter: filter, backdropSupported: true, sheet: false,
   }))).toThrow(/model overlay follows semantic token/);
 });
 
-test('supported floating layer with no backdrop filter fails even when the glass colour matches', () => {
+test('a translucent popover fails even when measured against the opaque token name', () => {
   expect(() => assertModelOverlayFollowsToken(measurement({
-    token: '--th-glass', expected: glass, actual: glass,
+    token: '--th-surface-overlay', expected: glass, actual: glass,
     backdropFilter: 'none', backdropSupported: true, sheet: false,
   }))).toThrow(/model overlay follows semantic token/);
 });
 
-test('solid overlay fallback rejects a non-token colour and accepts the overlay token without a filter', () => {
+test('the opaque overlay rejects an arbitrary colour at every width', () => {
   expect(() => assertModelOverlayFollowsToken(measurement({
     token: '--th-surface-overlay', expected: overlay, actual: overlay,
     backdropFilter: 'none', backdropSupported: false, sheet: false,
@@ -44,6 +43,10 @@ test('solid overlay fallback rejects a non-token colour and accepts the overlay 
   expect(() => assertModelOverlayFollowsToken(measurement({
     token: '--th-surface-overlay', expected: overlay, actual: glass,
     backdropFilter: 'none', backdropSupported: false, sheet: false,
+  }))).toThrow(/model overlay follows semantic token/);
+  expect(() => assertModelOverlayFollowsToken(measurement({
+    token: '--th-surface-overlay', expected: overlay, actual: 'rgb(9, 9, 9)',
+    backdropFilter: filter, backdropSupported: true, sheet: false,
   }))).toThrow(/model overlay follows semantic token/);
 });
 
@@ -60,8 +63,8 @@ test('sheet placement stays on the solid overlay token', () => {
 
 test('other open surfaces must still match their semantic tokens', () => {
   expect(() => assertModelOverlayFollowsToken(measurement({
-    token: '--th-glass', expected: glass, actual: glass,
-    backdropFilter: filter, backdropSupported: true, sheet: false,
+    token: '--th-surface-overlay', expected: overlay, actual: overlay,
+    backdropFilter: 'none', backdropSupported: true, sheet: false,
     siblingActual: 'rgb(9, 9, 9)',
   }))).toThrow(/model overlay follows semantic token/);
 });

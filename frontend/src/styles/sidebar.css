@@ -69,16 +69,15 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
   }
 }
 
-/* Toolbar: brand leading, icon actions trailing. The brand starts on the
-   same 16px column as the tree's leading glyphs (body inset + row inset);
-   the actions keep the footer's 12px trailing inset. */
+/* Toolbar: brand on the shared heading/card/workspace text column, icon
+   actions trailing. The actions keep the footer's 12px trailing inset. */
 .th-sidebar-nav {
   flex: none;
   display: flex;
   align-items: center;
   gap: var(--th-space-2);
   height: var(--th-header-h);
-  padding: 0 var(--th-space-3) 0 var(--th-space-4);
+  padding: 0 var(--th-space-3) 0 var(--th-space-6);
 }
 
 .th-sidebar-logo {
@@ -119,7 +118,7 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: var(--th-space-2);
+  padding: var(--th-space-2) var(--th-space-4);
 }
 
 .th-sidebar-section-label {
@@ -128,7 +127,7 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
-  color: var(--th-muted);
+  color: var(--th-text-dim);
   white-space: nowrap;
 }
 
@@ -175,9 +174,20 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
    needed. The footer buttons previously sat on the inner column's bottom
    edge with zero reserve; the 8px bottom padding keeps the in-flow 44px
    buttons clear of the safe-area inset band the shell reserves below it.
-   The footer's 8px top padding already holds the buttons off the session
-   tree. Fine-pointer geometry is untouched. */
+   Fine-pointer geometry is untouched.
+   E33: the drawer's fixed 44px chevron and kebab squeeze the workspace label
+   column until the trailing number ellipsizes away. Coarse sections use a
+   12px inset so the absolute folder glyph retains an 8px edge gutter while
+   nav, headings, live cards and tree text share one column (Q5). */
 @media (pointer: coarse) {
+  .th-sidebar-nav {
+    padding-left: var(--th-space-5);
+  }
+
+  .th-sidebar-body {
+    padding: var(--th-space-2) var(--th-space-3);
+  }
+
   .th-sidebar-footer {
     padding-bottom: var(--th-space-2);
   }

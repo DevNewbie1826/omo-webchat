@@ -1,4 +1,5 @@
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type TransitionEvent } from "react";
+import { flushSync } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -340,7 +341,7 @@ export function ChatTranscript({
   const clearDeferredAdjustment = useCallback(() => {
     deferredAdjustmentRef.current = 0;
   }, []);
-  const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom, isFollowing, isReaderInputActive, noteProgrammaticWrite, isRecentProgrammaticWrite } = useChatScroll(restoreVersion, focused, clearDeferredAdjustment, historyWarming);
+  const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom, holdDisclosurePosition, isFollowing, isReaderInputActive, noteProgrammaticWrite, isRecentProgrammaticWrite } = useChatScroll(restoreVersion, focused, clearDeferredAdjustment, historyWarming);
   // Lane width feeding the row-height estimator. Tracked via ResizeObserver
   // so metrics recompute only on an actual width change, never per render.
   const [laneWidth, setLaneWidth] = useState(0);
@@ -789,6 +790,53 @@ export function ChatTranscript({
     useScrollendEvent: true,
   });
 
+  // Disclosure state commits before ResizeObserver's next delivery. Without
+  // a synchronous measurement the old expanded height remains in the
+  // virtualizer for a frame, leaving a blank band where later rows belong.
+  // Capture the clicked row before React changes its body, then measure the
+  // committed DOM in a layout effect so the corrected window paints at once.
+  // measureElement without a ResizeObserverEntry returns the *cached* size,
+  // so resizeItem must receive the row's actual post-commit offsetHeight.
+  const measureDisclosureRow = (row: HTMLElement): void => {
+    virtualizer.resizeItem(Number(row.dataset["index"]), row.offsetHeight);
+  };
+  const disclosureRowRef = useRef<{ row: HTMLElement; top: number } | null>(null);
+  const [disclosureVersion, setDisclosureVersion] = useState(0);
+  const onDisclosureClickCapture = (event: MouseEvent<HTMLDivElement>): void => {
+    if (!(event.target instanceof Element) ||
+      !event.target.closest(".th-tool-head, .th-chat-thinking-head")) return;
+    holdDisclosurePosition();
+    const row = event.target.closest<HTMLElement>(".th-chat-row[data-index]");
+    if (row === null) return;
+    disclosureRowRef.current = { row, top: row.getBoundingClientRect().top };
+  };
+  const onDisclosureClick = (): void => {
+    if (disclosureRowRef.current === null) return;
+    // React batches a real pointer click beyond Playwright's click return.
+    // Flush after the child toggles, so the committed row and virtual window
+    // both land before the browser can paint the old-sized empty band.
+    flushSync(() => setDisclosureVersion((version) => version + 1));
+  };
+  useLayoutEffect(() => {
+    const anchor = disclosureRowRef.current;
+    if (anchor === null || !anchor.row.isConnected) return;
+    measureDisclosureRow(anchor.row);
+    const scroll = scrollRef.current;
+    if (scroll !== null) {
+      const previous = scroll.scrollTop;
+      scroll.scrollTop += anchor.row.getBoundingClientRect().top - anchor.top;
+      if (scroll.scrollTop !== previous) noteProgrammaticWrite("measurement");
+    }
+    disclosureRowRef.current = null;
+  }, [disclosureVersion, virtualizer, scrollRef, noteProgrammaticWrite]);
+  const onDisclosureTransitionEnd = (event: TransitionEvent<HTMLDivElement>): void => {
+    if (event.propertyName !== "grid-template-rows" ||
+      !(event.target instanceof Element) ||
+      !event.target.matches(".th-chat-thinking-body")) return;
+    const row = event.target.closest<HTMLElement>(".th-chat-row[data-index]");
+    if (row !== null) measureDisclosureRow(row);
+  };
+
   // virtual-core 3.17.6 corrects the scroll offset whenever a measured row
   // above the fold turns out taller or shorter than its estimate, so the
   // content the reader is looking at stays put. While a warm chunk settles,
@@ -933,7 +981,9 @@ export function ChatTranscript({
 
   return (
     <div className="th-chat-scrollport">
-      <div className="th-chat-body" ref={scrollRef} onScroll={onTranscriptScroll}>
+      <div className="th-chat-body" ref={scrollRef} onScroll={onTranscriptScroll}
+        onClickCapture={onDisclosureClickCapture} onClick={onDisclosureClick}
+        onTransitionEndCapture={onDisclosureTransitionEnd}>
         <div className="th-chat-content" ref={contentRef}>
           {!historyLoaded && rows.length === 0 && !streaming && Object.keys(toolCalls).length === 0 && !error && !doneReason && (
             <div className="th-chat-loading" role="status">{t("chat.loading")}</div>

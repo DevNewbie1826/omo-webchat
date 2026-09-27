@@ -403,8 +403,9 @@ export function probeHierarchy(arg) {
   return { scenario: 'S3', pass: failures.length === 0, measurements, failures };
 }
 
-/** S4 - tonal separation: bordered-element census inside .th-chat-pane,
- * composer radius, user bubble facts. arg: { baselineBordered?: number } */
+/** S4 - tonal separation with one neutral hairline per tool record. The
+ * previous 50%-of-baseline ceiling still applies to non-tool borders;
+ * card hairlines have their own one-per-record allowance. */
 export function probeSeparation(arg) {
   const pane = document.querySelector('.th-chat-pane');
   if (!pane) return { scenario: 'S4', pass: false, measurements: {}, failures: ['.th-chat-pane not found'] };
@@ -421,9 +422,11 @@ export function probeSeparation(arg) {
     return {
       index,
       parentIndex: indexOf.get(element.parentElement) ?? -1,
-      excluded: /^(input|textarea|select)$/i.test(element.tagName) || element.matches(':focus-visible'),
+      excluded: /^(input|textarea|select)$/i.test(element.tagName) || element.matches(':focus-visible')
+        || !!element.closest('.th-goal-shelf, .th-activity-shelf'),
       visible: isVisibleElement(element),
       label: describeElement(element),
+      toolCard: element.matches('.th-tool[data-tool-call-id]'),
       sides,
     };
   });
@@ -435,9 +438,20 @@ export function probeSeparation(arg) {
   const remap = new Map(counted.map((fact, position) => [fact.index, position]));
   const countedFacts = counted.map(fact => ({ ...fact, parentIndex: remap.get(fact.parentIndex) ?? -1 }));
   const census = classifyBorderFacts(countedFacts);
+  const toolCards = countedFacts.filter(fact => fact.toolCard);
+  const toolCardBorder = tokenColor('--th-tool-record-border');
+  const cardFacts = toolCards.map(fact => {
+    const painted = fact.sides.filter(side => side.width > 0 && side.color?.a > 0.02);
+    return { label: fact.label, paintedSides: painted.length,
+      neutralHairline: painted.length === 4 && painted.every(side =>
+        Math.abs(side.width - 1) <= 0.1 && colorEquals(side.color, toolCardBorder)) };
+  });
+  const nonToolBorderedCount = census.borderedCount - countedFacts.filter((fact, index) =>
+    fact.toolCard && census.bordered.includes(index)).length;
   const measurements = {
     elementsInPane: elements.length, visibleElements: counted.length,
     borderedCount: census.borderedCount, nestedBorderedCount: census.nestedBorderedCount,
+    nonToolBorderedCount, toolCardBorder: hexOf(toolCardBorder), toolCards: cardFacts,
     nestedBorderedSamples: census.nested.slice(0, 12).map(position => counted[position].label),
     composerRadius: null, userBubble: null, baselineComparison: null,
   };
@@ -460,26 +474,96 @@ export function probeSeparation(arg) {
     if (minRadius < 16) failures.push(`user bubble min corner radius ${minRadius}px < 16px`);
   } else failures.push('user bubble .th-chat-msg--user not found');
   if (census.nestedBorderedCount > 0) failures.push(`${census.nestedBorderedCount} bordered elements nested inside another bordered element`);
+  if (cardFacts.length === 0) failures.push('no tool record found for the neutral hairline budget');
+  for (const card of cardFacts) if (!card.neutralHairline) failures.push(`${card.label} needs one neutral 1px --th-tool-record-border hairline on all sides`);
   if (typeof arg.baselineBordered === 'number') {
     const ceiling = arg.baselineBordered * 0.5;
-    measurements.baselineComparison = { baseline: arg.baselineBordered, ceiling, verdict: census.borderedCount <= ceiling };
-    if (census.borderedCount > ceiling) failures.push(`bordered count ${census.borderedCount} > 50% of baseline ${arg.baselineBordered}`);
+    measurements.baselineComparison = { baseline: arg.baselineBordered, ceiling,
+      toolCardAllowance: cardFacts.length, verdict: nonToolBorderedCount <= ceiling };
+    if (nonToolBorderedCount > ceiling) failures.push(`non-tool bordered count ${nonToolBorderedCount} > 50% of baseline ${arg.baselineBordered} (tool cards have one neutral hairline each)`);
   } else measurements.baselineComparison = 'no baseline captured (run with --baseline first)';
   return { scenario: 'S4', pass: failures.length === 0, measurements, failures };
 }
 
-/** S5 - state must not be encoded by coloured border/stroke; no uppercase. */
-export function probeStateColors() {
+/** S5 - neutral borders/strokes AND matching state ink on a light tint. */
+export function probeStateColors(arg = {}) {
   const tokens = {
     success: tokenColor('--th-success'), warning: tokenColor('--th-warning'),
     error: tokenColor('--th-error'), accent: tokenColor('--th-accent'),
   };
+  const statusInk = { ...tokens, accent: tokenColor('--th-accent-ink') };
   const violations = [], uppercase = [];
   const uppercaseFacts = [];
-  for (const element of document.querySelectorAll('*')) {
-    if (element.matches(':focus-visible')) continue;
-    if (element.closest('.th-alert')) continue;
-    if (element.classList.contains('th-input') && element.matches(':focus')) continue;
+  const stateTargets = {
+    success: '.th-tool-status--ok, .th-activity-chip--ok, .th-toast--success',
+    error: '.th-tool-status--error, .th-activity-chip--error',
+    accent: '.th-tool-status--running, .th-activity-chip--running, .th-tree-running--count, .th-overview-card-running',
+    warning: '.th-activity-chip--warning, .th-queue-engine',
+  };
+  const tintNames = { success: '--th-success-bg', error: '--th-error-bg',
+    accent: '--th-accent-bg', warning: '--th-warning-bg' };
+  const scratch = document.createElement('div');
+  document.body.appendChild(scratch);
+  const tints = {};
+  for (const [state, name] of Object.entries(tintNames)) {
+    scratch.style.backgroundColor = `var(${name})`;
+    const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    const resolved = parseColor(getComputedStyle(scratch).backgroundColor);
+    const literal = parseColor(raw);
+    tints[state] = literal && !colorEquals(literal, resolved) ? literal : resolved;
+  }
+  scratch.remove();
+  const statusSamples = [], statusFailures = [];
+  for (const [state, selector] of Object.entries(stateTargets)) {
+    for (const element of document.querySelectorAll(selector)) {
+      if (!isVisibleElement(element)) continue;
+      if (arg.scope === 'chat' && !element.closest('.th-chat-pane')) continue;
+      if (arg.scope === 'shell' && element.closest('.th-chat-pane, .th-activity-shelf, .th-goal-shelf')) continue;
+      const style = getComputedStyle(element);
+      const ink = parseColor(style.color);
+      const fill = parseColor(style.backgroundColor);
+      const inkOk = colorEquals(ink, statusInk[state]);
+      const tintOk = !!tints[state] && tints[state].a > 0.02 && colorEquals(fill, tints[state]);
+      const backdrop = tokenColor('--th-surface') ?? tokenColor('--th-bg');
+      const contrast = ink && fill && backdrop ? contrastRatio(ink, compositeOver(fill, backdrop)) : null;
+      const sample = { state, where: describeElement(element), ink: hexOf(ink), tint: hexOf(fill),
+        tintAlpha: fill?.a ?? null, inkOk, tintOk, contrast };
+      statusSamples.push(sample);
+      if (!inkOk || !tintOk || contrast === null || contrast < 4.5 - 0.01) {
+        statusFailures.push(`${sample.where} ${state} needs matching ink and tint at 4.5:1 (ink=${sample.ink}, fill=${sample.tint}, contrast=${contrast})`);
+      }
+    }
+  }
+  const glyphTargets = {
+    success: '.th-tool-glyph--ok, .th-activity-glyph--ok, .th-activity-gstatus--ok',
+    error: '.th-tool-glyph--error, .th-activity-glyph--error, .th-activity-gstatus--error',
+    accent: '.th-tool-glyph--running, .th-activity-glyph--running, .th-activity-gstatus--running',
+  };
+  const glyphSamples = [];
+  for (const [state, selector] of Object.entries(glyphTargets)) {
+    for (const element of document.querySelectorAll(selector)) {
+      if (!isVisibleElement(element)) continue;
+      if (arg.scope === 'chat' && (!element.closest('.th-chat-pane')
+        || element.closest('.th-activity-shelf, .th-goal-shelf'))) continue;
+      if (arg.scope === 'shell' && element.closest('.th-chat-pane, .th-activity-shelf, .th-goal-shelf')) continue;
+      const shapes = [...element.querySelectorAll('path, circle, rect, line, polyline, polygon, ellipse')];
+      const painted = (shapes.length ? shapes : [element]).flatMap(part => {
+        const style = getComputedStyle(part);
+        if (part.namespaceURI !== 'http://www.w3.org/2000/svg') {
+          return [style.color, style.backgroundColor].map(parseColor).filter(colour => colour && colour.a > 0.02);
+        }
+        return [
+          (parseFloat(style.strokeWidth) || 0) > 0 && style.stroke !== 'none' ? style.stroke : 'none',
+          style.fill !== 'none' ? style.fill : 'none',
+        ].map(parseColor).filter(colour => colour && colour.a > 0.02);
+      });
+      const match = painted.some(colour => colorEquals(colour, tokens[state]));
+      const sample = { state, where: describeElement(element), painted: painted.map(hexOf), match };
+      glyphSamples.push(sample);
+      if (!match) statusFailures.push(`${sample.where} ${state} glyph is not painted with the matching status hue`);
+    }
+  }
+  if (!arg.statusOnly) for (const element of document.querySelectorAll('*')) {
     const style = getComputedStyle(element);
     if (style.display === 'none' || style.visibility === 'hidden') continue;
     // Only painted borders encode state: a zero-width or style:none border
@@ -497,7 +581,7 @@ export function probeStateColors() {
     }
     if (element.namespaceURI === 'http://www.w3.org/2000/svg'
       && /^(rect|path|line|polyline|polygon|circle|ellipse)$/.test(element.localName)
-      && !element.closest('.th-activity-gstatus, .th-tool-glyph--ok, .th-activity-gedge-comet, .th-activity-gedge-glow, .th-activity-gnode-halo')
+      && !element.closest('.th-activity-gstatus, .th-tool-glyph--ok, .th-tool-glyph--error, .th-tool-glyph--running, .th-activity-glyph--ok, .th-activity-glyph--error, .th-activity-glyph--running, .th-activity-gedge-comet, .th-activity-gedge-glow, .th-activity-gnode-halo')
       && style.stroke && style.stroke !== 'none'
       && (parseFloat(style.strokeWidth) || 0) > 0
       && (style.strokeOpacity === '' || style.strokeOpacity === undefined
@@ -505,9 +589,16 @@ export function probeStateColors() {
     const where = describeElement(element);
     for (const raw of colours) {
       const colour = parseColor(raw);
-      if (!colour) continue;
+      if (!colour || colour.a <= 0.02) continue;
+      const dagCard = element.matches('.th-activity-gnode-card')
+        ? element.closest('.th-activity-gnode') : null;
       for (const [name, token] of Object.entries(tokens)) {
-        if (token && colorEquals(colour, token) && violations.length < 400) {
+        const sameHue = token && ['r', 'g', 'b'].every(channel =>
+          Math.abs(colour[channel] - token[channel]) <= 1.5);
+        if (!sameHue) continue;
+        if (dagCard && ((name === 'success' && dagCard.matches('.th-activity-gnode--ok, .th-activity-gnode--completed'))
+          || (name === 'error' && dagCard.matches('.th-activity-gnode--error, .th-activity-gnode--failed, .th-activity-gnode--cancelled, .th-activity-gnode--canceled')))) continue;
+        if (violations.length < 400) {
           violations.push({ where, token: name, colour: hexOf(colour), alpha: Number(colour.a.toFixed(3)) });
         }
       }
@@ -518,16 +609,24 @@ export function probeStateColors() {
     }
   }
   const uppercaseCensus = uppercaseOf(uppercaseFacts);
+  const tintTokens = {};
+  for (const state of Object.keys(tints)) tintTokens[state] = hexOf(tints[state]);
   const measurements = {
     tokens: { success: hexOf(tokens.success), warning: hexOf(tokens.warning), error: hexOf(tokens.error), accent: hexOf(tokens.accent) },
+    accentInk: hexOf(statusInk.accent),
     stateColorViolationCount: violations.length,
     stateColorViolationSamples: violations.slice(0, 25),
     uppercaseCount: uppercaseCensus.uppercaseCount,
     uppercaseSamples: uppercaseCensus.uppercase.slice(0, 12).map(index => uppercaseFacts[index]),
+    statusSamples, glyphSamples, statusFailures, tintTokens,
   };
   const failures = [];
   if (violations.length > 0) failures.push(`${violations.length} elements carry a state/accent coloured border or stroke (first: ${violations[0].where} ${violations[0].token})`);
   if (uppercaseCensus.uppercaseCount > 0) failures.push(`${uppercaseCensus.uppercaseCount} visible elements use text-transform: uppercase (first: ${uppercaseFacts[uppercaseCensus.uppercase[0]].where})`);
+  failures.push(...statusFailures);
+  for (const state of arg.requireStates ?? []) {
+    if (!statusSamples.some(sample => sample.state === state)) failures.push(`no ${state} status ink/tint target mounted`);
+  }
   return { scenario: 'S5', pass: failures.length === 0, measurements, failures };
 }
 
@@ -566,12 +665,15 @@ export function probeHeader(arg) {
  * lives inside the function body (same D6 class as OLD_PALETTE_HEXES). */
 export function runningGlyphSelectors() {
   return ['.th-tool-glyph--running', '.th-tree-running-dot', '.th-overview-card-running-dot',
+    '.th-tree-running', '.th-overview-card-running',
     '.th-activity-gnode--running', '.th-activity-gstatus--running'];
 }
 
-/** S8 part 1 - running glyphs must be accent-coloured. */
+/** S8 part 1 - running glyphs and sidebar count chips use accent ink;
+ * the sidebar dots must complete a visible cycle within 800ms. */
 export function probeRunningGlyphs() {
   const accent = tokenColor('--th-accent');
+  const accentInk = tokenColor('--th-accent-ink');
   const glyphs = [];
   for (const selector of runningGlyphSelectors()) {
     for (const element of document.querySelectorAll(selector)) {
@@ -584,14 +686,30 @@ export function probeRunningGlyphs() {
       };
       const matchesAccent = [
         parseColor(style.stroke), parseColor(style.borderTopColor), parseColor(style.backgroundColor), parseColor(style.fill),
-      ].some(colour => colour && colorEquals(colour, accent));
-      glyphs.push({ selector, where: describeElement(element), colourFacts, matchesAccent });
+      ].some(colour => colour && colorEquals(colour, accent))
+        || (element.matches('.th-tree-running, .th-overview-card-running')
+          && colorEquals(parseColor(style.color), accentInk));
+      const dot = element.matches('.th-tree-running, .th-overview-card-running')
+        ? element.querySelector('.th-tree-running-dot, .th-overview-card-running-dot') : null;
+      const dotStyle = dot ? getComputedStyle(dot) : null;
+      const animationMs = dotStyle ? maxDurationMs(dotStyle.animationDuration)
+        * (dotStyle.animationDirection.includes('alternate') ? 2 : 1) : null;
+      const animationCount = dot ? dot.getAnimations().filter(animation => animation.playState === 'running').length : null;
+      glyphs.push({ selector, where: describeElement(element), colourFacts, matchesAccent,
+        countInkMatches: dot ? colorEquals(parseColor(style.color), accentInk) : null,
+        dotAnimationMs: animationMs, dotRunningAnimations: animationCount });
     }
   }
-  const measurements = { accent: hexOf(accent), glyphsFound: glyphs.length, glyphs };
+  const measurements = { accent: hexOf(accent), accentInk: hexOf(accentInk), glyphsFound: glyphs.length, glyphs };
   const failures = [];
   if (glyphs.length === 0) failures.push('no running glyphs found (fixture must expose a running tool/tree/DAG)');
   for (const glyph of glyphs) if (!glyph.matchesAccent) failures.push(`running glyph ${glyph.selector} at ${glyph.where} is not accent-coloured: ${JSON.stringify(glyph.colourFacts)}`);
+  for (const glyph of glyphs.filter(item => item.countInkMatches !== null)) {
+    if (!glyph.countInkMatches) failures.push(`running count ${glyph.selector} is not --th-accent-ink-coloured`);
+    if (glyph.dotRunningAnimations === 0 || !glyph.dotAnimationMs || glyph.dotAnimationMs > 800) {
+      failures.push(`sidebar ${glyph.selector} indicator period ${glyph.dotAnimationMs ?? 'none'}ms exceeds 800ms or does not animate`);
+    }
+  }
   return { scenario: 'S8', pass: failures.length === 0, measurements, failures };
 }
 
@@ -605,8 +723,13 @@ export function probeRunningReducedMotion() {
     for (const element of document.querySelectorAll(selector)) {
       if (!isVisibleElement(element)) continue;
       const animations = element.getAnimations({ subtree: true });
-      glyphStates.push({ selector, where: describeElement(element), animationCount: animations.length });
+      const sidebarChip = element.matches('.th-tree-running, .th-overview-card-running');
+      const accessibleName = sidebarChip ? element.getAttribute('aria-label') || element.getAttribute('title') || '' : null;
+      glyphStates.push({ selector, where: describeElement(element), animationCount: animations.length, accessibleName });
       if (animations.length > 0) failures.push(`running glyph ${selector} still animates under reduced motion (${animations.length})`);
+      if (sidebarChip && !/(running|responding|executing|streaming|live|진행|실행|응답)/i.test(accessibleName)) {
+        failures.push(`sidebar running chip ${selector} lacks an accessible running name under reduced motion`);
+      }
     }
   }
   const labelPattern = /(running|responding|executing|streaming|live|진행|실행|응답)/i;
@@ -765,21 +888,40 @@ export function probeContrastSurface(arg) {
   const canvas = tokenColor('--th-bg');
   let textNodes = 0, failedNodes = 0, gradientSkipped = 0, unresolved = 0;
   const nodeFailures = [];
-  // The walk ascends from the text towards the root and every ancestor is
-  // painted UNDER the layers already collected: the DESCENDANT is painted
-  // over its ancestor (review R1). Painting the ancestor over the stack let
-  // an opaque ancestor erase a translucent panel, reporting black under
-  // white glass and passing contrast that is really ~2:1.
-  const effectiveBackground = element => {
-    let layers = null;
-    for (let node = element; node && node instanceof Element; node = node.parentElement) {
-      const style = getComputedStyle(node);
+  // Paint the stack from the canvas towards the text. Ancestors alone miss
+  // earlier siblings such as a pointer-events:none segmented thumb painted
+  // beneath a transparent tab label. Sample the text's own rect, then include
+  // only preceding sibling surfaces that actually cover that point.
+  const effectiveBackground = (element, textNode) => {
+    const range = document.createRange();
+    range.selectNodeContents(textNode);
+    const rects = typeof range.getClientRects === 'function' ? range.getClientRects() : [];
+    const rect = [...rects].find(box => box.width > 0 && box.height > 0);
+    const point = rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null;
+    const path = [];
+    for (let current = element; current && current instanceof Element; current = current.parentElement) path.unshift(current);
+    let layers = canvas ?? { r: 255, g: 255, b: 255, a: 1 };
+    const paint = target => {
+      const style = getComputedStyle(target);
       if (style.backgroundImage && style.backgroundImage !== 'none') gradientSkipped += 1;
       const colour = parseColor(style.backgroundColor);
-      if (colour && colour.a > 0) layers = layers ? compositeOver(layers, colour) : colour;
-      if (layers && layers.a >= 0.999) break;
+      if (colour && colour.a > 0) layers = compositeOver(colour, layers);
+    };
+    const paintSibling = sibling => {
+      if (!isVisibleElement(sibling)) return;
+      const box = sibling.getBoundingClientRect();
+      if (!point || point.x < box.left || point.x > box.right || point.y < box.top || point.y > box.bottom) return;
+      paint(sibling);
+      for (const child of sibling.children) paintSibling(child);
+    };
+    for (let index = 0; index < path.length; index += 1) {
+      const current = path[index];
+      paint(current);
+      if (!point || index + 1 === path.length) continue;
+      for (let sibling = current.firstElementChild; sibling && sibling !== path[index + 1]; sibling = sibling.nextElementSibling) {
+        paintSibling(sibling);
+      }
     }
-    if (!layers || layers.a < 0.999) layers = compositeOver(layers ?? { r: 0, g: 0, b: 0, a: 0 }, canvas ?? { r: 255, g: 255, b: 255, a: 1 });
     return layers;
   };
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -791,16 +933,20 @@ export function probeContrastSurface(arg) {
     const style = getComputedStyle(parent);
     const colour = parseColor(style.color);
     if (!colour) { unresolved += 1; continue; }
-    const background = effectiveBackground(parent);
+    const background = effectiveBackground(parent, node);
     const ratio = contrastRatio(colour, background);
     const isFaint = faint && colorEquals(colour, faint);
-    const threshold = isFaint ? arg.faintMin : arg.bodyMin;
+    // Tool status glyphs render as text characters but are aria-hidden icons:
+    // judge their painted symbol at the non-text 3:1 floor. Their adjacent
+    // visible status words retain the full 4.5:1 body-text floor (S5/Q1).
+    const isGlyph = !!parent.closest('.th-chat-record-glyph[aria-hidden="true"]');
+    const threshold = isGlyph ? arg.faintMin : isFaint ? arg.faintMin : arg.bodyMin;
     if (ratio === null) { unresolved += 1; continue; }
     if (ratio < threshold - 0.01) {
       failedNodes += 1;
       if (nodeFailures.length < 30) nodeFailures.push({
         where: describeElement(parent), text: node.textContent.trim().slice(0, 40),
-        colour: hexOf(colour), background: hexOf(background), ratio: Number(ratio.toFixed(2)), threshold, isFaint,
+        colour: hexOf(colour), background: hexOf(background), ratio: Number(ratio.toFixed(2)), threshold, isFaint, isGlyph,
       });
     }
   }
@@ -871,8 +1017,8 @@ export const SCENARIOS = Object.freeze({
     reason: 'not a browser-harness scenario: measured by npx vitest run src/styles/contrast.test.ts including its mutation check',
   },
   S3: { title: 'Text hierarchy luminance separation', stub: false },
-  S4: { title: 'Tonal separation vs stacked borders', stub: false },
-  S5: { title: 'No state encoded by coloured border/stroke', stub: false },
+  S4: { title: 'Neutral tool-card hairlines and tonal separation', stub: false },
+  S5: { title: 'Neutral borders with matching state ink and tints', stub: false },
   S6: { title: 'Pane header label discipline', stub: false },
   S7: {
     title: 'Transcript timeline + disclosure', stub: true, reason: 'defined in T2/T3/T4',
@@ -883,7 +1029,7 @@ export const SCENARIOS = Object.freeze({
     // 5 rapid toggles ending with aria-expanded consistent with visibility.
     detail: 'owner T2: rail element, keyboard disclosure, overflow fade mask, rapid-toggle consistency',
   },
-  S8: { title: 'Running indicator accent + reduced motion', stub: false },
+  S8: { title: 'Running accent, chip cadence + reduced motion', stub: false },
   S9: {
     title: 'Composer + palette + send states', stub: true, reason: 'defined in T2/T3/T4',
     // T2 implements: send button background == --th-accent-solid when enabled,
@@ -915,7 +1061,8 @@ export const SCENARIOS = Object.freeze({
   },
   S14: {
     title: 'DAG graph + list redesign', stub: true, reason: 'defined in T2/T3/T4',
-    // T4 implements: no state-coloured node strokes, glyph left of label,
+    // T4 implements: state-tinted fills, semantic completed/failed DAG card
+    // strokes with neutral pending/running cards, glyph left of label,
     // cubic bezier <path> edges, animated comet on running edges, running
     // node halo, run-header progress scaleX == completed/total +-0.01,
     // auto-scroll on first paint, timeline list view, stable-layout test.

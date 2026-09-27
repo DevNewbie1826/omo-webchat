@@ -32,12 +32,34 @@
   background: var(--th-accent-solid-hover);
 }
 
-.th-btn--ghost {
+/* Secondary action: a quiet tonal fill behind a neutral hairline, so
+   Cancel/Next/New folder/Choose files/Save read as buttons in both themes
+   (E19; DESIGN.md State encoding: visible tonal fill or neutral hairline,
+   including disabled states). Icon-only ghosts (.th-btn-icon) keep the
+   borderless chrome idiom and are excluded. */
+.th-btn--ghost:not(.th-btn-icon) {
+  background: var(--th-hover);
+  border: 1px solid var(--th-border-strong);
+  color: var(--th-text-dim);
+}
+
+.th-btn--ghost:not(.th-btn-icon):hover:not(:disabled) {
+  background: var(--th-active);
+  color: var(--th-text);
+}
+
+.th-btn--ghost:not(.th-btn-icon):disabled {
+  background: var(--th-disabled-bg);
+  border-color: var(--th-border-surface);
+  color: var(--th-disabled-fg);
+}
+
+.th-btn--ghost.th-btn-icon {
   color: var(--th-text-dim);
   background: transparent;
 }
 
-.th-btn--ghost:hover:not(:disabled) {
+.th-btn--ghost.th-btn-icon:hover:not(:disabled) {
   background: var(--th-hover);
   color: var(--th-text);
 }

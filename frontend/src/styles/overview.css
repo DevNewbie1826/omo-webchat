@@ -31,6 +31,9 @@
 .th-overview-card-open {
   display: flex;
   flex-direction: column;
+  /* Centre the rows when the activation grows past its content (the 44px
+     coarse touch target), instead of pinning them to the top edge. */
+  justify-content: center;
   gap: var(--th-space-1);
   width: 100%;
   padding: var(--th-space-2) var(--th-space-3);
@@ -84,9 +87,10 @@
   text-overflow: ellipsis;
 }
 
-/* Agent-alive pill: violet dot + count on the accent wash. The transparent
-   1px border keeps the micro line box + 2px height the sidebar head-row floor
-   is built on, so a dot-only pill (main session only) matches `● N`. */
+/* Agent-alive pill: running ink + the matching 12% tint, same state idiom
+   as the tree chips. The transparent 1px border keeps the micro line box +
+   2px height the sidebar head-row floor is built on, so a dot-only pill
+   (main session only) matches `● N`. */
 .th-overview-card-running {
   display: inline-flex;
   flex: none;
@@ -96,8 +100,8 @@
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
   font-variant-numeric: tabular-nums;
-  color: var(--th-text-dim);
-  background: var(--th-accent-soft);
+  color: var(--th-accent-ink);
+  background: var(--th-accent-bg);
   border: 1px solid transparent;
   border-radius: var(--th-radius-pill);
   padding: 0 var(--th-space-1);
@@ -105,21 +109,23 @@
   letter-spacing: var(--th-type-micro-tracking);
 }
 
+/* Dotted spinner on the shared --th-dur-run beat, the sidebar tree marker's
+   idiom; reduced motion keeps the static dashed disc plus the accessible
+   running name (global policy). */
 .th-overview-card-running-dot {
   flex: none;
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  background: var(--th-accent);
-  animation: th-overview-running-blink calc(var(--th-dur-slow) * 4) var(--th-ease-in-out) infinite alternate;
+  background-color: var(--th-accent);
+  -webkit-mask-image: repeating-conic-gradient(var(--th-accent) 0deg 60deg, transparent 60deg 90deg);
+  mask-image: repeating-conic-gradient(var(--th-accent) 0deg 60deg, transparent 60deg 90deg);
+  animation: th-overview-running-spin var(--th-dur-run) var(--th-ease-linear) infinite;
 }
 
-@keyframes th-overview-running-blink {
-  from {
-    opacity: 1;
-  }
+@keyframes th-overview-running-spin {
   to {
-    opacity: 0.35;
+    transform: rotate(1turn);
   }
 }
 

@@ -58,6 +58,8 @@
  */
 import {
   colorEquals,
+  compositeOver,
+  contrastRatio,
   parseColor,
 } from './visual-redesign-probes.mjs';
 import { buildScenarioRegistry } from './visual-redesign.mjs';
@@ -315,29 +317,111 @@ export function glyphOrderVerdict(nodeFacts) {
   return { pass: failures.length === 0, failures, measured: { judged: judged.length, wrongOrder: wrong.length } };
 }
 
-/** S14: every node has a card, whose stroke never equals a state colour. */
+/** S14/Q3: only completed and failed DAG cards have semantic strokes.
+ * Opacity may be subtle, but the painted RGB must be the matching token;
+ * pending and running cards retain the neutral hairline. */
 export function nodeStrokeViolations(nodeFacts, tokens) {
-  const wanted = Object.entries(tokens ?? {})
-    .map(([name, raw]) => ({ name, color: parseColor(raw) }))
-    .filter(entry => entry.color !== null);
   const violations = [];
   for (const fact of nodeFacts ?? []) {
     if (fact.cardFound === false) {
       violations.push({ id: fact.id, token: 'missing card', stroke: null });
       continue;
     }
+    const cls = `${fact.cls ?? ''} ${fact.state ?? ''}`;
+    const completed = /(?:^|\s)(?:th-activity-gnode--)?(?:ok|completed)(?:\s|$)/.test(cls);
+    const failed = /(?:^|\s)(?:th-activity-gnode--)?(?:error|failed|cancelled|canceled)(?:\s|$)/.test(cls);
+    const token = completed ? '--th-success' : failed ? '--th-error' : '--th-border-surface';
+    const expected = parseColor(tokens?.[token] ?? tokens?.[token.slice(5)]);
     const stroke = parseColor(fact.stroke);
-    if (!stroke || stroke.a < 0.02) continue;
-    for (const token of wanted) {
-      if (colorEquals(stroke, token.color) && violations.length < 60) {
-        violations.push({ id: fact.id, token: token.name, stroke: fact.stroke });
-      }
+    const opacity = Number(fact.strokeOpacity ?? 1);
+    const width = parseFloat(fact.strokeWidth ?? 1);
+    const painted = stroke && stroke.a * opacity > 0.02 && width >= 0.5;
+    const matchingHue = expected && stroke && ['r', 'g', 'b'].every(channel =>
+      Math.abs(stroke[channel] - expected[channel]) <= 1.5);
+    if ((!painted || !matchingHue) && violations.length < 60) {
+      violations.push({ id: fact.id, token, stroke: fact.stroke, opacity, width });
     }
   }
   const failures = violations.length > 0
-    ? [`${violations.length} node card strokes encode state by colour (first: ${violations[0].id} -> ${violations[0].token} ${violations[0].stroke})`]
+    ? [`${violations.length} DAG card strokes miss their state hue/neutral hairline (first: ${violations[0].id} -> ${violations[0].token} ${violations[0].stroke})`]
     : [];
   return { pass: failures.length === 0, failures, violations };
+}
+
+/** Q3: all three mixed-stage states must paint their card with the
+ * browser-resolved tint token, not the shared raised grey fill. */
+export function nodeTintVerdict(nodes, roles, tints) {
+  const failures = [];
+  for (const [state, ids] of Object.entries(roles ?? {})) {
+    const expected = parseColor(tints?.[state]);
+    if (!expected || expected.a < 0.02) failures.push(`${state} tint token is unresolved (${tints?.[state] ?? 'missing'})`);
+    if (!ids?.length) failures.push(`mixed stage has no ${state} node to judge`);
+    for (const id of ids ?? []) {
+      const node = (nodes ?? []).find(candidate => candidate.id === id);
+      if (!node?.cardFound || !colorEquals(parseColor(node.fill), expected)) {
+        failures.push(`${state} node ${id} card fill ${node?.fill ?? '(missing)'} != computed tint ${tints?.[state] ?? '(missing)'}`);
+      }
+    }
+  }
+  return { pass: failures.length === 0, failures };
+}
+
+/** Q3: edge and marker paint are composited over the graph surface before
+ * evaluating WCAG contrast; stroke-opacity is not a CSS color alpha. */
+export function fulfilledEdgeContrastVerdict(edges, arrowheads, graphBackground, expectedCount, statusColors = []) {
+  const failures = [];
+  const background = parseColor(graphBackground);
+  const fulfilled = (edges ?? []).filter(edge => !edge.inDefs && /(?:^|\s)th-activity-gedge--fulfilled(?:\s|$)/.test(edge.cls ?? ''));
+  const heads = (arrowheads ?? []).filter(head => /(?:^|\s)th-activity-gedge-head--fulfilled(?:\s|$)/.test(head.cls ?? ''));
+  if (!background || background.a < 0.999) failures.push(`graph background unresolved (${graphBackground ?? 'missing'})`);
+  if (fulfilled.length !== expectedCount || expectedCount < 1) failures.push(`${fulfilled.length} fulfilled edges found, expected ${expectedCount}`);
+  if (!heads.length) failures.push('no fulfilled arrowhead found');
+  const paintContrast = (raw, opacity) => {
+    const color = parseColor(raw), alpha = Number(opacity);
+    if (!color || !Number.isFinite(alpha) || !background || background.a < 0.999) return null;
+    return contrastRatio(compositeOver({ ...color, a: color.a * alpha }, background), background);
+  };
+  for (const [name, items, color, opacity] of [
+    ['edge', fulfilled, 'stroke', 'strokeOpacity'],
+    ['arrowhead', heads, 'fill', 'fillOpacity'],
+  ]) {
+    for (const item of items) {
+      const ratio = paintContrast(item[color], item[opacity]);
+      if (ratio === null || ratio < 3) failures.push(`fulfilled ${name} contrast ${ratio?.toFixed(2) ?? '(unresolved)'}:1 < 3:1 against graph (${item[color]}, opacity ${item[opacity]})`);
+      if (statusColors.some(raw => colorEquals(parseColor(item[color]), parseColor(raw)))) {
+        failures.push(`fulfilled ${name} uses a status-coloured stroke/fill (${item[color]})`);
+      }
+    }
+  }
+  return { pass: failures.length === 0, failures, measured: { edges: fulfilled.length, arrowheads: heads.length } };
+}
+
+/** Q3: first paint at 1280 must show five WHOLE cards inside the reel, not
+ * five partly cropped groups or a count inflated by offscreen nodes. */
+export function visibleMixedNodesVerdict(facts) {
+  if (facts?.viewportWidth !== 1280) return { pass: true, failures: [], measured: { skipped: '1280px only' } };
+  const reel = facts.scroller?.rect;
+  const visible = (facts.nodes ?? []).filter(node => {
+    const box = node.cardRect;
+    return box && reel && box.width > 1 && box.height > 1
+      && box.left >= reel.left - 1 && box.right <= reel.right + 1
+      && box.top >= reel.top - 1 && box.bottom <= reel.bottom + 1;
+  });
+  const failures = visible.length >= 5 ? [] : [`${visible.length} whole mixed-stage cards inside the 1280px graph reel on first paint; need 5`];
+  return { pass: failures.length === 0, failures, measured: { wholeCards: visible.map(node => node.id), count: visible.length } };
+}
+
+/** Q3: the full disclosure trigger, not merely its left edge, must fit
+ * inside the panel's painted box. */
+export function footerInsidePanelVerdict(footer) {
+  const panel = footer?.panel, summary = footer?.summary;
+  const failures = [];
+  if (!panel || !summary || summary.width <= 0 || summary.height <= 0
+    || summary.left < panel.left - 1 || summary.right > panel.right + 1
+    || summary.top < panel.top - 1 || summary.bottom > panel.bottom + 1) {
+    failures.push(`DAG footer expander is missing or clipped outside panel (${JSON.stringify(footer ?? null)})`);
+  }
+  return { pass: failures.length === 0, failures, measured: footer };
 }
 
 /** Geometric match of the edge whose endpoints connect `fromRect`
@@ -369,31 +453,51 @@ export function cometVerdict(cometFacts, runningEdge) {
   const failures = [];
   const comets = (cometFacts ?? []).filter(fact => fact && fact.found);
   if (comets.length === 0) {
-    return { pass: false, failures: ['no comet element (class/data ~ "comet") exists in the graph while an edge flows completed -> running'], measured: { comets: 0 } };
+    return { pass: false, failures: ['no comet element (class/data ~ "comet") exists in the graph while an edge flows completed -> running'], measured: { comets: 0, edgeLength: runningEdge?.length ?? null } };
   }
-  const animated = comets.filter(fact => (fact.runningAnimations ?? 0) > 0);
-  if (animated.length === 0) failures.push(`${comets.length} comet element(s) found but none carries a running animation`);
+  const animated = comets.filter(fact => (fact.movingAnimations ?? 0) > 0);
+  if (animated.length === 0) failures.push(`${comets.length} comet element(s) found but none carries a running stroke-dashoffset animation`);
   if (!runningEdge) {
     failures.push('could not identify the running edge geometrically (completed -> running node)');
     return { pass: false, failures, measured: { comets: comets.length, animated: 0 } };
   }
-  const riding = animated.filter(fact => rectsIntersect(fact.rect, runningEdge.rect, 12));
-  if (riding.length === 0 && animated.length > 0) failures.push(`animated comet does not intersect the running edge's bounding box (edge at ${JSON.stringify(runningEdge.rect)})`);
-  return { pass: failures.length === 0, failures, measured: { comets: comets.length, animated: animated.length, riding: riding.length } };
+  // The production comet traces the same SVG path. A 12px inflated bounding
+  // box could accept a detached comet on an 8px edge; compare the path and
+  // its screen-space bounds with tolerance capped by actual edge length.
+  const tolerance = Math.min(2, (runningEdge.length ?? 16) / 8);
+  const riding = animated.filter(fact => fact.d && fact.d === runningEdge.d
+    && fact.rect && runningEdge.rect
+    && ['left', 'top', 'right', 'bottom'].every(side =>
+      Math.abs(fact.rect[side] - runningEdge.rect[side]) <= tolerance));
+  if (riding.length === 0 && animated.length > 0) failures.push(`animated comet is detached from the running edge (length ${runningEdge.length ?? 'unknown'}px, tolerance ${tolerance}px)`);
+  return { pass: failures.length === 0, failures, measured: {
+    comets: comets.length, animated: animated.length, riding: riding.length,
+    edgeLength: runningEdge.length ?? null, tolerance,
+  } };
 }
 
 /** S14: the running node carries a visible halo element (in-group or
  * overlapping the node box). */
-export function haloVerdict(haloFacts, runningNodeRect) {
+export function haloVerdict(haloFacts, runningNodeRect, glowRaw) {
   const failures = [];
   const halos = (haloFacts ?? []).filter(fact => fact && fact.found);
   if (halos.length === 0) {
     return { pass: false, failures: ['running node has no halo element (class/data ~ "halo")'], measured: { halos: 0 } };
   }
-  const visible = halos.filter(fact => (fact.rect?.width ?? 0) > 1 && (fact.rect?.height ?? 0) > 1);
-  if (visible.length === 0) failures.push('halo element(s) found but none is visibly sized');
+  const glow = parseColor(glowRaw);
+  const visible = halos.filter(fact => (fact.rect?.width ?? 0) > 1 && (fact.rect?.height ?? 0) > 1
+    && fact.visible === true && Number(fact.opacity) > 0.02 && !!glow && glow.a > 0.02
+    && (Number(fact.fillOpacity) > 0.02 && colorEquals(parseColor(fact.fill), glow)
+      || parseFloat(fact.strokeWidth) >= 1 && Number(fact.strokeOpacity) > 0.02
+        && colorEquals(parseColor(fact.stroke), glow)));
+  if (visible.length === 0) failures.push('halo element(s) found but none visibly paints the computed accent glow');
   const onNode = visible.filter(fact => fact.insideRunningNode || rectsIntersect(fact.rect, runningNodeRect, 4));
   if (onNode.length === 0 && visible.length > 0) failures.push('no visible halo intersects the running node box');
+  if (!onNode.some(fact => (fact.animations ?? []).some(animation =>
+    animation.playState === 'running' && animation.iterations === Infinity
+    && Number(animation.duration) > 0 && Number(animation.duration) <= 800))) {
+    failures.push('running halo has no animation with period <= 800ms');
+  }
   return { pass: failures.length === 0, failures, measured: { halos: halos.length, visible: visible.length, onNode: onNode.length } };
 }
 
@@ -569,9 +673,21 @@ export function dagRunningMotionVerdict(facts) {
     failures.push('no running DAG status glyph found in the graph');
     return { pass: false, failures };
   }
-  const animated = glyphs.filter(g => (g.runningAnimations ?? 0) > 0);
+  const animated = glyphs.filter(g => (g.animations ?? []).some(animation =>
+    animation.playState === 'running' && animation.iterations === Infinity
+    && Number(animation.duration) > 0 && Number(animation.duration) <= 800));
   if (animated.length === 0) failures.push(`${glyphs.length} running DAG glyph(s) carry no running animation under normal motion`);
-  return { pass: failures.length === 0, failures, measured: { glyphs: glyphs.length, animated: animated.length } };
+  for (const glyph of glyphs) {
+    if (!animated.includes(glyph)) failures.push(`running DAG glyph at ${glyph.where} has no animation with period <= 800ms`);
+  }
+  const shelfGlyphs = facts?.shelfGlyphs ?? [];
+  for (const glyph of shelfGlyphs) {
+    if (!(glyph.animations ?? []).some(animation => animation.playState === 'running'
+      && animation.iterations === Infinity && Number(animation.duration) > 0 && Number(animation.duration) <= 800)) {
+      failures.push(`running shelf glyph at ${glyph.where} has no animation with period <= 800ms`);
+    }
+  }
+  return { pass: failures.length === 0, failures, measured: { glyphs: glyphs.length, animated: animated.length, shelfGlyphs: shelfGlyphs.length } };
 }
 
 /** S8: running glyph stroke/colour equals the accent token (violet,
@@ -653,10 +769,20 @@ export async function probeDagGraph(arg) {
   }
   const root = getComputedStyle(document.documentElement);
   const tokens = {};
-  for (const name of ['--th-success', '--th-warning', '--th-error', '--th-accent']) tokens[name] = root.getPropertyValue(name).trim();
+  for (const name of ['--th-success', '--th-warning', '--th-error', '--th-accent', '--th-border-surface']) tokens[name] = root.getPropertyValue(name).trim();
+  const tintSample = document.createElement('span');
+  svg.parentElement.appendChild(tintSample);
+  try {
+    for (const name of ['--th-success-bg', '--th-error-bg', '--th-accent-bg', '--th-accent-glow']) {
+      tintSample.style.color = `var(${name})`;
+      tokens[name] = getComputedStyle(tintSample).color;
+    }
+  } finally {
+    tintSample.remove();
+  }
   const rectJson = element => { const r = element.getBoundingClientRect();
     return { left: +r.left.toFixed(2), top: +r.top.toFixed(2), right: +r.right.toFixed(2), bottom: +r.bottom.toFixed(2), width: +r.width.toFixed(2), height: +r.height.toFixed(2) }; };
-  const animJson = element => collectAnimations(element).map(a => ({ kind: a.kind, name: a.name, playState: a.playState, iterations: a.iterations }));
+  const animJson = element => collectAnimations(element).map(a => ({ kind: a.kind, name: a.name, playState: a.playState, iterations: a.iterations, duration: a.duration }));
   const nodeGroups = [...svg.querySelectorAll('g[class*="gnode"], g[data-node]')];
   const seen = new Set();
   const nodes = [];
@@ -671,8 +797,10 @@ export async function probeDagGraph(arg) {
     const stateText = group.querySelector('text[class*="gstate" i], [data-state-word]');
     nodes.push({
       id, cls: group.getAttribute('class'), transform: group.getAttribute('transform'),
-      rect: rectJson(group),
-      cardFound: !!card, stroke: cardStyle ? cardStyle.stroke : null, strokeWidth: cardStyle ? cardStyle.strokeWidth : null,
+      rect: rectJson(group), cardRect: card ? rectJson(card) : null,
+      cardFound: !!card, fill: cardStyle ? cardStyle.fill : null,
+      stroke: cardStyle ? cardStyle.stroke : null, strokeWidth: cardStyle ? cardStyle.strokeWidth : null,
+      strokeOpacity: cardStyle ? cardStyle.strokeOpacity : null,
       glyph: glyph ? { found: true, tag: glyph.tagName, rect: rectJson(glyph) } : { found: false },
       label: label ? { found: true, rect: rectJson(label), text: (label.textContent || '').slice(0, 24) } : { found: false },
       stateWord: stateText ? { text: (stateText.textContent || '').trim(), visible: isVisibleElement(stateText) } : null,
@@ -691,23 +819,50 @@ export async function probeDagGraph(arg) {
   const edges = [];
   for (const element of svg.querySelectorAll('[class*="gedge" i]')) {
     const inDefs = !!(element.closest && element.closest('marker, defs'));
+    const style = getComputedStyle(element);
     edges.push({
       tag: element.tagName.toLowerCase(), d: element.getAttribute('d'), cls: element.getAttribute('class'),
+      stroke: style.stroke, strokeOpacity: style.strokeOpacity,
+      length: typeof element.getTotalLength === 'function' ? element.getTotalLength() * scale : null,
       inDefs, rect: rectJson(element), p0: pointJson(element, false), p1: pointJson(element, true),
     });
+  }
+  const arrowheads = [...svg.querySelectorAll('marker path[class*="gedge-head"]')].map(element => {
+    const style = getComputedStyle(element);
+    return { cls: element.getAttribute('class'), fill: style.fill, fillOpacity: style.fillOpacity };
+  });
+  const graph = svg.parentElement;
+  let graphBackground = null;
+  for (let element = graph; element; element = element.parentElement) {
+    const color = getComputedStyle(element).backgroundColor;
+    if (parseColor(color)?.a >= 0.999) { graphBackground = color; break; }
   }
   const runningElement = svg.querySelector(`[data-node="${arg.runningId}"]`);
   const comets = [], halos = [];
   for (const element of svg.querySelectorAll('[class*="comet" i], [data-comet]')) {
-    comets.push({ found: true, where: describeElement(element), rect: rectJson(element), runningAnimations: animJson(element).filter(a => a.playState === 'running').length, animations: animJson(element) });
+    const animations = element.getAnimations();
+    comets.push({
+      found: true, where: describeElement(element), d: element.getAttribute('d'),
+      rect: rectJson(element),
+      runningAnimations: animations.filter(animation => animation.playState === 'running').length,
+      movingAnimations: animations.filter(animation => animation.playState === 'running'
+        && animation.effect?.getKeyframes().some(frame => 'strokeDashoffset' in frame || 'stroke-dashoffset' in frame)).length,
+      animations: animJson(element),
+    });
   }
   for (const element of svg.querySelectorAll('[class*="halo" i], [data-halo]')) {
     halos.push({
       found: true, where: describeElement(element), rect: rectJson(element),
       insideRunningNode: !!(runningElement && runningElement.contains(element)),
+      visible: isVisibleElement(element), fill: getComputedStyle(element).fill,
+      stroke: getComputedStyle(element).stroke, strokeWidth: getComputedStyle(element).strokeWidth,
+      strokeOpacity: getComputedStyle(element).strokeOpacity,
+      opacity: getComputedStyle(element).opacity, fillOpacity: getComputedStyle(element).fillOpacity,
       runningAnimations: animJson(element).filter(a => a.playState === 'running').length, animations: animJson(element),
     });
   }
+  const details = document.querySelector('[data-activity-dag-run] .th-activity-dag-details summary');
+  const panel = details?.closest('.th-activity-panel');
   const progress = fills.filter(isVisibleElement).map(fill => ({
     found: true, where: describeElement(fill),
     countText: fill.closest('.th-activity-dag-head')?.querySelector('.th-activity-dag-counts')?.textContent.trim() ?? null,
@@ -720,14 +875,16 @@ export async function probeDagGraph(arg) {
   if (runningElement) {
     for (let node = runningElement.parentElement; node && node !== document.body; node = node.parentElement) {
       const style = getComputedStyle(node);
-      if (/auto|scroll|hidden/.test(style.overflowX) && node.scrollWidth > node.clientWidth + 1) {
+      if (/auto|scroll/.test(style.overflowX)) {
         scroller = { where: describeElement(node), cls: node.getAttribute('class'), scrollLeft: node.scrollLeft, scrollWidth: node.scrollWidth, clientWidth: node.clientWidth, rect: rectJson(node) };
         break;
       }
     }
   }
   return {
-    found: true, tokens, nodes, edges, comets, halos, progress,
+    found: true, tokens, nodes, edges, arrowheads, graphBackground, comets, halos, progress,
+    viewportWidth: window.innerWidth,
+    footer: { summary: details ? rectJson(details) : null, panel: panel ? rectJson(panel) : null },
     runningRect: runningElement ? rectJson(runningElement) : null,
     scroller,
     document: { scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth },
@@ -892,7 +1049,7 @@ export function probeShelfTabs() {
 
 /** S8: running-indicator motion/colour facts for the DAG surface. */
 export function probeDagRunningMotion() {
-  const animJson = element => collectAnimations(element).map(a => ({ kind: a.kind, name: a.name, playState: a.playState, iterations: a.iterations }));
+  const animJson = element => collectAnimations(element).map(a => ({ kind: a.kind, name: a.name, playState: a.playState, iterations: a.iterations, duration: a.duration }));
   const root = getComputedStyle(document.documentElement);
   const accent = root.getPropertyValue('--th-accent').trim();
   const runningGlyphs = [];
@@ -907,6 +1064,8 @@ export function probeDagRunningMotion() {
       animations: animJson(element),
     });
   }
+  const shelfGlyphs = [...document.querySelectorAll('.th-activity-shelf .th-activity-glyph--running.th-activity-glyph--live')]
+    .filter(isVisibleElement).map(element => ({ where: describeElement(element), animations: animJson(element) }));
   const scope = document.querySelector('.th-activity-graph, [data-activity-tabpanel="dag"]') ?? document;
   const comets = [], halos = [];
   for (const element of scope.querySelectorAll('[class*="comet" i], [data-comet]')) {
@@ -920,7 +1079,7 @@ export function probeDagRunningMotion() {
     const stateText = group.querySelector('text[class*="gstate" i], [data-state-word]');
     if (stateText) stateWords.push({ node: group.getAttribute('data-node'), text: (stateText.textContent || '').trim(), visible: isVisibleElement(stateText) });
   }
-  return { accent, runningGlyphs, comets, halos, stateWords };
+  return { accent, runningGlyphs, shelfGlyphs, comets, halos, stateWords };
 }
 
 
@@ -1292,17 +1451,30 @@ async function driveS14(ctx) {
     const runningEdge = findRunningEdge(facts.edges, sourceRect, facts.runningRect);
     const autoScroll = autoScrollVerdict(facts.scroller ? { scroller: facts.scroller, runningRect: facts.runningRect } : null);
     const strokes = nodeStrokeViolations(facts.nodes, facts.tokens);
+    const tints = nodeTintVerdict(facts.nodes, roles, {
+      completed: facts.tokens['--th-success-bg'], failed: facts.tokens['--th-error-bg'],
+      running: facts.tokens['--th-accent-bg'],
+    });
+    const fulfilledCount = t4StageSpec('mixed').reduce((count, node, index, nodes) =>
+      count + node.deps.filter(dep => nodes.find(source => source.id === dep)?.state === 'completed').length, 0);
+    const edgeContrast = fulfilledEdgeContrastVerdict(facts.edges, facts.arrowheads, facts.graphBackground, fulfilledCount,
+      ['--th-success', '--th-warning', '--th-error', '--th-accent'].map(name => facts.tokens[name]));
+    const visibleNodes = visibleMixedNodesVerdict(facts);
+    const footer = footerInsidePanelVerdict(facts.footer);
     const glyphOrder = glyphOrderVerdict(facts.nodes);
     const edgeShape = edgeShapeVerdict(facts.edges);
     const comet = cometVerdict(facts.comets, runningEdge);
-    const halo = haloVerdict(facts.halos, facts.runningRect);
+    const halo = haloVerdict(facts.halos, facts.runningRect, facts.tokens['--th-accent-glow']);
+    const runningMotion = dagRunningMotionVerdict(await ctx.probe(env.page, probeDagRunningMotion));
     const progress = progressVerdict((facts.progress ?? []).map(fact => ({
       found: fact.found, where: fact.where, settled: fact.settled, countText: fact.countText,
       scaleX: scaleXFromTransform(fact.transform),
       inlineScaleX: scaleXFromTransform(fact.inlineTransform),
     })), t4ExpectedProgress('mixed'), '6/11');
-    for (const [name, verdict] of [['auto-scroll', autoScroll], ['node strokes', strokes], ['glyph order', glyphOrder],
-      ['edge shape', edgeShape], ['comet', comet], ['halo', halo], ['progress', progress]]) {
+    for (const [name, verdict] of [['auto-scroll', autoScroll], ['node strokes', strokes],
+      ['node tints', tints], ['fulfilled edge contrast', edgeContrast],
+      ['whole nodes', visibleNodes], ['footer', footer], ['running spinner', runningMotion],
+      ['glyph order', glyphOrder], ['edge shape', edgeShape], ['comet', comet], ['halo', halo], ['progress', progress]]) {
       failures.push(...verdict.failures.map(f => `${name}: ${f}`));
     }
     const transformsBefore = facts.nodes.map(node => ({ id: node.id, transform: node.transform }));
@@ -1396,6 +1568,8 @@ async function driveS14(ctx) {
           tokens: facts.tokens, runningEdge: runningEdge ? { cls: runningEdge.cls, tag: runningEdge.tag } : null,
         },
         autoScroll: autoScroll.measured, strokes: strokes.violations.slice(0, 12),
+      semanticStrokes: strokes.pass, tints: tints.pass, fulfilledEdgeContrast: edgeContrast.measured,
+        wholeNodes: visibleNodes.measured, footer: footer.measured, runningSpinner: runningMotion.measured,
         glyphOrder: glyphOrder.measured, edgeShape: edgeShape.measured,
         comet: comet.measured, halo: halo.measured, progress: progress.measured,
         progressAfterFlip: progressFlip.measured, stableLayout: stable.measured,

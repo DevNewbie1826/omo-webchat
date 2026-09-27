@@ -7,7 +7,8 @@ export function readSummaryDOM() {
   const sidebar = [...document.querySelectorAll('.th-tree-node')].find(node =>
     node.querySelector('.th-tree-activation .th-tree-label')?.textContent === 'Stored A');
   const overview = [...document.querySelectorAll('.th-overview-card')].find(node =>
-    node.querySelector('.th-overview-card-name')?.textContent === 'Stored A');
+    node.querySelector('.th-overview-card-name')?.textContent?.startsWith('Stored A'));
+  const cardName = overview?.querySelector('.th-overview-card-name')?.textContent;
   function badge(node) {
     if (!node) return null;
     const box = node.getBoundingClientRect(), hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
@@ -18,49 +19,42 @@ export function readSummaryDOM() {
   return { sidebar: badge(sidebar?.querySelector('.th-tree-running')),
     overview: badge(overview?.querySelector('.th-overview-card-running')),
     rows: { sidebar: badge(sidebar), overview: badge(overview) },
-    marker: overview?.querySelector('.th-overview-card-line')?.textContent ?? null,
+    marker: overview?.querySelector('.th-overview-card-line')?.textContent
+      ?? (cardName?.startsWith('Stored A | ') ? cardName.slice('Stored A | '.length) : null),
     viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth,
     transcript: transcript && { height: transcript.scrollHeight, client: transcript.clientHeight, top: transcript.scrollTop },
     drawerHidden: document.querySelector('.th-sidebar')?.getAttribute('aria-hidden') === 'true' };
 }
 
-/** Compare accessible names with shipped translations, not pinned prose.
- * '?' and the numeric '+' lower-bound sentinel are the existing UI protocol.
+/** Compare exact server-side running counts with shipped accessible names.
+ * Truncated topology no longer qualifies an authoritative live-row scalar.
  */
 export function assertSummaryDOM(dom, stage, copy, surfaces = ['sidebar', 'overview']) {
   assert.ok(stages.includes(stage), `Unknown summary stage: ${stage}`);
-  const exact = ['complete2', 'compact-duplicate-ids', 'complete2-empty-optional-ids', 'complete2-recovery'].includes(stage);
-  const expected = exact ? '2' : stage === 'compact-no-ids' ? '?' : stage === 'compact-mixed-ids' ? '1+' : null;
+  const zero = stage === 'canceled-retained-running2' || stage === 'incomplete-retained0';
   const result = {};
   for (const surface of surfaces) {
     const badge = dom[surface];
-    if (stage === 'canceled-retained-running2') {
+    if (zero) {
       assert.ok(dom.rows?.[surface], `${surface}: zero-running session must remain mounted`);
-      // Shipped Sidebar/OverviewPanel omit the badge for an exact zero, not '0' or '?'.
-      assert.equal(badge, null, `${surface}: terminal retained nodes must yield the shipped absent running badge`);
+      assert.equal(badge, null, `${surface}: authoritative zero must yield the shipped absent running badge`);
       result[surface] = { qualified: false, unknown: false, exact2: false, falseExact: false,
         impliesZero: true, zeroRunning: true, text: null, aria: null };
       continue;
     }
     assert.ok(badge, `${surface}: running badge must not disappear`);
     const prefix = surface === 'sidebar' ? 'sidebar.tm.runningAgents' : 'overview.runningAria';
-    const unknown = badge.text === '?', lowerBound = /^[1-9]\d*\+$/.test(badge.text);
-    const count = Number.parseInt(badge.text, 10), qualified = unknown || lowerBound;
-    const key = prefix + (unknown ? 'Unknown' : lowerBound ? 'Partial' : '');
-    assert.equal(badge.aria, copy[key].replace('{n}', String(count)), `${surface}: accessible qualification matches visible count`);
-    if (expected !== null) assert.equal(badge.text, expected, `${surface}: ${stage} must yield ${expected}`);
-    else {
-      assert.ok(qualified, `${surface}: incomplete data must be visibly qualified, never exact/zero`);
-      if (lowerBound) assert.ok(count <= 2, `${surface}: lower bound cannot exceed the full two-node fixture`);
-    }
-    result[surface] = { qualified, unknown, exact2: badge.text === '2', falseExact: !exact && !qualified,
-      impliesZero: badge.text === '0', text: badge.text, aria: badge.aria };
+    assert.equal(badge.text, '2', `${surface}: ${stage} must display the exact pre-truncation count`);
+    assert.equal(badge.aria, copy[prefix].replace('{n}', '2'), `${surface}: accessible count matches visible count`);
+    result[surface] = { qualified: false, unknown: false, exact2: true, falseExact: false,
+      impliesZero: false, zeroRunning: false, text: badge.text, aria: badge.aria };
   }
   return result;
 }
 
 export function assertVisibleBadge(dom, surface, stage) {
-  const target = stage === 'canceled-retained-running2' ? dom.rows?.[surface] : dom[surface], box = target?.box;
+  const target = stage === 'canceled-retained-running2' || stage === 'incomplete-retained0'
+    ? dom.rows?.[surface] : dom[surface], box = target?.box;
   assert.ok(target?.visible && target.hit && box.width > 0 && box.height > 0,
     `${surface}: visible unobscured count or zero-running session`);
   assert.ok(box.x >= 0 && box.y >= 0 && box.right <= dom.viewport.width + 1 && box.bottom <= dom.viewport.height + 1,

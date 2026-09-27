@@ -23,7 +23,7 @@
  * pre-redesign baseline fails (pinned by visual-redesign-scenarios-t2.test.mjs
  * over the pure decisions): composer radius 24 vs the old hard-coded 26,
  * borderless user bubble, accent (not amber) running glyphs, hidden raw cwd,
- * sans header metadata, timeline rail, overflow fade, palette glass + hint
+ * sans header metadata, timeline rail, overflow fade, opaque palette + hint
  * row, accent-solid send fill, view-transition session-switch continuity.
  *
  * T2 selector contracts this file measures (S7/S9 - the markup the
@@ -44,7 +44,7 @@
 import { prose } from './design-workbench-fixture.mjs';
 import { summaryFrame } from './dag-summary-fixture.mjs';
 import {
-  colorEquals, parseColor, probeHeader, probeSeparation,
+  colorEquals, parseColor, probeHeader, probeSeparation, probeStateColors,
 } from './visual-redesign-probes.mjs';
 
 const STALE_KOREAN_MARKER = prose.slice(0, 12); // unique to the stored-a design seed
@@ -107,18 +107,22 @@ export function composerDecision(facts) {
   return { pass: failures.length === 0, failures, measurements: { ...facts } };
 }
 
-/** S9: palette glass + hint row facts -> failures. The pre-redesign plain
- * raised palette (no backdrop-filter, no hints) fails both gates. */
+/** S9: opaque floating-layer fill + hint row facts -> failures. A translucent
+ * glass palette and a mismatched solid palette fail the overlay token gate. */
 export function paletteDecision(facts) {
   const failures = [];
   const hints = (facts.nonOptionTexts ?? []).filter(text => keyboardHintRowText(text));
   const measurements = {
+    backgroundColor: facts.backgroundColor ?? null, overlaySurfaceRaw: facts.overlaySurfaceRaw ?? null,
     backdropFilter: facts.backdropFilter ?? null, optionCount: facts.optionCount ?? 0,
     hintRowCount: hints.length, hintTexts: hints,
   };
   if (!facts.paletteFound) failures.push('slash palette .th-chat-slash did not render');
   else {
-    if (!facts.backdropFilter || facts.backdropFilter === 'none') failures.push(`slash palette backdrop-filter is ${facts.backdropFilter ?? 'none'} (glass required)`);
+    const background = parseColor(facts.backgroundColor), overlay = parseColor(facts.overlaySurfaceRaw);
+    if (!background || !overlay || background.a < 0.999 || overlay.a < 0.999 || !colorEquals(background, overlay)) {
+      failures.push(`slash palette background ${facts.backgroundColor ?? 'missing'} must match opaque --th-surface-overlay ${facts.overlaySurfaceRaw ?? 'missing'}`);
+    }
     if (hints.length < 1) failures.push('slash palette shows no keyboard hint row (navigate/select/dismiss hints)');
   }
   return { pass: failures.length === 0, failures, measurements };
@@ -137,34 +141,43 @@ export function commandInsertDecision(facts) {
   return { pass: failures.length === 0, failures, measurements: { ...facts } };
 }
 
-/** S7: per-record glyph/rail geometry and consecutive-rail joins. */
+/** S7: a shared gutter rail outside cards/text, joined across consecutive records. */
 export function railFactsDecision(result) {
   const failures = [];
   const facts = (result?.facts ?? []).filter(fact => fact.recordVisible);
+  const column = facts.find(fact => fact.kind === 'tool' && fact.railVisible)?.railCenter
+    ?? facts.find(fact => fact.railVisible)?.railCenter ?? null;
   const measurements = {
     toolCount: result?.toolCount ?? 0,
     visibleToolCount: facts.filter(fact => fact.kind === 'tool').length,
     visibleThinkingCount: facts.filter(fact => fact.kind === 'thinking').length,
+    gutterColumn: column,
     records: [],
   };
   if (measurements.visibleToolCount === 0) failures.push('no visible tool records found to measure the timeline rail');
   for (const fact of facts) {
-    const alignment = fact.railCenter === null || fact.glyphCenter === null
-      ? null : Math.abs(fact.railCenter - fact.glyphCenter);
+    const alignment = fact.railCenter === null || column === null
+      ? null : Math.abs(fact.railCenter - column);
     const thin = typeof fact.railWidth === 'number' && fact.railWidth >= 0.5 && fact.railWidth <= 1.5;
+    const inGutter = !!fact.gutter && fact.railInGutter
+      && fact.railCenter >= fact.gutter.left + fact.railWidth / 2 - 1
+      && fact.railCenter <= fact.gutter.right - fact.railWidth / 2;
     const joined = !fact.continues || !fact.previousVisible
       || (fact.previousRailCenter !== null && fact.railCenter !== null
         && Math.abs(fact.railCenter - fact.previousRailCenter) <= 1
         && fact.railTop !== null && fact.previousRailBottom !== null
         && fact.railTop <= fact.previousRailBottom + 1);
-    const ok = fact.railFound && fact.railVisible && fact.glyphFound
+    const ok = fact.railFound && fact.railVisible && inGutter
+      && !fact.cardIntersection && !fact.textIntersection
       && fact.railSpansRecord && thin && alignment !== null && alignment <= 1 && joined;
     measurements.records.push({
       id: fact.id, kind: fact.kind, ok, railWidth: fact.railWidth,
-      railCenter: fact.railCenter, glyphCenter: fact.glyphCenter,
+      railCenter: fact.railCenter, gutter: fact.gutter, railInGutter: inGutter,
+      cardIntersection: fact.cardIntersection, textIntersection: fact.textIntersection,
       alignment, railSpansRecord: fact.railSpansRecord, joined,
+      railTop: fact.railTop, previousRailBottom: fact.previousRailBottom,
     });
-    if (!ok) failures.push(`${fact.kind} ${fact.id} has no qualifying timeline rail (found=${fact.railFound} glyph=${fact.glyphFound} spans=${fact.railSpansRecord} width=${fact.railWidth} offset=${alignment} joined=${joined})`);
+    if (!ok) failures.push(`${fact.kind} ${fact.id} has no qualifying gutter rail (found=${fact.railFound} gutter=${inGutter} card=${fact.cardIntersection} text=${fact.textIntersection} spans=${fact.railSpansRecord} width=${fact.railWidth} columnOffset=${alignment} joined=${joined})`);
   }
   return { pass: failures.length === 0, failures, measurements };
 }
@@ -295,20 +308,27 @@ export function headerTextDecision(texts, arg = {}) {
   return { pass: failures.length === 0, failures, measurements: { monoRuns: mono.slice(0, 8) } };
 }
 
-/** S4: every visible EXPANDED tool body sits on the scoped tool material
- * behind the tool hairline (v2 grammar: collapsed rows are transparent). */
+/** S4: every tool invocation, including collapsed ones, is one tinted card
+ * with a neutral hairline; expanded bodies add no nested border. */
 export function toolMaterialDecision(result) {
   const failures = [];
   const border = parseColor(result?.toolBorderRaw), surface = parseColor(result?.toolSurfaceRaw);
   const measurements = { toolBorderRaw: result?.toolBorderRaw ?? null, toolSurfaceRaw: result?.toolSurfaceRaw ?? null, records: [] };
-  const expanded = (result?.facts ?? []).filter(fact => fact.expanded);
-  if (expanded.length === 0) failures.push('no expanded tool body found for the tool-material check');
-  for (const fact of expanded) {
-    const borderOk = !!border && colorEquals(parseColor(fact.borderTopColor), border);
-    const surfaceOk = !!surface && colorEquals(parseColor(fact.backgroundColor), surface);
-    measurements.records.push({ id: fact.id, borderOk, surfaceOk, borderTopColor: fact.borderTopColor, backgroundColor: fact.backgroundColor });
-    if (!borderOk) failures.push(`expanded body of ${fact.id} border ${fact.borderTopColor} != --th-tool-border ${result?.toolBorderRaw}`);
-    if (!surfaceOk) failures.push(`expanded body of ${fact.id} fill ${fact.backgroundColor} != --th-tool-surface ${result?.toolSurfaceRaw}`);
+  const records = result?.facts ?? [];
+  if (records.length === 0) failures.push('no tool records found for the whole-card material check');
+  if (!records.some(fact => fact.expanded)) failures.push('no expanded tool body found for the tool-material check');
+  if (!records.some(fact => !fact.expanded)) failures.push('no collapsed tool record found for the tool-material check');
+  for (const fact of records) {
+    const borderOk = !!border && (fact.borderSides ?? []).length === 4
+      && fact.borderSides.every(side => Math.abs(side.width - 1) <= 0.1 && colorEquals(parseColor(side.color), border));
+    const surfaceOk = !!surface && colorEquals(parseColor(fact.backgroundColor), surface)
+      && !colorEquals(parseColor(fact.backgroundColor), parseColor(result?.paneBackground));
+    const bodyBorderOk = !fact.expanded || (fact.bodyBorderSides ?? []).every(side => side.width === 0 || side.style === 'none' || side.style === 'hidden' || parseColor(side.color)?.a <= 0.02);
+    measurements.records.push({ id: fact.id, expanded: fact.expanded, borderOk, surfaceOk, bodyBorderOk,
+      borderSides: fact.borderSides, backgroundColor: fact.backgroundColor, bodyBorderSides: fact.bodyBorderSides });
+    if (!borderOk) failures.push(`tool card ${fact.id} needs a neutral 1px --th-tool-record-border hairline`);
+    if (!surfaceOk) failures.push(`tool card ${fact.id} fill ${fact.backgroundColor} != --th-tool-record-surface ${result?.toolSurfaceRaw} or matches pane`);
+    if (!bodyBorderOk) failures.push(`expanded body of ${fact.id} adds a nested border`);
   }
   return { pass: failures.length === 0, failures, measurements };
 }
@@ -332,14 +352,23 @@ export function switchOutcomeDecision(facts) {
 /** S7: status-glyph-centered, full-height rails on tool and thinking records. */
 export function probeToolRail() {
   const records = [...document.querySelectorAll('.th-chat-record')];
+  const gutterWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--th-space-12'));
   const facts = [];
   for (const [index, record] of records.entries()) {
     const kind = record.matches('[data-tool-call-id]') ? 'tool' : 'thinking';
     const rail = record.querySelector('.th-chat-record-rail');
-    const glyph = record.querySelector(kind === 'tool' ? '.th-tool-glyph' : '.th-chat-thinking-dot');
     const recordRect = record.getBoundingClientRect();
     const railRect = rail ? rail.getBoundingClientRect() : null;
-    const glyphRect = glyph ? glyph.getBoundingClientRect() : null;
+    const textRects = [...record.querySelectorAll('.th-tool-name, .th-tool-summary, .th-tool-invocation, .th-tool-preview, .th-chat-thinking-label, .th-chat-thinking-body pre')]
+      .filter(isVisibleElement).map(element => element.getBoundingClientRect());
+    const gutterRight = kind === 'tool' ? recordRect.left
+      : Math.min(...textRects.map(rect => rect.left));
+    const gutter = Number.isFinite(gutterWidth) && gutterWidth > 0 && Number.isFinite(gutterRight)
+      ? { left: gutterRight - gutterWidth, right: gutterRight } : null;
+    const intersects = (a, b) => !!a && !!b && Math.min(a.right, b.right) - Math.max(a.left, b.left) > 0.1
+      && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 0.1;
+    const railInGutter = !!railRect && !!gutter && railRect.left >= gutter.left - 1
+      && railRect.right <= gutter.right - (kind === 'tool' ? 0.1 : 0);
     const previous = records[index - 1];
     const previousVisible = !!previous && isVisibleElement(previous)
       && previous.closest('.th-chat-pane') === record.closest('.th-chat-pane');
@@ -350,10 +379,11 @@ export function probeToolRail() {
       recordVisible: isVisibleElement(record),
       railFound: !!rail,
       railVisible: !!rail && isVisibleElement(rail),
-      glyphFound: !!glyph && isVisibleElement(glyph),
+      gutter, railInGutter,
+      cardIntersection: kind === 'tool' && intersects(railRect, recordRect),
+      textIntersection: textRects.some(rect => intersects(railRect, rect)),
       railWidth: railRect?.width ?? null,
       railCenter: railRect ? (railRect.left + railRect.right) / 2 : null,
-      glyphCenter: glyphRect ? (glyphRect.left + glyphRect.right) / 2 : null,
       railTop: railRect?.top ?? null,
       railSpansRecord: !!railRect && railRect.top <= recordRect.top + 1 && railRect.bottom >= recordRect.bottom - 1,
       continues: record.classList.contains('th-chat-record--continue'),
@@ -477,7 +507,7 @@ export function probeComposerFacts() {
   };
 }
 
-/** S9: slash palette glass + non-option text runs (hint row candidates).
+/** S9: slash palette fill + non-option text runs (hint row candidates).
  * The shipped hint row splits its copy across kbd chips and label spans
  * ("<kbd>↑</kbd><kbd>↓</kbd> to navigate <kbd>↵</kbd> … <kbd>esc</kbd> …"),
  * so LEAF runs alone never name both key families; candidates are the
@@ -499,6 +529,8 @@ export function probePaletteFacts() {
   }
   return {
     paletteFound: true,
+    backgroundColor: style.backgroundColor,
+    overlaySurfaceRaw: getComputedStyle(document.documentElement).getPropertyValue('--th-surface-overlay').trim(),
     backdropFilter: style.backdropFilter || style.webkitBackdropFilter || null,
     optionCount,
     nonOptionTexts: texts.slice(0, 24),
@@ -524,26 +556,41 @@ export function probeHeaderTexts() {
   return { found: true, texts };
 }
 
-/** S4: the v2 Golo timeline grammar keeps COLLAPSED records transparent
- * (timeline rows on Canvas); the scoped tool material belongs to the
- * EXPANDED body. Gates every visible expanded body on the scoped tokens. */
+/** S4: resolve the whole-record material tokens in the browser so their
+ * color-mix() values are compared as computed colours, not raw strings. */
 export function probeToolMaterial() {
   const root = getComputedStyle(document.documentElement);
+  const scratch = document.createElement('div');
+  scratch.style.backgroundColor = 'var(--th-tool-record-surface)';
+  scratch.style.border = '1px solid var(--th-tool-record-border)';
+  document.body.appendChild(scratch);
+  const resolved = getComputedStyle(scratch);
+  const toolSurfaceRaw = parseColor(resolved.backgroundColor)
+    ? resolved.backgroundColor : root.getPropertyValue('--th-tool-record-surface').trim();
+  const borderToken = root.getPropertyValue('--th-tool-record-border').trim();
+  const toolBorderRaw = parseColor(borderToken) && !colorEquals(parseColor(resolved.borderTopColor), parseColor(borderToken))
+    ? borderToken : resolved.borderTopColor;
+  scratch.remove();
   const facts = [];
-  for (const record of document.querySelectorAll('[data-tool-call-id]')) {
+  for (const record of document.querySelectorAll('.th-tool[data-tool-call-id]')) {
     if (!isVisibleElement(record)) continue;
     const body = record.querySelector('.th-tool-body');
+    const style = getComputedStyle(record);
+    const sides = target => ['Top', 'Right', 'Bottom', 'Left'].map(side => ({
+      width: parseFloat(target[`border${side}Width`]) || 0,
+      style: target[`border${side}Style`], color: target[`border${side}Color`],
+    }));
     facts.push({
       id: record.getAttribute('data-tool-call-id'),
       expanded: !!body && isVisibleElement(body),
-      borderTopColor: body ? getComputedStyle(body).borderTopColor : null,
-      backgroundColor: body ? getComputedStyle(body).backgroundColor : null,
+      borderSides: sides(style),
+      backgroundColor: style.backgroundColor,
+      bodyBorderSides: body ? sides(getComputedStyle(body)) : [],
     });
   }
   return {
-    toolBorderRaw: root.getPropertyValue('--th-tool-border').trim(),
-    toolSurfaceRaw: root.getPropertyValue('--th-tool-surface').trim(),
-    facts,
+    toolBorderRaw, toolSurfaceRaw, paneBackground: getComputedStyle(document.querySelector('.th-chat-pane') ?? document.body).backgroundColor,
+    tokenBorder: root.getPropertyValue('--th-tool-record-border').trim(), facts,
   };
 }
 
@@ -725,6 +772,7 @@ export function probeChatRunningGlyphs() {
   };
   // end T4 ownership exclusion
   const accent = tokenColor('--th-accent');
+  const accentInk = tokenColor('--th-accent-ink');
   const glyphs = [];
   const excludedElements = new Set();
   for (const selector of runningGlyphSelectors()) {
@@ -742,18 +790,34 @@ export function probeChatRunningGlyphs() {
       };
       const matchesAccent = [
         parseColor(style.stroke), parseColor(style.borderTopColor), parseColor(style.backgroundColor), parseColor(style.fill),
-      ].some(colour => colour && colorEquals(colour, accent));
-      glyphs.push({ selector, where: describeElement(element), colourFacts, matchesAccent });
+      ].some(colour => colour && colorEquals(colour, accent))
+        || (element.matches('.th-tree-running, .th-overview-card-running')
+          && colorEquals(parseColor(style.color), accentInk));
+      const chip = element.matches('.th-tree-running, .th-overview-card-running');
+      const dot = chip ? element.querySelector('.th-tree-running-dot, .th-overview-card-running-dot') : null;
+      const dotStyle = dot ? getComputedStyle(dot) : null;
+      const dotAnimationMs = dotStyle ? maxDurationMs(dotStyle.animationDuration)
+        * (dotStyle.animationDirection.includes('alternate') ? 2 : 1) : null;
+      const dotRunningAnimations = dot ? dot.getAnimations().filter(animation => animation.playState === 'running').length : null;
+      glyphs.push({ selector, where: describeElement(element), colourFacts, matchesAccent,
+        countInkMatches: chip ? colorEquals(parseColor(style.color), accentInk) : null,
+        dotAnimationMs, dotRunningAnimations });
     }
   }
   const measurements = {
-    accent: hexOf(accent), glyphsFound: glyphs.length, glyphs,
+    accent: hexOf(accent), accentInk: hexOf(accentInk), glyphsFound: glyphs.length, glyphs,
     excludedSelectors, excludedElementCount: excludedElements.size,
     excludedSamples: [...excludedElements].slice(0, 12).map(element => describeElement(element)),
   };
   const failures = [];
   if (glyphs.length === 0) failures.push('no running glyphs found (fixture must expose a running tool, tree, or overview glyph)');
   for (const glyph of glyphs) if (!glyph.matchesAccent) failures.push(`running glyph ${glyph.selector} at ${glyph.where} is not accent-coloured: ${JSON.stringify(glyph.colourFacts)}`);
+  for (const glyph of glyphs.filter(item => item.countInkMatches !== null)) {
+    if (!glyph.countInkMatches) failures.push(`running count ${glyph.selector} is not --th-accent-ink-coloured`);
+    if (!glyph.dotAnimationMs || glyph.dotAnimationMs > 800 || glyph.dotRunningAnimations === 0) {
+      failures.push(`sidebar ${glyph.selector} indicator period ${glyph.dotAnimationMs ?? 'none'}ms exceeds 800ms or does not animate`);
+    }
+  }
   return { scenario: 'S8', pass: failures.length === 0, measurements, failures };
 }
 
@@ -792,8 +856,13 @@ export function probeChatRunningReducedMotion() {
       }
       if (!isVisibleElement(element)) continue;
       const animations = element.getAnimations({ subtree: true });
-      glyphStates.push({ selector, where: describeElement(element), animationCount: animations.length });
+      const sidebarChip = element.matches('.th-tree-running, .th-overview-card-running');
+      const accessibleName = sidebarChip ? element.getAttribute('aria-label') || element.getAttribute('title') || '' : null;
+      glyphStates.push({ selector, where: describeElement(element), animationCount: animations.length, accessibleName });
       if (animations.length > 0) failures.push(`running glyph ${selector} still animates under reduced motion (${animations.length})`);
+      if (sidebarChip && !/(running|responding|executing|streaming|live|진행|실행|응답)/i.test(accessibleName)) {
+        failures.push(`sidebar running chip ${selector} lacks an accessible running name under reduced motion`);
+      }
     }
   }
   const labelPattern = /(running|responding|executing|streaming|live|진행|실행|응답)/i;
@@ -1387,12 +1456,16 @@ async function stateColorsT2(ctx) {
       }
     }
     const result = await ctx.probe(page, probeChatStateColors);
+    const ink = await ctx.probe(page, probeStateColors, {
+      statusOnly: true, scope: 'chat', requireStates: ['success', 'error', 'accent'],
+    });
     if (!result.measurements.portalMeasured || result.measurements.portalElementCount === 0) {
       failures.push('approval question portal was not measured by the chat census');
     }
     result.measurements.surfaceNotes = notes;
     result.measurements.questionWindowSettle = questionWindowSettle;
     result.measurements.motion = await ctx.motionSweep(page);
+    result.measurements.statusInk = ink.measurements;
     const shot = await ctx.save(page, '');
     if (paletteOpened) {
       await page.keyboard.press('Escape').catch(() => {});
@@ -1400,8 +1473,8 @@ async function stateColorsT2(ctx) {
     }
     await page.keyboard.press('Escape').catch(() => {});
     return {
-      pass: result.pass && failures.length === 0,
-      failures: [...result.failures, ...failures],
+      pass: result.pass && ink.pass && failures.length === 0,
+      failures: [...result.failures, ...ink.failures.map(f => `status ink: ${f}`), ...failures],
       measurements: withErrors(env, result.measurements),
       screenshots: [shot], teardown: await env.close(),
     };
@@ -1507,8 +1580,14 @@ async function timelineT2(ctx) {
             return window.__qaThinkingFrameCount;
           });
           states.push({ action: 'reversal-frame-count', frames: reversalFrames });
-          if (reversalFrames > 1) failures.push(`${kind} thinking ${reduced ? 'reduced' : 'normal'} reversal crossed ${reversalFrames} animation frames`);
+          // Playwright's two pointer RPCs and the intervening bounding-box
+          // read can cross frames even with reduced motion. Gate the rendered
+          // result and settled animation state, not transport scheduling.
           await observe('rapid-open-close-open', true, true);
+          const reversed = states.at(-1);
+          if (reduced && reversed?.settlement?.animationCount !== 0) {
+            failures.push(`${kind} thinking reduced reversal left a running animation`);
+          }
           await head.click();
           await observe('final-closed', false);
         } catch (error) {
@@ -1690,13 +1769,13 @@ async function composerT2(ctx) {
     measurements.textareaFocusedAfterFocus = focused.textareaFocused;
     failures.push(...composerVerdict.failures.map(f => `composer: ${f}`));
 
-    // '/' opens the palette: glass + keyboard hint row.
+    // '/' opens the palette: opaque overlay token + keyboard hint row.
     let paletteFacts = { paletteFound: false };
     try {
       await page.keyboard.press('/');
       await page.waitForSelector('.th-chat-slash', { timeout: 4000 });
-      // D7: capture the palette settled, never a mid-enter frame (the T2
-      // glass layer will carry an enter transition).
+      // D7: capture the palette settled, never a mid-enter frame (the
+      // floating layer carries an enter transition).
       await settleElement(page, '.th-chat-slash');
       paletteFacts = await ctx.probe(page, probePaletteFacts);
     } catch (error) {

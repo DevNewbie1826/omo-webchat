@@ -10,6 +10,8 @@ import { armDOM, assertTaskDOM, doneDOM, overviewFrame, parseArgs, readTaskDOM, 
 import { confirmPortReleased, installDOMSignals } from './dag-state-ordering.mjs';
 import { observeSockets } from './heartbeat-liveness.mjs';
 import { parseChatServerFrame } from '../../frontend/src/lib/chatWsParse.ts';
+import { parseTaskUpdated } from '../../frontend/src/features/split/activityParseTask.ts';
+import { parseTaskDigest } from '../../frontend/src/features/workspace/activityDigest.ts';
 
 const output = process.env.QA_HELPER_EVIDENCE;
 const save = async (name, body) => { if (output) { await mkdir(output, { recursive: true }); await writeFile(resolve(output, name), JSON.stringify(body, null, 2) + '\n'); } };
@@ -18,12 +20,18 @@ test('CLI rejects malformed flags without launching a browser; fixtures retain r
   assert.deepEqual(parseArgs(['--evidence-dir', '/tmp/proof']), { evidenceDir: '/tmp/proof' });
   for (const args of [[], ['--evidence-dir'], ['--other', 'value'], ['--evidence-dir', '--oops'], ['--evidence-dir', 'x', '--evidence-dir', 'y']]) assert.throws(() => parseArgs(args));
   const row = taskRow('completed', 1, { raw_status: 'running' });
-  const frame = overviewFrame([], { snapshots: [{ name: 'omo.task.updated', oversized: true }],
-    taskDigest: { tasks: [{ task_id: row.task_id, status: row.status, raw_status: row.raw_status, updated_at: row.updated_at }], truncated: true } });
+  const frame = overviewFrame([row], { truncated: { task: true, dag: false } });
   const parsed = parseChatServerFrame(frame);
   assert.equal(parsed?.type, 'sessions.activity');
-  assert.deepEqual(parsed.taskDigest, frame.taskDigest, 'actual production boundary accepts exact compact correction');
+  assert.deepEqual(parsed.running, { agents: 0, tasks: 0, dag: 0 }, 'corrected task status controls the live scalar');
+  assert.equal(parsed.done, 1); assert.deepEqual(parsed.truncated, frame.truncated);
+  const compact = { tasks: [{ task_id: row.task_id, status: row.status, raw_status: row.raw_status,
+    updated_at: row.updated_at }], truncated: true };
+  assert.deepEqual(parseTaskDigest(compact)?.tasks[0], { taskId: row.task_id, status: 'completed',
+    rawStatus: 'running', updatedAt: row.updated_at }, 'attached compact detail retains raw provenance');
+  assert.equal(parseTaskUpdated(taskSnapshot([row]))?.tasks[0].rawStatus, 'running');
   assert.equal(parseChatServerFrame({ ...frame, sessionId: null }), null, 'null routing identity is invalid at actual boundary');
+  assert.equal(parseChatServerFrame({ ...frame, running: { agents: -1 } }), null, 'negative control: invalid exact scalar');
   assert.equal(transcript().length, 160);
   assert.equal(transcript().at(-1).parentId, 'ordering-entry-158');
 });
@@ -38,8 +46,10 @@ test('REST and overview markers own their tasks without aliasing the target; exp
     assert.equal(parsed?.type, 'sessions.activity');
     assert.equal(parsed.sessionId, identity.sessionId);
     assert.equal(parsed.durableSessionId, identity.durableSessionId ?? identity.sessionId);
-    assert.equal(parsed.snapshots[0].data.parent_session_id, parsed.durableSessionId);
-    assert.deepEqual(parsed.snapshots[0].data.tasks, rows);
+    assert.equal(parsed.running.agents, 1);
+    assert.equal(parsed.running.tasks, 1);
+    assert.equal(Object.hasOwn(parsed, 'snapshots'), false, 'overview never exposes attached task topology');
+    assert.equal(taskSnapshot(rows, parsed.durableSessionId).parent_session_id, parsed.durableSessionId);
     if (identity.replacesSessionId) assert.equal(parsed.replacesSessionId, identity.replacesSessionId);
   }
 });

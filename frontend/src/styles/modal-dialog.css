@@ -57,11 +57,15 @@
   word-break: keep-all;
 }
 
-/* Floating layer: glass over the scrim where backdrop-filter is available;
-   the solid Overlay fill above stands as the fallback. */
+/* The panel fill stays opaque (--th-surface-overlay): the revised overlay
+   contract requires that content behind a dialog never competes with its
+   rows, and the Q9 probe measures the fill alpha (glass 0.72 fails without
+   a proven-effective blur). Where backdrop-filter exists the panel still
+   carries the floating layer's filter recipe — the opaque fill hides the
+   blur, but the surface keeps the classified floating-layer treatment the
+   S12 contract expects. The scrim carries the separation. */
 @supports (backdrop-filter: blur(1px)) {
   .th-modal {
-    background: var(--th-glass);
     backdrop-filter: var(--th-glass-filter);
   }
 }

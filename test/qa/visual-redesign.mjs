@@ -293,7 +293,7 @@ async function setupLive(browser, options = {}) {
   } catch (error) {
     if (context) await context.close();
     const cleanup = await fixture.stop();
-    throw new Error(`Live setup failed; cleanup=${JSON.stringify(cleanup)}`, { cause: error });
+    throw new Error(`Live setup failed: ${error instanceof Error ? error.message : String(error)}; cleanup=${JSON.stringify(cleanup)}`, { cause: error });
   }
 }
 
@@ -413,7 +413,7 @@ async function driveStateColors(browser, ctx) {
   } catch (error) {
     notes.push(`model picker not reached: ${error instanceof Error ? error.message.split('\n')[0] : error}`);
   }
-  const result = await probe(env.page, probeStateColors);
+  const result = await probe(env.page, probeStateColors, { requireStates: ['success', 'error', 'accent'] });
   result.measurements.surfaceNotes = notes;
   result.measurements.motion = await motionSweep(env.page);
   const shot = await screenshot(env.page, ctx, '');
@@ -1079,6 +1079,43 @@ async function waitForLoadedEditor(page) {
   }, fileContent, { timeout: 8000 });
 }
 
+/** S19 samples painted geometry only after finite transitions throughout the
+ * page finish, including the activity thumb outside the opened surface. */
+async function settleContrastLayout(page) {
+  await page.evaluate(async () => {
+    document.documentElement.getBoundingClientRect();
+    const animations = document.getAnimations().filter(animation =>
+      animation.playState === 'running' && Number.isFinite(animation.effect?.getComputedTiming().iterations));
+    let timeout;
+    try {
+      await Promise.race([
+        Promise.allSettled(animations.map(animation => animation.finished)),
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('S19 contrast animation did not settle')), 5000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timeout);
+    }
+    document.documentElement.getBoundingClientRect();
+  });
+}
+
+/** Arm the form's visible-input condition before navigation. Auth check and
+ * bundle hydration may complete slowly when another Chrome capture is active;
+ * neither a mounted shell nor an elapsed fixed delay establishes readiness. */
+export async function waitForLoginForm(page, navigate, timeoutMs = 45_000) {
+  const selector = '.th-login form #th-password[type="password"]';
+  const ready = page.locator(selector).waitFor({ state: 'visible', timeout: timeoutMs })
+    .then(() => null, error => error);
+  await navigate();
+  const error = await ready;
+  if (error) throw new Error(
+    `S19 login form with visible password input (${selector}) did not mount within ${timeoutMs}ms after auth check 401`,
+    { cause: error },
+  );
+}
+
 async function driveSurfaces(browser, ctx) {
   const env = await setupSurfaces(browser, ctx);
   const page = env.page;
@@ -1092,6 +1129,7 @@ async function driveSurfaces(browser, ctx) {
   const scan = async (surface, settleRoot, prepare) => {
     try {
       await prepare();
+      await settleContrastLayout(page);
       const result = await probe(page, probeContrastSurface, { surface, bodyMin: CONTRAST_BODY_MIN, faintMin: CONTRAST_FAINT_MIN });
       measurements.surfaces.push({ surface, pass: result.pass, measurements: result.measurements });
       failures.push(...result.failures.map(f => `${surface}: ${f}`));
@@ -1222,9 +1260,10 @@ async function driveSurfaces(browser, ctx) {
   env.page = loginPage;
   const savedErrors = env.errors;
   try {
-    await loginPage.goto(env.fixture.url);
-    await loginPage.waitForSelector('.th-login', { timeout: 6000 });
+    await waitForLoginForm(loginPage, () =>
+      loginPage.goto(env.fixture.url, { waitUntil: 'domcontentloaded', timeout: 45_000 }));
     await settleAnimations(loginPage, '.th-login');
+    await settleContrastLayout(loginPage);
     const result = await probe(loginPage, probeContrastSurface, { surface: 'login', bodyMin: CONTRAST_BODY_MIN, faintMin: CONTRAST_FAINT_MIN });
     measurements.surfaces.push({ surface: 'login', pass: result.pass, measurements: result.measurements });
     failures.push(...result.failures.map(f => `login: ${f}`));
@@ -1366,6 +1405,7 @@ const DRIVERS = {
 // ---------------------------------------------------------------------------
 
 const PLUGIN_GLOB = 'visual-redesign-scenarios-*.mjs';
+const EMPHASIS_PLUGIN = 'emphasis-restore-scenarios.mjs';
 
 /** Import every plugin module in `dir` (sorted; later files override earlier
  * ones and built-in stubs). Returns one entry per file
@@ -1373,8 +1413,10 @@ const PLUGIN_GLOB = 'visual-redesign-scenarios-*.mjs';
 export async function loadScenarioPlugins(dir) {
   // Colocated unit-test modules (`*.test.mjs`) match the glob too; importing
   // them registers bun:test suites, so they are never plugins.
-  const files = Array.from(new Bun.Glob(PLUGIN_GLOB).scanSync({ cwd: dir }))
-    .filter(file => !file.endsWith('.test.mjs')).sort();
+  const files = [
+    ...Array.from(new Bun.Glob(PLUGIN_GLOB).scanSync({ cwd: dir })),
+    ...Array.from(new Bun.Glob(EMPHASIS_PLUGIN).scanSync({ cwd: dir })),
+  ].filter(file => !file.endsWith('.test.mjs')).sort();
   const plugins = [];
   for (const file of files) {
     try {
@@ -1461,8 +1503,29 @@ async function screenshot(page, ctx, suffix) {
       } finally {
         clearTimeout(timer);
       }
+      // The 0s visibility transition starts after the transform transition.
+      // It may not be in getAnimations() yet when the inert attribute lands;
+      // subscribe to its actual completion rather than checking that frame.
       if (getComputedStyle(sidebar).visibility !== 'hidden') {
-        throw new Error('mobile drawer is inert but still visible after its exit animations');
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            cleanup();
+            reject(new Error('mobile drawer is inert but still visible after its exit animations'));
+          }, 2500);
+          function cleanup() {
+            clearTimeout(timer);
+            sidebar.removeEventListener('transitionend', settled);
+            sidebar.removeEventListener('transitioncancel', settled);
+          }
+          function settled() {
+            if (getComputedStyle(sidebar).visibility !== 'hidden') return;
+            cleanup();
+            resolve();
+          }
+          sidebar.addEventListener('transitionend', settled);
+          sidebar.addEventListener('transitioncancel', settled);
+          requestAnimationFrame(settled);
+        });
       }
     });
   }
@@ -1588,7 +1651,7 @@ async function main() {
 
     if (baselineMode) {
       await writeFile(join(evidence, 'baseline-counts.json'), `${JSON.stringify({
-        generatedAt: new Date().toISOString(), note: 'captured by visual-redesign.mjs --baseline; S4 compares borderedCount <= 50% of this',
+        generatedAt: new Date().toISOString(), note: 'captured by visual-redesign.mjs --baseline; S4 compares non-tool borders <= 50% of baseline and allows one neutral hairline per tool card',
         counts: baselineCounts,
       }, null, 2)}\n`);
     }

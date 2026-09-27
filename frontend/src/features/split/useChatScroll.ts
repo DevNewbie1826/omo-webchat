@@ -20,6 +20,7 @@ export interface ChatScrollState {
   readonly showScrollToBottom: boolean;
   readonly onScroll: UIEventHandler<HTMLDivElement>;
   readonly scrollToBottom: (options?: { automatic?: boolean }) => void;
+  readonly holdDisclosurePosition: () => void;
   readonly isFollowing: () => boolean;
   readonly isReaderInputActive: () => boolean;
   readonly noteProgrammaticWrite: (origin: ProgrammaticWriteOrigin) => void;
@@ -38,6 +39,8 @@ export function useChatScroll(
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
+  const disclosureAnchorRef = useRef(false);
+  const disclosureReaderMotionRef = useRef(false);
   const readerEngagedRef = useRef(false);
   const lastReaderSignalRef = useRef(-Infinity);
   // Physical contacts survive an explicit handoff; only their ownership is
@@ -53,6 +56,14 @@ export function useChatScroll(
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
 
   const isFollowing = useCallback(() => followRef.current, []);
+  const holdDisclosurePosition = useCallback(() => {
+    // A user opening a disclosure is reading that record. Content growth
+    // must not re-pin to the bottom until reader motion or an explicit jump.
+    disclosureAnchorRef.current = true;
+    disclosureReaderMotionRef.current = false;
+    lastScrollEventRef.current = null;
+    followRef.current = false;
+  }, []);
   const isReaderInputActive = useCallback(() =>
     [...contactsRef.current.values()].some((contact) => contact.owns)
       || performance.now() - lastReaderSignalRef.current <= READER_INPUT_GRACE_MS, []);
@@ -84,7 +95,20 @@ export function useChatScroll(
       contact.x = event.clientX;
       contact.y = event.clientY;
       contact.owns = true;
+      disclosureReaderMotionRef.current = true;
       noteSignal();
+    };
+    const readerMove = (): void => {
+      disclosureReaderMotionRef.current = true;
+      noteSignal();
+    };
+    const keyDown = (event: KeyboardEvent): void => {
+      noteSignal();
+      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key) ||
+        (event.key === " " && !(event.target instanceof Element &&
+          event.target.closest(".th-tool-head, .th-chat-thinking-head")))) {
+        disclosureReaderMotionRef.current = true;
+      }
     };
     const scrollEnd = (): void => {
       lastReaderSignalRef.current = -Infinity;
@@ -97,11 +121,11 @@ export function useChatScroll(
     };
     element.addEventListener("pointerdown", pointerDown, { passive: true });
     element.addEventListener("pointermove", pointerMove, { passive: true });
+    element.addEventListener("keydown", keyDown, { passive: true });
     const listeners = [
       ["touchstart", noteSignal],
-      ["touchmove", noteSignal],
-      ["wheel", noteSignal],
-      ["keydown", noteSignal],
+      ["touchmove", readerMove],
+      ["wheel", readerMove],
       ["scrollend", scrollEnd],
     ] as const;
     for (const [event, listener] of listeners) element.addEventListener(event, listener, { passive: true });
@@ -111,6 +135,7 @@ export function useChatScroll(
     return () => {
       element.removeEventListener("pointerdown", pointerDown);
       element.removeEventListener("pointermove", pointerMove);
+      element.removeEventListener("keydown", keyDown);
       window.removeEventListener("blur", blur);
       for (const [event, listener] of listeners) element.removeEventListener(event, listener);
       window.removeEventListener("pointerup", pointerEnd, true);
@@ -139,6 +164,9 @@ export function useChatScroll(
     recentProgrammaticWrite(value) !== undefined, [recentProgrammaticWrite]);
 
   const scrollToBottom = useCallback((options?: { automatic?: boolean }) => {
+    if (options?.automatic && disclosureAnchorRef.current) return;
+    disclosureAnchorRef.current = false;
+    disclosureReaderMotionRef.current = false;
     if (!options?.automatic) {
       lastReaderSignalRef.current = -Infinity;
       for (const contact of contactsRef.current.values()) contact.owns = false;
@@ -160,6 +188,15 @@ export function useChatScroll(
   const updateIntent = useCallback((echoOrigin?: ProgrammaticWriteOrigin, readerMotion = false) => {
     const element = scrollRef.current;
     if (!element) return;
+    if (disclosureAnchorRef.current && !readerMotion) {
+      // Keep the mobile button's reserved strip until the reader explicitly
+      // resumes following. Removing it during a near-end collapse expands
+      // the viewport by 60px and moves the clicked record even when its row
+      // and all following rows have already been measured correctly.
+      setShowScrollToBottom(true);
+      return;
+    }
+    disclosureAnchorRef.current = false;
     // Only the history fill locks attach intent against unattributed movement.
     if (historyWarming && !readerEngagedRef.current) {
       followRef.current = true;
@@ -208,7 +245,8 @@ export function useChatScroll(
       && distance > 0 && distance <= MOTION_STREAK_DISTANCE;
     const unwritten = !isRecentProgrammaticWrite(pos);
     const readerOwned = isReaderInputActive();
-    const readerMotion = readerOwned || (continuingMotion && previous.reader);
+    const readerMotion = (readerOwned && (!disclosureAnchorRef.current || disclosureReaderMotionRef.current))
+      || (continuingMotion && previous.reader);
     if (continuingMotion || unwritten) {
       lastScrollEventRef.current = { pos, at, reader: readerMotion };
       if (readerMotion) lastReaderSignalRef.current = at;
@@ -249,6 +287,7 @@ export function useChatScroll(
     showScrollToBottom,
     onScroll,
     scrollToBottom,
+    holdDisclosurePosition,
     isFollowing,
     isReaderInputActive,
     noteProgrammaticWrite,

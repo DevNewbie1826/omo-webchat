@@ -123,6 +123,18 @@ describe("ActivityShelf tabs", () => {
     expect(panelOf("dag").querySelector(".th-activity-dag")).not.toBeNull();
   });
 
+  it("uses the compact branch-row height budget only on the DAG tab", () => {
+    renderShelf(harness, activityState({ todo: todoPhases, dags: [makeDag()] }));
+    openPanel(harness.container);
+    const panel = requireElement(harness.container.querySelector(".th-activity-panel"), "activity panel");
+    expect(panel.classList.contains("th-activity-panel--dag")).toBe(false);
+
+    selectTab(harness.container, "dag");
+    expect(panel.classList.contains("th-activity-panel--dag")).toBe(true);
+    selectTab(harness.container, "todo");
+    expect(panel.classList.contains("th-activity-panel--dag")).toBe(false);
+  });
+
   it("initially selects the first available content in user order", async () => {
     renderShelf(harness, activityState({ todo: todoPhases, tasks: [makeTask()], dags: [makeDag()] }));
     openPanel(harness.container);
@@ -439,5 +451,8 @@ describe("ActivityShelf tabs", () => {
     const lines = [...harness.container.querySelectorAll(".th-activity-gnode[data-node='k'] .th-activity-glabel")];
     expect(lines.length).toBe(2);
     expect(lines.map((line) => line.textContent).join("")).toContain("매우 긴 한글");
+    expect(lines.map((line) => line.textContent).join("").replace(/\s/g, ""))
+      .toBe(longKorean.replace(/\s/g, ""));
+    expect(lines.every((line) => !line.textContent?.includes("…"))).toBe(true);
   });
 });

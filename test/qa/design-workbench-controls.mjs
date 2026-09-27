@@ -1,20 +1,17 @@
 import assert from 'node:assert/strict';
 import { arm, armShelf, complete, wheel, output, fileContent } from './design-workbench-fixture.mjs';
 import { measure, preservedGeometry, modelRows, contentAnchor, assertAnchor, semanticColor } from './design-workbench-measure.mjs';
+import { parseColor } from './visual-redesign-probes.mjs';
 
-/** Open model popover must follow the floating-layer token, not an arbitrary
- * colour: resolved --th-glass (and a real backdrop-filter) where that filter
- * is supported, otherwise the solid --th-surface-overlay fallback. The narrow
- * sheet keeps the solid fallback even when the filter is supported. Every
- * other measured surface must still match its own semantic token. */
+/** The model popover stays on the opaque floating-layer token at every width.
+ * Every other measured surface must still match its own semantic token. */
 export function assertModelOverlayFollowsToken(measurement) {
   const roles = measurement.roles.filter(role => role.actual);
   assert(roles.every(role => semanticColor(role.actual) === semanticColor(role.expected)), 'model overlay follows semantic token');
   const overlay = measurement.roles.find(role => role.selector === '.th-model-picker-popover');
   assert(overlay?.actual, 'model overlay follows semantic token');
-  if (overlay.backdropSupported && !overlay.sheet) {
-    assert(overlay.backdropFilter && overlay.backdropFilter !== 'none', 'model overlay follows semantic token');
-  }
+  assert(overlay.token === '--th-surface-overlay' && parseColor(overlay.actual)?.a >= 0.999,
+    'model overlay follows semantic token');
 }
 
 export async function exerciseControls(q, shot) {
@@ -56,6 +53,11 @@ export async function exerciseControls(q, shot) {
   const trigger = page.locator('.th-model-picker-btn');
   await arm(page, () => !!document.querySelector('.th-model-picker-popover'));
   await trigger.click(); await complete(page);
+  await page.locator('.th-model-picker-popover').evaluate(async popover => {
+    const entrances = popover.getAnimations({ subtree: true })
+      .filter(animation => animation.effect?.getComputedTiming()?.iterations !== Infinity);
+    await Promise.allSettled(entrances.map(animation => animation.finished));
+  });
   const rows = await modelRows(page);
   assert.equal(rows.length, 53); assert(rows.some(row => row.complete && row.hit), 'complete model row reachable on open');
   const open = await measure(page);

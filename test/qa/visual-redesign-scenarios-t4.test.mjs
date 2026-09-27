@@ -25,9 +25,10 @@ import { pageKit } from './visual-redesign-probes.mjs';
 import {
   T4_RUN, T4_STAGE_ORDER, autoScrollVerdict, cometVerdict, countFontVerdict, dagGlyphAccentVerdict,
   dagReducedMotionVerdict, dagRunningMotionVerdict, edgeShapeVerdict, findRunningEdge, firstFamily,
-  denseFadeVerdict, glyphOrderVerdict, haloVerdict, nodeStrokeViolations, overlapVerdict, progressVerdict,
+  denseFadeVerdict, footerInsidePanelVerdict, fulfilledEdgeContrastVerdict, glyphOrderVerdict,
+  haloVerdict, nodeStrokeViolations, nodeTintVerdict, overlapVerdict, progressVerdict,
   probeDagGraph, probeDagList, probeDagRunningMotion, probeDenseViewport, probeShelfTabs, probeT4RunningIndicators,
-  railVerdict, rovingVerdict, scaleXFromTransform, scenarios, stableTransformVerdict,
+  railVerdict, rovingVerdict, scaleXFromTransform, scenarios, stableTransformVerdict, visibleMixedNodesVerdict,
   settleTablist,
   t4ActivityFrame, t4CatalogPayload, t4DocumentPayload, t4ExpectedProgress, t4ExtensionFrames,
   t4RunCounts, t4StageRoles, t4StageRun, t4StageSpec, thumbVerdict,
@@ -212,21 +213,73 @@ describe('glyphOrderVerdict (S14 glyph left of label)', () => {
   });
 });
 
-describe('nodeStrokeViolations (S14 no state strokes)', () => {
-  const tokens = { success: '#16a34a', warning: '#d97706', error: '#dc2626', accent: '#8b7cf6' };
-  test('state-token strokes are flagged; neutral hairlines are not', () => {
-    const violations = nodeStrokeViolations([
-      { id: 'k0', stroke: 'rgb(22, 163, 74)' },   // success stroke (baseline ok-node)
-      { id: 'k6', stroke: 'rgb(217, 119, 6)' },   // warning stroke (baseline running-node)
-      { id: 'k7', stroke: 'rgba(255, 255, 255, 0.06)' }, // hairline
-    ], tokens);
-    expect(violations.pass).toBe(false);
-    expect(violations.violations.map(v => v.id).sort()).toEqual(['k0', 'k6']);
-    const clean = nodeStrokeViolations([{ id: 'k0', stroke: 'rgba(255,255,255,0.06)' }, { id: 'k6', stroke: 'rgb(29,30,34)' }], tokens);
-    expect(clean.pass).toBe(true);
+describe('nodeStrokeViolations (S14 DAG card exception)', () => {
+  const tokens = { '--th-success': '#16a34a', '--th-error': '#dc2626',
+    '--th-border-surface': 'rgba(255,255,255,.06)' };
+  const node = (id, state, stroke, opacity = '1') => ({
+    id, cls: `th-activity-gnode th-activity-gnode--${state}`,
+    cardFound: true, stroke, strokeWidth: '1px', strokeOpacity: opacity,
   });
-  test('accent strokes on node cards are flagged too (state-by-colour)', () => {
-    expect(nodeStrokeViolations([{ id: 'k6', stroke: '#8b7cf6' }], tokens).pass).toBe(false);
+  test('completed green and failed/cancelled red cards pass even with subtle stroke opacity', () => {
+    const nodes = [node('done', 'ok', '#16a34a', '.16'),
+      node('failed', 'failed', '#dc2626', '.16'), node('cancelled', 'cancelled', '#dc2626', '.16'),
+      node('running', 'running', 'rgba(255,255,255,.06)'),
+      node('pending', 'pending', 'rgba(255,255,255,.06)')];
+    expect(nodeStrokeViolations(nodes, tokens).pass).toBe(true);
+  });
+  test('completed or failed cards without matching stroke fail, as do coloured running cards', () => {
+    for (const candidate of [node('done', 'ok', 'rgba(255,255,255,.06)'),
+      node('failed', 'error', 'rgba(255,255,255,.06)'),
+      node('done', 'ok', '#dc2626'), node('running', 'running', '#8b7cf6'),
+      node('pending', 'pending', '#16a34a'), node('failed', 'failed', '#dc2626', '0')]) {
+      const verdict = nodeStrokeViolations([candidate], tokens);
+      expect(verdict.pass, candidate.id).toBe(false);
+      expect(verdict.violations[0].id).toBe(candidate.id);
+    }
+  });
+});
+
+describe('Q3 semantic graph verdicts', () => {
+  const roles = { completed: ['k0'], failed: ['f'], running: ['k6'] };
+  const tints = { completed: 'rgba(63, 192, 132, 0.12)', failed: 'rgba(249, 128, 133, 0.12)',
+    running: 'color(srgb 0.545 0.486 0.965 / 0.12)' };
+  const nodes = [
+    { id: 'k0', cls: 'th-activity-gnode--ok', cardFound: true, fill: tints.completed, stroke: '#3fc084' },
+    { id: 'f', cls: 'th-activity-gnode--error', cardFound: true, fill: tints.failed, stroke: '#f98085' },
+    { id: 'k6', cls: 'th-activity-gnode--running', cardFound: true, fill: tints.running, stroke: 'rgba(255,255,255,0.06)' },
+  ];
+  const strokes = { '--th-success': '#3fc084', '--th-error': '#f98085',
+    '--th-border-surface': 'rgba(255,255,255,.06)' };
+  test('matching computed tint and state stroke pass; drained grey fill and neutral completed border fail', () => {
+    expect(nodeTintVerdict(nodes, roles, tints).pass).toBe(true);
+    expect(nodeStrokeViolations(nodes, strokes).pass).toBe(true);
+    expect(nodeTintVerdict(nodes.map(node => ({ ...node, fill: '#25262b' })), roles, tints).pass).toBe(false);
+    expect(nodeStrokeViolations([{ ...nodes[0], stroke: 'rgba(255,255,255,.06)' }, ...nodes.slice(1)], strokes).pass).toBe(false);
+    expect(nodeStrokeViolations([nodes[0], { ...nodes[1], stroke: 'rgba(255,255,255,.06)' }, nodes[2]], strokes).pass).toBe(false);
+    expect(nodeTintVerdict(nodes.slice(0, 2), roles, tints).pass).toBe(false);
+  });
+  test('fulfilled neutral lines and arrowheads must each reach 3:1 over graph', () => {
+    const edges = [{ cls: 'th-activity-gedge th-activity-gedge--fulfilled',
+      stroke: '#c4c4cc', strokeOpacity: '1' }];
+    const heads = [{ cls: 'th-activity-gedge-head th-activity-gedge-head--fulfilled',
+      fill: '#c4c4cc', fillOpacity: '1' }];
+    expect(fulfilledEdgeContrastVerdict(edges, heads, '#1d1e22', 1, ['#3fc084']).pass).toBe(true);
+    expect(fulfilledEdgeContrastVerdict(edges.map(edge => ({ ...edge, strokeOpacity: '0.4' })), heads, '#1d1e22', 1).pass).toBe(false);
+    expect(fulfilledEdgeContrastVerdict(edges, heads.map(head => ({ ...head, fillOpacity: '0.4' })), '#1d1e22', 1).pass).toBe(false);
+    expect(fulfilledEdgeContrastVerdict(edges.map(edge => ({ ...edge, stroke: '#3fc084' })), heads, '#1d1e22', 1, ['#3fc084']).pass).toBe(false);
+    expect(fulfilledEdgeContrastVerdict(edges, [], '#1d1e22', 1).pass).toBe(false);
+  });
+  test('at 1280 five whole card boxes and contained footer pass; clipped boxes and footer fail', () => {
+    const scroller = { rect: rect(0, 0, 900, 300) };
+    const visible = Array.from({ length: 5 }, (_, i) => ({
+      id: `k${i}`, cardRect: rect(10 + i * 178, 10, 160, 60),
+    }));
+    expect(visibleMixedNodesVerdict({ viewportWidth: 1280, scroller, nodes: visible }).pass).toBe(true);
+    expect(visibleMixedNodesVerdict({ viewportWidth: 1280, scroller, nodes: visible.map((node, i) =>
+      i === 4 ? { ...node, cardRect: rect(820, 10, 160, 60) } : node) }).pass).toBe(false);
+    const footer = { panel: rect(0, 0, 900, 300), summary: rect(12, 260, 876, 30) };
+    expect(footerInsidePanelVerdict(footer).pass).toBe(true);
+    expect(footerInsidePanelVerdict({ ...footer, summary: rect(12, 280, 876, 30) }).pass).toBe(false);
   });
 });
 
@@ -243,22 +296,41 @@ describe('findRunningEdge + cometVerdict (S14 comet)', () => {
     expect(findRunningEdge(edges, rect(900, 400, 50, 50), toRect)).toBeNull();
   });
   test('comet verdict: animated + riding the running edge passes; static or off-edge fails; missing fails', () => {
-    const riding = [{ found: true, rect: rect(250, 65, 40, 18), runningAnimations: 2 }];
+    const riding = [{ found: true, d: edges[0].d, rect: edges[0].rect, movingAnimations: 1 }];
     expect(cometVerdict(riding, edges[0]).pass).toBe(true);
-    expect(cometVerdict([{ found: true, rect: rect(250, 65, 40, 18), runningAnimations: 0 }], edges[0]).pass).toBe(false);
-    expect(cometVerdict([{ found: true, rect: rect(700, 300, 40, 18), runningAnimations: 2 }], edges[0]).pass).toBe(false);
+    expect(cometVerdict([{ ...riding[0], movingAnimations: 0 }], edges[0]).pass).toBe(false);
+    expect(cometVerdict([{ ...riding[0], rect: rect(700, 300, 40, 18) }], edges[0]).pass).toBe(false);
+    expect(cometVerdict([{ ...riding[0], d: 'M0 0 C 1 1, 2 2, 3 3' }], edges[0]).pass).toBe(false);
     expect(cometVerdict([], edges[0]).pass).toBe(false);
     expect(cometVerdict(riding, null).pass).toBe(false);
+    expect(cometVerdict([], { ...edges[0], length: 8 }).pass).toBe(false);
+    expect(cometVerdict([], { ...edges[0], length: 16 }).pass).toBe(false);
+    expect(cometVerdict([], { ...edges[0], length: 24 }).pass).toBe(false);
+    expect(cometVerdict([], { ...edges[0], length: 64 }).pass).toBe(false);
   });
 });
 
 describe('haloVerdict (S14 running node halo)', () => {
   const nodeRect = rect(300, 50, 160, 60);
-  test('in-group or intersecting halo passes; invisible or missing fails', () => {
-    expect(haloVerdict([{ found: true, rect: rect(295, 45, 170, 70), insideRunningNode: true }], nodeRect).pass).toBe(true);
-    expect(haloVerdict([{ found: true, rect: rect(295, 45, 170, 70), insideRunningNode: false }], nodeRect).pass).toBe(true);
-    expect(haloVerdict([{ found: true, rect: rect(0, 0, 0, 0), insideRunningNode: false }], nodeRect).pass).toBe(false);
-    expect(haloVerdict([], nodeRect).pass).toBe(false);
+  const painted = { found: true, rect: rect(295, 45, 170, 70), insideRunningNode: true,
+    visible: true, opacity: '1', fillOpacity: '1', fill: 'rgba(139,124,246,0.35)',
+    animations: [{ kind: 'animation', playState: 'running', iterations: Infinity, duration: 700 }] };
+  test('visible accent glow with a fast breath passes; grey/slow/hidden/missing fail', () => {
+    expect(haloVerdict([painted], nodeRect, painted.fill).pass).toBe(true);
+    expect(haloVerdict([{ ...painted, insideRunningNode: false }], nodeRect, painted.fill).pass).toBe(true);
+    expect(haloVerdict([{ ...painted, fill: 'rgba(128,128,128,0.35)' }], nodeRect, painted.fill).pass).toBe(false);
+    expect(haloVerdict([{ ...painted, animations: [{ kind: 'animation', playState: 'running', iterations: Infinity, duration: 1600 }] }], nodeRect, painted.fill).pass).toBe(false);
+    expect(haloVerdict([{ ...painted, opacity: '0' }], nodeRect, painted.fill).pass).toBe(false);
+    expect(haloVerdict([{ ...painted, rect: rect(0, 0, 0, 0) }], nodeRect, painted.fill).pass).toBe(false);
+    expect(haloVerdict([], nodeRect, painted.fill).pass).toBe(false);
+  });
+  test('hollow stroke halo passes; invisible or grey strokes fail', () => {
+    const ring = { ...painted, fill: 'none', stroke: painted.fill,
+      strokeWidth: '4px', strokeOpacity: '1' };
+    expect(haloVerdict([ring], nodeRect, painted.fill).pass).toBe(true);
+    expect(haloVerdict([{ ...ring, strokeWidth: '0px' }], nodeRect, painted.fill).pass).toBe(false);
+    expect(haloVerdict([{ ...ring, strokeOpacity: '0' }], nodeRect, painted.fill).pass).toBe(false);
+    expect(haloVerdict([{ ...ring, stroke: 'rgb(128,128,128)' }], nodeRect, painted.fill).pass).toBe(false);
   });
 });
 
@@ -378,10 +450,15 @@ describe('thumbVerdict + rovingVerdict + countFontVerdict (S13)', () => {
 });
 
 describe('dagRunningMotion / accent / reduced verdicts (S8)', () => {
-  test('normal motion requires an animated running glyph', () => {
-    const animated = { runningGlyphs: [{ found: true, where: 'circle.gstatus--running', runningAnimations: 1 }] };
+  test('normal motion requires a running glyph with period <=800ms', () => {
+    const animated = { runningGlyphs: [{ found: true, where: 'circle.gstatus--running', runningAnimations: 1,
+      animations: [{ kind: 'animation', playState: 'running', iterations: Infinity, duration: 700 }] }] };
     expect(dagRunningMotionVerdict(animated).pass).toBe(true);
-    const staticGlyph = { runningGlyphs: [{ found: true, where: 'circle.gstatus--running', runningAnimations: 0 }] };
+    expect(dagRunningMotionVerdict({ ...animated, shelfGlyphs: [{ where: 'span.th-activity-glyph--live',
+      animations: [{ kind: 'animation', playState: 'running', iterations: Infinity, duration: 1600 }] }] }).pass).toBe(false);
+    expect(dagRunningMotionVerdict({ runningGlyphs: [{ ...animated.runningGlyphs[0],
+      animations: [{ kind: 'animation', playState: 'running', iterations: Infinity, duration: 960 }] }] }).pass).toBe(false);
+    const staticGlyph = { runningGlyphs: [{ found: true, where: 'circle.gstatus--running', runningAnimations: 0, animations: [] }] };
     expect(dagRunningMotionVerdict(staticGlyph).pass).toBe(false);
     expect(dagRunningMotionVerdict({ runningGlyphs: [] }).pass).toBe(false);
   });
@@ -831,7 +908,18 @@ function buildDom(tree) {
       getClientRects: () => [{ left: 0, top: 0, right: 1, bottom: 1, width: 1, height: 1 }],
       getBoundingClientRect: () => ({ left: 0, top: 0, right: 1, bottom: 1, width: 1, height: 1 }),
       getAnimations: () => [],
+      style: {},
       ...options.host || {},
+    };
+    element.appendChild = child => {
+      child.parentElement = element;
+      element.children.push(child);
+      return child;
+    };
+    element.remove = () => {
+      const index = element.parentElement?.children.indexOf(element) ?? -1;
+      if (index >= 0) element.parentElement.children.splice(index, 1);
+      element.parentElement = null;
     };
     element.getAttribute = name => (element.attrs.has(name) ? element.attrs.get(name) : null);
     element.setAttribute = (name, value) => { element.attrs.set(name, String(value)); };
@@ -862,6 +950,7 @@ function buildDom(tree) {
   const documentElement = root;
   const document = {
     nodeType: 9, documentElement,
+    createElement: tag => make([tag]),
     querySelector: selector => collectAll({ children: [root] }).find(candidate => selectorMatches(candidate, selector)) ?? null,
     querySelectorAll: selector => collectAll({ children: [root] }).filter(candidate => selectorMatches(candidate, selector)),
   };
@@ -904,10 +993,17 @@ const computedFromStyles = styles => element => {
   const style = {
     display: 'block', visibility: 'visible', opacity: '1', transform: 'none', content: 'none',
     '--th-success': '#16a34a', '--th-warning': '#d97706', '--th-error': '#dc2626', '--th-accent': '#8b7cf6',
+    '--th-border-surface': 'rgba(255,255,255,0.06)',
+    '--th-success-bg': 'rgba(22,163,74,0.12)', '--th-error-bg': 'rgba(220,38,38,0.12)',
+    '--th-accent-bg': 'rgba(139,124,246,0.12)', '--th-accent-glow': 'rgba(139,124,246,0.35)',
+    backgroundColor: 'rgba(0,0,0,0)', fill: '#25262b', fillOpacity: '1',
+    strokeOpacity: '1',
     '--th-font-mono': '"JetBrains Mono", ui-monospace, monospace',
     '--th-font-sans': '"Pretendard Variable", sans-serif',
     ...(styles?.(element) ?? {}), ...inline,
   };
+  const variable = /^var\((--[\w-]+)\)$/.exec(element.style?.color ?? '');
+  if (variable) style.color = style[variable[1]];
   return new Proxy(style, { get: (target, property) => (property === 'getPropertyValue' ? name => target[name] ?? '' : target[property]) });
 };
 
@@ -920,15 +1016,15 @@ function withBox(element, x, y, width, height) {
 }
 
 function withAnimations(element, animations) {
-  element.getAnimations = () => animations.map(({ playState = 'running', iterations = Infinity, name = 'th-fake' } = {}) => ({
+  element.getAnimations = () => animations.map(({ playState = 'running', iterations = Infinity, duration = 700, name = 'th-fake' } = {}) => ({
     playState, kind: 'animation',
-    effect: { getComputedTiming: () => ({ iterations }), getKeyframes: () => ({ [name]: true }) },
+    effect: { getComputedTiming: () => ({ iterations, duration }), getKeyframes: () => [{ [name]: true }] },
   }));
   return element;
 }
 
 const spin = () => ({ name: 'th-dag-run-spin', iterations: Infinity });
-const cometLoop = () => ({ name: 'th-dag-comet', iterations: Infinity });
+const cometLoop = () => ({ name: 'strokeDashoffset', iterations: Infinity });
 
 // ----- S13: shelf tabs through the ACTUAL serialized probeShelfTabs ------
 
@@ -1059,7 +1155,14 @@ describe('T4 S8 scope via the serialized probeT4RunningIndicators', () => {
       ['span', { class: 'th-tool-glyph th-tool-glyph--running', style: `color: ${DIM}; background-color: #000000; border-top-color: #000000; fill: #000000` }],
       ['circle', { class: 'th-activity-gstatus th-activity-gstatus--running', style: `stroke: ${DIM}` }],
     ] }]] : []),
-    ...(treeDot ? [['span', { class: 'th-tree-running-dot', style: `background-color: ${DIM}` }]] : []),
+    ...(treeDot ? [
+      ['span', { class: 'th-tree-running', style: `color: ${DIM}` }, { children: [
+        ['span', { class: 'th-tree-running-dot', style: `background-color: ${DIM}` }],
+      ] }],
+      ['span', { class: 'th-overview-card-running', style: `color: ${DIM}` }, { children: [
+        ['span', { class: 'th-overview-card-running-dot', style: `background-color: ${DIM}` }],
+      ] }],
+    ] : []),
     ['div', { class: 'th-activity-shelf' }, { children: [
       ['div', { class: 'th-activity-dag-head' }, { children: [
         ['span', { class: 'th-activity-chip th-activity-chip--running', style: 'background-color: #3f3f46; color: #ededf0', '#text': 'Running' }],
@@ -1076,12 +1179,15 @@ describe('T4 S8 scope via the serialized probeT4RunningIndicators', () => {
           ['span', { class: 'th-activity-dnode-state', '#text': 'running' }],
         ] }],
       ] }],
-      ['span', { class: 'th-activity-glyph th-activity-glyph--running', style: `background-color: ${stroke}` }],
+      ['span', { class: 'th-activity-glyph th-activity-glyph--running th-activity-glyph--live', style: `background-color: ${stroke}` }],
       ...(statusWord ? [['span', { role: 'status', '#text': 'Running' }]] : []),
     ] }],
   ] }];
   const measure = async (tree, phase = 'accent') => {
     const dom = buildDom(tree);
+    for (const indicator of dom.document.querySelectorAll('.th-activity-shelf .th-activity-gstatus--running, .th-activity-glyph--live')) {
+      withAnimations(indicator, [spin()]);
+    }
     return runProbe(probeT4RunningIndicators, { phase }, dom, computedFromStyles());
   };
 
@@ -1127,6 +1233,8 @@ describe('T4 S8 scope via the serialized probeT4RunningIndicators', () => {
     expect(result.measurements.glyphs.every(glyphFact => glyphFact.matchesAccent === true)).toBe(true);
     expect(result.measurements.excludedSelectors).toContain('.th-tool-glyph');
     expect(result.measurements.excludedSelectors).toContain('.th-chat-transcript');
+    expect(result.measurements.excludedSelectors).toContain('.th-tree-running');
+    expect(result.measurements.excludedSelectors).toContain('.th-overview-card-running');
     expect(result.measurements.excludedSelectors).toContain('.th-tool-glyph--running');
     expect(result.measurements.excludedCounts['.th-tool-glyph']).toBe(1);
     expect(result.measurements.excludedCounts['.th-tool-glyph--running']).toBe(1);
@@ -1140,6 +1248,7 @@ describe('T4 S8 scope via the serialized probeT4RunningIndicators', () => {
     const calmDom = buildDom(shelf({ transcript: true, statusWord: true }));
     const tool = calmDom.document.querySelector('.th-tool-glyph--running');
     withAnimations(tool, [spin()]);
+    // Reduced-motion fixture: only the out-of-scope transcript animation survives.
     const calm = await runProbe(probeT4RunningIndicators, { phase: 'reduced' }, calmDom, computedFromStyles());
     expect(calm.pass).toBe(true);
     expect(calm.failures.join('\n')).not.toContain('th-tool-glyph');
@@ -1162,6 +1271,55 @@ describe('T4 S8 scope via the serialized probeT4RunningIndicators', () => {
 });
 
 // ----- S14: DAG graph through the ACTUAL serialized probeDagGraph ---------
+
+describe('S14 short-edge comet controls through the serialized graph probe', () => {
+  const measure = async (length, variant) => {
+    const d = `M100 52 C ${100 + length / 3} 52, ${100 + 2 * length / 3} 52, ${100 + length} 52`;
+    const dom = buildDom(['div', { class: 'th-activity-graph' }, { children: [
+      ['svg', {}, { children: [
+        ['path', { class: 'th-activity-gedge th-activity-gedge--flow', d }],
+        ...(variant === 'missing' ? [] : [['path', { class: 'th-activity-gedge-comet', d }]]),
+        ['g', { class: 'th-activity-gnode th-activity-gnode--ok', 'data-node': 'source' }],
+        ['g', { class: 'th-activity-gnode th-activity-gnode--running', 'data-node': 'target' }],
+      ], host: { viewBox: undefined } }],
+    ] }]);
+    const svg = dom.document.querySelector('svg');
+    withBox(svg, 0, 0, 400, 100);
+    withBox(dom.document.querySelector('[data-node="source"]'), 80, 32, 20, 40);
+    withBox(dom.document.querySelector('[data-node="target"]'), 100 + length, 32, 20, 40);
+    const edge = dom.document.querySelector('.th-activity-gedge--flow');
+    withBox(edge, 100, 50, length, 4);
+    edge.getTotalLength = () => length;
+    edge.getPointAtLength = at => ({ x: 100 + at, y: 52 });
+    const comet = dom.document.querySelector('.th-activity-gedge-comet');
+    if (comet) {
+      withBox(comet, 100 + (variant === 'detached' ? Math.max(5, length / 2) : 0), 50, length, 4);
+      if (variant !== 'static') withAnimations(comet, [variant === 'unrelated' ? spin() : cometLoop()]);
+    }
+    const facts = await runProbe(probeDagGraph, { sourceId: 'source', runningId: 'target' }, dom, computedFromStyles());
+    const runningEdge = findRunningEdge(facts.edges, facts.nodes[0].rect, facts.runningRect);
+    return { facts, runningEdge, verdict: cometVerdict(facts.comets, runningEdge) };
+  };
+
+  for (const length of [8, 16, 64]) {
+    for (const variant of ['missing', 'static', 'detached', 'unrelated']) {
+      test(`${length}px ${variant} comet fails after serialization`, async () => {
+        const { facts, runningEdge, verdict } = await measure(length, variant);
+        expect(facts.edges[0].length).toBe(length);
+        expect(runningEdge).not.toBeNull();
+        expect(verdict.pass, `${length}px ${variant}: ${JSON.stringify(verdict.measured)}`).toBe(false);
+      });
+    }
+    test(`${length}px attached moving comet passes after serialization`, async () => {
+      const { facts, runningEdge, verdict } = await measure(length, 'valid');
+      expect(facts.comets[0].runningAnimations).toBe(1);
+      expect(runningEdge.length).toBe(length);
+      expect(verdict.pass, verdict.failures.join('; ')).toBe(true);
+      expect(verdict.measured.riding).toBe(1);
+      expect(verdict.measured.tolerance).toBe(Math.min(2, length / 8));
+    });
+  }
+});
 
 describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph', () => {
   const node = (id, state, stroke, glyphLeft, wave) => ['g', { class: `th-activity-gnode th-activity-gnode--${state}`, 'data-node': id }, {
@@ -1187,18 +1345,18 @@ describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph
           redesigned
             ? ['path', { class: 'th-activity-gedge th-activity-gedge--flow', d: 'M166 36 C 190 36, 210 36, 234 36' }]
             : ['line', { class: 'th-activity-gedge', x1: 166, y1: 36, x2: 234, y2: 36 }],
-          redesigned ? ['circle', { class: 'th-dag-comet' }] : null,
+          redesigned ? ['path', { class: 'th-dag-comet', d: 'M166 36 C 190 36, 210 36, 234 36' }] : null,
           ['g', { class: 'th-activity-gnode th-activity-gnode--running', 'data-node': 'k6' }, {
             host: { transform: 'translate(1030, 6)' },
             children: [
-              ...(redesigned ? [['rect', { class: 'th-activity-gnode-halo', style: 'stroke: none' }]] : []),
+              ...(redesigned ? [['rect', { class: 'th-activity-gnode-halo', style: 'stroke: rgba(139,124,246,0.35); stroke-width: 4px; fill: none' }]] : []),
               ['rect', { class: 'th-activity-gnode-card', style: `stroke: ${redesigned ? 'rgba(255,255,255,0.06)' : 'rgb(217, 119, 6)'}` }],
               ['text', { class: 'th-activity-glabel', '#text': 'label k6' }],
               ['text', { class: 'th-activity-gstate', '#text': 'running' }],
               ['circle', { class: 'th-activity-gstatus th-activity-gstatus--running' }],
             ],
           }],
-          node('k0', 'ok', redesigned ? 'rgba(255,255,255,0.06)' : 'rgb(22, 163, 74)', true, 0),
+          node('k0', 'ok', '#16a34a', true, 0),
         ].filter(Boolean),
       }],
       ['div', { class: 'th-activity-dag-head' }, {
@@ -1245,9 +1403,9 @@ describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph
       progress.children[0].style = { transform: `scaleX(${6 / 11})` };
     }
     const comet = dom.document.querySelector('[class*="comet" i]');
-    if (comet) { withBox(comet, 180, 28, 12, 12); withAnimations(comet, [cometLoop()]); }
+    if (comet) { withBox(comet, 166, 26, 68, 20); withAnimations(comet, [cometLoop()]); }
     const halo = dom.document.querySelector('[class*="halo" i]');
-    if (halo) withBox(halo, k6X - 5, 1, 170, 70);
+    if (halo) { withBox(halo, k6X - 5, 1, 170, 70); withAnimations(halo, [spin()]); }
     const glyph = dom.document.querySelector('.th-activity-gstatus--running');
     if (glyph) withAnimations(glyph, [spin()]);
     const graphHost = dom.root;
@@ -1263,7 +1421,7 @@ describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph
     expect(nodeStrokeViolations(facts.nodes, facts.tokens).pass).toBe(false);
     expect(glyphOrderVerdict(facts.nodes).pass).toBe(false);
     expect(cometVerdict(facts.comets, findRunningEdge(facts.edges, sourceRect, facts.runningRect)).pass).toBe(false);
-    expect(haloVerdict(facts.halos, facts.runningRect).pass).toBe(false);
+    expect(haloVerdict(facts.halos, facts.runningRect, facts.tokens['--th-accent-glow']).pass).toBe(false);
     expect(progressVerdict(facts.progress.map(f => ({ ...f, scaleX: scaleXFromTransform(f.transform), inlineScaleX: scaleXFromTransform(f.inlineTransform) })), 6 / 11).pass).toBe(false);
     expect(autoScrollVerdict({ scroller: facts.scroller, runningRect: facts.runningRect }).pass).toBe(false);
   });
@@ -1276,7 +1434,7 @@ describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph
     expect(nodeStrokeViolations(facts.nodes, facts.tokens).pass).toBe(true);
     expect(glyphOrderVerdict(facts.nodes).pass).toBe(true);
     expect(cometVerdict(facts.comets, runningEdge).pass).toBe(true);
-    expect(haloVerdict(facts.halos, facts.runningRect).pass).toBe(true);
+    expect(haloVerdict(facts.halos, facts.runningRect, facts.tokens['--th-accent-glow']).pass).toBe(true);
     expect(progressVerdict(facts.progress.map(f => ({ ...f, scaleX: scaleXFromTransform(f.transform), inlineScaleX: scaleXFromTransform(f.inlineTransform) })), 6 / 11).pass).toBe(true);
     expect(facts.progress[0].countText).toBe('6/11 done');
     expect(progressVerdict(facts.progress.map(f => ({
@@ -1339,6 +1497,142 @@ describe('S14 adversarial + conforming fixtures via the serialized probeDagGraph
       scaleX: scaleXFromTransform(fact.transform), inlineScaleX: scaleXFromTransform(fact.inlineTransform),
     })), 6 / 11);
     expect(verdict.pass).toBe(true);
+  });
+});
+
+describe('Q3 mixed stage through serialized graph and S8 motion probes', () => {
+  const tint = { completed: 'rgba(22,163,74,0.12)', failed: 'rgba(220,38,38,0.12)',
+    running: 'rgba(139,124,246,0.12)' };
+  const node = (id, state) => ['g', { class: `th-activity-gnode th-activity-gnode--${state}`, 'data-node': id }, {
+    children: [
+      ...(state === 'running' ? [['rect', { class: 'th-activity-gnode-halo', style: 'fill: rgba(139,124,246,0.35)' }]] : []),
+      ['rect', { class: 'th-activity-gnode-card',
+        style: `fill: ${tint[state]}; stroke: ${state === 'completed' ? '#16a34a' : state === 'failed' ? '#dc2626' : 'rgba(255,255,255,0.06)'}` }],
+      ['text', { class: 'th-activity-glabel', '#text': id }],
+      ['text', { class: 'th-activity-gstate', '#text': state }],
+      ['circle', { class: `th-activity-gstatus th-activity-gstatus--${state}`, style: 'stroke: #8b7cf6' }],
+    ],
+  }];
+  const tree = () => ['div', { class: 'th-activity-panel', style: 'background-color: #1d1e22' }, { children: [
+    ['div', { class: 'th-activity-graph', style: 'overflow-x: auto' }, { host: {
+      scrollLeft: 180, scrollWidth: 1300, clientWidth: 900,
+    }, children: [['svg', {}, { children: [
+      ['defs', {}, { children: [['marker', {}, { children: [
+        ['path', { class: 'th-activity-gedge-head th-activity-gedge-head--fulfilled',
+          style: 'fill: #c4c4cc; fill-opacity: 1' }],
+      ] }]] }],
+      ['path', { class: 'th-activity-gedge th-activity-gedge--fulfilled', d: 'M160 40 C 220 40, 260 40, 300 40',
+        style: 'stroke: #c4c4cc; stroke-opacity: 1' }],
+      ...['k0', 'k1', 'k2', 'k3', 'k4'].map(id => node(id, 'completed')),
+      node('f', 'failed'), node('k6', 'running'),
+    ] }]] }],
+    ['article', { 'data-activity-dag-run': 't4-dag-run' }, { children: [
+      ['details', { class: 'th-activity-dag-details' }, { children: [
+        ['summary', { '#text': 'All states and node details' }],
+      ] }],
+    ] }],
+  ] }];
+  const measure = async (mutate = () => {}) => {
+    const dom = buildDom(tree());
+    const graph = dom.document.querySelector('.th-activity-graph');
+    withBox(dom.root, 0, 0, 900, 320);
+    withBox(graph, 0, 0, 900, 280);
+    withBox(graph.querySelector('svg'), 0, 0, 1300, 280);
+    dom.document.querySelectorAll('[data-node]').forEach((group, i) => {
+      const x = i < 5 ? 10 + i * 178 : i === 5 ? 360 : 980;
+      const y = i === 5 ? 100 : 10;
+      withBox(group, x, y, 160, 60);
+      const card = group.querySelector('.th-activity-gnode-card');
+      withBox(card, x, y, 160, 60);
+      const glyph = group.querySelector('.th-activity-gstatus');
+      withBox(glyph, x + 8, y + 10, 10, 10);
+      if (i === 6) withAnimations(glyph, [spin()]);
+      const label = group.querySelector('.th-activity-glabel');
+      withBox(label, x + 26, y + 10, 60, 12);
+    });
+    const halo = dom.document.querySelector('.th-activity-gnode-halo');
+    withBox(halo, 975, 5, 170, 70);
+    withAnimations(halo, [spin()]);
+    const edge = dom.document.querySelector('.th-activity-gedge--fulfilled');
+    withBox(edge, 150, 25, 160, 30);
+    edge.getTotalLength = () => 160;
+    edge.getPointAtLength = at => at === 0 ? { x: 150, y: 40 } : { x: 310, y: 40 };
+    withBox(dom.document.querySelector('.th-activity-dag-details summary'), 12, 284, 876, 30);
+    mutate(dom);
+    return {
+      facts: await runProbe(probeDagGraph, { runningId: 'k6', sourceId: 'k4' }, dom, computedFromStyles()),
+      motion: await runProbe(probeDagRunningMotion, null, dom, computedFromStyles()),
+    };
+  };
+  const verdicts = ({ facts, motion }) => ({
+    tints: nodeTintVerdict(facts.nodes, { completed: ['k0'], failed: ['f'], running: ['k6'] }, {
+      completed: facts.tokens['--th-success-bg'], failed: facts.tokens['--th-error-bg'],
+      running: facts.tokens['--th-accent-bg'],
+    }),
+    strokes: nodeStrokeViolations(facts.nodes, facts.tokens),
+    edges: fulfilledEdgeContrastVerdict(facts.edges, facts.arrowheads, facts.graphBackground, 1,
+      [facts.tokens['--th-success'], facts.tokens['--th-error'], facts.tokens['--th-accent']]),
+    visible: visibleMixedNodesVerdict(facts),
+    footer: footerInsidePanelVerdict(facts.footer),
+    spinner: dagRunningMotionVerdict(motion),
+    accent: dagGlyphAccentVerdict(motion, motion.accent),
+    halo: haloVerdict(facts.halos, facts.runningRect, facts.tokens['--th-accent-glow']),
+  });
+  test('valid tints, semantic card strokes, neutral paths, cadence, visible cards and footer pass together', async () => {
+    const results = verdicts(await measure());
+    for (const [name, result] of Object.entries(results)) expect(result.pass, `${name}: ${result.failures.join('; ')}`).toBe(true);
+    expect(results.visible.measured.count).toBe(6);
+    expect(results.edges.measured).toEqual({ edges: 1, arrowheads: 1 });
+  });
+  test('old grey fills, neutral completed cards, coloured running cards and dim edges fail', async () => {
+    const grey = verdicts(await measure(dom => {
+      for (const card of dom.document.querySelectorAll('.th-activity-gnode-card')) {
+        card.attrs.set('style', 'fill: #25262b; stroke: rgba(255,255,255,0.06)');
+      }
+    }));
+    expect(grey.tints.pass).toBe(false);
+    expect(grey.strokes.pass).toBe(false);
+    const chromatic = verdicts(await measure(dom =>
+      dom.document.querySelector('[data-node="k6"] .th-activity-gnode-card').attrs.set('style',
+        `fill: ${tint.running}; stroke: #8b7cf6`)));
+    expect(chromatic.tints.pass).toBe(true);
+    expect(chromatic.strokes.pass).toBe(false);
+    const dimEdge = verdicts(await measure(dom =>
+      dom.document.querySelector('.th-activity-gedge--fulfilled').attrs.set('style',
+        'stroke: #c4c4cc; stroke-opacity: 0.4')));
+    expect(dimEdge.edges.pass).toBe(false);
+  });
+  test('slow grey spinner and halo fail independently of valid node cards', async () => {
+    const old = verdicts(await measure(dom => {
+      const glyph = dom.document.querySelector('[data-node="k6"] .th-activity-gstatus--running');
+      glyph.attrs.set('style', 'stroke: #a1a1aa');
+      withAnimations(glyph, [{ name: 'old-slow-breath', duration: 1600 }]);
+      const halo = dom.document.querySelector('.th-activity-gnode-halo');
+      halo.attrs.set('style', 'fill: rgba(128,128,128,0.35)');
+      withAnimations(halo, [{ name: 'old-slow-halo', duration: 1600 }]);
+    }));
+    expect(old.tints.pass).toBe(true);
+    expect(old.accent.pass).toBe(false);
+    expect(old.spinner.pass).toBe(false);
+    expect(old.halo.pass).toBe(false);
+  });
+  test('four whole cards and a clipped expander fail the measured first-paint geometry', async () => {
+    const old = verdicts(await measure(dom => {
+      withBox(dom.document.querySelector('[data-node="k4"] .th-activity-gnode-card'), 850, 10, 160, 60);
+      withBox(dom.document.querySelector('[data-node="f"] .th-activity-gnode-card'), 850, 100, 160, 60);
+      withBox(dom.document.querySelector('.th-activity-dag-details summary'), 12, 305, 876, 30);
+    }));
+    expect(old.visible.pass).toBe(false);
+    expect(old.footer.pass).toBe(false);
+  });
+  test('a reel that fits the mobile layout remains the scroll owner without fake overflow', async () => {
+    const { facts } = await measure(dom => {
+      const graph = dom.document.querySelector('.th-activity-graph');
+      graph.scrollWidth = graph.clientWidth;
+    });
+    expect(facts.scroller?.cls).toBe('th-activity-graph');
+    expect(autoScrollVerdict({ scroller: facts.scroller, runningRect: facts.runningRect }).measured.skipped)
+      .toBe('no horizontal overflow');
   });
 });
 

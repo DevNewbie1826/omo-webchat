@@ -31,14 +31,17 @@ export async function measure(page) {
     const token = name => root.getPropertyValue(name).trim();
     const popover = document.querySelector('.th-model-picker-popover');
     const sheet = !!popover?.classList.contains('th-model-picker-popover--sheet');
-    // Floating layers use --th-glass where backdrop-filter is supported.
-    // The narrow sheet and browsers without that support stay on the solid
-    // --th-surface-overlay fallback (same query as the stylesheet @supports).
+    // The model picker is opaque in every placement: transcript text must
+    // never show through the desktop popup, fixed panel, or narrow sheet.
     const backdropSupported = CSS.supports('(backdrop-filter: blur(1px))');
-    const modelToken = sheet || !backdropSupported ? '--th-surface-overlay' : '--th-glass';
+    const toolMaterial = document.createElement('span');
+    toolMaterial.style.backgroundColor = 'var(--th-tool-record-surface)';
+    document.body.appendChild(toolMaterial);
+    const toolSurface = getComputedStyle(toolMaterial).backgroundColor;
+    toolMaterial.remove();
     const roles = [['.th-chat-pane', '--th-bg'], ['.th-termhead', '--th-surface'],
       ['.th-chat-input-inner', '--th-surface-composer'], ['.th-sidebar', innerWidth <= 768 ? '--th-surface-overlay' : '--th-surface'],
-      ['.th-model-picker-popover', modelToken]]
+      ['.th-model-picker-popover', '--th-surface-overlay']]
       .map(([selector, name]) => { const element = document.querySelector(selector);
         const style = element && getComputedStyle(element);
         const role = { selector, token: name, expected: token(name), actual: style && style.backgroundColor };
@@ -57,7 +60,8 @@ export async function measure(page) {
       return { id: element.dataset.toolCallId, name: element.querySelector('.th-tool-name').textContent,
         status: element.querySelector('.th-tool-status').textContent, glyph: !!element.querySelector('.th-tool-glyph'),
         expanded: head.getAttribute('aria-expanded'), rect: box(element), head: box(head),
-        background: css.backgroundColor, borders: ['Top', 'Right', 'Bottom', 'Left'].map(side => ({
+        background: css.backgroundColor, radius: parseFloat(css.borderTopLeftRadius),
+        borders: ['Top', 'Right', 'Bottom', 'Left'].map(side => ({
           width: parseFloat(css[`border${side}Width`]), style: css[`border${side}Style`], color: css[`border${side}Color`] })),
         output: box(element.querySelector('.th-tool-output')) };
     });
@@ -68,7 +72,10 @@ export async function measure(page) {
       gutter: parseFloat(columnStyle.getPropertyValue('--th-chat-gutter')) }, viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth,
       theme: document.documentElement.dataset.theme, fontSize: assistant && getComputedStyle(assistant).fontSize,
       coarse: matchMedia('(pointer: coarse)').matches, rows, tools, roles,
-      tokens: Object.fromEntries(['--th-bg', '--th-surface', '--th-surface-composer', '--th-surface-raised', '--th-surface-overlay', '--th-border-strong', '--th-chat-gutter'].map(name => [name, token(name)])),
+      tokens: {
+        ...Object.fromEntries(['--th-bg', '--th-surface', '--th-surface-composer', '--th-surface-raised', '--th-surface-overlay', '--th-border-strong', '--th-chat-gutter', '--th-tool-record-border'].map(name => [name, token(name)])),
+        '--th-tool-record-surface': toolSurface,
+      },
       // Only full reading bands share both edges; status occupies the row's remaining space.
       edges: { controls: rect('.th-chat-controls'), composer: rect('.th-chat-input-inner'), live: rect('.th-chat-live') },
       status: rect('.th-chat-status'),
@@ -127,9 +134,15 @@ export function designAssertions(sample) {
   // viewport breakpoints or the observed edge assertion's own result.
   const beforeEdgeDelta = (Math.min(maxWidth, width) - Math.min(maxWidth, width - 2 * gutter)) / 2;
   return [
-    { id: 'collapsed-enclosure', pass: collapsed.every(tool => tool.background === 'rgba(0, 0, 0, 0)'
-      && !tool.borders.every(border => border.width > 0 && border.style !== 'none')), expectedBefore: true,
-      actual: collapsed.map(tool => ({ id: tool.id, background: tool.background, borders: tool.borders })) },
+    { id: 'collapsed-enclosure', pass: collapsed.every(tool =>
+      semanticColor(tool.background) === semanticColor(sample.tokens['--th-tool-record-surface'])
+      && tool.radius >= 8
+      && tool.borders.length === 4
+      && tool.borders.every(border => Math.abs(border.width - 1) <= 0.1
+        && border.style !== 'none'
+        && semanticColor(border.color) === semanticColor(sample.tokens['--th-tool-record-border']))),
+    expectedBefore: true,
+    actual: collapsed.map(tool => ({ id: tool.id, background: tool.background, radius: tool.radius, borders: tool.borders })) },
     { id: 'new-turn-spacing', pass: newTurnGap > withinAssistantGap, expectedBefore: true,
       actual: { newTurnGap, withinAssistantGap } },
     { id: 'local-gutters', pass: gutterDelta <= 1 && rightDelta <= 1, expectedBefore: beforeEdgeDelta > 1,

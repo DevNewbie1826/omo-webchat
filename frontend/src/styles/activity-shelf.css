@@ -142,7 +142,9 @@ button.th-activity-bar:hover {
    segments. flex-basis 0 keeps the widths equal within a pixel regardless
    of label length, so the thumb is exactly one segment wide and
    translateX(100%) steps one tab. No borders: the track separates from the
-   canvas by tone, the thumb from the track by shadow and highlight. */
+   canvas by tone, the thumb from the track by a full luminance step plus
+   its shadow and highlight (E21: the active segment must read at a glance
+   in both themes and at 390). */
 .th-activity-tabs {
   position: relative;
   display: flex;
@@ -160,12 +162,14 @@ button.th-activity-bar:hover {
   /* One of the three equal segments inside the track's inset. */
   width: calc((100% - var(--th-space-0-5) - var(--th-space-0-5)) / 3);
   border-radius: var(--th-radius-pill);
-  background: var(--th-surface-raised);
+  /* The active step is the strongest neutral lift the ladder holds in
+     dark (1.36:1 from the surface track), so the selected segment reads
+     without a coloured border. */
+  background: var(--th-active);
   box-shadow: var(--th-shadow-surface), var(--th-highlight);
   pointer-events: none;
-  /* Continuity: a re-aimed transition retargets from the thumb's current
-     position; the global reduced-motion policy moves it instantly. */
-  transition: transform var(--th-dur) var(--th-ease-in-out);
+  /* Selection and the selected label change in the same frame. Keep the
+     thumb on that label as the track reflows when a pane or drawer resizes. */
 }
 
 .th-activity-tab-thumb[data-index="1"] {
@@ -246,6 +250,37 @@ button.th-activity-bar:hover {
   color: var(--th-text-dim);
 }
 
+/* Keep light-theme text readable throughout the thumb's slide: selected
+   ink must contrast with both the bare track and the tinted thumb, while
+   inactive labels/counts remain legible even as the thumb passes beneath. */
+[data-theme="light"] .th-activity-tabs {
+  /* A slightly deeper neutral recess gives the white raised thumb a clear
+     step without changing the dark ink on either side of it. */
+  background: color-mix(in srgb, var(--th-muted) 12%, var(--th-active));
+}
+
+[data-theme="light"] .th-activity-tab-thumb {
+  background: var(--th-surface-raised);
+  box-shadow: var(--th-shadow-surface), var(--th-highlight), inset 0 0 0 1px var(--th-border-strong);
+}
+
+[data-theme="light"] .th-activity-tab,
+[data-theme="light"] .th-activity-tab-count {
+  color: var(--th-text-dim);
+}
+
+[data-theme="light"] .th-activity-tab:hover,
+[data-theme="light"] .th-activity-tab[aria-selected="true"],
+[data-theme="light"] .th-activity-tab[aria-selected="true"] .th-activity-tab-count {
+  color: var(--th-text);
+}
+
+[data-theme="light"] .th-activity-tab:is(:disabled, [aria-disabled="true"]),
+[data-theme="light"] .th-activity-tab:is(:disabled, [aria-disabled="true"]) .th-activity-tab-count {
+  color: var(--th-text-dim);
+  opacity: 1;
+}
+
 /* One content area: every tabpanel stays mounted (per-view scroll state,
    no remount replay on switching) and hidden tabs drop out of layout and
    the accessibility tree. */
@@ -305,16 +340,56 @@ button.th-activity-bar:hover {
   max-height: 60vh;
 }
 
+/* Match the allocator's setting-scaled desktop cap so larger graph text
+   and the mixed-stage footer fit together. Dense runs still scroll inside. */
+.th-activity-panel--dag {
+  max-height: max(320px, calc(320 * var(--th-font-size) / 13));
+}
+
+/* At phone/pane width, eight compact branch rows plus the header and footer
+   need a taller allocation; only horizontal graph scrolling remains. The
+   shared column allocator still reserves transcript space first. */
+@container chat-pane (max-width: 640px) {
+  .th-activity-panel--dag {
+    max-height: 480px;
+    padding-block: var(--th-space-1);
+  }
+
+  .th-activity-panel--dag .th-activity-dag-head,
+  .th-activity-panel--dag .th-activity-dag {
+    gap: var(--th-space-1);
+  }
+
+  /* Keep dense branch rows and the footer in the allocated panel at the
+     largest user font setting; compact DAG chrome has its own readable tier. */
+  .th-activity-panel--dag .th-activity-dag-details {
+    font-size: var(--th-type-dag-compact-details-size);
+  }
+
+  .th-activity-panel--dag .th-activity-dag-name,
+  .th-activity-panel--dag .th-activity-view-btn {
+    font-size: var(--th-type-dag-compact-name-size);
+  }
+
+  .th-activity-panel--dag .th-activity-dag-counts,
+  .th-activity-panel--dag .th-activity-chip {
+    font-size: var(--th-type-dag-compact-counts-size);
+  }
+
+  .th-activity-panel--dag .th-activity-dag-complete > .th-activity-dag-toolbar {
+    margin-bottom: 0;
+  }
+}
+
 /* Explicit drags must track the pointer 1:1 — no transition on the height mid-drag. */
 .th-activity-panel--resizing {
   transition: none;
 }
 
-/* Pill grip between the tab strip and the panel: always visible, centered
-   in the reading column. The 10px band is the hit target; the ::after pill
-   carries the feedback (faint -> muted on hover -> text-dim while
-   dragging). The grip never yields its height; only the panel below it
-   shrinks. */
+/* Resize grip sits against the panel, not directly under a tab label: a
+   short dotted handle reads as a drag affordance rather than a second
+   selected-tab underline. The 10px band keeps the existing hit target and
+   the total margins keep the panel's height allocation unchanged. */
 .th-activity-resize {
   display: flex;
   flex: none;
@@ -323,7 +398,7 @@ button.th-activity-bar:hover {
   width: 100%;
   height: 10px;
   /* Open-intent spacing survives even when the allocated panel is hidden. */
-  margin: var(--th-space-0-5) auto var(--th-space-1);
+  margin: var(--th-space-2) auto calc(-1 * var(--th-space-0-5));
   cursor: row-resize;
   touch-action: none;
 }
@@ -331,10 +406,11 @@ button.th-activity-bar:hover {
 .th-activity-resize::after {
   content: "";
   flex: none;
-  width: 36px;
+  width: var(--th-space-6);
   height: 4px;
   border-radius: var(--th-radius-pill);
   background: var(--th-faint);
+  mask: radial-gradient(circle, currentColor 1px, transparent 1.5px) center / var(--th-space-1) var(--th-space-1) repeat-x;
   transition:
     background-color var(--th-dur-fast) var(--th-ease),
     box-shadow var(--th-dur-fast) var(--th-ease);
@@ -393,11 +469,14 @@ button.th-activity-bar:hover {
 }
 
 /* Status chip: a tinted wash behind the localized word, sans and in normal
-   case; hue is a redundant cue beside the word and the rail glyph. Running
-   takes the violet agent-alive wash with a neutral label (violet text on
-   the 14% wash measures ~4.1:1, under the 4.5:1 floor); done recedes to
-   the neutral active step like its muted rail check; failed keeps its
-   measured error pair; everything else stays neutral. */
+   case; hue is a redundant cue beside the word and the rail glyph. Every
+   state paints its semantic ink on that SAME hue's light tint (State
+   encoding, Q2): running violet on the accent wash, complete green on the
+   success wash, failed red on the error wash. The 12% washes keep each ink
+   at or above 4.5:1 on the pane and the shelf surface — running text uses
+   --th-accent-ink, which holds the ratio on the accent wash; pending and
+   disabled stay neutral. Borders remain neutral — state is never a
+   coloured border. */
 .th-activity-chip {
   display: inline-flex;
   flex: none;
@@ -411,8 +490,8 @@ button.th-activity-bar:hover {
   white-space: nowrap;
 }
 
-.th-activity-chip--running { background: var(--th-accent-soft); color: var(--th-text); }
-.th-activity-chip--ok { background: var(--th-active); color: var(--th-text-dim); }
+.th-activity-chip--running { background: var(--th-accent-bg); color: var(--th-accent-ink); }
+.th-activity-chip--ok { background: var(--th-success-bg); color: var(--th-success); }
 .th-activity-chip--error { background: var(--th-error-bg); color: var(--th-error); }
 .th-activity-chip--muted { background: var(--th-hover); color: var(--th-muted); }
 
@@ -441,6 +520,18 @@ button.th-activity-bar:hover {
   font-size: var(--th-type-secondary-size);
   line-height: var(--th-type-secondary-line);
   letter-spacing: var(--th-type-secondary-tracking);
+}
+
+/* Todo rows carry the shared status chip in a third column (E7): the state
+   reads as coloured word + tint at the row's right edge, aligned with the
+   first text line. */
+.th-activity-todo-task {
+  grid-template-columns: var(--th-space-4) minmax(0, 1fr) auto;
+}
+
+.th-activity-todo-task > .th-activity-chip {
+  align-self: start;
+  margin-block: var(--th-space-1);
 }
 
 .th-activity-lane {
@@ -517,18 +608,18 @@ button.th-activity-bar:hover {
 }
 
 .th-activity-glyph--live {
-  /* Same period as the DAG running ring, so every live spinner in the shelf
-     turns together. */
-  animation: th-activity-glyph-spin calc(var(--th-dur-slow) * 5) linear infinite;
+  /* The shared running beat: every live spinner in the shelf turns at the
+     same 700ms period as the DAG ring (S8 pins <=800ms). */
+  animation: th-activity-glyph-spin var(--th-dur-run) linear infinite;
 }
 
 @keyframes th-activity-glyph-spin {
   to { transform: rotate(1turn); }
 }
 
-/* Done: a muted check; finished work recedes. */
+/* Done: the check shares the completed chip's green ink. */
 .th-activity-glyph--done {
-  background-color: var(--th-muted);
+  background-color: var(--th-success);
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.75 8.5 6.5 11.25 12.25 5' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 
@@ -776,7 +867,7 @@ button.th-activity-bar:hover {
 }
 
 .th-activity-dag-complete > .th-activity-dag-toolbar {
-  margin-bottom: var(--th-space-3);
+  margin-bottom: var(--th-space-1);
 }
 
 .th-activity-dag-toolbar {
@@ -909,7 +1000,9 @@ button.th-activity-bar:hover {
 }
 
 /* Dependencies are one neutral hairline; a fulfilled one (completed source)
-   reads brighter, never green: satisfaction is not destination success. */
+   reads brighter at full alpha — the muted ink clears 3:1 against the
+   graph surface in both themes, never a status hue: satisfaction is not
+   destination success. */
 .th-activity-gedge {
   fill: none;
   stroke: var(--th-border-strong);
@@ -921,16 +1014,32 @@ button.th-activity-bar:hover {
   stroke: none;
 }
 
-.th-activity-gedge--fulfilled { stroke: var(--th-text-dim); stroke-opacity: 0.4; }
-.th-activity-gedge-head--fulfilled { fill: var(--th-text-dim); fill-opacity: 0.4; }
+.th-activity-gedge--fulfilled { stroke: var(--th-muted); stroke-opacity: 1; }
+.th-activity-gedge-head--fulfilled { fill: var(--th-muted); fill-opacity: 1; }
 
-/* Cards keep the raised fill and default hairline in every state: state is
-   the glyph, the word and (running) the halo, never the outline. */
+/* Binding user decision (2026-09-26): DAG node cards carry a status border
+   on top of their status tint — completed a subtle green stroke, failed /
+   cancelled / error / blocked a red stroke. Pending, scheduled, skipped and
+   running keep the neutral hairline. Every non-DAG surface stays neutral. */
 .th-activity-gnode-card {
   fill: var(--th-surface-raised);
   stroke: var(--th-border-surface);
   stroke-width: 1;
 }
+
+.th-activity-gnode--ok .th-activity-gnode-card {
+  fill: var(--th-success-bg);
+  stroke: var(--th-success);
+  stroke-opacity: 0.55;
+}
+
+.th-activity-gnode--error .th-activity-gnode-card,
+.th-activity-gnode--cancelled .th-activity-gnode-card {
+  fill: var(--th-error-bg);
+  stroke: var(--th-error);
+}
+
+.th-activity-gnode--running .th-activity-gnode-card { fill: var(--th-accent-bg); }
 
 .th-activity-glabel {
   fill: var(--th-text-dim);
@@ -942,7 +1051,9 @@ button.th-activity-bar:hover {
   letter-spacing: var(--th-type-label-tracking);
 }
 
-/* The visible localized state word: textual status, never colour alone. */
+/* The visible localized state word: textual status in the state's ink on
+   its tinted card, never colour alone. The running word also takes the
+   announce weight so live work reads first (E8). */
 .th-activity-gstate {
   fill: var(--th-muted);
   stroke: none;
@@ -951,6 +1062,15 @@ button.th-activity-bar:hover {
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-activity-gnode--ok .th-activity-gstate { fill: var(--th-success); }
+.th-activity-gnode--error .th-activity-gstate { fill: var(--th-error); }
+.th-activity-gnode--running .th-activity-gstate {
+  /* The running word is text on the accent wash: --th-accent-ink holds
+     4.5:1 there (--th-accent stays reserved for glyphs and fills). */
+  fill: var(--th-accent-ink);
+  font-weight: var(--th-weight-announce);
 }
 
 .th-activity-gstatus {
@@ -968,11 +1088,11 @@ button.th-activity-bar:hover {
   stroke: none;
 }
 
-/* Done: a neutral check one tier above the waiting glyphs (muted-to-text),
-   never green. pathLength is 1: one full dash, and a gap long enough that
-   the draw-in start (offset 1.1) paints nothing, not even a round cap. */
+/* Done: a green check, the state's ink, drawn in on completion. pathLength
+   is 1: one full dash, and a gap long enough that the draw-in start
+   (offset 1.1) paints nothing, not even a round cap. */
 .th-activity-gstatus--ok {
-  stroke: var(--th-text-dim);
+  stroke: var(--th-success);
   stroke-dasharray: 1 2;
 }
 
@@ -1021,7 +1141,7 @@ button.th-activity-bar:hover {
 
 .th-activity-graph[data-live="true"] .th-activity-gstatus--running,
 .th-activity-dagnodes[data-live="true"] .th-activity-gstatus--running {
-  animation: th-dag-run-spin calc(var(--th-dur-slow) * 3) linear infinite;
+  animation: th-dag-run-spin var(--th-dur-run) linear infinite;
 }
 
 .th-activity-phases {
@@ -1120,7 +1240,7 @@ button.th-activity-bar:hover {
    ========================================================================== */
 
 .th-activity-dag-section {
-  gap: var(--th-space-4);
+  gap: var(--th-space-2);
 }
 
 .th-activity-dag-run + .th-activity-dag-run {
@@ -1163,8 +1283,11 @@ button.th-activity-bar:hover {
   background: var(--th-accent);
 }
 
-/* List/Graph segmented control: a recessed pill track and one neutral raised
-   thumb that slides to the pressed segment, never a coloured border. */
+/* List/Graph segmented control: a recessed pill track and one neutral
+   raised thumb that slides to the pressed segment, never a coloured
+   border. The thumb takes the active step so the pressed segment clears
+   1.3:1 from the track in dark; light recesses the track one step further
+   (the ladder's strongest neutral pair) and keeps the thumb white. */
 .th-activity-dag-view {
   position: relative;
   display: grid;
@@ -1176,9 +1299,10 @@ button.th-activity-bar:hover {
   isolation: isolate;
 }
 
-/* The light canvas is white, so the recessed track takes the hover step. */
+/* The light canvas is white, so the recessed track takes the active
+   step — the strongest neutral recess the ladder holds in light. */
 [data-theme="light"] .th-activity-dag-view {
-  background: var(--th-hover);
+  background: var(--th-active);
 }
 
 .th-activity-dag-view-thumb {
@@ -1189,9 +1313,13 @@ button.th-activity-bar:hover {
   z-index: -1;
   width: calc(50% - var(--th-space-0-5));
   border-radius: var(--th-radius-pill);
-  background: var(--th-surface-raised);
+  background: var(--th-active);
   box-shadow: var(--th-shadow-surface), var(--th-highlight);
   transition: transform var(--th-dur) var(--th-ease-in-out);
+}
+
+[data-theme="light"] .th-activity-dag-view-thumb {
+  background: var(--th-muted);
 }
 
 .th-activity-dag-view[data-view-mode="graph"] > .th-activity-dag-view-thumb {
@@ -1216,6 +1344,10 @@ button.th-activity-bar:hover {
 .th-activity-dag-view-btn[aria-pressed="true"] {
   background: transparent;
   color: var(--th-text);
+}
+
+[data-theme="light"] .th-activity-dag-view-btn[aria-pressed="true"] {
+  color: var(--th-surface-raised);
 }
 
 @media (pointer: coarse) {
@@ -1319,25 +1451,26 @@ button.th-activity-bar:hover {
   animation: th-dag-check-draw var(--th-dur) var(--th-ease-out);
 }
 
-/* Running halo: a blurred accent-glow card behind the card, breathing while
-   the run is live. It is rendered only then, and never under reduced
-   motion. */
+/* Running halo: the blurred outer ring breathes at the shared running beat.
+   Its centre stays transparent so it cannot brighten the translucent card
+   underneath the status word. It exists only for live, non-reduced motion. */
 @keyframes th-dag-halo-breathe {
   from { opacity: 0.45; }
   to { opacity: 1; }
 }
 
 .th-activity-gnode-halo {
-  fill: var(--th-accent-glow);
-  stroke: none;
-  animation: th-dag-halo-breathe calc(var(--th-dur-slow) * 5) var(--th-ease-in-out) infinite alternate;
+  fill: none;
+  stroke: var(--th-accent-glow);
+  stroke-width: 4;
+  animation: th-dag-halo-breathe var(--th-dur-run) var(--th-ease-in-out) infinite alternate;
 }
 
-/* Comet on a running edge: pathLength 100, one 24-unit dash and a 100-unit
-   gap, so exactly one dash is ever on the path; it enters before the source
-   and leaves past the destination. The resting offset hides it. */
+/* Comet on a running edge: pathLength 100, a per-edge dash and a 100-unit
+   gap. The 50-unit entrance starts fully before even the longest (half-edge)
+   dash; the trail passes the destination before the cycle restarts. */
 @keyframes th-dag-comet {
-  from { stroke-dashoffset: 24; }
+  from { stroke-dashoffset: 50; }
   to { stroke-dashoffset: -100; }
 }
 
@@ -1345,8 +1478,7 @@ button.th-activity-bar:hover {
 .th-activity-gedge-glow {
   fill: none;
   stroke-linecap: round;
-  stroke-dasharray: 24 100;
-  stroke-dashoffset: 24;
+  stroke-dashoffset: 50;
 }
 
 .th-activity-gedge-comet {
@@ -1419,12 +1551,69 @@ button.th-activity-bar:hover {
   overflow: visible;
 }
 
+/* The list state word carries the same status encoding as the shared chips
+   (E7/E10): the state's ink on its light tint pill. Pending and stopped
+   stay neutral — state colour is reserved for work that is live, done or
+   failed. */
 .th-activity-dnode-state {
-  padding: var(--th-space-1) 0;
+  padding: var(--th-space-0-5) var(--th-space-2);
+  border-radius: var(--th-radius-pill);
   color: var(--th-muted);
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
   white-space: nowrap;
+}
+
+.th-activity-dnode-state--running { background: var(--th-accent-bg); color: var(--th-accent-ink); }
+.th-activity-dnode-state--ok { background: var(--th-success-bg); color: var(--th-success); }
+.th-activity-dnode-state--error { background: var(--th-error-bg); color: var(--th-error); }
+
+/* Per-agent activity track (E23): one thin rail under the agent's lines so
+   a row's state reads by fill as well as by chip and glyph. The active
+   step and a neutral hairline keep an EMPTY track distinct in light too;
+   the 6px outer height retains a 4px inner fill. Fills speak the same
+   semantic language as the chips: green or red for finished work, and a
+   violet block sliding across the rail for a running agent. */
+.th-activity-agent-progress {
+  position: relative;
+  height: calc(var(--th-space-1) + var(--th-space-0-5));
+  overflow: hidden;
+  border: 1px solid var(--th-border-strong);
+  border-radius: var(--th-radius-pill);
+  background: var(--th-active);
+}
+
+.th-activity-agent-progress-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  transform: scaleX(1);
+  transform-origin: left center;
+}
+
+.th-activity-agent--done .th-activity-agent-progress-fill { background: var(--th-success); }
+.th-activity-agent--error .th-activity-agent-progress-fill { background: var(--th-error); }
+
+.th-activity-agent--running .th-activity-agent-progress-fill {
+  /* Indeterminate: a partial block shuttles across the rail; under reduced
+     motion the global policy freezes it mid-rail and the chip, glyph and
+     word still carry the state. */
+  width: 45%;
+  transform: translateX(0);
+  background: var(--th-accent);
+  animation: th-agent-progress-slide var(--th-dur-run) var(--th-ease-in-out) infinite alternate;
+}
+
+/* Pending or stopped agents carry no fill: the empty rail is the neutral
+   reading. */
+.th-activity-agent--pending .th-activity-agent-progress-fill,
+.th-activity-agent--stopped .th-activity-agent-progress-fill {
+  transform: scaleX(0);
+}
+
+@keyframes th-agent-progress-slide {
+  from { transform: translateX(0); }
+  to { transform: translateX(122%); }
 }

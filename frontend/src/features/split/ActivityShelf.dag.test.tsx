@@ -1,5 +1,6 @@
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { I18nContext } from "../../i18n";
 import {
   activityState,
   click,
@@ -11,6 +12,7 @@ import {
   type ActivityShelfHarness,
 } from "./ActivityShelf.support";
 import { i18n, requireElement } from "./chatPaneTestHarness";
+import { ActivityShelf } from "./ActivityShelf";
 import { applyActivityEvent, emptyActivityState } from "./activityState";
 
 describe("ActivityShelf", () => {
@@ -295,14 +297,108 @@ describe("ActivityShelf", () => {
     expect(graph.querySelector('[data-node="c"] .th-activity-gstate')?.textContent).toBe("activity.status.running");
   });
 
+  it.each([
+    { reelWidth: 366, edgeLength: 8, dashLength: 4 },
+    { reelWidth: 900, edgeLength: 16, dashLength: 6 },
+  ])("keeps the comet visible on a $edgeLength px running edge", ({ reelWidth, edgeLength, dashLength }) => {
+    const clientWidth = vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
+      return this.classList.contains("th-activity-graph") ? reelWidth : 0;
+    });
+    try {
+      const chain = makeDag({
+        nodes: [
+          { id: "source", prompt: "Source", dependsOn: [], state: "completed" },
+          { id: "target", prompt: "Target", dependsOn: ["source"], state: "running" },
+        ],
+        edges: [{ from: "source", to: "target" }],
+        waves: [{ index: 0, nodeIds: ["source"] }, { index: 1, nodeIds: ["target"] }],
+      });
+      renderShelf(harness, activityState({ dags: [chain] }));
+      openShelf(harness.container);
+      click(requireElement(harness.container.querySelector('[data-activity-tab="dag"]'), "DAG tab"));
+      const edge = requireElement(harness.container.querySelector<SVGPathElement>(".th-activity-gedge--flow"), "running edge");
+      const comet = requireElement(harness.container.querySelector<SVGPathElement>(".th-activity-gedge-comet"), "comet");
+      const glow = requireElement(harness.container.querySelector<SVGPathElement>(".th-activity-gedge-glow"), "comet glow");
+      const coordinates = [...(edge.getAttribute("d") ?? "").matchAll(/-?\d+(?:\.\d+)?/g)].map(match => Number(match[0]));
+      expect(coordinates).toHaveLength(8);
+      expect((coordinates[6] ?? NaN) - (coordinates[0] ?? NaN)).toBe(edgeLength);
+      expect(comet.getAttribute("d")).toBe(edge.getAttribute("d"));
+      expect(glow.getAttribute("d")).toBe(edge.getAttribute("d"));
+      const paintedLength = Number.parseFloat(comet.style.strokeDasharray) * edgeLength / 100;
+      expect(paintedLength).toBeGreaterThanOrEqual(dashLength);
+      expect(paintedLength).toBeLessThanOrEqual(6);
+      expect(glow.style.strokeDasharray).toBe(comet.style.strokeDasharray);
+    } finally {
+      clientWidth.mockRestore();
+    }
+  });
+
+  it.each([10, 13, 14, 16, 20, 24])("scales desktop DAG text and geometry with an 11px floor at font%d", fontSize => {
+    const localizedStatus = vi.spyOn(i18n, "t").mockImplementation(key =>
+      key.startsWith("activity.status.") ? key.slice("activity.status.".length) : key);
+    const clientWidth = vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
+      return this.classList.contains("th-activity-graph") ? 734 : 0;
+    });
+    try {
+      const nodes = Array.from({ length: 6 }, (_, index) => ({
+        id: `n${index}`, prompt: `Node ${index}`,
+        dependsOn: index === 0 ? [] : [`n${index - 1}`], state: "completed",
+      }));
+      const run = makeDag({ status: "completed", nodes,
+        counts: { ...makeDag().counts, total: 6, running: 0, completed: 6 },
+        edges: nodes.slice(1).map((node, index) => ({ from: `n${index}`, to: node.id })) });
+      act(() => {
+        harness.root.render(
+          <I18nContext.Provider value={{ ...i18n, fontSize }}>
+            <ActivityShelf activities={activityState({ dags: [run] })} />
+          </I18nContext.Provider>,
+        );
+      });
+      openShelf(harness.container);
+      click(requireElement(harness.container.querySelector('[data-activity-tab="dag"]'), "DAG tab"));
+      const graph = requireElement(harness.container.querySelector(".th-activity-graph"), "desktop graph");
+      const cards = [...graph.querySelectorAll<SVGRectElement>(".th-activity-gnode-card")];
+      expect(cards).toHaveLength(6);
+      for (const card of cards) {
+        const node = requireElement(card.closest("[data-node]"), "DAG node");
+        for (const title of node.querySelectorAll(".th-activity-glabel")) {
+          const size = Number.parseFloat(getComputedStyle(title).fontSize);
+          expect(size).toBeCloseTo(Math.max(11, fontSize * 0.8571), 4);
+        }
+        const state = requireElement(node.querySelector(".th-activity-gstate"), "state word");
+        const stateSize = Number.parseFloat(getComputedStyle(state).fontSize);
+        expect(stateSize).toBeCloseTo(Math.max(11, fontSize * 0.7857), 4);
+        expect(Number(card.getAttribute("width"))).toBeGreaterThanOrEqual(
+          Math.round(120 * Math.max(11, fontSize * 0.8571) / (13 * 0.8571)),
+        );
+        expect(Number(card.getAttribute("height"))).toBe(
+          16 + 2 * Math.ceil(Math.max(11, fontSize * 0.8571) * 1.4) + Math.ceil(stateSize * 1.4),
+        );
+      }
+      // Density is guaranteed at the app's default setting, not by capping
+      // the user's larger text to force the same number of columns.
+      if (fontSize === 13) {
+        const fifth = requireElement(cards[4], "fifth card");
+        const x = Number(/translate\(([-\d.]+)/.exec(fifth.parentElement?.parentElement?.getAttribute("transform") ?? "")?.[1]);
+        expect(x + Number(fifth.getAttribute("width"))).toBeLessThanOrEqual(734);
+      }
+    } finally {
+      clientWidth.mockRestore();
+      localizedStatus.mockRestore();
+    }
+  });
+
   it("scrolls the first running node into view on the first visible paint, then leaves the reel to the user", () => {
     const frames: FrameRequestCallback[] = [];
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
     vi.stubGlobal("cancelAnimationFrame", (handle: number) => { frames[handle - 1] = () => undefined; });
+    // 900px is a desktop-width reel: the compact phone layout stays off, so
+    // this pin exercises the wave-column centering path end to end.
+    const reelWidth = 900;
     const reelMetric = (value: number) => function (this: Element): number {
       return this.classList.contains("th-activity-graph") ? value : 0;
     };
-    const clientWidth = vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(reelMetric(300));
+    const clientWidth = vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(reelMetric(reelWidth));
     const scrollWidth = vi.spyOn(Element.prototype, "scrollWidth", "get").mockImplementation(reelMetric(2000));
     try {
       const chain = makeDag({
@@ -321,7 +417,7 @@ describe("ActivityShelf", () => {
       const cardWidth = Number(graph.querySelector(".th-activity-gnode-card")?.getAttribute("width"));
       expect(graph.scrollLeft).toBeGreaterThan(0);
       expect(nodeX).toBeGreaterThanOrEqual(graph.scrollLeft);
-      expect(nodeX + cardWidth).toBeLessThanOrEqual(graph.scrollLeft + 300);
+      expect(nodeX + cardWidth).toBeLessThanOrEqual(graph.scrollLeft + reelWidth);
 
       act(() => { for (const frame of frames.splice(0)) frame(0); });
       graph.scrollLeft = 0;
@@ -330,6 +426,118 @@ describe("ActivityShelf", () => {
     } finally {
       clientWidth.mockRestore();
       scrollWidth.mockRestore();
+    }
+  });
+
+  it("keeps a phone-width DAG left-to-right with three compact cards in view", () => {
+    const localizedStatus = vi.spyOn(i18n, "t").mockImplementation(key =>
+      key.startsWith("activity.status.") ? key.slice("activity.status.".length) : key);
+    const reelMetric = (value: number) => function (this: Element): number {
+      return this.classList.contains("th-activity-graph") ? value : 0;
+    };
+    // 366px is the real 390px-viewport reel width (390 minus the shelf
+    // gutters and panel padding).
+    const clientWidth = vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(reelMetric(366));
+    try {
+      const chain = makeDag({
+        nodes: [
+          { id: "a", prompt: "alpha node", dependsOn: [], state: "completed" },
+          { id: "b", prompt: "beta node", dependsOn: ["a"], state: "completed" },
+          { id: "c", prompt: "gamma node", dependsOn: ["b"], state: "running" },
+          { id: "d", prompt: "delta node", dependsOn: ["c"], state: "pending" },
+          { id: "e", prompt: "epsilon node", dependsOn: ["d"], state: "pending" },
+          { id: "f", prompt: "zeta node", dependsOn: ["e"], state: "pending" },
+        ],
+        edges: [
+          { from: "a", to: "b" },
+          { from: "b", to: "c" },
+          { from: "c", to: "d" },
+          { from: "d", to: "e" },
+          { from: "e", to: "f" },
+        ],
+      });
+      renderShelf(harness, activityState({ dags: [chain] }));
+      openShelf(harness.container);
+      const graph = requireElement(harness.container.querySelector<HTMLElement>(".th-activity-graph"), "graph reel");
+      const svg = requireElement(graph.querySelector("svg"), "graph svg");
+      // The same ordered chain extends horizontally; it never snakes back.
+      expect(Number(svg.getAttribute("width"))).toBeGreaterThan(366);
+      expect(graph.scrollLeft).toBe(0);
+      // Check the authored CSS font size rather than the SVG presentation
+      // attribute, which the stylesheet overrides in a real browser.
+      const label = requireElement(graph.querySelector<SVGTextElement>('[data-node] .th-activity-glabel'), "node label");
+      const state = requireElement(graph.querySelector<SVGTextElement>('[data-node] .th-activity-gstate'), "node state");
+      expect(Number.parseFloat(getComputedStyle(label).fontSize)).toBeGreaterThanOrEqual(11);
+      expect(Number.parseFloat(getComputedStyle(state).fontSize)).toBeGreaterThanOrEqual(11);
+      const card = requireElement(graph.querySelector(".th-activity-gnode-card"), "node card");
+      const cardWidth = Number(card.getAttribute("width"));
+      expect(Number(card.getAttribute("height"))).toBeLessThanOrEqual(40);
+      expect(Number(card.getAttribute("height"))).toBeGreaterThanOrEqual(36);
+      expect(Number(svg.getAttribute("height"))).toBeLessThan(80);
+      const transformOf = (id: string): readonly [number, number] => {
+        const value = graph.querySelector(`[data-node="${id}"]`)?.getAttribute("transform") ?? "";
+        const match = /translate\(([-\d.]+), ([-\d.]+)\)/.exec(value);
+        return [Number(match?.[1]), Number(match?.[2])] as const;
+      };
+      const [ax, ay] = transformOf("a");
+      const [cx] = transformOf("c");
+      const [ex, ey] = transformOf("e");
+      const [fx, fy] = transformOf("f");
+      expect(cx).toBeGreaterThan(ax);
+      expect(cx + cardWidth).toBeLessThanOrEqual(366);
+      expect(ex).toBeGreaterThan(cx);
+      expect(fx).toBeGreaterThan(ex);
+      expect(ey).toBe(ay);
+      expect(fy).toBe(ay);
+      // A later state flip keeps the identical geometry (stable-layout pin).
+      const before = [...graph.querySelectorAll("[data-node]")].map(node => node.getAttribute("transform"));
+      renderShelf(harness, activityState({ dags: [{ ...chain, status: "completed", nodes: chain.nodes.map(node => ({ ...node, state: "completed" })) }] }));
+      const after = [...graph.querySelectorAll("[data-node]")].map(node => node.getAttribute("transform"));
+      expect(after).toEqual(before);
+    } finally {
+      clientWidth.mockRestore();
+      localizedStatus.mockRestore();
+    }
+  });
+
+  it("uses a single title row for dense phone waves whose labels fit", () => {
+    const localizedStatus = vi.spyOn(i18n, "t").mockImplementation(key =>
+      key.startsWith("activity.status.") ? key.slice("activity.status.".length) : key);
+    const clientWidth = vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
+      return this.classList.contains("th-activity-graph") ? 340 : 0;
+    });
+    try {
+      const nodes = Array.from({ length: 64 }, (_, index) => ({
+        id: `w${Math.floor(index / 8)}n${index % 8}`,
+        prompt: `w${Math.floor(index / 8)}n${index % 8}`,
+        dependsOn: index < 8 ? [] : [`w${Math.floor(index / 8) - 1}n${index % 8}`],
+        state: index >= 8 && index < 16 ? "running" : "completed",
+      }));
+      const waves = Array.from({ length: 8 }, (_, index) => ({
+        index, nodeIds: nodes.slice(index * 8, (index + 1) * 8).map(node => node.id),
+      }));
+      renderShelf(harness, activityState({ dags: [makeDag({
+        nodes, waves, edges: [], counts: { ...makeDag().counts, total: 64, running: 8, completed: 56 },
+      })] }));
+      openShelf(harness.container);
+      click(requireElement(harness.container.querySelector('[data-activity-tab="dag"]'), "DAG tab"));
+      const graph = requireElement(harness.container.querySelector(".th-activity-graph"), "dense graph");
+      const svg = requireElement(graph.querySelector("svg"), "dense SVG");
+      expect(graph.querySelectorAll(".th-activity-gnode")).toHaveLength(64);
+      expect(Number(svg.getAttribute("height"))).toBeLessThanOrEqual(290);
+      for (const node of graph.querySelectorAll(".th-activity-gnode")) {
+        expect(node.querySelectorAll(".th-activity-glabel")).toHaveLength(1);
+        const card = requireElement(node.querySelector(".th-activity-gnode-card"), "dense card");
+        const height = Number(card.getAttribute("height"));
+        expect(height).toBeGreaterThanOrEqual(28);
+        expect(height).toBeLessThanOrEqual(32);
+        const state = requireElement(node.querySelector(".th-activity-gstate"), "dense state");
+        expect(Number.parseFloat(getComputedStyle(state).fontSize)).toBeGreaterThanOrEqual(11);
+        expect(Number(state.getAttribute("y"))).toBeLessThan(height);
+      }
+    } finally {
+      clientWidth.mockRestore();
+      localizedStatus.mockRestore();
     }
   });
 });

@@ -75,19 +75,23 @@ describe("SessionTree session-row activation target", () => {
     vi.unstubAllGlobals();
   });
 
-  function render(onOpen: SessionTreeProps["onOpen"] = async () => undefined): void {
+  function render(
+    onOpen: SessionTreeProps["onOpen"] = async () => undefined,
+    onToggle: SessionTreeProps["onToggle"] = () => undefined,
+    workspaces: readonly Workspace[] = [workspace],
+  ): void {
     act(() => {
       root.render(
         <I18nContext.Provider value={i18n}>
           <SessionTree
-            workspaces={[workspace]}
+            workspaces={workspaces}
             liveSessions={new Set()}
             activeTerminalId={null}
             placedSessions={new Set()}
             expanded={new Set([workspace.id])}
             sessionLists={new Map([[workspace.id, sessions]])}
             sessionPages={new Map()}
-            onToggle={() => undefined}
+            onToggle={onToggle}
             onLoadMoreSessions={() => undefined}
             onSelect={() => undefined}
             onOpen={onOpen}
@@ -140,5 +144,65 @@ describe("SessionTree session-row activation target", () => {
     act(() => activation?.click());
     expect(onOpen).toHaveBeenCalledTimes(1);
     expect(onOpen).toHaveBeenCalledWith(workspace, discoveredSession, false);
+  });
+
+  it("toggles the workspace through one name-and-caret disclosure", () => {
+    const onToggle = vi.fn();
+    render(async () => undefined, onToggle);
+    const parent = container.querySelector(".th-tree-workspace > .th-tree-node");
+    const disclosure = parent?.querySelector<HTMLButtonElement>(".th-tree-workspace-activation");
+
+    expect(parent?.querySelectorAll("button[aria-expanded]")).toHaveLength(1);
+    expect(disclosure?.getAttribute("aria-expanded")).toBe("true");
+    expect(disclosure?.getAttribute("aria-label")).toBe(workspace.name);
+    expect(disclosure?.querySelector(".th-tree-chevron")?.getAttribute("aria-hidden")).toBe("true");
+
+    act(() => disclosure?.click());
+    expect(onToggle).toHaveBeenCalledTimes(1);
+    expect(onToggle).toHaveBeenCalledWith(workspace.id);
+  });
+
+  it("keeps every workspace's distinguishing number outside the shrinkable name head", () => {
+    const numbered = Array.from({ length: 12 }, (_, index) => ({
+      ...workspace,
+      id: `ws-${index + 1}`,
+      name: `Earlier workspace ${index + 1}`,
+    }));
+    render(undefined, undefined, numbered);
+
+    const disclosures = container.querySelectorAll<HTMLButtonElement>(".th-tree-workspace-activation");
+    expect(disclosures).toHaveLength(12);
+    disclosures.forEach((disclosure, index) => {
+      const name = `Earlier workspace ${index + 1}`;
+      const label = disclosure.querySelector(".th-tree-label-text");
+      const head = label?.querySelector(".th-tree-label-head");
+      const tail = label?.querySelector(".th-tree-label-tail");
+      expect(label?.textContent).toBe(name);
+      expect(head?.textContent).toBe("Earlier workspace");
+      expect(head?.classList.contains("th-tree-label-head--long")).toBe(true);
+      expect(tail?.textContent).toBe(` ${index + 1}`);
+      expect(label?.getAttribute("aria-hidden")).toBe("true");
+      expect(disclosure.getAttribute("aria-label")).toBe(name);
+      expect(disclosure.getAttribute("title")).toBe(workspace.path);
+    });
+  });
+
+  it("reserves the final characters when a workspace name has no separate word", () => {
+    const longName = "very-long-unbrokenname";
+    render(undefined, undefined, [{ ...workspace, name: longName }]);
+
+    const disclosure = container.querySelector<HTMLButtonElement>(".th-tree-workspace-activation");
+    expect(disclosure?.querySelector(".th-tree-label-head")?.textContent).toBe("very-long-unbroke");
+    expect(disclosure?.querySelector(".th-tree-label-tail")?.textContent).toBe("nname");
+    expect(disclosure?.getAttribute("aria-label")).toBe(longName);
+  });
+
+  it("keeps short workspace names unsplit visually and without a prefix floor", () => {
+    render();
+
+    const disclosure = container.querySelector<HTMLButtonElement>(".th-tree-workspace-activation");
+    expect(disclosure?.querySelector(".th-tree-label-text")?.textContent).toBe(workspace.name);
+    expect(disclosure?.querySelector(".th-tree-label-head--long")).toBeNull();
+    expect(disclosure?.getAttribute("aria-label")).toBe(workspace.name);
   });
 });

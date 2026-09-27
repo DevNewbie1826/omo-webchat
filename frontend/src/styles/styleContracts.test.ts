@@ -6,6 +6,7 @@ const readStyle = (name: string): string => readFileSync(`src/styles/${name}.css
 const tokens = readStyle("tokens");
 const global = readStyle("global");
 const chatPane = readStyle("chat-pane");
+const chatComposer = readStyle("chat-composer");
 const chatTranscript = readStyle("chat-transcript");
 const toolCard = readStyle("tool-card");
 const sessionTree = readStyle("session-tree");
@@ -21,6 +22,8 @@ const fileEditor = readStyle("file-editor");
 const appEmpty = readStyle("app-empty");
 const sidebar = readStyle("sidebar");
 const sidebarToggle = readStyle("sidebar-toggle");
+const stats = readStyle("system-stats");
+const login = readStyle("login");
 const approvalDock = readStyle("approval-dock");
 const questionWindow = readStyle("question-window");
 const allStyles = ["app-empty", "chat-transcript", "home-live", "login", "sidebar", "sidebar-live"]
@@ -188,7 +191,16 @@ describe("spacing and elevation contracts", () => {
       const file = path.slice(2);
       const css = readFileSync(`src/styles/${file}`, "utf8");
       postcss.parse(css, { from: file }).walkDecls((declaration) => {
-        if (!isSpacingProperty(declaration.prop) || hasOnlyAllowedSpacingComponents(declaration.value)) return;
+        // E4/E28: the tool glyph's 12px disc must be centred over the 1px
+        // rail outside a card indented by --th-space-6. Only this precise
+        // fixed-glyph offset is outside the general spacing scale.
+        const glyphRailOffset =
+          file === "tool-card.css" &&
+          declaration.parent?.type === "rule" &&
+          declaration.parent.selector === ".th-tool-glyph" &&
+          declaration.prop === "margin-left" &&
+          declaration.value.trim() === "calc(-1 * (var(--th-space-6) + 7px))";
+        if (!isSpacingProperty(declaration.prop) || hasOnlyAllowedSpacingComponents(declaration.value) || glyphRailOffset) return;
         violations.push(
           `${file}:${declaration.source?.start?.line ?? "?"}: ${declaration.prop}: ${declaration.value.trim()}`,
         );
@@ -324,14 +336,16 @@ describe("spacing and elevation contracts", () => {
   });
 
   it("consumes the dedicated user surface for the borderless pill bubble", () => {
-    // The user bubble separates authorship by its OWN surface step - one
-    // above Raised - per theme. The v2 Golo grammar (QA S4 probe) makes it a
-    // borderless pill: no hairline at all, every corner at --th-radius-lg,
-    // with the Raised shadow and the surface step doing the separation.
+    // E23: the dedicated user fill plus a neutral wash restores contrast
+    // against the pane. The bubble remains borderless at every corner, with
+    // no accent bar, while contrast.test.ts measures the composed fill.
     const body = ruleBody(chatTranscript, ".th-chat-msg--user");
     const userViolations: string[] = [];
     if (wholeVarToken(declarationValue(body, "background")) !== "--th-surface-user") {
       userViolations.push("chat-transcript.css .th-chat-msg--user is missing background: var(--th-surface-user)");
+    }
+    if (declarationValue(body, "background-image") !== "linear-gradient(var(--th-border-user), var(--th-border-user))") {
+      userViolations.push("chat-transcript.css .th-chat-msg--user is missing its neutral contrast wash");
     }
     if (declarationValue(body, "border") !== "0") {
       userViolations.push("chat-transcript.css .th-chat-msg--user must stay borderless (QA S4: border-style none)");
@@ -354,21 +368,19 @@ describe("visual accessibility contracts", () => {
     // v2 motion contract: 120 (hover/press) - 200 (state/popover) - 320
     // (enter/disclosure) - 480ms (one-time choreography only), plus the
     // easings (standard, enter, move, small-pop spring, linear). The
-    // progress clocks (--th-dur-spin/--th-dur-shimmer) run continuous
-    // agent-alive loops rather than state transitions, so they sit outside
-    // the 120-480ms census by design and are pinned to their own values.
+    // The running cadence (--th-dur-run) is continuous rather than a state
+    // transition, so it sits outside the 120-480ms census.
     const durations = Array.from(tokens.matchAll(/--th-dur(?:-[\w-]+)?:\s*(\d+)ms/g), (match) => ({
       name: match[0].slice(0, match[0].indexOf(":")),
       ms: Number(match[1]),
     }));
     expect(durations.length).toBeGreaterThan(0);
     for (const duration of durations) {
-      if (duration.name === "--th-dur-spin" || duration.name === "--th-dur-shimmer") continue;
+      if (duration.name === "--th-dur-run") continue;
       expect(duration.ms >= 120 && duration.ms <= 480, `${duration.name} must stay on the state-transition scale`).toBe(true);
     }
     expect(tokenValue("--th-dur-emph")).toBe("480ms");
-    expect(tokenValue("--th-dur-spin")).toBe("700ms");
-    expect(tokenValue("--th-dur-shimmer")).toBe("1600ms");
+    expect(tokenValue("--th-dur-run")).toBe("700ms");
     expect(tokenValue("--th-ease-linear")).toBe("linear");
     for (const name of ["--th-ease", "--th-ease-out", "--th-ease-in-out", "--th-ease-spring", "--th-ease-linear"]) {
       expect(tokenValue(name), `${name} must exist`).not.toBe("");
@@ -798,33 +810,79 @@ describe("chat reading rhythm and tool width contracts", () => {
     expect(io).toMatch(/font-family:\s*var\(--th-font-mono\)/);
   });
 
-  it("gives collapsed tool records a transparent row and the expanded body the scoped material", () => {
-    // T2 timeline grammar (design-workbench 'collapsed-enclosure' predicate):
-    // a collapsed record is a transparent, borderless timeline row — the
-    // design-workbench harness measures background rgba(0,0,0,0) and no full
-    // box border on collapsed records. The scoped tool material lives on the
-    // expanded body alone, at the 12px radius and without a border or
-    // shadow; the output well insets Canvas inside that material.
+  it("encloses collapsed and expanded tool records in one neutral tinted card", () => {
+    // E1: the card itself owns the tinted material and neutral hairline in
+    // either disclosure state; opening it adds only an inset body and output.
     const block = toolCard.match(/\.th-tool\s*\{([^}]*)\}/)?.[1] ?? "";
-    expect(block).not.toMatch(/background\s*:/);
-    expect(block).not.toMatch(/border\s*:/);
+    expect(block).toMatch(/background:\s*var\(--th-tool-record-surface\)/);
+    expect(block).toMatch(/border:\s*1px solid var\(--th-tool-record-border\)/);
+    expect(block).toMatch(/border-radius:\s*var\(--th-radius\)/);
     const body = toolCard.match(/\.th-tool-body\s*\{([^}]*)\}/)?.[1] ?? "";
-    expect(body).toMatch(/background:\s*var\(--th-tool-surface\)/);
-    expect(body).toMatch(/border:\s*1px solid var\(--th-tool-border\)/);
-    expect(body).toMatch(/border-radius:\s*var\(--th-radius\)/);
+    expect(body).not.toMatch(/(?:^|;)\s*(?:background|border|border-radius)\s*:/);
     expect(body).not.toMatch(/box-shadow/);
     expect(body).toMatch(/padding:\s*var\(--th-space-3/);
     expect(body).toMatch(/gap:\s*var\(--th-space-3/);
-    // The scoped material replaces the global Surface role on tool records.
+    // Tool cards retain their separate material instead of the global Surface.
     expect(toolCard).not.toMatch(/\.th-tool[^{]*\{[^}]*background:\s*var\(--th-surface\)/);
     const output = toolCard.match(/\.th-tool-output\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(output).toMatch(/background:\s*var\(--th-bg\)/);
   });
 
-  it("declares the scoped tool material tokens in both theme scopes", () => {
-    for (const name of ["--th-tool-surface", "--th-tool-border"]) {
+  it("declares whole-card tool material tokens in both theme scopes", () => {
+    for (const name of ["--th-tool-record-surface", "--th-tool-record-border"]) {
       expect(tokens).toMatch(new RegExp(`:root\\s*\\{[^}]*${name}:`));
       expect(tokens).toMatch(new RegExp(`\\[data-theme="light"\\]\\s*\\{[^}]*${name}:`));
+    }
+  });
+
+  it("keeps the rail outside the 24px tool card and thinking body", () => {
+    // E4/E28 and decision 7: reserve the gutter inside the reading column.
+    const card = ruleBody(toolCard, ".th-tool.th-chat-record");
+    expect(declarationValue(card, "width")).toBe("calc(100% - var(--th-space-6))");
+    expect(declarationValue(card, "margin-left")).toBe("var(--th-space-6)");
+    expect(declarationValue(ruleBody(toolCard, ".th-tool .th-chat-record-rail"), "left"))
+      .toBe("calc(-1 * var(--th-space-3) - 1.5px)");
+    expect(declarationValue(ruleBody(chatTranscript, ".th-chat-thinking-body"), "padding-left"))
+      .toBe("var(--th-space-6)");
+    expect(declarationValue(ruleBody(chatTranscript, ".th-chat-thinking-body pre"), "font-family"))
+      .toBe("var(--th-font-mono)");
+  });
+
+  it("uses right and down disclosure chevrons and tinted status words", () => {
+    // E2/E3: colour and a glyph both convey state; the card border is neutral.
+    expect(declarationValue(ruleBody(toolCard, ".th-tool-chevron"), "transform")).toBe("rotate(0deg)");
+    expect(declarationValue(ruleBody(toolCard, ".th-tool-chevron--open"), "transform")).toBe("rotate(90deg)");
+    for (const [status, ink, tint] of [
+      ["running", "--th-accent-ink", "--th-accent-bg"],
+      ["ok", "--th-success", "--th-success-bg"],
+      ["error", "--th-error", "--th-error-bg"],
+    ]) {
+      const body = ruleBody(toolCard, `.th-tool-status--${status}`);
+      expect(declarationValue(body, "color")).toBe(`var(${ink})`);
+      expect(declarationValue(body, "background")).toBe(`var(${tint})`);
+    }
+    expect(declarationValue(ruleBody(toolCard, ".th-tool-status"), "font-weight"))
+      .toBe("var(--th-weight-emphasize)");
+    expect(declarationValue(ruleBody(toolCard, ".th-tool-glyph--running"), "animation"))
+      .toBe("th-tool-spin var(--th-dur-run) var(--th-ease-linear) infinite");
+  });
+
+  it("requests semantic visible edges and selected-row washes at their consumers", () => {
+    // E18/E20/E23: contrast.test.ts measures both theme token values; these
+    // selectors must request the semantic roles instead of a tool-only edge
+    // or three independently mixed selection fills.
+    expect(declarationValue(ruleBody(stats, ".th-stats-row"), "border-top"))
+      .toBe("1px solid var(--th-border-visible)");
+    expect(ruleBody(login, ".th-login-card"))
+      .toMatch(/(?:^|\*\/|;)\s*border:\s*1px solid var\(--th-border-visible\)/);
+    expect(declarationValue(ruleBody(login, ".th-login-card .th-input"), "border-color"))
+      .toBe("var(--th-border-visible)");
+    for (const [css, selector] of [
+      [chatPane, '.th-model-picker-list > button[aria-selected="true"]'],
+      [chatPane, ".th-thinking-level--active"],
+      [chatComposer, '.th-chat-slash > button[aria-selected="true"]'],
+    ] as const) {
+      expect(declarationValue(ruleBody(css, selector), "background")).toBe("var(--th-accent-select)");
     }
   });
 
@@ -903,10 +961,11 @@ describe("sidebar density and top-bar hierarchy contracts", () => {
     expect(label).toMatch(/font-size:\s*var\(--th-type-secondary-size\)/);
     const badge = sessionTree.match(/\.th-tree-source\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(badge).toMatch(/font-size:\s*var\(--th-type-micro-size\)/);
-    // The selected row changes only to emphasize weight - never size or colour.
+    // E13: selection changes weight and text tier without changing size.
     const active = sessionTree.match(/\.th-tree-node--active \.th-tree-label\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(active).toMatch(/font-weight:\s*var\(--th-weight-emphasize\)/);
-    expect(active).not.toMatch(/font-size|color/);
+    expect(declarationValue(active, "color")).toBe("var(--th-text)");
+    expect(active).not.toMatch(/font-size/);
   });
 
   it("stretches the session activation target across the full row height", () => {
@@ -954,10 +1013,15 @@ describe("transcript error readability", () => {
 });
 
 describe("activity shelf DAG contracts", () => {
-  it("separates the DAG tab refresh row from the first run card", () => {
-    const rule = activityShelf.match(/\.th-activity-dag-complete\s*>\s*\.th-activity-dag-toolbar\s*\{[^}]*\}/);
-    expect(rule, "scoped refresh-toolbar spacing rule").not.toBeNull();
-    expect(rule?.[0]).toContain("margin-bottom: var(--th-space-3)");
+  it("separates the DAG refresh row while compacting phone-height spacing", () => {
+    // E9/E26: desktop keeps a 4px toolbar margin; narrow DAG panels retain
+    // their 4px flex gap while clearing the extra toolbar margin.
+    const rules = [...activityShelf.matchAll(/\.th-activity-dag-complete\s*>\s*\.th-activity-dag-toolbar\s*\{([^}]*)\}/g)];
+    expect(rules).toHaveLength(2);
+    expect(declarationValue(rules[1]?.[1] ?? "", "margin-bottom")).toBe("var(--th-space-1)");
+    expect(declarationValue(rules[0]?.[1] ?? "", "margin-bottom")).toBe("0");
+    expect(activityShelf).toMatch(/@container chat-pane \(max-width: 640px\)/);
+    expect(activityShelf).toMatch(/\.th-activity-panel--dag \.th-activity-dag-head,\s*\.th-activity-panel--dag \.th-activity-dag\s*\{[^}]*gap:\s*var\(--th-space-1\)/);
   });
 });
 
@@ -1585,6 +1649,24 @@ describe("coarse-pointer shell hit-area contracts (G40)", () => {
     const ko = JSON.parse(readFileSync("src/i18n/locales/ko.json", "utf8")) as Record<string, string>;
     expect(en["sidebar.ws.moreActions"], "en sidebar.ws.moreActions").toBeDefined();
     expect(ko["sidebar.ws.moreActions"], "ko sidebar.ws.moreActions").toBeDefined();
+  });
+
+  it("reveals fine-pointer workspace actions inline and retains the coarse kebab", () => {
+    // E16: restore one-click actions without removing the 44px touch menu.
+    const actions = ruleBody(sessionTree, ".th-tree-actions");
+    expect(declarationValue(actions, "display")).toBe("none");
+    for (const selector of [
+      ".th-tree-node:hover .th-tree-actions",
+      ".th-tree-node:focus-within .th-tree-actions",
+      ".th-tree-node--active .th-tree-actions",
+    ]) {
+      expect(sessionTree).toContain(selector);
+    }
+    expect(sessionTree).toMatch(/\.th-tree-node--active \.th-tree-actions,\s*\.th-tree-actions\[data-th-restore-focus\]\s*\{\s*display:\s*inline-flex/);
+    expect(declarationValue(ruleBody(sessionTree, ".th-tree--touch .th-tree-actions"), "display"))
+      .toBe("inline-flex");
+    expect(declarationValue(ruleBody(sessionTree, ".th-tree--touch .th-tree-count"), "display"))
+      .toBe("none");
   });
 });
 

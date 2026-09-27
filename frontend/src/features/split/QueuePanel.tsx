@@ -79,7 +79,7 @@ export function QueuePanel({ items, engine, placeholders, onRemove, onMove, onCl
         onClick={() => setExpanded((open) => !open)}
       >
         <span className="th-queue-title">{t("queue.count", { count })}</span>
-        {engineCount > 0 && <span className="th-queue-engine">{engineLabel}</span>}
+        {engineCount > 0 && <span className="th-queue-engine th-queue-engine-chip">{engineLabel}</span>}
         <IconChevron size={12} className={`th-queue-chevron${expanded ? " th-queue-chevron--open" : ""}`} />
       </button>
       {expanded && (

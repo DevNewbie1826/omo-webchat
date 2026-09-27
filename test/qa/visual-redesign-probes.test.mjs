@@ -7,7 +7,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildScenarioRegistry, loadScenarioPlugins, selectScenarioIds, NEW_CHAT_DIALOG_SURFACE, openNewChatDialogNative, overlayCycle, requiredInteractionVerdict } from './visual-redesign.mjs';
+import { buildScenarioRegistry, loadScenarioPlugins, selectScenarioIds, NEW_CHAT_DIALOG_SURFACE, openNewChatDialogNative, overlayCycle, requiredInteractionVerdict, waitForLoginForm } from './visual-redesign.mjs';
 import { probeChatStateColors, scenarios as chatScenarios } from './visual-redesign-scenarios-t2.mjs';
 import { probeShellStateColors } from './visual-redesign-scenarios-t3.mjs';
 import {
@@ -25,7 +25,35 @@ const closeTo = (actual, expected, epsilon = 0.01) => {
   expect(Math.abs(actual - expected)).toBeLessThanOrEqual(epsilon);
 };
 
-describe('per-task scenario plugins (T2/T3/T4 extension contract)', () => {
+test('S19 arms visible login-form readiness before navigation and names a missing form', async () => {
+  let formMounted;
+  const page = {
+    locator(selector) {
+      expect(selector).toBe('.th-login form #th-password[type="password"]');
+      return { waitFor(options) {
+        expect(options).toEqual({ state: 'visible', timeout: 45_000 });
+        return new Promise(resolve => { formMounted = resolve; });
+      } };
+    },
+  };
+  await waitForLoginForm(page, async () => {
+    expect(typeof formMounted).toBe('function');
+    formMounted();
+  });
+
+  const unavailable = {
+    locator() {
+      return { waitFor: () => Promise.reject(new Error('form never became visible')) };
+    },
+  };
+  let failure;
+  try { await waitForLoginForm(unavailable, async () => {}, 120); }
+  catch (error) { failure = error; }
+  expect(failure?.message).toContain('.th-login form #th-password[type="password"]');
+  expect(failure?.message).toContain('120ms');
+});
+
+describe('per-task scenario plugins (T2/T3/T4/emphasis extension contract)', () => {
   test('a plugin module is picked up and overrides a stub; unknown ids allowed', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'vr-plugins-'));
     try {
@@ -69,9 +97,10 @@ describe('per-task scenario plugins (T2/T3/T4 extension contract)', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
-  test('actual T2, T3 and T4 discovery keeps app-wide drivers and selects scoped variants', async () => {
+  test('actual T2, T3, T4 and emphasis discovery keeps app-wide drivers and selects scoped variants', async () => {
     const plugins = await loadScenarioPlugins(import.meta.dir);
     expect(plugins.map(plugin => plugin.file)).toEqual([
+      'emphasis-restore-scenarios.mjs',
       'visual-redesign-scenarios-t2.mjs',
       'visual-redesign-scenarios-t3.mjs', 'visual-redesign-scenarios-t4.mjs',
     ]);
@@ -807,6 +836,70 @@ describe('serialized probeContrastSurface (R1: descendant-over-ancestor composit
     });
     expect(result.pass).toBe(true);
   });
+
+  const tabFixture = ({ thumbLeft = 20, thumbFill = '#4b4c55' } = {}) => ({
+    html: `<body style="background-color: #ffffff">
+      <div class="tab-track" style="position: relative; background-color: #e9e9ec">
+        <span class="tab-thumb" style="position: absolute; pointer-events: none; background-color: ${thumbFill}"></span>
+        <button class="tab" style="position: relative; background-color: transparent">
+          <span class="tab-label" style="color: #ffffff">Subagents</span>
+        </button>
+      </div>
+    </body>`,
+    tokens: { '--th-bg': '#ffffff', '--th-faint': '#71717a' },
+    prepare(window) {
+      window.Range.prototype.getClientRects = () => [{ left: 45, right: 95, top: 17, bottom: 29, width: 50, height: 12 }];
+      const rect = (left, right, top, bottom) => ({ left, right, top, bottom, width: right - left, height: bottom - top });
+      window.document.querySelector('.tab-thumb').getBoundingClientRect = () => rect(thumbLeft, thumbLeft + 100, 10, 38);
+      window.document.querySelector('.tab-track').getBoundingClientRect = () => rect(0, 320, 0, 48);
+      window.document.querySelector('.tab').getBoundingClientRect = () => rect(20, 120, 10, 38);
+    },
+  });
+
+  test('white text on the painted preceding sibling thumb passes', async () => {
+    const result = await serializedProbeInDom(probeContrastSurface, contrastArg, tabFixture());
+    expect(result.measurements.textNodes).toBe(1);
+    expect(result.measurements.failedNodes).toBe(0);
+    expect(result.pass).toBe(true);
+  });
+
+  test('the same white text on the track, with no thumb under it, still fails', async () => {
+    const result = await serializedProbeInDom(probeContrastSurface, contrastArg, tabFixture({ thumbLeft: 150 }));
+    expect(result.pass).toBe(false);
+    expect(result.measurements.textNodes).toBe(1);
+    expect(result.measurements.failedNodes).toBe(1);
+    expect(result.measurements.nodeFailures[0].background).toBe('#e9e9ec');
+    expect(result.measurements.nodeFailures[0].ratio).toBeLessThan(4.5);
+  });
+
+  test('an overlapping transparent sibling cannot hide a track contrast failure', async () => {
+    const result = await serializedProbeInDom(probeContrastSurface, contrastArg, tabFixture({ thumbFill: 'transparent' }));
+    expect(result.pass).toBe(false);
+    expect(result.measurements.nodeFailures[0].background).toBe('#e9e9ec');
+  });
+
+  test('an aria-hidden status glyph uses the non-text floor while its visible word still needs 4.5:1', async () => {
+    const markup = word => ({
+      html: `<body style="background-color:#ffffff">
+        <span class="th-chat-record-glyph" aria-hidden="true"
+          style="color:#b3252e;background:#dfced1">!</span>
+        ${word ? '<span style="color:#b3252e;background:#dfced1">Failed</span>' : ''}
+      </body>`,
+      tokens: { '--th-bg': '#ffffff', '--th-faint': '#71717a' },
+    });
+    const icon = await serializedProbeInDom(probeContrastSurface, contrastArg, markup(false));
+    expect(icon.pass).toBe(true);
+    expect(icon.measurements.textNodes).toBe(1);
+    const word = await serializedProbeInDom(probeContrastSurface, contrastArg, markup(true));
+    expect(word.pass).toBe(false);
+    expect(word.measurements.nodeFailures[0]).toMatchObject({ text: 'Failed', threshold: 4.5, isGlyph: false });
+    const drained = await serializedProbeInDom(probeContrastSurface, contrastArg, {
+      html: '<body style="background:#ffffff"><span class="th-chat-record-glyph" aria-hidden="true" style="color:#999;background:#eee">!</span></body>',
+      tokens: { '--th-bg': '#ffffff', '--th-faint': '#71717a' },
+    });
+    expect(drained.pass).toBe(false);
+    expect(drained.measurements.nodeFailures[0]).toMatchObject({ text: '!', threshold: 3, isGlyph: true });
+  });
 });
 
 describe('serialized probeReducedMotion (R4: finite entrances must fail)', () => {
@@ -1009,16 +1102,35 @@ describe('serialized probeStateColors (painted borders and SVG enclosures)', () 
     expect(result.measurements.stateColorViolationSamples[0].where).toBe('rect');
   });
 
-  test('accent-stroked circles pass only inside allowlisted status glyphs', () => {
-    for (const glyph of ['th-activity-gstatus', 'th-tool-glyph--ok']) {
+  test('status glyphs use their own hue; grey, wrong-hue, and coloured card strokes fail', () => {
+    for (const [glyph, colour] of [
+      ['th-activity-gstatus th-activity-gstatus--running', '#8b7cf6'],
+      ['th-tool-glyph--ok', '#146c43'],
+      ['th-tool-glyph--error', '#b3252e'],
+    ]) {
       const result = serializedProbeInDom(probeStateColors, {}, {
-        html: `<body><svg><g class="${glyph}"><circle style="stroke: #8b7cf6; stroke-width: 2px; fill: none"></circle></g></svg></body>`,
+        html: `<body><svg><g class="${glyph}"><circle style="stroke: ${colour}; stroke-width: 2px; fill: none"></circle></g></svg></body>`,
         tokens: stateColorTokens,
       });
       expect(result.pass, glyph).toBe(true);
       expect(result.measurements.stateColorViolationCount).toBe(0);
       expect(result.failures).toEqual([]);
     }
+    for (const colour of ['#a1a1aa', '#8b7cf6']) {
+      const wrong = serializedProbeInDom(probeStateColors, {}, {
+        html: `<body><svg><g class="th-tool-glyph--ok"><circle style="stroke:${colour};stroke-width:2px;fill:none"></circle></g></svg></body>`,
+        tokens: stateColorTokens,
+      });
+      expect(wrong.pass).toBe(false);
+      expect(wrong.failures.join(' ')).toContain('glyph is not painted');
+    }
+    const card = serializedProbeInDom(probeStateColors, {}, {
+      html: '<body><div class="th-tool" style="border:1px solid #146c43"><span class="th-tool-glyph--ok" style="color:#146c43">✓</span></div></body>',
+      tokens: stateColorTokens,
+    });
+    expect(card.pass).toBe(false);
+    expect(card.measurements.stateColorViolationCount).toBeGreaterThan(0);
+    expect(card.measurements.stateColorViolationSamples.every(sample => sample.where.includes('th-tool'))).toBe(true);
     const bare = serializedProbeInDom(probeStateColors, {}, {
       html: '<body><svg><circle style="stroke: #8b7cf6; stroke-width: 2px; fill: none"></circle></svg></body>',
       tokens: stateColorTokens,
@@ -1054,6 +1166,109 @@ describe('serialized probeStateColors (painted borders and SVG enclosures)', () 
     expect(scoped.measurements.uppercaseCount).toBe(0);
     expect(scoped.measurements.tokens.error).toBe('#b3252e');
     expect(scoped.failures).toEqual([]);
+  });
+});
+
+describe('emphasis contract serialized negative controls', () => {
+  const tints = {
+    ...stateColorTokens,
+    '--th-bg': '#17181b', '--th-surface': '#1d1e22',
+    '--th-success-bg': 'rgba(20,108,67,.12)', '--th-error-bg': 'rgba(179,37,46,.12)',
+    '--th-warning-bg': 'rgba(161,92,7,.12)', '--th-accent-bg': 'rgba(139,124,246,.12)',
+    '--th-accent-ink': '#9d90f8',
+    '--th-tool-record-border': 'rgba(255,255,255,.16)',
+  };
+  test('S4 permits a neutral hairline per card but fails old transparent records and nested borders', () => {
+    const pane = card => `<body><section class="th-chat-pane">${card}
+      <div class="th-chat-input-inner" style="border-radius:24px"></div>
+      <div class="th-chat-msg--user" style="border-style:none;border-top-left-radius:16px;border-top-right-radius:16px;border-bottom-right-radius:16px;border-bottom-left-radius:16px"></div>
+    </section></body>`;
+    const valid = serializedProbeInDom(probeSeparation, { baselineBordered: 0 }, {
+      html: pane('<div class="th-tool" data-tool-call-id="t" style="border:1px solid rgba(255,255,255,.16)">tool</div>'),
+      tokens: tints,
+    });
+    expect(valid.pass).toBe(true);
+    expect(valid.measurements.baselineComparison).toMatchObject({ toolCardAllowance: 1, verdict: true });
+    const drained = serializedProbeInDom(probeSeparation, { baselineBordered: 0 }, {
+      html: pane('<div class="th-tool" data-tool-call-id="t">transparent row</div>'), tokens: tints,
+    });
+    expect(drained.pass).toBe(false);
+    expect(drained.failures.join(' ')).toContain('neutral 1px');
+    const nested = serializedProbeInDom(probeSeparation, {}, {
+      html: pane('<div class="th-tool" data-tool-call-id="t" style="border:1px solid rgba(255,255,255,.16)"><div class="th-tool-body" style="border-top:1px solid #888">body</div></div>'),
+      tokens: tints,
+    });
+    expect(nested.measurements.nestedBorderedCount).toBeGreaterThan(0);
+    expect(nested.pass).toBe(false);
+    const ownedPanel = serializedProbeInDom(probeSeparation, { baselineBordered: 0 }, {
+      html: pane(`<div class="th-goal-shelf" style="border:1px solid #555">
+        <button class="th-activity-bar" style="border:1px solid #555">Goal</button></div>
+        <div class="th-tool" data-tool-call-id="t" style="border:1px solid rgba(255,255,255,.16)">tool</div>`),
+      tokens: tints,
+    });
+    expect(ownedPanel.measurements.nestedBorderedCount).toBe(0);
+    expect(ownedPanel.pass).toBe(true);
+  });
+
+  test('S5 fails grey status words or neutral washes and passes matched ink/tints', () => {
+    const vivid = { ...tints, '--th-success': '#3fc084', '--th-error': '#f98085',
+      '--th-success-bg': 'rgba(63,192,132,.03)', '--th-error-bg': 'rgba(249,128,133,.03)',
+      '--th-accent-bg': 'rgba(139,124,246,.12)' };
+    const good = serializedProbeInDom(probeStateColors, { statusOnly: true, requireStates: ['success', 'error', 'accent'] }, {
+      html: `<body><span class="th-tool-status--ok" style="color:#3fc084;background:rgba(63,192,132,.03)">Done</span>
+        <span class="th-tool-status--error" style="color:#f98085;background:rgba(249,128,133,.03)">Failed</span>
+        <span class="th-tool-status--running" style="color:#9d90f8;background:rgba(139,124,246,.12)">Running</span>
+        <span class="th-tool-glyph--ok" style="color:#3fc084">✓</span>
+        <span class="th-tool-glyph--error" style="color:#f98085">!</span>
+        <span class="th-tool-glyph--running" style="background:#8b7cf6"></span></body>`,
+      tokens: vivid,
+    });
+    expect(good.pass).toBe(true);
+    const grey = serializedProbeInDom(probeStateColors, { statusOnly: true, requireStates: ['success'] }, {
+      html: '<body><span class="th-tool-status--ok" style="color:#a1a1aa;background:#34353c">Done</span></body>',
+      tokens: vivid,
+    });
+    expect(grey.pass).toBe(false);
+    expect(grey.measurements.statusFailures[0]).toContain('matching ink and tint');
+    const greyGlyph = serializedProbeInDom(probeStateColors, { statusOnly: true }, {
+      html: '<body><span class="th-tool-glyph--ok" style="color:#a1a1aa">✓</span></body>',
+      tokens: vivid,
+    });
+    expect(greyGlyph.pass).toBe(false);
+    expect(greyGlyph.failures[0]).toContain('glyph is not painted');
+  });
+
+  test('S8 rejects slow grey sidebar counts and accepts accent text with a 700ms indicator', () => {
+    const run = (ink, duration, direction) => serializedProbeInDom(probeRunningGlyphs, {}, {
+      html: `<body><div class="th-tree-running th-tree-running--count" style="color:${ink}">
+        2<span class="th-tree-running-dot" style="background:#8b7cf6;animation-name:blink;animation-duration:${duration};animation-direction:${direction}"></span>
+      </div></body>`,
+      tokens: tints,
+      prepare: window => {
+        window.Element.prototype.getAnimations = function () {
+          return this.matches('.th-tree-running-dot') ? [{ playState: 'running' }] : [];
+        };
+      },
+    });
+    const valid = run('#9d90f8', '700ms', 'normal');
+    expect(valid.pass).toBe(true);
+    expect(valid.measurements.glyphs.find(fact => fact.countInkMatches)?.dotAnimationMs).toBe(700);
+    const drained = run('#a1a1aa', '1280ms', 'alternate');
+    expect(drained.pass).toBe(false);
+    expect(drained.failures.join(' ')).toContain('running count');
+    expect(drained.failures.join(' ')).toContain('exceeds 800ms');
+  });
+
+  test('S8 reduced motion requires each sidebar chip to retain its running name', () => {
+    const run = name => serializedProbeInDom(probeRunningReducedMotion, {}, {
+      html: `<body><span class="th-tree-running" role="img" aria-label="${name}"><span class="th-tree-running-dot"></span></span>
+        <span role="status">Running</span></body>`,
+      prepare: window => { window.Element.prototype.getAnimations = () => []; },
+    });
+    expect(run('Running subagents').pass).toBe(true);
+    const unnamed = run('2');
+    expect(unnamed.pass).toBe(false);
+    expect(unnamed.failures.join(' ')).toContain('accessible running name');
   });
 });
 
@@ -1162,6 +1377,23 @@ describe('serialized S5 SVG stroke coverage in production element order', () => 
     <circle class="th-activity-gstatus th-activity-gstatus--running" style="stroke:#8b7cf6;stroke-width:2px" />
   </g>`;
 
+  test('only matching completed and error DAG cards may use subtle semantic strokes', () => {
+    const card = (state, stroke) => `<g class="th-activity-gnode th-activity-gnode--${state}">
+      <rect class="th-activity-gnode-card" style="stroke:${stroke};stroke-width:1px" />
+    </g>`;
+    expect(run(card('ok', 'rgba(22,163,74,.16)')).pass).toBe(true);
+    for (const state of ['error', 'failed', 'cancelled']) {
+      expect(run(card(state, 'rgba(220,38,38,.16)')).pass).toBe(true);
+    }
+    expect(run(card('ok', 'rgba(220,38,38,.16)')).pass).toBe(false);
+    expect(run(card('running', 'rgba(22,163,74,.16)')).pass).toBe(false);
+    expect(run('<rect class="th-activity-gnode-card" style="stroke:#16a34a;stroke-width:1px" />').pass).toBe(false);
+    expect(serializedProbeInDom(probeStateColors, {}, {
+      html: '<body><section class="th-notice" style="border:1px solid rgba(22,163,74,.16)">Done</section></body>',
+      tokens,
+    }).pass).toBe(false);
+  });
+
   test('running card behind its normal halo fails for accent and warning outlines', () => {
     for (const stroke of ['#8b7cf6', '#d97706']) {
       const result = run(runningCard(stroke));
@@ -1183,7 +1415,7 @@ describe('serialized S5 SVG stroke coverage in production element order', () => 
     expect(run('<path style="stroke:#16a34a;stroke-width:0" />').pass).toBe(true);
     expect(run('<path style="stroke:#16a34a;stroke-width:2px;stroke-opacity:0" />').pass).toBe(true);
   });
-  test('normal status glyph, halo, comet, glow and focus or alert outlines remain allowed', () => {
+  test('semantic glyphs and effects remain allowed; focused or alert borders stay neutral', () => {
     const svg = `${runningCard('rgba(255,255,255,0.06)')}
       <g class="th-activity-gstatus th-activity-gstatus--error">
         <path style="stroke:#dc2626;stroke-width:2px" />
@@ -1200,14 +1432,22 @@ describe('serialized S5 SVG stroke coverage in production element order', () => 
       html: '<body><div class="th-alert" style="border:1px solid #dc2626"><svg xmlns="http://www.w3.org/2000/svg"><path style="stroke:#dc2626;stroke-width:2px" /></svg></div></body>',
       tokens,
     });
-    expect(alert.pass).toBe(true);
+    expect(alert.pass).toBe(false);
+    expect(alert.measurements.stateColorViolationCount).toBeGreaterThan(0);
     const focus = serializedProbeInDom(probeStateColors, {}, {
       html: '<body><input class="th-input" style="border:1px solid #8b7cf6" /></body>',
       tokens, prepare: window => window.document.querySelector('input').focus(),
     });
-    expect(focus.pass).toBe(true);
+    expect(focus.pass).toBe(false);
+    expect(serializedProbeInDom(probeStateColors, {}, {
+      html: '<body><input class="th-input" style="border:1px solid #a1a1aa;box-shadow:0 0 0 3px rgba(139,124,246,.55)" /></body>',
+      tokens, prepare: window => window.document.querySelector('input').focus(),
+    }).pass).toBe(true);
     expect(serializedProbeInDom(probeStateColors, {}, {
       html: '<body><div class="th-alert" style="border:1px solid #8b7cf6"></div></body>', tokens,
+    }).pass).toBe(false);
+    expect(serializedProbeInDom(probeStateColors, {}, {
+      html: '<body><div class="th-alert" style="border:1px solid #a1a1aa;color:#dc2626">Blocked</div></body>', tokens,
     }).pass).toBe(true);
   });
 });
@@ -1348,6 +1588,8 @@ describe('T4 S8 scope leaves the shared running-glyph census for T5', () => {
       '.th-tool-glyph--running',
       '.th-tree-running-dot',
       '.th-overview-card-running-dot',
+      '.th-tree-running',
+      '.th-overview-card-running',
       '.th-activity-gnode--running',
       '.th-activity-gstatus--running',
     ]);

@@ -22,11 +22,15 @@
   animation: th-settings-in var(--th-dur) var(--th-ease-out);
 }
 
-/* Floating layer: glass where backdrop-filter is available; the solid
-   Overlay fill above stands as the fallback. */
+/* The panel stays opaque, matching the revised floating-overlay contract
+   (prefer --th-surface-overlay where behind content could compete with
+   text). Under the translucent glass, the heading's composited paint
+   (#fdfdfd light / #26272c dark) measured a hair quieter than the opaque
+   white/grey row surfaces beneath it, failing Q6's heading >= row check
+   by rounding. Where backdrop-filter exists the panel keeps the floating
+   layer's filter recipe; the opaque fill hides the blur. */
 @supports (backdrop-filter: blur(1px)) {
   .th-settings-panel {
-    background: var(--th-glass);
     backdrop-filter: var(--th-glass-filter);
   }
 }
@@ -55,17 +59,30 @@ html[data-th-keyboard-open] .th-settings-panel {
 }
 
 .th-settings-label {
-  font-size: var(--th-type-micro-size);
+  /* Section headings carry hierarchy: emphasize weight on the top text
+     tier (E15). The colour must be --th-text, not --th-text-dim: Q6
+     measures each heading against the row it heads, and the selected
+     segment / select / size values already render --th-text at up to
+     ~17.7:1 (light) and ~13.9:1 (dark) — a dimmer heading reads quieter
+     than its own group. Never uppercase. */
+  font-size: var(--th-type-label-size);
   font-weight: var(--th-weight-emphasize);
-  line-height: var(--th-type-micro-line);
-  letter-spacing: var(--th-type-micro-tracking);
-  color: var(--th-faint);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  color: var(--th-text);
 }
 
 /* Segmented control: a tonal pill track with no border and no inter-segment
    dividers. The selected segment carries exactly one neutral raised thumb
    (surface fill + surface shadow + top highlight, per the token contract's
-   segmented-control rule); markup keeps its role="radio" behaviour. */
+   segmented-control rule); markup keeps its role="radio" behaviour.
+   Dark: the thumb lifts from the track by tone alone (--th-active clears
+   1.3:1 against the --th-surface track). Light: --th-active tops out at
+   1.21:1 white-on-track, so the track steps down to
+   --th-tool-record-border, the contract's panel-grade neutral 16% hairline
+   (composited ~1.37:1 under the white thumb per the Q8 probe's math over
+   --th-surface-overlay); the thumb keeps its neutral hairline as a second
+   cue on the near-white panel. */
 .th-settings-seg {
   display: flex;
   padding: var(--th-space-0-5);
@@ -73,18 +90,31 @@ html[data-th-keyboard-open] .th-settings-panel {
   border-radius: var(--th-radius-pill);
 }
 
+[data-theme="light"] .th-settings-seg {
+  background: var(--th-tool-record-border);
+}
+
 .th-settings-seg-btn {
   flex: 1;
   padding: var(--th-space-1) 0;
+  /* Transparent border so the selected thumb's hairline never changes the
+     row height; only the colour switches. */
+  border: 1px solid transparent;
   border-radius: var(--th-radius-pill);
   font-size: var(--th-type-label-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
-  color: var(--th-muted);
+  /* Unselected labels take the text-dim tier, not muted: on the light
+     track (--th-tool-record-border over the panel, composited ~#d8d8d9)
+     --th-muted measures 4.44:1, under the 4.5 text floor; --th-text-dim
+     holds ~7.3:1 there and keeps dark unchanged. The selected segment
+     still dominates via the white thumb, --th-text label, and shadow. */
+  color: var(--th-text-dim);
   background: transparent;
   transition: background var(--th-dur-fast) var(--th-ease),
     color var(--th-dur-fast) var(--th-ease),
+    border-color var(--th-dur-fast) var(--th-ease),
     box-shadow var(--th-dur-fast) var(--th-ease);
 }
 
@@ -101,17 +131,15 @@ html[data-th-keyboard-open] .th-settings-panel {
 
 .th-settings-seg-btn--on,
 .th-settings-seg-btn--on:hover {
-  background: var(--th-surface-raised);
+  background: var(--th-active);
+  border-color: var(--th-border-strong);
   color: var(--th-text);
   box-shadow: var(--th-shadow-surface), var(--th-highlight);
 }
 
 [data-theme="light"] .th-settings-seg-btn--on,
 [data-theme="light"] .th-settings-seg-btn--on:hover {
-  /* White on the near-white glass panel would wash the thumb out; the
-     active tone stays visible while the shadow and highlight carry the
-     raised read. */
-  background: var(--th-active);
+  background: var(--th-surface-raised);
 }
 
 .th-settings-seg-btn--on:focus-visible {

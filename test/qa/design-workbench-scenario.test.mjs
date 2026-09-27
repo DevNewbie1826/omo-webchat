@@ -3,9 +3,8 @@ import { singleScenario, scenarioRunner } from './design-workbench.mjs';
 import { collectDesignReds } from './design-workbench-measure.mjs';
 
 /** Measurement fixture satisfying every designAssertions/preservedGeometry
- * precondition; the collapsed-enclosure predicate is driven to a RED by an
- * opaque tool-card background, exactly like the deferred T2 restyle. */
-function sample({ viewportWidth = 1280, columnWidth = 506, gutter = 24, userTop = 180, fontSize = '14px', enclosed = false } = {}) {
+ * precondition; an old transparent tool row drives the enclosure RED. */
+function sample({ viewportWidth = 1280, columnWidth = 506, gutter = 24, userTop = 180, fontSize = '14px', enclosed = true } = {}) {
   const bandWidth = Math.min(760, columnWidth - 2 * gutter);
   const left = (columnWidth - bandWidth) / 2, right = left + bandWidth;
   return {
@@ -16,10 +15,13 @@ function sample({ viewportWidth = 1280, columnWidth = 506, gutter = 24, userTop 
       { index: 25, content: { top: 132, bottom: 152 }, paddingTop: 0 },
       { index: 26, content: { top: userTop, bottom: userTop + 20 }, paddingTop: 0 },
     ],
-    tools: ['one', 'two', 'three'].map((id, index) => ({ id, name: 'bash', status: 'Done', glyph: true,
-      expanded: 'false', background: enclosed && index === 0 ? 'rgb(29, 30, 34)' : 'rgba(0, 0, 0, 0)',
-      borders: ['Top', 'Right', 'Bottom', 'Left'].map(() => ({ width: 0, style: 'solid', color: 'rgba(0, 0, 0, 0)' })),
+    tools: ['one', 'two', 'three'].map(id => ({ id, name: 'bash', status: 'Done', glyph: true,
+      expanded: 'false', background: enclosed ? 'rgb(29, 30, 34)' : 'rgba(0, 0, 0, 0)', radius: enclosed ? 12 : 0,
+      borders: ['Top', 'Right', 'Bottom', 'Left'].map(() => ({
+        width: enclosed ? 1 : 0, style: 'solid', color: enclosed ? 'rgba(255, 255, 255, .16)' : 'rgba(0, 0, 0, 0)',
+      })),
       head: { height: 44 } })),
+    tokens: { '--th-tool-record-surface': 'rgb(29, 30, 34)', '--th-tool-record-border': 'rgba(255, 255, 255, 0.16)' },
     edges: Object.fromEntries(['controls', 'composer', 'live'].map(key => [key, { left, right }])),
     status: { left, right: right - 108, top: 800, bottom: 830 },
     historyAxis: left, liveAxis: left, roles: [],
@@ -60,7 +62,7 @@ function scenarioContext(record, { enclosed = true, fontSize = '14px' } = {}) {
 test('a failing design predicate is recorded, not thrown, so the following behaviour steps still run', async () => {
   const record = {};
   const { ctx, saved } = scenarioContext(record);
-  const { page, order } = fakePage(() => sample({ enclosed: true }));
+  const { page, order } = fakePage(() => sample({ enclosed: false }));
   const behaviour = {
     exerciseControls: async () => {
       // The RED must already be recorded when behaviour starts, proving the
@@ -83,7 +85,7 @@ test('a failing design predicate is recorded, not thrown, so the following behav
 test('a passing design surface records no REDs and behaviour still completes', async () => {
   const record = {};
   const { ctx } = scenarioContext(record);
-  const { page } = fakePage(() => sample({ enclosed: false }));
+  const { page } = fakePage(() => sample({ enclosed: true }));
   const behaviour = {
     exerciseControls: async () => 'CONTROLS',
     auxiliarySurfaces: async () => {},
@@ -96,7 +98,7 @@ test('a passing design surface records no REDs and behaviour still completes', a
 test('a failing behaviour step still rejects the scenario and retains the recorded REDs', async () => {
   const record = {};
   const { ctx } = scenarioContext(record);
-  const { page } = fakePage(() => sample({ enclosed: true }));
+  const { page } = fakePage(() => sample({ enclosed: false }));
   const behaviour = {
     exerciseControls: async () => { throw new Error('behaviour step failed'); },
     auxiliarySurfaces: async () => { throw new Error('must not run'); },

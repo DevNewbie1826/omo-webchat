@@ -269,21 +269,26 @@ describe("token contrast contracts (WCAG 2.1)", () => {
   const ELEVATION_FILLS = [
     "--th-bg", "--th-surface", "--th-surface-composer", "--th-surface-raised",
     "--th-surface-user", "--th-surface-overlay",
-    // Scoped tool material: tool title, preview, status word, and status hues
-    // land on it in both disclosure states and both themes.
-    "--th-tool-surface",
+    // Whole-card tint under the header and body in both disclosure states.
+    "--th-tool-record-surface",
   ] as const;
   const STATE_FILLS = ["--th-hover", "--th-active"] as const;
   const TEXT_BACKGROUNDS = [...ELEVATION_FILLS, ...STATE_FILLS] as const;
   // The fills metadata (timestamps, counts, hints) actually lands on.
   const FAINT_FILLS = [
     "--th-bg", "--th-surface", "--th-surface-composer", "--th-surface-raised",
-    "--th-tool-surface",
+    "--th-tool-record-surface",
   ] as const;
   // The violet accent is legible as text on the canvas and body surfaces;
   // state and user fills sit too close to it for 4.5:1.
   const ACCENT_TEXT_FILLS = ["--th-bg", "--th-surface"] as const;
   const STATUS_TOKENS = ["--th-error", "--th-success", "--th-warning"] as const;
+  const STATUS_TINTS = [
+    ["--th-accent-ink", "--th-accent-bg"],
+    ["--th-success", "--th-success-bg"],
+    ["--th-error", "--th-error-bg"],
+    ["--th-warning", "--th-warning-bg"],
+  ] as const;
   const NORMAL_TEXT = 4.5;
 
   // Pairs that are intentionally NOT held to the matrix requirement. Each entry
@@ -354,6 +359,14 @@ describe("token contrast contracts (WCAG 2.1)", () => {
     ...STATUS_TOKENS.flatMap((fg) =>
       ELEVATION_FILLS.map(
         (bg): ContrastPair => ({ fg, bg, ratio: NORMAL_TEXT, note: "status hue used as text" }),
+      ),
+    ),
+    ...STATUS_TINTS.flatMap(([fg, bg]) =>
+      ["--th-bg", "--th-surface", "--th-tool-record-surface"].map(
+        (over): ContrastPair => ({
+          fg, bg, over, ratio: NORMAL_TEXT,
+          note: "matching status ink on its translucent tint over the pane or tool card",
+        }),
       ),
     ),
     {
@@ -429,6 +442,9 @@ describe("token contrast contracts (WCAG 2.1)", () => {
         "--th-type-secondary-size", "--th-type-secondary-line", "--th-type-secondary-tracking",
         "--th-type-label-size", "--th-type-label-line", "--th-type-label-tracking",
         "--th-type-micro-size", "--th-type-micro-line", "--th-type-micro-tracking",
+        "--th-type-dag-compact-details-size", "--th-type-dag-compact-name-size",
+        "--th-type-dag-compact-counts-size", "--th-type-dag-compact-graph-title-size",
+        "--th-type-dag-compact-graph-state-size",
         "--th-weight-read", "--th-weight-emphasize", "--th-weight-announce",
       ],
     },
@@ -442,7 +458,7 @@ describe("token contrast contracts (WCAG 2.1)", () => {
     },
     {
       reason: "Structural dimensions are shared by every theme.",
-      names: ["--th-sidebar-w", "--th-header-h", "--th-node-h"],
+      names: ["--th-sidebar-w", "--th-header-h"],
     },
     {
       reason: "Motion timing and easing are shared by every theme.",
@@ -450,7 +466,7 @@ describe("token contrast contracts (WCAG 2.1)", () => {
         "--th-ease", "--th-ease-out", "--th-ease-in-out", "--th-ease-spring",
         "--th-ease-linear",
         "--th-dur-fast", "--th-dur", "--th-dur-slow", "--th-dur-emph",
-        "--th-dur-spin", "--th-dur-shimmer",
+        "--th-dur-run",
       ],
     },
   ] as const;
@@ -511,6 +527,70 @@ describe("token contrast contracts (WCAG 2.1)", () => {
     expect(failures).toEqual([]);
   });
 
+  it("retains base running-word contrast and rejects the calibrated overlapping-halo paint", () => {
+    const css = postcss.parse(readFileSync("src/styles/activity-shelf.css", "utf8"));
+    const declaration = (selector: string, property: string): string => {
+      let value: string | undefined;
+      css.walkRules(selector, (rule) => {
+        rule.walkDecls(property, (decl) => { value = decl.value; });
+      });
+      return must(value);
+    };
+    const paintedToken = (selector: string, property: string): string => {
+      const value = declaration(selector, property);
+      const token = /^var\(\s*(--th-[\w-]+)\s*\)$/.exec(value)?.[1];
+      return must(token);
+    };
+    const ink = paintedToken(".th-activity-gnode--running .th-activity-gstate", "fill");
+    const card = paintedToken(".th-activity-gnode--running .th-activity-gnode-card", "fill");
+    const backdrop = paintedToken(".th-activity-panel", "background");
+    expect(declaration(".th-activity-gnode-halo", "animation")).toContain("th-dag-halo-breathe");
+    const keyframes = css.nodes.find(
+      (node): node is postcss.AtRule => node.type === "atrule" && node.name === "keyframes" && node.params === "th-dag-halo-breathe",
+    );
+    const opacity = (step: string): number => {
+      const frame = keyframes?.nodes?.find((node): node is postcss.Rule => node.type === "rule" && node.selector === step);
+      const value = frame?.nodes?.find((node): node is postcss.Declaration => node.type === "decl" && node.prop === "opacity")?.value;
+      return Number(must(value));
+    };
+    const from = opacity("from");
+    const to = opacity("to");
+    expect(from).toBeGreaterThanOrEqual(0);
+    expect(to).toBeLessThanOrEqual(1);
+
+    // Settled browser pixels beside the running word at the halo peak (review item 3).
+    // They remain a negative control even if the product's colours later change.
+    const currentPaint = [
+      { selector: ":root", word: "rgb(157, 144, 248)", behind: "rgb(65, 60, 102)", ratio: 3.7705 },
+      { selector: '[data-theme="light"]', word: "rgb(91, 73, 194)", behind: "rgb(196, 188, 234)", ratio: 3.6919 },
+    ] as const;
+    for (const reference of currentPaint) {
+      const observed = contrastRatio(parseColor(reference.word), parseColor(reference.behind));
+      expect(observed).toBeCloseTo(reference.ratio, 4);
+      expect(observed).toBeLessThan(NORMAL_TEXT);
+
+      const scope = must(scopes.find((candidate) => candidate.selector === reference.selector));
+      const word = scopeColor(scope, ink);
+      const wash = scopeColor(scope, card);
+      const pane = scopeColor(scope, backdrop);
+      // This is only the necessary base stack. A hollow SVG rect still has a
+      // blurred stroke, and the following node's ring can paint under this
+      // word. Q3 samples actual glyph pixels in the dense graph at each phase.
+      const base = compositeOver(wash, pane);
+      expect(contrastRatio(word, base)).toBeGreaterThanOrEqual(NORMAL_TEXT);
+    }
+    const overlappingDark = contrastRatio(
+      parseColor("rgb(157, 144, 248)"), parseColor("rgb(54, 51, 81)"),
+    );
+    const isolatedDark = contrastRatio(
+      parseColor("rgb(157, 144, 248)"), parseColor("rgb(48, 46, 70)"),
+    );
+    expect(overlappingDark).toBeCloseTo(4.446822592, 6);
+    expect(overlappingDark).toBeLessThan(NORMAL_TEXT);
+    expect(isolatedDark).toBeCloseTo(4.846608785, 6);
+    expect(isolatedDark).toBeGreaterThanOrEqual(NORMAL_TEXT);
+  });
+
   // --th-faint is the METADATA-ONLY tier (the >=3.0:1 rule above). Every
   // selector that paints any property with it must be enumerated here with
   // its metadata role; a new usage fails the allowlist test until it is
@@ -519,7 +599,6 @@ describe("token contrast contracts (WCAG 2.1)", () => {
   // list cannot silently rot. Readable prose, including expanded reasoning,
   // is not metadata and is not listed.
   const FAINT_METADATA_ALLOWLIST: Readonly<Record<string, string>> = {
-    ".th-settings-label": "settings section label",
     ".th-login-foot": "login footer hint line",
     ".th-input::placeholder": "input placeholder hint",
     ".th-activity-bar-sep": "activity bar middot separator glyph",
@@ -734,10 +813,8 @@ describe("token contrast contracts (WCAG 2.1)", () => {
   });
 
   it("measures the activity-shelf done chip's declared fill and label pair instead of skipping it", () => {
-    // The done chip no longer recreates --th-success-bg with a raw
-    // color-mix(); it requests a neutral token pair. Read the exact pair the
-    // stylesheet declares and hold it to the 4.5:1 contract in every theme
-    // scope, composed over the shelf's --th-surface.
+    // E7: read the declared status ink and matching tint, and hold them to
+    // 4.5:1 after the tint is composed over the shelf surface.
     const shelf = readFileSync("src/styles/activity-shelf.css", "utf8");
     const rule = /\.th-activity-chip--ok\s*\{([^}]*)\}/.exec(shelf)?.[1] ?? "";
     const fill = /(?:^|;)\s*background:\s*var\(\s*(--th-[\w-]+)\s*\)\s*;/.exec(rule)?.[1];
@@ -895,10 +972,8 @@ describe("token contrast contracts (WCAG 2.1)", () => {
     const expected = [
       [":root", "--th-border-surface", 0.06, [255, 255, 255]],
       [":root", "--th-border-strong", 0.10, [255, 255, 255]],
-      [":root", "--th-tool-border", 0.06, [255, 255, 255]],
       ['[data-theme="light"]', "--th-border-surface", 0.07, [24, 24, 27]],
       ['[data-theme="light"]', "--th-border-strong", 0.12, [24, 24, 27]],
-      ['[data-theme="light"]', "--th-tool-border", 0.06, [24, 24, 27]],
     ] as const;
     for (const [selector, token, alpha, tint] of expected) {
       const scope = must(scopes.find((candidate) => candidate.selector === selector));
@@ -909,6 +984,89 @@ describe("token contrast contracts (WCAG 2.1)", () => {
       }
     }
     expect(failures).toEqual([]);
+  });
+
+  it("keeps the whole tool-card hairline neutral and visible against each pane fill", () => {
+    const failures: string[] = [];
+    for (const scope of scopes) {
+      const border = scopeColor(scope, "--th-tool-record-border");
+      const neutral = scopeColor(scope, "--th-border-surface");
+      if ([border.r - neutral.r, border.g - neutral.g, border.b - neutral.b].some((difference) => Math.abs(difference) > 0.5)) {
+        failures.push(`[${scope.selector}] tool-card border must share the neutral border hue`);
+      }
+      for (const pane of ["--th-bg", "--th-surface"]) {
+        const measured = pairRatio(scope, "--th-tool-record-border", pane, pane);
+        if (measured < 1.3) {
+          failures.push(`[${scope.selector}] tool-card border over ${pane}: ${measured.toFixed(2)}:1 < 1.3:1`);
+        }
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it("keeps the shared visible hairline neutral at 1.3:1 over pane fills", () => {
+    // E23: system-stats and login boundaries use a semantic visible edge,
+    // independent of the tool-card token that happens to share its value.
+    const failures: string[] = [];
+    for (const scope of scopes) {
+      const border = scopeColor(scope, "--th-border-visible");
+      const neutral = scopeColor(scope, "--th-border-surface");
+      if ([border.r - neutral.r, border.g - neutral.g, border.b - neutral.b].some((difference) => Math.abs(difference) > 0.5)) {
+        failures.push(`[${scope.selector}] visible border must have the neutral hairline hue`);
+      }
+      for (const pane of ["--th-bg", "--th-surface", "--th-surface-raised"]) {
+        const measured = pairRatio(scope, "--th-border-visible", pane, pane);
+        if (measured < 1.3) {
+          failures.push(`[${scope.selector}] visible border over ${pane}: ${measured.toFixed(2)}:1 < 1.3:1`);
+        }
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it("keeps the selected-row wash at 1.3:1 against neighbouring states", () => {
+    // E18/E20: selected model and palette rows must remain identifiable
+    // even when a neighbouring row has the normal hover or active fill.
+    const failures: string[] = [];
+    for (const scope of scopes) {
+      for (const neighbour of ["--th-hover", "--th-active"]) {
+        const measured = pairRatio(scope, "--th-accent-select", neighbour);
+        if (measured < 1.3) {
+          failures.push(`[${scope.selector}] selection versus ${neighbour}: ${measured.toFixed(2)}:1 < 1.3:1`);
+        }
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it("keeps the borderless user bubble distinct through its composed neutral wash", () => {
+    // E23: the base user surface alone did not clear 1.3:1 against the
+    // canvas; the neutral overlay yields ~1.72 dark and ~1.44 light.
+    const failures: string[] = [];
+    for (const scope of scopes) {
+      const pane = scopeColor(scope, "--th-bg");
+      const base = scopeColor(scope, "--th-surface-user");
+      const composed = compositeOver(scopeColor(scope, "--th-border-user"), base);
+      const measured = contrastRatio(composed, pane);
+      const floor = scope.selector === ":root" ? 1.7 : 1.4;
+      if (measured < floor) {
+        failures.push(`[${scope.selector}] user bubble: ${measured.toFixed(2)}:1 < ${floor}:1`);
+      }
+      // Negative control: the drained bare surface must not pass as the new
+      // fill if the overlay disappears.
+      if (contrastRatio(base, pane) >= 1.3) {
+        failures.push(`[${scope.selector}] unwashed user surface no longer distinguishes the regression`);
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it("keeps the shared running period within 800ms", () => {
+    const root = must(scopes.find((scope) => scope.selector === ":root"));
+    const period = root.tokens["--th-dur-run"] ?? "";
+    expect(period).toMatch(/^\d+ms$/);
+    expect(Number.parseInt(period, 10)).toBeGreaterThan(0);
+    expect(Number.parseInt(period, 10)).toBeLessThanOrEqual(800);
   });
 
   it("pins the glass, backdrop, and highlight tokens to their contract values", () => {
@@ -961,11 +1119,9 @@ describe("token contrast contracts (WCAG 2.1)", () => {
       return 0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b);
     };
     const dark = must(scopes.find((scope) => scope.selector === ":root"));
-    // Dark lifts by luminance steps: tool shares surface, overlay shares
-    // raised, then surface < composer < raised < user < hover < active.
-    if (luminance(dark, "--th-tool-surface") !== luminance(dark, "--th-surface")) {
-      failures.push("[dark] --th-tool-surface must equal --th-surface");
-    }
+    // Dark lifts by luminance steps: overlay shares raised, then surface
+    // < composer < raised < user < hover < active. The tinted tool card has
+    // its own material and neutral hairline contract above.
     if (luminance(dark, "--th-surface-overlay") !== luminance(dark, "--th-surface-raised")) {
       failures.push("[dark] --th-surface-overlay must equal --th-surface-raised");
     }
@@ -982,8 +1138,8 @@ describe("token contrast contracts (WCAG 2.1)", () => {
     }
     const light = must(scopes.find((scope) => scope.selector === '[data-theme="light"]'));
     // Light: canvas, composer, raised, and overlay hold pure white; surface
-    // and tool sit one whisper below; user and hover share one grey step
-    // further down; active steps below that.
+    // sits one whisper below; user and hover share one grey step further
+    // down; active steps below that. The tool card has a separate tint.
     if (luminance(light, "--th-bg") !== 1) {
       failures.push("[light] --th-bg must stay white");
     }
@@ -991,9 +1147,6 @@ describe("token contrast contracts (WCAG 2.1)", () => {
       if (luminance(light, token) !== 1) {
         failures.push(`[light] ${token} must stay at the contract white`);
       }
-    }
-    if (luminance(light, "--th-tool-surface") !== luminance(light, "--th-surface")) {
-      failures.push("[light] --th-tool-surface must equal --th-surface");
     }
     if (luminance(light, "--th-surface") >= luminance(light, "--th-bg")) {
       failures.push("[light] --th-surface must sit one whisper below the white canvas");

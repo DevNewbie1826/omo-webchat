@@ -1,31 +1,45 @@
-/* Tool-execution record — v2 Golo timeline grammar (governing plan:
-   .omo/plans/visual-redesign.md G7; task spec "transcript timeline"):
-   one addressable transcript block per tool invocation, keyed by
-   toolCallId. A collapsed record is a transparent timeline row — a status
-   glyph on a 1px rail, a Label operation title with a concise invocation
-   summary, and a round collapse chevron — so executions recede behind the
-   transparent Body-tier prose around them through smaller type and dimmer
-   tiers, never whole-record opacity. The expanded body alone carries the
-   scoped tool material (--th-tool-surface at the 12px radius), with the
-   output well insetting Canvas inside it. Status is never colour alone:
-   a violet dotted spinner beside the Running word while live, a muted check
-   beside Done on success, an error-hued exclamation beside Failed on
-   failure. No state is encoded by a coloured border: the only accent in a
-   record is the agent-alive running glyph/label. Spacing uses the
-   --th-space-* scale; the px values below are the record's fixed glyph
-   geometry, not spacing. */
+/* Tool-execution record — v2 Golo timeline grammar with the emphasis-restore
+   whole-record card (governing plan: .omo/plans/emphasis-restore.md E1-E5;
+   DESIGN.md "Tool-execution block anatomy"): ONE bounded card per tool
+   invocation, keyed by toolCallId, in either disclosure state. The card
+   carries the light --th-tool-record-surface tint, a 1px neutral
+   --th-tool-record-border hairline and --th-radius corners around BOTH the
+   disclosure header and, when open, the inset body — collapsed records are
+   cards too, never transparent rows. The card indents to the right of the
+   timeline gutter: the aria-hidden 1px rail and the status glyph live in
+   that gutter (the glyph disc knocks the rail), so the rail never paints
+   through a card or any text. Status is coloured glyph + coloured word at
+   emphasize weight on a light tint of the SAME hue (running --th-accent-ink
+   on --th-accent-bg, complete --th-success on --th-success-bg, failed
+   --th-error on --th-error-bg); no state is ever a coloured border. Spacing
+   uses the --th-space-* scale; the px values below are the record's fixed
+   glyph geometry, not spacing. */
 
 .th-tool {
   width: 100%;
   max-width: 100%;
   min-width: 0;
+  border: 1px solid var(--th-tool-record-border);
+  border-radius: var(--th-radius);
+  background: var(--th-tool-record-surface);
+}
+
+/* Reserve the gutter inside the reading column, rather than adding it to
+   the card's full width. Hook cards share .th-tool but have no timeline. */
+.th-tool.th-chat-record {
+  width: calc(100% - var(--th-space-6));
+  margin-left: var(--th-space-6);
 }
 
 /* The rail is a real, aria-hidden element so transcript tooling can find it
    (QA S7 "a rail element"): a 1px hairline at the status glyph's center
-   running the record's full height. Records whose previous sibling is also
-   a record carry th-chat-record--continue and extend the rail up across
-   the 8px block rhythm, meeting the previous record's rail so consecutive
+   running the record's full height. The base position serves thinking
+   records (transparent rows). Tool records indent 24px for the
+   card gutter, so their rail re-anchors to the SAME transcript-x as the
+   thinking rail — the gutter column stays one continuous timeline and the
+   rail never intersects the card. Records whose previous sibling is also a
+   record carry th-chat-record--continue and extend the rail up across the
+   8px block rhythm, meeting the previous record's rail so consecutive
    records within a turn read as one connected timeline. */
 .th-chat-record {
   position: relative;
@@ -35,16 +49,29 @@
   position: absolute;
   top: 0;
   bottom: 0;
-  /* 12px head inset - 4px chevron pull + 20px chip + 8px gap
-     + half the 12px status glyph, minus half the 1px stroke. */
-  left: calc(var(--th-space-3) - var(--th-space-1) + var(--th-space-5) + var(--th-space-2) + 5.5px);
+  /* Centre the rail in the 24px gutter, outside every card and label. */
+  left: calc(var(--th-space-3) - 0.5px);
   width: 1px;
   background: var(--th-border-surface);
   pointer-events: none;
 }
 
+/* Tool cards indent --th-space-6 for the gutter; pull their rail back by
+   the same gutter plus the card border so the rail still lands on the
+   glyph and never touches the card rect. */
+.th-tool .th-chat-record-rail {
+  left: calc(-1 * var(--th-space-3) - 1.5px);
+}
+
 .th-chat-record--continue .th-chat-record-rail {
   top: calc(-1 * var(--th-space-2));
+}
+
+/* Two tool siblings inside one message have an extra 2px between rail
+   endpoints after the card border is accounted for. The rail alone bridges
+   that seam; the cards retain their 8px separation. */
+.th-tool.th-chat-record--continue .th-chat-record-rail {
+  top: calc(-1 * var(--th-space-2) - var(--th-space-0-5));
 }
 
 /* Separate virtual rows contribute 8px of padding on each side of their
@@ -57,14 +84,14 @@
 /* Thinking's dot is its first header child; reserve the same leading lane
    as the tool's chevron without changing thinking's accessible markup. */
 .th-chat-thinking-head {
-  padding-left: var(--th-space-9);
+  padding-left: calc(var(--th-space-1) + var(--th-space-0-5));
 }
 
 /* The entire header is the disclosure button: 48px minimum, 8px block /
    12px inline padding, 2px between its two text lines, identical in both
-   states. Transparent so the timeline rail reads through it; positioned so
-   both the rail (earlier sibling) and the expanded body (later sibling)
-   stack beneath it and the glyph above it. */
+   states. Transparent so the record card fill reads through it; positioned
+   so the gutter rail (earlier sibling) and the expanded body (later
+   sibling) stack beneath it. */
 .th-tool-head {
   position: relative;
   display: flex;
@@ -100,8 +127,68 @@
   min-width: 0;
 }
 
+/* Status glyph: the coloured state signal in the gutter, knocked out of
+   the rail by its own disc and vertically centred on the header's first
+   line by the flex row. It leads the line from the gutter (before the
+   collapse chevron) so the rail can stay left of the indented card. The
+   negative margin is fixed gutter geometry, not spacing rhythm. */
+.th-tool-glyph {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  margin-left: calc(-1 * (var(--th-space-6) + 7px));
+  border-radius: 50%;
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: 1;
+}
+
+/* Running: a violet spinner. The accent fill is the agent-alive hue; the
+   wide conic wedges (30deg of each 45deg cell, up from 22deg) read as a
+   clearly larger, ring-like spinner than the old thin dashes. The spin
+   requests the shared --th-dur-run beat. Under reduced motion the global
+   policy stops the spin and the static dashed disc plus the Running word
+   carry the state. The colour property repeats the accent so the glyph
+   reads violet on every paint probe, not just its background. The mask
+   reads only alpha, so the accent stop is a visibility switch, not a
+   palette choice. */
+.th-tool-glyph--running {
+  border-radius: 50%;
+  background-color: var(--th-accent);
+  color: var(--th-accent);
+  -webkit-mask-image: repeating-conic-gradient(var(--th-accent) 0deg 30deg, transparent 30deg 45deg);
+  mask-image: repeating-conic-gradient(var(--th-accent) 0deg 30deg, transparent 30deg 45deg);
+  animation: th-tool-spin var(--th-dur-run) var(--th-ease-linear) infinite;
+}
+
+.th-tool-glyph--ok {
+  background: var(--th-success-bg);
+  color: var(--th-success);
+}
+
+.th-tool-glyph--error {
+  background: var(--th-error-bg);
+  color: var(--th-error);
+}
+
+@keyframes th-tool-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* Round collapse chip; hover/focus treatment lives on the chip rather than
-   the whole header, keeping the record visually quiet. */
+   the whole header, keeping the record visually quiet. IconChevron points
+   RIGHT unrotated, so the chip reads RIGHT collapsed and rotates +90deg to
+   point DOWN when open (the disclosure idiom, matching the queue chevron).
+   The rotation snaps without a transform transition: disclosure probes read
+   the computed rotation immediately after a toggle, and the record's height
+   — not the chip — carries the expand motion. */
 .th-tool-chevron {
   display: inline-flex;
   flex: none;
@@ -112,9 +199,8 @@
   margin-left: calc(-1 * var(--th-space-1));
   border-radius: 50%;
   color: var(--th-faint);
-  transform: rotate(-90deg);
+  transform: rotate(0deg);
   transition:
-    transform var(--th-dur) var(--th-ease),
     background-color var(--th-dur-fast) var(--th-ease),
     color var(--th-dur-fast) var(--th-ease);
 }
@@ -129,53 +215,6 @@
   transform: rotate(90deg);
 }
 
-/* Status glyph: the non-colour signal beside the localized status word.
-   The canvas-coloured disc knocks the rail so the glyph reads as a dot ON
-   the line. */
-.th-tool-glyph {
-  position: relative;
-  z-index: 1;
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--th-bg);
-}
-
-/* Running: a violet dotted spinner. The accent fill is the agent-alive
-   hue; the conic mask cuts it into eight wedges so it reads as
-   indeterminate progress. Under reduced motion the global policy stops
-   the spin and the static dashed disc plus the Running word carry the
-   state. The mask reads only alpha, so the accent stop is a visibility
-   switch, not a palette choice. */
-.th-tool-glyph--running {
-  border-radius: 50%;
-  background-color: var(--th-accent);
-  -webkit-mask-image: repeating-conic-gradient(var(--th-accent) 0deg 22deg, transparent 22deg 45deg);
-  mask-image: repeating-conic-gradient(var(--th-accent) 0deg 22deg, transparent 22deg 45deg);
-  animation: th-tool-spin var(--th-dur-spin) var(--th-ease-linear) infinite;
-}
-
-.th-tool-glyph--ok {
-  color: var(--th-muted);
-}
-
-.th-tool-glyph--error {
-  color: var(--th-error);
-  font-size: var(--th-type-micro-size);
-  font-weight: var(--th-weight-emphasize);
-  line-height: 1;
-}
-
-@keyframes th-tool-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 /* Operation title: Label tier, receding dim, truncating before the status. */
 .th-tool-name {
   flex: 0 1 auto;
@@ -186,11 +225,16 @@
   white-space: nowrap;
 }
 
-/* Localized status word: Micro tier, trailing. Colour is a redundant third
-   cue; the glyph and word carry the state. */
+/* Localized status word: Micro tier, trailing, emphasised, on a light tint
+   pill of the SAME hue as the glyph — coloured text plus tinted background
+   (user decision 1); the neutral card hairline never changes with state.
+   Word contrast on its tint is at least 4.5:1 in both themes (the
+   --th-accent-ink running ink exists for exactly this). */
 .th-tool-status {
   flex: none;
   margin-left: auto;
+  padding: 0 var(--th-space-1);
+  border-radius: var(--th-radius-sm);
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
@@ -198,37 +242,19 @@
   white-space: nowrap;
 }
 
-/* Running: the accent family carries the agent-alive state, with a slow
-   shimmer sweeping the lighter family member across the label via
-   background-position (an allowed animated property). Motion is a bonus,
-   never the only signal: the gradient's dominant stop is the accent
-   itself, so a static frame still reads as the violet Running word. */
 .th-tool-status--running {
-  background-image: linear-gradient(100deg, var(--th-accent) 42%, var(--th-accent-hover) 50%, var(--th-accent) 58%);
-  background-size: 220% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: var(--th-accent);
-  -webkit-text-fill-color: transparent;
-  animation: th-tool-shimmer var(--th-dur-shimmer) var(--th-ease-linear) infinite;
+  background: var(--th-accent-bg);
+  color: var(--th-accent-ink);
 }
 
 .th-tool-status--ok {
-  color: var(--th-muted);
+  background: var(--th-success-bg);
+  color: var(--th-success);
 }
 
 .th-tool-status--error {
+  background: var(--th-error-bg);
   color: var(--th-error);
-}
-
-@keyframes th-tool-shimmer {
-  from {
-    background-position: 120% 0;
-  }
-
-  to {
-    background-position: -120% 0;
-  }
 }
 
 /* Second header line: single-line mono invocation summary plus the first
@@ -270,10 +296,9 @@
   white-space: nowrap;
 }
 
-/* Expanded body: the scoped tool material at the 12px radius behind the
-   tool hairline, inset below the transparent header. The fill step and the
-   hairline together separate it from the canvas; no shadow. The position
-   stacks it above the rail, which stops at the material's edge. */
+/* Expanded body: appended INSIDE the same card — no second outer border,
+   fill or shadow; the record card's tint and hairline are the only
+   enclosure. The output well insets Canvas below. */
 .th-tool-body {
   position: relative;
   display: flex;
@@ -283,9 +308,6 @@
   min-width: 0;
   gap: var(--th-space-3);
   padding: var(--th-space-3);
-  border: 1px solid var(--th-tool-border);
-  border-radius: var(--th-radius);
-  background: var(--th-tool-surface);
   color: var(--th-text-dim);
   font-family: var(--th-font-mono);
   font-size: var(--th-type-secondary-size);
@@ -327,22 +349,35 @@
   overflow-wrap: anywhere;
 }
 
-/* Output well: Canvas insets inside the tool material so streamed output is
+/* Output well: Canvas insets inside the tool card so streamed output is
    visibly bounded. Internally scrollable and capped at min(360px, 45dvh),
-   so a long execution cannot take over the conversation scrollport. When
-   the content truly overflows the cap (ToolCard sets data-clipped from a
-   real overflow measure and clears it at the scroll bottom), a bottom
-   fade — mask-image, an alpha-only gradient — signals that more output
-   sits below. */
+   so a long execution cannot take over the conversation scrollport. */
 .th-tool-output {
   max-height: min(360px, 45dvh);
   overflow: auto;
+  /* The virtual row translates after adjacent disclosures resize. Keep the
+     nested scrollport's paint bound to its own box, not the old row layer. */
+  contain: paint;
   padding: var(--th-space-2) var(--th-space-3);
   border-radius: var(--th-radius-xs);
   background: var(--th-bg);
 }
 
-.th-tool-output[data-clipped="true"] {
-  -webkit-mask-image: linear-gradient(to bottom, var(--th-accent) 0, var(--th-accent) calc(100% - 20px), transparent 100%);
-  mask-image: linear-gradient(to bottom, var(--th-accent) 0, var(--th-accent) calc(100% - 20px), transparent 100%);
+/* A mask on the scrolling <pre> can composite against a stale virtual-row
+   position after another disclosure changes height, hiding its first lines
+   even at scrollTop 0. Paint the overflow hint outside that scroll layer. */
+.th-tool-section:has(.th-tool-output[data-clipped="true"]) {
+  position: relative;
+}
+
+.th-tool-section:has(.th-tool-output[data-clipped="true"])::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: var(--th-space-5);
+  border-radius: 0 0 var(--th-radius-xs) var(--th-radius-xs);
+  background: linear-gradient(to bottom, transparent, var(--th-bg));
+  content: "";
+  pointer-events: none;
 }
