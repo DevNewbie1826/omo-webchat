@@ -89,11 +89,11 @@ describe("useChatSession progressive steer marks", () => {
       historyComplete: true,
     }));
 
-    expect(steerMarks(session.id)).toContainEqual({ requestId: "req-old", text: "turn 62", ordinal: 62 });
+    expect(steerMarks(session.id)).toContainEqual({ requestId: "req-old", text: "turn 62", entryId: "e-62" });
     expect(current?.messages.find((message) => message.id === "e-62")?.customType).toBe("steer");
   });
 
-  it("resolves a steer sent while warming to its root-relative ordinal once history completes", () => {
+  it("records a steer only when its entry identity arrives, not when the root loads", () => {
     // 62 user turns on the branch; the tail holds the last 60. A same-text
     // decoy at root-relative ordinal 61 must NOT absorb the mark: the steer
     // becomes the 63rd user message.
@@ -123,7 +123,7 @@ describe("useChatSession progressive steer marks", () => {
       historyComplete: true,
     }));
 
-    expect(steerMarks(session.id)).toContainEqual({ requestId, text: "warm steer", ordinal: 63 });
+    expect(steerMarks(session.id)).toEqual([]);
 
     act(() => deliver({
       type: "message",
@@ -134,6 +134,11 @@ describe("useChatSession progressive steer marks", () => {
     const echo = current?.messages.at(-1);
     expect(echo?.customType).toBe("steer");
     expect(current?.messages.find((message) => message.id === "e-61")?.customType).toBeUndefined();
+    act(() => deliver({
+      type: "entry.appended", sessionId: session.id, id: "e-63",
+      parentId: "e-62", role: "user", textPrefix: "warm steer",
+    }));
+    expect(steerMarks(session.id)).toContainEqual({ requestId, text: "warm steer", entryId: "e-63" });
   });
 
   it("marks the steer's own echo when it arrives before the final head page", () => {
@@ -171,7 +176,12 @@ describe("useChatSession progressive steer marks", () => {
       historyComplete: true,
     }));
 
-    expect(steerMarks(session.id)).toContainEqual({ requestId, text: "warm steer", ordinal: 63 });
+    expect(steerMarks(session.id)).toEqual([]);
+    act(() => deliver({
+      type: "entry.appended", sessionId: session.id, id: "e-63",
+      parentId: "e-62", role: "user", textPrefix: "warm steer",
+    }));
+    expect(steerMarks(session.id)).toContainEqual({ requestId, text: "warm steer", entryId: "e-63" });
     const marked = current?.messages.filter((message) => message.customType === "steer") ?? [];
     expect(marked).toHaveLength(1);
     expect(marked[0]?.ts).toBe(9999);
@@ -218,7 +228,7 @@ describe("useChatSession progressive steer marks", () => {
     expect(current?.messages.some((message) => message.customType === "steer")).toBe(false);
   });
 
-  it("records a steer immediately when the terminal page already reaches the root", () => {
+  it("waits for entry identity even when the terminal page already reaches the root", () => {
     act(() => deliver({
       type: "entries",
       sessionId: session.id,
@@ -228,14 +238,23 @@ describe("useChatSession progressive steer marks", () => {
     act(() => deliver({ type: "run.started", sessionId: session.id }));
     act(() => current?.steer("root steer"));
 
+    expect(steerMarks(session.id)).toEqual([]);
+    act(() => deliver({
+      type: "message", sessionId: session.id,
+      message: { role: "user", blocks: [{ kind: "text", text: "root steer" }] },
+    }));
+    act(() => deliver({
+      type: "entry.appended", sessionId: session.id, id: "e-3",
+      parentId: "e-2", role: "user", textPrefix: "root steer",
+    }));
     expect(steerMarks(session.id)).toContainEqual({
       requestId: steerRequestId(),
       text: "root steer",
-      ordinal: 3,
+      entryId: "e-3",
     });
   });
 
-  it("still prunes a stale mark at run.done once the branch root is held", () => {
+  it("leaves an unresolvable legacy ordinal to age out instead of pruning by loaded count", () => {
     recordSteerMark(session.id, { requestId: "req-stale", text: "gone", ordinal: 5 });
     act(() => deliver({
       type: "entries",
@@ -245,6 +264,6 @@ describe("useChatSession progressive steer marks", () => {
     }));
     act(() => deliver({ type: "run.done", sessionId: session.id, reason: "stop" }));
 
-    expect(steerMarks(session.id)).toEqual([]);
+    expect(steerMarks(session.id)).toEqual([{ requestId: "req-stale", text: "gone", ordinal: 5 }]);
   });
 });

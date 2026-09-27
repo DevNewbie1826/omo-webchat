@@ -3,12 +3,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ChatServerFrame } from "../../lib/chatWs";
 import { useChatFrameState } from "./useChatFrameState";
-import { useChatScroll, type ChatScrollState } from "./useChatScroll";
 
 let root: Root;
 let state: ReturnType<typeof useChatFrameState>;
 let generation: number;
-let scroll: ChatScrollState;
 let container: HTMLDivElement;
 const entry = (id: string) => ({ type: "message", id, message: { role: "user", content: id } });
 const deliver = (frame: ChatServerFrame) => act(() => state.handleFrame(frame, generation));
@@ -27,11 +25,7 @@ beforeEach(() => {
   root = createRoot(container);
   function Probe() {
     state = useChatFrameState();
-    scroll = useChatScroll(state.restoreVersion, false, undefined, state.historyWarming);
-    return <div ref={scroll.scrollRef} onScroll={scroll.onScroll}>
-      <div ref={scroll.contentRef} />
-      {scroll.showScrollToBottom && <button onClick={() => scroll.scrollToBottom()}>jump</button>}
-    </div>;
+    return null;
   }
   act(() => root.render(<Probe />));
   act(() => { generation = state.markOpen(); });
@@ -43,18 +37,20 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it("warms from fresh attach through committed root, not merely the terminal tail", () => {
+it("ends warming at the terminal tail even when the root remains unloaded", () => {
   expect(state.historyWarming).toBe(true);
   page({ final: false });
   expect(state.historyWarming).toBe(true);
   page();
   const restore = state.restoreVersion;
   expect(state.historyStatus).toBe("loaded");
-  expect(state.historyWarming).toBe(true);
+  expect(state.historyWarming).toBe(false);
+  expect(state.historyRootKnown).toBe(false);
   page({ segment: "head", final: false, entries: [entry("middle")] });
-  expect(state.historyWarming).toBe(true);
+  expect(state.historyWarming).toBe(false);
   page({ segment: "head", final: false, historyComplete: true, entries: [entry("root")] });
   expect(state.historyWarming).toBe(false);
+  expect(state.historyRootKnown).toBe(true);
   expect(state.restoreVersion).toBe(restore);
 });
 
@@ -89,7 +85,7 @@ it("re-arms when a resume falls back to fresh history", () => {
   page({ final: false, historySessionId: "replacement" });
   expect(state.historyWarming).toBe(true);
   page({ historySessionId: "replacement" });
-  expect(state.historyWarming).toBe(true);
+  expect(state.historyWarming).toBe(false);
 });
 
 it.each(["incomplete_history", "provider_disconnected", "session_unloaded", "session-active", "external-write-detected"])(
@@ -122,30 +118,17 @@ it("ends resync warming at its ready boundary and uses the committed tail for su
   deliver({ type: "ready", sessionId: "s", resumed: true, piSessionId: "durable" });
   expect(state.historyWarming).toBe(false);
   page();
-  expect(state.historyWarming).toBe(true);
+  expect(state.historyWarming).toBe(false);
   page({ segment: "head", historyComplete: true, entries: [entry("root")] });
   expect(state.historyWarming).toBe(false);
 });
 
-it("quietly releases the post-tail hold when no head pages arrive", () => {
-  const port = scroll.scrollRef.current!;
-  Object.defineProperties(port, {
-    scrollHeight: { value: 6000 },
-    clientHeight: { value: 400 },
-  });
+it("has no post-tail hold or deadline while waiting for on-demand pages", () => {
   page();
   const messages = state.messages;
   const restore = state.restoreVersion;
-  const navigate = () => act(() => {
-    port.scrollTop = 3000;
-    port.dispatchEvent(new Event("scroll"));
-  });
-  expect(state.historyWarming).toBe(true);
-  expect(scroll.isReaderInputActive()).toBe(false);
-  expect(scroll.isRecentProgrammaticWrite(3000)).toBe(false);
-  navigate();
-  expect(scroll.isFollowing()).toBe(true);
-  expect(container.querySelector("button")).toBeNull();
+  expect(state.historyWarming).toBe(false);
+  expect(vi.getTimerCount()).toBe(0);
 
   act(() => vi.advanceTimersByTime(30_001));
   expect.soft(state.historyWarming).toBe(false);
@@ -154,27 +137,25 @@ it("quietly releases the post-tail hold when no head pages arrive", () => {
   expect(state.restoreVersion).toBe(restore);
   expect(state.error).toBe("");
   expect(state.notices).toEqual([]);
-  navigate();
-  expect.soft(scroll.isFollowing()).toBe(false);
-  expect.soft(container.querySelector("button")).not.toBeNull();
 });
 
-it("refreshes the stall window on every accepted head page", () => {
+it("never re-arms a stall window on accepted head pages", () => {
   page();
   for (const id of ["middle", "earlier"]) {
     act(() => vi.advanceTimersByTime(19_000));
     page({ segment: "head", final: false, entries: [entry(id)] });
     act(() => vi.advanceTimersByTime(10_001));
-    expect(state.historyWarming).toBe(true);
+    expect(state.historyWarming).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
   }
   act(() => vi.advanceTimersByTime(20_000));
   expect(state.historyWarming).toBe(false);
   expect(state.historyStatus).toBe("loaded");
 });
 
-it("retires the pending head watchdog immediately at branch root", () => {
+it("keeps the watchdog retired when a head page reaches the root", () => {
   page();
-  expect(vi.getTimerCount()).toBe(1);
+  expect(vi.getTimerCount()).toBe(0);
   act(() => vi.advanceTimersByTime(20_000));
   page({ segment: "head", historyComplete: true, entries: [entry("root")] });
   expect(state.historyWarming).toBe(false);
@@ -185,7 +166,7 @@ it("replaces the deadline on connection generation change without a close", () =
   page();
   act(() => vi.advanceTimersByTime(20_000));
   act(() => { generation = state.markOpen(); });
-  page({ historySessionId: "replacement" });
+  page({ historySessionId: "replacement", final: false });
   act(() => vi.advanceTimersByTime(10_001));
   expect(state.historyWarming).toBe(true);
   act(() => vi.advanceTimersByTime(20_000));
@@ -218,4 +199,13 @@ it("ends warming when history stalls", () => {
   act(() => vi.advanceTimersByTime(30_000));
   expect(state.historyStatus).toBe("failed");
   expect(state.historyWarming).toBe(false);
+});
+
+it("arms a fresh initial-history watchdog after resync from loaded history", () => {
+  page();
+  act(() => state.beginResync());
+  expect(vi.getTimerCount()).toBe(1);
+  act(() => vi.advanceTimersByTime(30_000));
+  expect(state.historyStatus).toBe("failed");
+  expect(state.resyncBusy).toBe(false);
 });

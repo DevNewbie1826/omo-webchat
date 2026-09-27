@@ -63,6 +63,7 @@ describe("useChatSession steer occurrence identity", () => {
         sessionId: session.id,
         entries: canonicalEntries.slice(0, 2),
         final: true,
+        historyComplete: false,
       });
       harness.deliver({ type: "run.started", sessionId: session.id });
       harness.current?.steer("마무리");
@@ -70,6 +71,10 @@ describe("useChatSession steer occurrence identity", () => {
         type: "message",
         sessionId: session.id,
         message: { role: "user", blocks: [{ kind: "text", text: "마무리" }], ts: 30 },
+      });
+      harness.deliver({
+        type: "entry.appended", sessionId: session.id, id: "steer",
+        parentId: "reply", role: "user", textPrefix: "마무리",
       });
       harness.deliver({ type: "run.done", sessionId: session.id, reason: "stop" });
     });
@@ -80,7 +85,7 @@ describe("useChatSession steer occurrence identity", () => {
       harness.disconnect();
       harness.reconnect();
       harness.deliver({ type: "state", sessionId: session.id, isStreaming: false, isCompacting: false });
-      harness.deliver({ type: "entries", sessionId: session.id, entries: canonicalEntries, final: true });
+      harness.deliver({ type: "entries", sessionId: session.id, entries: canonicalEntries, final: true, historyComplete: false });
     });
 
     expectOnlyLaterOccurrenceMarked(harness);
@@ -91,9 +96,10 @@ describe("useChatSession steer occurrence identity", () => {
     const remounted = mountReconnectHarness();
     mounted.push(remounted);
     act(() => {
-      remounted.deliver({ type: "entries", sessionId: session.id, entries: canonicalEntries, final: true });
+      remounted.deliver({ type: "entries", sessionId: session.id, entries: canonicalEntries, final: true, historyComplete: false });
     });
 
     expectOnlyLaterOccurrenceMarked(remounted);
+    expect(remounted.current?.historyRootKnown).toBe(false);
   });
 });

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { forgetSteerMark, recordSteerMark, steerMarks } from "./chatSteerMarks";
+import { applyEntrySteerMarks, forgetSteerMark, recordSteerMark, steerMarks } from "./chatSteerMarks";
+import type { UiMessage } from "./chatEntries";
 
 describe("chatSteerMarks client-side store", () => {
   beforeEach(() => {
@@ -25,11 +26,33 @@ describe("chatSteerMarks client-side store", () => {
   });
 
   it("survives a simulated reload through sessionStorage", () => {
-    const mark = { requestId: "r1", text: "hold on", ordinal: 2 } as const;
+    const mark = { requestId: "r1", text: "hold on", entryId: "e-2" } as const;
     recordSteerMark("chat-1", mark);
     const raw = window.sessionStorage.getItem("th-chat-steer:chat-1");
     expect(raw).not.toBeNull();
     expect(steerMarks("chat-1")).toEqual([mark]);
+  });
+
+  it("applies entry-id marks to a bounded tail without mistaking identical text for identity", () => {
+    recordSteerMark("chat-1", { requestId: "r1", text: "again", entryId: "steer" });
+    const messages: readonly UiMessage[] = ["ordinary", "steer"].map(id => ({
+      id, role: "user", blocks: [{ kind: "text", text: "again" }],
+    }));
+    expect(applyEntrySteerMarks("chat-1", messages, false).map(message => message.customType))
+      .toEqual([undefined, "steer"]);
+  });
+
+  it("migrates legacy ordinals only once the committed branch reaches its root", () => {
+    window.sessionStorage.setItem("th-chat-steer:chat-1", JSON.stringify([
+      { requestId: "legacy", text: "again", ordinal: 1 },
+    ]));
+    const tail: readonly UiMessage[] = [{ id: "tail", role: "user", blocks: [{ kind: "text", text: "again" }] }];
+    expect(applyEntrySteerMarks("chat-1", tail, false)[0]?.customType).toBeUndefined();
+    expect(steerMarks("chat-1")[0]?.ordinal).toBe(1);
+    const root: UiMessage = { id: "root", role: "user", blocks: [{ kind: "text", text: "again" }] };
+    expect(applyEntrySteerMarks("chat-1", [root, ...tail], true).map(message => message.customType))
+      .toEqual(["steer", undefined]);
+    expect(steerMarks("chat-1")).toEqual([{ requestId: "legacy", text: "again", entryId: "root" }]);
   });
 
   it("forgets only the rejected request occurrence", () => {

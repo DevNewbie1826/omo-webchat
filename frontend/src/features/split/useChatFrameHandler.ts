@@ -11,7 +11,7 @@ import { parseDagCounts } from "./activityParseDag";
 import { applyCountAuthority, type CountAuthority } from "./taskAuthority";
 import { applyTodoAuthority, bindTodoAuthority, type TodoAuthority } from "./todoAuthority";
 import type { UiMessage } from "./chatEntries";
-import { forgetSteerMark, steerMarks } from "./chatSteerMarks";
+import { applyEntrySteerMarks, forgetSteerMark } from "./chatSteerMarks";
 import type { useConfirmedControls } from "./chatConfirmedControls";
 import { reconcileFrameHistory } from "./chatFrameReconciliation";
 import * as chatState from "./chatSessionState";
@@ -37,12 +37,10 @@ interface ChatFrameHandlerBindings {
   readonly submitLatchRef: Current<boolean>;
   readonly sends: ChatSendStore;
   readonly offerFailedDraft: (request: ChatSendRequest) => void;
-  /** Record retained steer occurrences once the branch root is known.
-   * Returns true when marks were recorded against the given messages. */
-  readonly settlePendingSteers: (sessionId: string, messages: readonly UiMessage[]) => boolean;
   /** Bind a live user message to a retained steer occurrence as its echo and
    *  retire that steer's pending summary: the echo is the engine consuming it. */
-  readonly bindPendingSteerEcho: (sessionId: string, message: UiMessage) => void;
+  readonly bindPendingSteerEcho: (sessionId: string, message: UiMessage) => UiMessage;
+  readonly bindSteerEntry: (message: UiMessage, bound: UiMessage) => void;
   /** Retire retained steer occurrences whose run ended without an echo. */
   readonly retireUnmaterializedPendingSteers: () => void;
   /** Drop a retained steer occurrence whose send was rejected. */
@@ -193,10 +191,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
   /**
    * Reconcile this binding's ordered entry list into the transcript, keeping
    * the live messages received since the last committed snapshot after it.
-   * Steer marks address a canonical user message by its ordinal FROM THE
-   * BRANCH ROOT, so they are applied only while the client holds the branch
-   * from its root — never over a bounded tail, where the same ordinal names a
-   * different turn.
+   * Entry identities keep steer marks meaningful even on a bounded tail.
    */
   const reconcileEntries = (entries: unknown, sessionId: string): void => {
     const preserveCurrent = bindings.messageVersionRef.current > bindings.snapshotVersionRef.current;
@@ -208,15 +203,8 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       entries,
       current: suffix,
       preserveCurrent,
-      steerMarks: rootKnown ? steerMarks(sessionId) : [],
     });
-    let messages = reconciliation.history.messages;
-    // Steer occurrences retained while the client held only a bounded tail
-    // resolve their root-relative ordinals once the branch root is known, and
-    // the resolved marks join this same reconciliation pass.
-    if (rootKnown && bindings.settlePendingSteers(sessionId, messages)) {
-      messages = chatState.applySteerMarks(messages, steerMarks(sessionId));
-    }
+    const messages = applyEntrySteerMarks(sessionId, reconciliation.history.messages, rootKnown);
     bindings.replaceMessages(messages);
     // A committed snapshot is not another live receipt on a repeated terminal.
     bindings.snapshotMessagesRef.current = messages.filter(message => !suffix.includes(message));
@@ -329,16 +317,27 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // A user message that arrives while a steer is pending may be that
         // steer's echo: bind the occurrence identity so settlement resolves
         // the message that was actually sent, and retire its summary.
-        if (frame.message.role === "user") bindings.bindPendingSteerEcho(frame.sessionId, frame.message);
+        const message = frame.message.role === "user"
+          ? bindings.bindPendingSteerEcho(frame.sessionId, frame.message) : frame.message;
         bindings.messageVersionRef.current += 1;
-        bindings.replaceMessages(chatState.applySteerMarks(
-          [...bindings.messagesRef.current, frame.message],
-          // Ordinals count from the branch root: a bounded tail cannot resolve
-          // them, so the mark waits for the rest of the branch to arrive.
-          bindings.pageBuffer.historyRootKnown() ? steerMarks(frame.sessionId) : [],
-        ));
+        bindings.replaceMessages([...bindings.messagesRef.current, message]);
         bindings.streaming.clear();
         bindings.setThinking("");
+        return;
+      }
+      case "entry.appended": {
+        const messages = bindings.messagesRef.current;
+        const index = messages.findIndex(message => message.id === undefined && message.role === frame.role
+          && Array.from((message.blocks ?? []).filter(block => block.kind === "text")
+            .map(block => block.text ?? "").join("")).slice(0, 128).join("") === frame.textPrefix);
+        const message = messages[index];
+        if (!message) return;
+        const bound = { ...message, id: frame.id };
+        bindings.bindSteerEntry(message, bound);
+        // Binding changes identity, not receipt ownership. Keep the snapshot
+        // reference in step so a baseline row cannot become a new live suffix.
+        bindings.snapshotMessagesRef.current = bindings.snapshotMessagesRef.current.map(row => row === message ? bound : row);
+        bindings.replaceMessages(messages.map((row, position) => position === index ? bound : row));
         return;
       }
       case "run.started":
@@ -353,21 +352,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       case "run.done": {
         bindings.setDoneReason(frame.reason);
         const finalized = bindings.toolCallsRef.current;
-        // Only marks attached to canonical occurrences survive a run boundary.
-        // A no-message steer must not decorate an unrelated later same-text turn.
-        // Ordinals count from the branch root: while the client holds only a
-        // bounded tail, a mark addressed into the not-yet-loaded head
-        // outnumbers the loaded user messages without being stale, so pruning
-        // waits until the branch is held from its root.
-        if (bindings.pageBuffer.historyRootKnown()) {
-          const userCount = bindings.messagesRef.current.filter(message => message.role === "user").length;
-          for (const mark of steerMarks(frame.sessionId)) {
-            if (mark.ordinal > userCount) forgetSteerMark(frame.sessionId, mark.requestId);
-          }
-        }
-        // A retained steer occurrence whose run ends without its echo never
-        // materialized: retire it at the run boundary so it cannot resolve
-        // onto an unrelated later turn once history completes.
+        // Unbound occurrences must not decorate a later same-text turn.
         bindings.retireUnmaterializedPendingSteers();
         clearLiveSurfaces();
         const next = chatState.finalizeRunMessages(bindings.messagesRef.current, finalized);
@@ -634,8 +619,6 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
             : bindings.pageBuffer.prepend(page.entries, page.historyComplete);
           if (warmed === null) return;
           reconcileEntries(warmed, page.sessionId);
-          if (bindings.pageBuffer.historyRootKnown()) bindings.setHistoryWarming(false);
-          else bindings.armHistoryStall(true);
           return;
         }
         const terminal = frame.final !== false;
@@ -661,7 +644,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // its page-buffer fence.
         bindings.endResync(generation, true);
         reconcileEntries(bindings.pageBuffer.consume(page.entries, page.historyComplete), page.sessionId);
-        bindings.setHistoryWarming(!accepted?.resumed && !bindings.pageBuffer.historyRootKnown());
+        bindings.setHistoryWarming(false);
         if (!accepted?.resumed) bindings.setRestoreVersion((version) => version + 1);
         return;
       }

@@ -156,6 +156,10 @@ describe("useChatSession active-run sends", () => {
 				sessionId: session.id,
 				message: { role: "user", blocks: [{ kind: "text", text: "completed before done" }], ts: 10 },
 			});
+			deliver({
+				type: "entry.appended", sessionId: session.id, id: "steer-entry",
+				parentId: null, role: "user", textPrefix: "completed before done",
+			});
 			deliver({ type: "run.done", sessionId: session.id, reason: "stop" });
 			disconnect();
 			reconnect();
@@ -165,6 +169,7 @@ describe("useChatSession active-run sends", () => {
 				sessionId: session.id,
 				entries: [{
 					type: "message",
+					id: "steer-entry",
 					message: { role: "user", content: "completed before done", timestamp: 10 },
 				}],
 				final: true,
