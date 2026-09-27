@@ -309,8 +309,10 @@
   padding-inline-start: calc(var(--th-space-2) + var(--th-space-2));
 }
 
+/* Touch rows keep the name column aligned with the open-session titles, so
+   the icon moves to the row edge to keep the desktop 6px icon-to-name gap. */
 .th-tree--touch .th-tree-workspace > .th-tree-node > .th-tree-icon {
-  left: var(--th-space-1);
+  left: 0;
 }
 
 .th-tree-source {
@@ -380,8 +382,10 @@
   display: inline-flex;
 }
 
-.th-tree-node:hover .th-tree-count-slot:not(:has(.th-tree-running)),
-.th-tree-node:focus-within .th-tree-count-slot:not(:has(.th-tree-running)) {
+/* Only fine pointers swap the count for inline actions; a tap leaves sticky
+   :hover and focus behind, which would hide the count on touch rows. */
+.th-tree:not(.th-tree--touch) .th-tree-node:hover .th-tree-count-slot:not(:has(.th-tree-running)),
+.th-tree:not(.th-tree--touch) .th-tree-node:focus-within .th-tree-count-slot:not(:has(.th-tree-running)) {
   display: none;
 }
 

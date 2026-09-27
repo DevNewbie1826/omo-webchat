@@ -1680,6 +1680,9 @@ describe("coarse-pointer shell hit-area contracts (G40)", () => {
       .toBe("inline-flex");
     expect(declarationValue(ruleBody(sessionTree, ".th-tree--touch .th-tree-count-slot"), "display"))
       .toBe("grid");
+    // A tap leaves sticky :hover/focus; the count must not hide on touch rows.
+    expect(sessionTree).not.toMatch(/(?:^|\})\s*\.th-tree-node:(?:hover|focus-within) \.th-tree-count-slot/m);
+    expect(sessionTree).toContain(".th-tree:not(.th-tree--touch) .th-tree-node:hover .th-tree-count-slot");
     expect(declarationValue(ruleBody(sessionTree, ".th-tree-count-slot"), "width"))
       .toBe("var(--th-space-8)");
     expect(declarationValue(ruleBody(sessionTree, ".th-tree-label-head"), "min-width"))
