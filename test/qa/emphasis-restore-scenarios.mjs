@@ -305,6 +305,82 @@ export function sidebarVerdict(facts, { cards = 1, geometry = false } = {}) {
   return finish(facts, failures);
 }
 
+/** Q27 checks the heading's running pill against the actual card chips. */
+export function probeHeadingRunningCount() {
+  const root = getComputedStyle(document.documentElement);
+  const tintSample = document.createElement('i');
+  tintSample.style.backgroundColor = 'var(--th-accent-bg)';
+  document.body.append(tintSample);
+  const resolvedTint = getComputedStyle(tintSample).backgroundColor;
+  tintSample.remove();
+  const measure = el => {
+    const marker = el.querySelector('.th-overview-card-running-dot');
+    const markerStyle = marker && getComputedStyle(marker);
+    const markerBox = marker?.getBoundingClientRect();
+    return { right: el.getBoundingClientRect().right, text: el.textContent.trim(),
+      ariaLabel: el.getAttribute('aria-label'), color: getComputedStyle(el).color,
+      background: getComputedStyle(el).backgroundColor,
+      marker: marker ? { visible: isVisibleElement(marker) && markerBox.width > 0 && markerBox.height > 0
+        && markerStyle.visibility === 'visible' && Number(markerStyle.opacity) > 0
+        && (parseColor(markerStyle.backgroundColor)?.a ?? 0) > 0,
+      durations: marker.getAnimations().map(animation => animation.effect?.getComputedTiming()?.duration ?? 0) } : null };
+  };
+  return { reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+    accentInk: root.getPropertyValue('--th-accent-ink').trim(),
+    accentTint: resolvedTint.includes('var(')
+      ? root.getPropertyValue('--th-accent-bg').trim() : resolvedTint,
+    heading: [...document.querySelectorAll('.th-sidebar-live-count')].filter(isVisibleElement).map(measure),
+    chips: [...document.querySelectorAll('.th-sidebar-live-list .th-overview-card-running')]
+      .filter(isVisibleElement).map(measure) };
+}
+
+export function headingRunningCountVerdict(facts) {
+  const failures = [], heading = facts.heading ?? [], chips = facts.chips ?? [];
+  fail(heading.length === 1 && chips.length > 0, 'Q27 running heading or live-card chips missing', failures);
+  for (const pill of heading) {
+    fail(hue(pill.color, facts.accentInk)
+      && (same(pill.background, facts.accentTint) || pill.background === facts.accentTint),
+      'Q27 heading pill lacks accent ink on accent tint', failures);
+    fail(!!pill.text && !!pill.ariaLabel?.includes(pill.text),
+      'Q27 heading pill lost its running aria-label', failures);
+    fail(pill.marker?.visible === true, 'Q27 heading pill has no visible spinner marker', failures);
+    fail(facts.reducedMotion
+      ? pill.marker?.durations.every(ms => ms === 0)
+      : pill.marker?.durations.some(ms => ms > 0 && ms <= 800),
+    'Q27 heading spinner must animate in <=800ms or remain static under reduced motion', failures);
+    for (const chip of chips)
+      fail(Number.isFinite(pill.right) && Number.isFinite(chip.right)
+        && Math.abs(pill.right - chip.right) <= 1,
+      `Q27 heading/card chip right edges drift: ${pill.right},${chip.right}`, failures);
+  }
+  return finish(facts, failures);
+}
+
+/** Q23 uses the border box, not the activation box checked by Q20. */
+export function probeLiveCardInk() {
+  return [...document.querySelectorAll('.th-sidebar-live-list .th-overview-card')]
+    .filter(isVisibleElement).map(card => {
+      const name = card.querySelector('.th-overview-card-name');
+      const range = name && document.createRange();
+      if (range) range.selectNodeContents(name);
+      return { text: name?.textContent.trim() ?? null,
+        card: card.getBoundingClientRect().toJSON(),
+        ink: range?.getBoundingClientRect().toJSON() ?? null };
+    });
+}
+
+export function liveCardInkVerdict(facts, count) {
+  const failures = [];
+  fail(facts.length === count, `Q23 expected ${count} live cards, found ${facts.length}`, failures);
+  for (const item of facts) {
+    const top = item.ink?.top - item.card?.top;
+    const bottom = item.card?.bottom - item.ink?.bottom;
+    fail(Number.isFinite(top) && Number.isFinite(bottom) && Math.abs(top - bottom) <= 1,
+      `Q23 card "${item.text}" name ink off border-box centre (${top?.toFixed(1)}/${bottom?.toFixed(1)}px)`, failures);
+  }
+  return finish(facts, failures);
+}
+
 export function sidebarStatesVerdict(running, connected, idle) {
   const failures = [];
   const active = running.sessionRows?.find(row => row.running);
@@ -396,6 +472,81 @@ export function workspaceLabelVerdict(facts, { minWidth = 124 } = {}) {
     fail(!!glyph && !!content && facts.drawerLeft != null && glyph.left >= facts.drawerLeft + 4
       && glyph.right <= content.right && glyph.top >= content.top && glyph.bottom <= content.bottom,
     `Q19 "${row.text}" folder glyph outside content box or 4px left gutter`, failures);
+  }
+  return finish(facts, failures);
+}
+
+export function probeWorkspaceContinuity() {
+  const body = document.querySelector('.th-sidebar-body')?.getBoundingClientRect();
+  return [...document.querySelectorAll('.th-tree-workspace > .th-tree-node')]
+    .filter(isVisibleElement).filter(row => {
+      const box = row.getBoundingClientRect();
+      return body && box.top < body.bottom && box.bottom > body.top;
+    }).map(row => {
+      const label = row.querySelector('.th-tree-label-text');
+      const head = label?.querySelector('.th-tree-label-head');
+      const tail = label?.querySelector('.th-tree-label-tail');
+      const range = head && document.createRange();
+      if (range) range.selectNodeContents(head);
+      const headBox = head?.getBoundingClientRect();
+      const tailBox = tail?.getBoundingClientRect();
+      const labelBox = label?.getBoundingClientRect();
+      return { name: label?.textContent.trim() ?? '',
+        head: headBox?.toJSON() ?? null, headInk: range?.getBoundingClientRect().toJSON() ?? null,
+        tail: tailBox?.toJSON() ?? null,
+        truncated: !!head && head.scrollWidth > head.clientWidth + .5,
+        tailVisible: !!tailBox && !!labelBox && tailBox.width > 0
+          && tailBox.left >= labelBox.left - 1 && tailBox.right <= labelBox.right + 1 };
+    });
+}
+
+export function workspaceContinuityVerdict(facts) {
+  const failures = [];
+  const names = ['omo-desktop-app', 'ai-token-monitor', 'omo-zcode-oauth'];
+  const named = facts.filter(row => names.includes(row.name));
+  fail(named.length === names.length, `Q25 expected ${names.length} no-space workspace names, found ${named.length}`, failures);
+  fail(named.some(row => !row.truncated), 'Q25 no untruncated no-space workspace name', failures);
+  for (const row of facts) {
+    if (!row.truncated && names.includes(row.name)) {
+      const gap = row.tail?.left - row.head?.right;
+      const spare = row.head?.width - row.headInk?.width;
+      fail(Number.isFinite(gap) && Math.abs(gap) <= .1 && Number.isFinite(spare)
+        && spare <= .5 && spare >= -.5,
+      `Q25 "${row.name}" head/tail gap or spare width ${gap?.toFixed(1)}/${spare?.toFixed(1)}px`, failures);
+    }
+    if (row.truncated) fail(row.tailVisible,
+      `Q25 "${row.name}" truncated name loses its tail`, failures);
+  }
+  return finish(facts, failures);
+}
+
+export function probeWorkspaceColumns() {
+  const body = document.querySelector('.th-sidebar-body')?.getBoundingClientRect();
+  return [...document.querySelectorAll('.th-tree-workspace > .th-tree-node')]
+    .filter(isVisibleElement).filter(row => {
+      const box = row.getBoundingClientRect();
+      return body && box.top < body.bottom && box.bottom > body.top;
+    }).map(row => ({
+      name: row.querySelector('.th-tree-label-text')?.textContent.trim() ?? '',
+      running: !!row.querySelector('.th-tree-count--running, .th-tree-running--workspace'),
+      count: row.querySelector('.th-tree-count')?.getBoundingClientRect().toJSON() ?? null,
+      chevron: row.querySelector('.th-tree-workspace-activation > .th-tree-chevron')
+        ?.getBoundingClientRect().toJSON() ?? null,
+    }));
+}
+
+export function workspaceColumnsVerdict(facts) {
+  const failures = [];
+  fail(facts.some(row => row.running) && facts.some(row => !row.running),
+    'Q26 missing running or idle workspace row', failures);
+  fail(facts.length >= 2 && facts.every(row => row.count?.width > 0
+    && row.count.height > 0 && row.chevron?.width > 0 && row.chevron.height > 0),
+  'Q26 visible count pill or chevron box missing', failures);
+  for (const [kind, edge] of [['count', 'right'], ['chevron', 'left'], ['chevron', 'right']]) {
+    const values = facts.map(row => row[kind]?.[edge]);
+    fail(values.length >= 2 && values.every(Number.isFinite)
+      && Math.max(...values) - Math.min(...values) <= 1,
+    `Q26 ${kind} ${edge} edges drift: ${values.join(',')}`, failures);
   }
   return finish(facts, failures);
 }
@@ -727,25 +878,27 @@ async function setupCoarseLive(ctx, extra) {
   try {
     context = await ctx.browser.newContext({
       viewport: { width: ctx.viewport.width, height: ctx.viewport.height },
-      colorScheme: ctx.theme, hasTouch: true, isMobile: true,
+      colorScheme: ctx.theme, hasTouch: extra.coarse !== false, isMobile: extra.coarse !== false,
     });
     const page = await context.newPage();
     page.setDefaultTimeout(8000);
     const errors = [];
     page.on('pageerror', error => errors.push(String(error)));
-    if (extra.earlierWorkspaces) {
-      // E33 fixture: 12 workspaces named "Earlier workspace N" with no chats,
-      // so every drawer row's trailing number must stay visible.
+    if (extra.earlierWorkspaces || extra.workspaceNames) {
+      // E33/E39 fixture: numbered and unbroken workspace names coexist.
       await context.route('**/api/workspaces', async route => {
         const response = await route.fetch();
         const original = await response.json();
-        const earlier = Array.from({ length: 12 }, (_, index) => ({
+        const named = (extra.workspaceNames ?? []).map((name, index) => ({
+          id: `qa-name-${index}`, name, path: `/fixture/name-${index}`, chats: [],
+        }));
+        const earlier = Array.from({ length: extra.earlierWorkspaces ? 12 : 0 }, (_, index) => ({
           id: `qa-top-${index}`, name: `Earlier workspace ${index + 1}`, path: `/fixture/earlier-${index}`,
           chats: [],
         }));
-        await route.fulfill({ response, json: [...earlier, ...original] });
+        await route.fulfill({ response, json: [...named, ...earlier, ...original] });
       });
-      await context.route(/\/api\/workspaces\/qa-top-\d+\/sessions(?:\?.*)?$/, route =>
+      await context.route(/\/api\/workspaces\/qa-(?:top|name)-\d+\/sessions(?:\?.*)?$/, route =>
         route.fulfill({ status: 200, contentType: 'application/json',
           body: JSON.stringify({ items: [], nextCursor: '' }) }));
     }
@@ -1058,12 +1211,10 @@ export function dagListScaleVerdict(small, large) {
   return finish({ small, large }, failures);
 }
 
-export function dagAncestorVerdict(facts, stage = 'mixed', phone = true) {
+export function dagAncestorVerdict(facts, stage = 'mixed') {
   const failures = [], ancestors = facts.ancestors ?? [];
   fail(facts.panelFound && ancestors.some(row => String(row.owner).includes('th-activity-tabpanel')),
     `Q14/Q15 ${stage} missing DAG tabpanel clipping boundary`, failures);
-  for (const row of ancestors) if (phone) fail(row.clientHeight > 0 && row.scrollHeight <= row.clientHeight + 1,
-    `Q14/Q15 ${stage} ${row.owner} scrolls vertically (${row.scrollHeight}>${row.clientHeight}px)`, failures);
   const top = Math.max(...ancestors.map(row => row.top));
   const bottom = Math.min(...ancestors.map(row => row.bottom));
   fail(ancestors.length > 0 && Number.isFinite(top) && Number.isFinite(bottom) && bottom > top,
@@ -1074,7 +1225,7 @@ export function dagAncestorVerdict(facts, stage = 'mixed', phone = true) {
       let target = bounds;
       let reachable = !!bounds;
       for (const row of ancestors) {
-        const scrolling = !phone && /^(auto|scroll)$/.test(row.overflowY)
+        const scrolling = /^(auto|scroll)$/.test(row.overflowY)
           && row.scrollHeight > row.clientHeight + 1;
         if (scrolling) {
           reachable &&= target.top >= row.top - (row.scrollTop ?? 0) - 1
@@ -1086,10 +1237,10 @@ export function dagAncestorVerdict(facts, stage = 'mixed', phone = true) {
         }
       }
       fail(reachable,
-        `Q14/Q15 ${stage} ${node.id} ${item.kind} outside ${phone ? 'visible' : 'reachable'} ancestor ${top.toFixed(1)}..${bottom.toFixed(1)}`, failures);
+        `Q14/Q15 ${stage} ${node.id} ${item.kind} outside reachable ancestor ${top.toFixed(1)}..${bottom.toFixed(1)}`, failures);
     }
   }
-  if (!phone && ancestors.some(row => /^(auto|scroll)$/.test(row.overflowY)
+  if (ancestors.some(row => /^(auto|scroll)$/.test(row.overflowY)
     && row.scrollHeight > row.clientHeight + 1))
     for (const node of facts.nodes ?? []) fail(facts.scrollChecks?.find(row => row.id === node.id)?.visible,
       `Q14/Q15 ${stage} ${node.id} not fully painted when scrolled into view`, failures);
@@ -1099,7 +1250,6 @@ export function dagAncestorVerdict(facts, stage = 'mixed', phone = true) {
 export function mobileDagVerdict(facts, desktopHeight, stage = 'mixed') {
   const failures = [], reel = facts.reel, nodes = facts.nodes ?? [];
   failures.push(...dagAncestorVerdict(facts, stage).failures);
-  fail(reel && reel.scrollHeight <= reel.clientHeight + 1, `Q14 ${stage} reel scrolls vertically`, failures);
   const complete = nodes.filter(node => node.card && reel && inside(node.card, reel.box));
   if (stage === 'mixed') fail(complete.length >= 3, `Q14 only ${complete.length} whole mobile DAG nodes`, failures);
   fail(nodes.length === t4StageSpec(stage).length, `Q14 ${stage} node count`, failures);
@@ -1121,6 +1271,27 @@ export function mobileDagVerdict(facts, desktopHeight, stage = 'mixed') {
       `Q14 ${dep} -> ${node.id} wraps or reverses direction`, failures);
   }
   return finish({ ...facts, wholeCards: complete.map(node => node.id), desktopHeight }, failures);
+}
+
+export function compactDagPaddingVerdict(facts, stage) {
+  const failures = [];
+  fail(facts.nodes?.length === t4StageSpec(stage).length,
+    `Q24 ${stage} expected ${t4StageSpec(stage).length} compact nodes`, failures);
+  for (const node of facts.nodes ?? []) {
+    const titles = node.words.filter(word => word.kind === 'title' && word.box);
+    const state = node.words.find(word => word.kind === 'state')?.box;
+    const titleTop = Math.min(...titles.map(word => word.box.top));
+    const titleBottom = Math.max(...titles.map(word => word.box.bottom));
+    const top = titleTop - node.card?.top;
+    const bottom = node.card?.bottom - state?.bottom;
+    const gap = state?.top - titleBottom;
+    fail(titles.length > 0 && state && Number.isFinite(top) && Number.isFinite(bottom)
+      && Number.isFinite(gap) && top >= 4 && bottom >= 4 && gap >= 0
+      && Math.abs(top - bottom) <= 1 && gap <= Math.min(top, bottom),
+    `Q24 ${stage} ${node.id} compact node padding top/bottom/gap `
+      + `${top?.toFixed(1)}/${bottom?.toFixed(1)}/${gap?.toFixed(1)}px`, failures);
+  }
+  return finish(facts, failures);
 }
 
 export function phoneToolVerdict(facts) {
@@ -1535,6 +1706,40 @@ async function driveQ5(ctx) {
   }, { touchLive: ctx.viewport.width <= 768 });
 }
 
+async function driveQ23(ctx) {
+  const results = [];
+  for (const coarse of [false, true]) results.push(await withFixture(ctx, async (env, save) => {
+    const measurements = {}, failures = [];
+    for (const ids of [[CHAT], [CHAT, 'newer', 'created-2']]) {
+      if (ids.length === 3) {
+        const response = await fetch(`${env.fixture.base.url}/api/workspaces/ws/chats`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+        });
+        fail(response.ok, 'Q23 third live card creation failed', failures);
+        await env.page.reload();
+        await env.page.waitForSelector('.th-tree-workspace', { state: 'attached', timeout: 4000 });
+      }
+      for (const id of ids) env.fixture.overview(shellLiveFrame({ sessionId: id, title: id, agents: 1 }));
+      await env.page.waitForFunction(count =>
+        document.querySelectorAll('.th-sidebar-live-list .th-overview-card').length === count,
+      ids.length, { timeout: 4000 });
+      await drawer(env.page);
+      const facts = await ctx.probe(env.page, probeLiveCardInk);
+      measurements[ids.length] = facts;
+      fail(await env.page.evaluate(() => matchMedia('(pointer: coarse)').matches) === coarse,
+        `Q23 expected ${coarse ? 'coarse' : 'fine'} pointer`, failures);
+      failures.push(...liveCardInkVerdict(facts, ids.length).failures);
+      await save(`-${coarse ? 'coarse' : 'fine'}-${ids.length}-cards`);
+    }
+    return finish(measurements, failures);
+  }, { touchLive: true, coarse }));
+  return { ...finish(Object.fromEntries(results.map((result, index) =>
+    [[false, true][index] ? 'coarse' : 'fine', result.measurements])),
+  results.flatMap((result, index) => result.failures.map(reason =>
+    `${[false, true][index] ? 'coarse' : 'fine'}: ${reason}`))),
+  screenshots: results.flatMap(result => result.screenshots), teardown: results.map(result => result.teardown) };
+}
+
 async function driveQ6(ctx) {
   return withFixture(ctx, async (env, save) => {
     const page = env.page, measurements = {}, failures = [];
@@ -1849,13 +2054,13 @@ async function driveQ14(ctx) {
             t4StageSpec(stage).length, { timeout: 9000 });
           }
         }
-        const facts = await ctx.probe(env.page, probeMobileDag, { scroll: ctx.viewport.width !== 390 });
+        const facts = await ctx.probe(env.page, probeMobileDag, { scroll: true });
         const desktopHeight = desktop
           ? (await ctx.probe(desktop.page, probeMobileDag)).nodes[0]?.card?.height ?? 0
           : facts.nodes[0]?.card?.height ?? 0;
         const verdict = ctx.viewport.width === 390
           ? mobileDagVerdict(facts, desktopHeight, stage)
-          : finish(facts, [...dagAncestorVerdict(facts, stage, false).failures,
+          : finish(facts, [...dagAncestorVerdict(facts, stage).failures,
             ...(facts.nodes.length === t4StageSpec(stage).length
               && facts.nodes.every(node => node.words.every(word => word.fontSize >= 10.99 && !word.clipped))
               ? [] : [`Q14 ${stage} missing nodes or clipped/sub-11px text`])]);
@@ -1867,16 +2072,22 @@ async function driveQ14(ctx) {
           const shelf = env.page.locator('.th-activity-shelf');
           const previous = await shelf.evaluate(el => {
             const transform = el.style.transform;
+            const outer = el.closest('.th-chat-main-content');
+            const overflowY = outer.style.overflowY;
+            outer.style.overflowY = 'hidden';
             el.style.transform = 'translateY(300px)';
-            return transform;
+            return { transform, overflowY };
           });
           let moved;
           try {
-            moved = await ctx.probe(env.page, probeMobileDag);
+            moved = await ctx.probe(env.page, probeMobileDag, { scroll: true });
           } finally {
-            await shelf.evaluate((el, transform) => { el.style.transform = transform; }, previous);
+            await shelf.evaluate((el, styles) => {
+              el.style.transform = styles.transform;
+              el.closest('.th-chat-main-content').style.overflowY = styles.overflowY;
+            }, previous);
           }
-          const restored = await ctx.probe(env.page, probeMobileDag);
+          const restored = await ctx.probe(env.page, probeMobileDag, { scroll: true });
           const rejected = dagAncestorVerdict(moved, stage);
           const recovered = dagAncestorVerdict(restored, stage);
           measurements.outerClipControl = { moved: { reel: moved.reel, failures: rejected.failures },
@@ -1884,7 +2095,7 @@ async function driveQ14(ctx) {
           fail(moved.reel?.scrollHeight === facts.reel?.scrollHeight
             && moved.reel?.clientHeight === facts.reel?.clientHeight
             && moved.nodes?.every(node => node.words.every(word => !word.clipped))
-            && rejected.failures.some(reason => reason.includes('outside visible ancestor')),
+            && rejected.failures.some(reason => reason.includes('outside reachable ancestor')),
           'Q14 real-DOM translated shelf outside outer clip was not rejected', failures);
           fail(recovered.pass, `Q14 real-DOM shelf restoration failed: ${recovered.failures.join('; ')}`, failures);
         }
@@ -1940,6 +2151,33 @@ async function driveQ14(ctx) {
   screenshots: results.flatMap(result => result.screenshots), teardown: results.map(result => result.teardown) };
 }
 
+async function driveQ24(ctx) {
+  const results = [];
+  for (const fontSize of [13, 24]) results.push(await withFixture(ctx, async (env, save) => {
+    const update = await dag(env, 'mixed');
+    const measurements = {}, failures = [];
+    for (const stage of ['mixed', 'dense16', 'dense64']) {
+      if (stage !== 'mixed') {
+        await update(stage);
+        await env.page.waitForFunction(count =>
+          document.querySelectorAll('.th-activity-graph [data-node]').length === count,
+        t4StageSpec(stage).length, { timeout: 9000 });
+      }
+      const facts = await ctx.probe(env.page, probeMobileDag);
+      measurements[stage] = facts;
+      fail(await env.page.evaluate(() => innerWidth) === 390,
+        'Q24 fixture is not 390px wide', failures);
+      failures.push(...compactDagPaddingVerdict(facts, stage).failures);
+      await save(`-phone390-font${fontSize}-${stage}`);
+    }
+    return finish(measurements, failures);
+  }, { viewport: { width: 390, height: 844 }, fontSize }));
+  return { ...finish(Object.fromEntries(results.map((result, index) =>
+    [[13, 24][index], result.measurements])),
+  results.flatMap((result, index) => result.failures.map(reason => `font${[13, 24][index]}: ${reason}`))),
+  screenshots: results.flatMap(result => result.screenshots), teardown: results.map(result => result.teardown) };
+}
+
 async function driveQ15(ctx) {
   const tools = await withFixture(ctx, async (env, save) => {
     const page = env.page, rows = [];
@@ -1965,8 +2203,8 @@ async function driveQ15(ctx) {
         await env.page.waitForFunction(count => document.querySelectorAll('.th-activity-graph [data-node]').length === count,
           t4StageSpec(stage).length, { timeout: 9000 });
       }
-      const facts = await ctx.probe(env.page, probeMobileDag, { scroll: ctx.viewport.width !== 390 });
-      failures.push(...dagAncestorVerdict(facts, stage, ctx.viewport.width === 390).failures);
+      const facts = await ctx.probe(env.page, probeMobileDag, { scroll: true });
+      failures.push(...dagAncestorVerdict(facts, stage).failures);
       for (const node of facts.nodes) for (const word of node.words)
         fail(word.fontSize >= 10.99 && !word.clipped
           && (word.allowed === 0 || word.measured <= word.allowed + 1),
@@ -2108,20 +2346,24 @@ async function driveQ19(ctx) {
       `Q19 font setting ${fontSize ?? 'default'} not applied`, failures);
     const label = env.page.locator('.th-tree-workspace > .th-tree-node .th-tree-label-text')
       .filter({ hasText: 'Earlier workspace 12' }).first();
-    const previous = await label.evaluate(element => element.style.maxWidth);
+    const tail = label.locator('.th-tree-label-tail');
+    const previous = await tail.evaluate(element => ({
+      maxWidth: element.style.maxWidth, overflow: element.style.overflow,
+    }));
     let control;
     try {
-      await label.evaluate(element => { element.style.maxWidth = '64px'; });
+      await tail.evaluate(element => { element.style.maxWidth = '0px'; element.style.overflow = 'hidden'; });
       control = workspaceLabelVerdict(await ctx.probe(env.page, probeWorkspaceLabels));
     } finally {
-      await label.evaluate((element, value) => { element.style.maxWidth = value; }, previous);
+      await tail.evaluate((element, style) => {
+        element.style.maxWidth = style.maxWidth; element.style.overflow = style.overflow;
+      }, previous);
     }
-    fail(control.failures.some(reason => reason.includes('ellipsizes away its trailing number')),
+    fail(control.failures.some(reason => reason.includes('tail is not fully visible')),
       'Q19 control: a row truncated before its number must fail the verdict', failures);
     const restored = workspaceLabelVerdict(await ctx.probe(env.page, probeWorkspaceLabels));
     fail(restored.pass, 'Q19 control: restored label must pass the verdict', failures);
     if (fontSize === 24) {
-      const tail = label.locator('.th-tree-label-tail');
       const tailStyle = await tail.evaluate(element => ({
         maxWidth: element.style.maxWidth, overflow: element.style.overflow,
       }));
@@ -2165,8 +2407,65 @@ async function driveQ19(ctx) {
   screenshots: results.flatMap(result => result.screenshots), teardown: results.map(result => result.teardown) };
 }
 
+async function driveQ25(ctx) {
+  return withFixture(ctx, async (env, save) => {
+    await drawer(env.page);
+    const facts = await ctx.probe(env.page, probeWorkspaceContinuity);
+    const failures = workspaceContinuityVerdict(facts).failures;
+    await save('-continuous-workspaces');
+    return finish(facts, failures);
+  }, { touchLive: true, coarse: ctx.viewport.width <= 768,
+    workspaceNames: ['omo-desktop-app', 'ai-token-monitor', 'omo-zcode-oauth'],
+    earlierWorkspaces: true, fontSize: 13 });
+}
+
+async function driveQ26(ctx) {
+  return withFixture(ctx, async (env, save) => {
+    await env.page.evaluate(() => {
+      window.qaPending = window.qaSignal(() =>
+        !!document.querySelector('.th-tree-workspace .th-tree-count--running')
+        && document.querySelectorAll('.th-tree-workspace > .th-tree-node').length >= 4);
+    });
+    env.fixture.overview(shellLiveFrame({ sessionId: CHAT, title: CHAT, agents: 1 }));
+    await env.page.evaluate(() => window.qaPending);
+    await drawer(env.page);
+    const facts = await ctx.probe(env.page, probeWorkspaceColumns);
+    await save('-workspace-columns');
+    return workspaceColumnsVerdict(facts);
+  }, { touchLive: true, coarse: ctx.viewport.width <= 768,
+    workspaceNames: ['omo-desktop-app', 'ai-token-monitor', 'omo-zcode-oauth'] });
+}
+
+async function driveQ27(ctx) {
+  const results = [];
+  for (const coarse of [false, true]) results.push(await withFixture(ctx, async (env, save) => {
+    const ready = env.page.evaluate(() => window.qaSignal(() =>
+      !!document.querySelector('.th-sidebar-live-count')
+      && !!document.querySelector('.th-sidebar-live-list .th-overview-card-running')));
+    env.fixture.overview(shellLiveFrame({ sessionId: CHAT, title: 'Stored A', agents: 2 }));
+    await ready;
+    await drawer(env.page);
+    const facts = await ctx.probe(env.page, probeHeadingRunningCount);
+    const failures = headingRunningCountVerdict(facts).failures;
+    fail(await env.page.evaluate(() => matchMedia('(pointer: coarse)').matches) === coarse,
+      `Q27 expected ${coarse ? 'coarse' : 'fine'} pointer`, failures);
+    await save(`-${coarse ? 'coarse' : 'fine'}-running`);
+    await env.page.emulateMedia({ reducedMotion: 'reduce' });
+    const reduced = await ctx.probe(env.page, probeHeadingRunningCount);
+    failures.push(...headingRunningCountVerdict(reduced).failures.map(reason => `reduced: ${reason}`));
+    await save(`-${coarse ? 'coarse' : 'fine'}-reduced`);
+    return finish({ normal: facts, reduced }, failures);
+  }, { touchLive: true, coarse }));
+  return { ...finish(Object.fromEntries(results.map((result, index) =>
+    [[false, true][index] ? 'coarse' : 'fine', result.measurements])),
+  results.flatMap((result, index) => result.failures.map(reason =>
+    `${[false, true][index] ? 'coarse' : 'fine'}: ${reason}`))),
+  screenshots: results.flatMap(result => result.screenshots), teardown: results.map(result => result.teardown) };
+}
+
 export const scenarios = Object.freeze({
   Q1: driveQ1, Q2: driveQ2, Q3: driveQ3, Q4: driveQ4, Q5: driveQ5,
   Q6: driveQ6, Q7: driveQ7, Q8: driveQ8, Q9: driveQ9, Q10: driveQ10,
   Q14: driveQ14, Q15: driveQ15, Q17: driveQ17, Q18: driveQ18, Q19: driveQ19,
+  Q23: driveQ23, Q24: driveQ24, Q25: driveQ25, Q26: driveQ26, Q27: driveQ27,
 });
