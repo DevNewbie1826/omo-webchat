@@ -9,8 +9,35 @@ type errorDeliverer interface{ DeliverFrame(Frame) error }
 type deliveryInterrupter interface{ CancelDelivery() error }
 type overflowRecoverer interface{ RecoverSubscriberOverflow() }
 type overflowTransferSubscriber interface{ SubscriberOverflowTransferKey() string }
+type overflowTransferRetainer interface {
+	RetainSubscriberOverflowTransfer(*SubscriberOverflowTransfer)
+}
+type overflowTransferOwner interface {
+	SubscriberOverflowTransfer() *SubscriberOverflowTransfer
+}
+type historyDeliveryObserver interface{ HistoryFrameDelivered(Frame) }
 
 const SubscriberOverflowTransferCapacity = 256
+
+// SubscriberOverflowTransfer owns one subscriber's retained overflow frames.
+// Subscribers receive it through RetainSubscriberOverflowTransfer, outside the
+// broadcaster lock and before delivery cancellation or recovery notification.
+type SubscriberOverflowTransfer struct {
+	broadcaster *broadcaster
+	key         string
+	instance    *overflowTransfer
+}
+
+// Release abandons this transfer without touching a replacement with the same
+// key. It is safe to call repeatedly or concurrently with recovery and shutdown.
+func (t *SubscriberOverflowTransfer) Release() {
+	b := t.broadcaster
+	b.mu.Lock()
+	if b.overflowTransfers[t.key] == t.instance {
+		delete(b.overflowTransfers, t.key)
+	}
+	b.mu.Unlock()
+}
 
 type queuedFrame struct {
 	frame       Frame
@@ -63,6 +90,7 @@ type overflowTransfer struct {
 	reserved   int
 	finalized  bool
 	overflowed bool
+	consumed   bool
 }
 
 func (t *overflowTransfer) append(f Frame) {
@@ -134,6 +162,11 @@ func (x *subscription) run() {
 				// never queues, so it leaves no ids behind.
 				if len(item.replayedIDs) > 0 {
 					x.noteReplayedEntryIDs(item.replayedIDs)
+				}
+				if item.frame.Kind == FrameEntries || (item.frame.Kind == FrameError && item.delivered != nil) {
+					if observer, ok := x.sub.(historyDeliveryObserver); ok {
+						observer.HistoryFrameDelivered(item.frame)
+					}
 				}
 				if x.initialRemaining > 0 {
 					x.initialRemaining--
@@ -511,20 +544,34 @@ func (b *broadcaster) attachWithError(sub Subscriber, size int, initial []Frame)
 	if sub == nil {
 		return 0, nil, func() {}, nil
 	}
+	var owned *SubscriberOverflowTransfer
+	if owner, ok := sub.(overflowTransferOwner); ok {
+		owned = owner.SubscriberOverflowTransfer()
+	}
+	pendingTransfer := false
+	if owned != nil {
+		owned.broadcaster.mu.Lock()
+		pendingTransfer = !owned.instance.consumed
+		owned.broadcaster.mu.Unlock()
+	}
 	b.mu.Lock()
 	if b.subs == nil {
 		b.subs = make(map[uint64]*subscription)
 	}
 	b.next++
 	id := b.next
-	transferRejected := false
-	if keyed, ok := sub.(overflowTransferSubscriber); ok {
+	// A route replacement or retirement can remove the old session's map.
+	// That is not proof its retained stream was delivered: only consumption
+	// permits a fresh snapshot on another broadcaster.
+	transferRejected := pendingTransfer && (owned.broadcaster != b || b.overflowTransfers[owned.key] != owned.instance)
+	if keyed, ok := sub.(overflowTransferSubscriber); ok && !transferRejected {
 		key := keyed.SubscriberOverflowTransferKey()
 		if transfer := b.overflowTransfers[key]; transfer != nil {
-			delete(b.overflowTransfers, key)
 			if transfer.overflowed || !transfer.finalized {
 				transferRejected = true
 			} else {
+				delete(b.overflowTransfers, key)
+				transfer.consumed = true
 				initial = mergeOverflowTransfer(initial, transfer.frames)
 				if size < len(initial) {
 					size = len(initial)
@@ -619,23 +666,28 @@ func (b *broadcaster) finish(x *subscription, reason error, wait, cancel bool) {
 	x.cleanupOnce.Do(func() { close(x.cleanupDone) })
 }
 
-func (b *broadcaster) finishOverflowAsync(x *subscription, transferKey string, replayFrames []Frame) {
+func (b *broadcaster) finishOverflowAsync(x *subscription, transfer *SubscriberOverflowTransfer, replayFrames []Frame) {
 	x.stopWithReason(ErrSubscriberOverflow, false)
 	go func() {
+		if transfer != nil {
+			if retainer, ok := x.sub.(overflowTransferRetainer); ok {
+				retainer.RetainSubscriberOverflowTransfer(transfer)
+			}
+		}
 		if interrupter, ok := x.sub.(deliveryInterrupter); ok {
 			_ = interrupter.CancelDelivery()
 		} else {
 			_ = x.sub.Cancel()
 		}
 		<-x.exited
-		if transferKey != "" {
+		if transfer != nil {
 			b.mu.Lock()
-			if transfer := b.overflowTransfers[transferKey]; transfer != nil {
+			if b.overflowTransfers[transfer.key] == transfer.instance {
 				if replayFrames != nil {
 					prefix := append(x.drainReplayTail(), replayFrames...)
-					transfer.finalize(prefix)
+					transfer.instance.finalize(prefix)
 				} else {
-					transfer.finalize(x.drainOverflowQueue())
+					transfer.instance.finalize(x.drainOverflowQueue())
 				}
 			}
 			b.mu.Unlock()
@@ -661,7 +713,7 @@ func (b *broadcaster) publish(f Frame) {
 func (b *broadcaster) publishExcept(f Frame, except *subscription) {
 	type retiredSubscription struct {
 		sub          *subscription
-		transferKey  string
+		transfer     *SubscriberOverflowTransfer
 		replayFrames []Frame
 	}
 	var retired []retiredSubscription
@@ -680,10 +732,10 @@ func (b *broadcaster) publishExcept(f Frame, except *subscription) {
 		}
 		if !x.enqueue(f) {
 			delete(b.subs, id)
-			var transferKey string
+			var retained *SubscriberOverflowTransfer
 			replayFrames, replaying := x.beginOverflowTransfer(f)
 			if keyed, ok := x.sub.(overflowTransferSubscriber); ok {
-				transferKey = keyed.SubscriberOverflowTransferKey()
+				transferKey := keyed.SubscriberOverflowTransferKey()
 				if transferKey != "" {
 					if b.overflowTransfers == nil {
 						b.overflowTransfers = make(map[string]*overflowTransfer)
@@ -696,14 +748,15 @@ func (b *broadcaster) publishExcept(f Frame, except *subscription) {
 						transfer.append(f)
 					}
 					b.overflowTransfers[transferKey] = transfer
+					retained = &SubscriberOverflowTransfer{broadcaster: b, key: transferKey, instance: transfer}
 				}
 			}
-			retired = append(retired, retiredSubscription{sub: x, transferKey: transferKey, replayFrames: replayFrames})
+			retired = append(retired, retiredSubscription{sub: x, transfer: retained, replayFrames: replayFrames})
 		}
 	}
 	b.mu.Unlock()
 	for _, retired := range retired {
-		b.finishOverflowAsync(retired.sub, retired.transferKey, retired.replayFrames)
+		b.finishOverflowAsync(retired.sub, retired.transfer, retired.replayFrames)
 	}
 }
 

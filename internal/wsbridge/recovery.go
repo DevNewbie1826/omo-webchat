@@ -105,6 +105,9 @@ func (c *connection) recoverBindingInFlight(ctx context.Context, binding *recove
 		if resumeErr != nil && detach != nil {
 			staged.sub.wrapDetach(detach)()
 		}
+		if resumeErr != nil {
+			staged.sub.releaseTransfer()
+		}
 		if !errors.Is(resumeErr, session.ErrSessionResumable) || attempt == 1 {
 			return resumed, resumeErr
 		}
@@ -115,29 +118,42 @@ func (c *connection) recoverBindingInFlight(ctx context.Context, binding *recove
 func (c *connection) bindRecovered(ctx context.Context, binding *recoveryBinding, staged *stagedRecovery) bool {
 	wrappedDetach := staged.sub.wrapDetach(staged.detach)
 	c.stateMu.Lock()
-	if c.closed.Load() || c.wsID != binding.workspaceID || c.chatID != binding.stale.chatID ||
+	if c.closed.Load() || c.recoveryExhausted || c.wsID != binding.workspaceID || c.chatID != binding.stale.chatID ||
 		c.bindingGeneration != binding.stale.generation || c.sess != binding.stale.session {
 		c.stateMu.Unlock()
 		wrappedDetach()
+		staged.sub.releaseTransfer()
 		return false
 	}
 	oldSession, oldDetach, oldSub := c.sess, c.detach, c.sub
 	c.invalidateTodoWatchLocked()
 	c.sess, c.detach, c.sub = staged.session, wrappedDetach, staged.sub
 	c.stateMu.Unlock()
+	staged.sub.signalRecovery()
 	if err := staged.sub.activate(ctx, !staged.started); err != nil {
 		c.stateMu.Lock()
 		if c.sess == staged.session && c.sub == staged.sub && c.bindingGeneration == binding.stale.generation {
 			c.sess, c.detach, c.sub = oldSession, oldDetach, oldSub
 		}
+		restored := c.sub == oldSub
 		c.stateMu.Unlock()
 		wrappedDetach()
+		staged.sub.releaseTransfer()
+		if !restored {
+			if oldDetach != nil {
+				oldDetach()
+			}
+			oldSub.releaseTransfer()
+		} else if oldSub != nil {
+			oldSub.signalRecovery()
+		}
 		return false
 	}
 	binding.stale.session = staged.session
 	if oldDetach != nil {
 		oldDetach()
 	}
+	oldSub.releaseTransfer()
 	c.bridge.publishQueueToConnection(c, staged.session)
 	return true
 }
