@@ -189,6 +189,7 @@ export function ChatPane({
     questionFrame?.requestId ?? questionFrame?.id ?? "",
     questionFrame?.questions ?? [],
     questionFrame?.delivery === "failed" ? questionFrame.submittedAnswer : undefined,
+    chat.pendingQuestions.map(question => question.requestId ?? question.id),
   );
   const questionDraft = questionDraftState[0];
   const lastProgressRef = useRef("");
@@ -198,11 +199,12 @@ export function ChatPane({
       return;
     }
     const response = questionDraftResponse(questionDraft, questionFrame.questions ?? []);
-    const serialized = JSON.stringify(response);
+    const serializedResponse = JSON.stringify(response);
+    const serialized = JSON.stringify([questionFrame.requestId ?? questionFrame.id, response]);
     if (serialized === lastProgressRef.current) return;
     lastProgressRef.current = serialized;
     // An untouched draft carries nothing omo does not already know.
-    if (serialized === '{"answers":{}}') return;
+    if (serializedResponse === '{"answers":{}}') return;
     chat.reportQuestionProgress(questionFrame.id, response);
   }, [questionFrame, questionDraft, chat]);
 

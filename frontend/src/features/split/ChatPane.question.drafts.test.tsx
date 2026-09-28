@@ -36,6 +36,57 @@ describe("request-owned question drafts", () => {
     expect(document.querySelector(".th-modal")).not.toBeNull();
   };
 
+  it("keeps each pending request's selection, text, and comment through A-B-A cycling", async () => {
+    const { deliver, sent } = renderChatPane(root);
+    const alpha = { ...request, id: "alpha", requestId: "tool-alpha", nonBlocking: true,
+      questions: [{ id: "choice", question: "Alpha", options: [{ label: "A" }, { label: "B" }] }] };
+    const beta = { ...request, id: "beta", requestId: "tool-beta", nonBlocking: true,
+      questions: [{ id: "other", question: "Beta", options: [{ label: "C" }] }] };
+    act(() => { deliver(alpha); deliver(beta); });
+    ensureWindowOpen();
+    click("A");
+    input(".th-approval-question-text", "retained own answer");
+    input(".th-approval-question-comment", "retained comment");
+
+    act(() => requireElement(document.querySelector<HTMLButtonElement>(".th-modal .th-question-pending-next"), "next question").click());
+    ensureWindowOpen();
+    expect(document.querySelector(".th-approval-question-text-prompt")?.textContent).toBe("Beta");
+    act(() => requireElement(container.querySelector<HTMLButtonElement>(".th-question-band .th-question-pending-next"), "cycle back").click());
+    ensureWindowOpen();
+
+    expect(button("A").getAttribute("aria-pressed")).toBe("true");
+    expect(document.querySelector<HTMLInputElement>(".th-approval-question-text")?.value).toBe("retained own answer");
+    expect(document.querySelector<HTMLInputElement>(".th-approval-question-comment")?.value).toBe("retained comment");
+    click("approval.submit");
+    expect(sent.filter(frame => frame.type === "approval.respond").at(-1)).toMatchObject({
+      id: "alpha",
+      answers: { choice: { selected: ["A"], text: "retained own answer" } },
+      comment: "retained comment",
+    });
+  });
+
+  it("clears only the ended request while retaining another pending question's draft", () => {
+    const { deliver } = renderChatPane(root);
+    const alpha = { ...request, id: "alpha", requestId: "tool-alpha", nonBlocking: true,
+      questions: [{ id: "choice", options: [{ label: "A" }] }] };
+    const beta = { ...request, id: "beta", requestId: "tool-beta", nonBlocking: true,
+      questions: [{ id: "choice", options: [{ label: "B" }] }] };
+    act(() => { deliver(alpha); deliver(beta); });
+    ensureWindowOpen();
+    click("A");
+    act(() => requireElement(document.querySelector<HTMLButtonElement>(".th-modal .th-question-pending-next"), "next question").click());
+    ensureWindowOpen();
+    click("B");
+
+    act(() => deliver({ type: "approval.resolved", sessionId: "chat-1", id: alpha.id, outcome: "answered" }));
+    expect(button("B").getAttribute("aria-pressed")).toBe("true");
+    act(() => deliver(alpha));
+    expect(button("B").getAttribute("aria-pressed")).toBe("true");
+    act(() => requireElement(document.querySelector<HTMLButtonElement>(".th-modal .th-question-pending-next"), "reissued question").click());
+    ensureWindowOpen();
+    expect(button("A").getAttribute("aria-pressed")).toBe("false");
+  });
+
   it.each([{ surfaces: [true, false] }, { surfaces: [false, true] }, { surfaces: [true, false, true] }, { surfaces: [false, true, false, true, false] }] as const)(
     "preserves the complete response when surfaces hop through $surfaces", async ({ surfaces }) => {
       // Given a completed first answer, a partial selection, and a panel comment.

@@ -147,6 +147,7 @@ function OptionButton({
 			return windowRoot !== null && active !== null && windowRoot.contains(active);
 		};
 		const onTouchStart = (event: TouchEvent): void => {
+			if (button.disabled) return;
 			if (!focusInsideWindow()) return; // native: browser scrolls, click activates
 			event.preventDefault();
 			const touch = event.touches?.[0];
@@ -187,6 +188,7 @@ function OptionButton({
 			}
 			touchGesture.current = null;
 			event.preventDefault();
+			if (button.disabled) return;
 			// Taps and drags alike record the dedup timestamp: a drag must not
 			// activate, and its stray click must not toggle afterwards either.
 			lastTouchActivation.current = Date.now();
@@ -209,6 +211,7 @@ function OptionButton({
 			aria-pressed={selected}
 			disabled={disabled}
 			onClick={() => {
+				if (disabled) return;
 				if (Date.now() - lastTouchActivation.current < TOUCH_CLICK_DEDUP_MS) return;
 				onToggle();
 			}}
@@ -277,19 +280,19 @@ export function questionDraftResponse(draft: QuestionDraft, questions: readonly 
  *  sends a single response with answers keyed by question id. Every
  *  question's draft lives in one record, so switching tabs never loses
  *  selections already made. */
-export function useApprovalQuestionDraft(requestId: string, questions?: readonly Question[], submittedAnswer?: SubmittedAnswer): QuestionDraftState {
+export function useApprovalQuestionDraft(
+	requestId: string,
+	questions?: readonly Question[],
+	submittedAnswer?: SubmittedAnswer,
+	pendingIds?: readonly string[],
+): QuestionDraftState {
 	const owned = useContext(QuestionDraftContext);
-	const [draft, setDraft] = useState<QuestionDraft>({
-		requestId,
-		activeIndex: 0,
-		answers: new Map(),
-		questions: [], removedQuestions: [],
-		comment: "",
-		answering: false,
-	});
-	let current: QuestionDraft = draft.requestId !== requestId
-		? { requestId, activeIndex: 0, answers: new Map(), questions: [], removedQuestions: [], comment: "", answering: false }
-		: questions ? reconcileDraft(draft, questions) : draft;
+	const [drafts, setDrafts] = useState<ReadonlyMap<string, QuestionDraft>>(() => new Map());
+	const stored = drafts.get(requestId);
+	let current: QuestionDraft = stored ?? {
+		requestId, activeIndex: 0, answers: new Map(), questions: [], removedQuestions: [], comment: "", answering: false,
+	};
+	if (questions) current = reconcileDraft(current, questions);
 	const hasLocalAnswer = current.comment.trim() !== "" || [...current.answers.values()]
 		.some(answer => answer.selected.length > 0 || answer.text.trim() !== "");
 	if (submittedAnswer && !current.seededFromSubmission && !hasLocalAnswer) {
@@ -305,7 +308,19 @@ export function useApprovalQuestionDraft(requestId: string, questions?: readonly
 			}])),
 		};
 	}
-	if (current !== draft) setDraft(current);
+	// The pane supplies all pending request keys, not just the shown one.
+	// Prune only a request that actually ended; a presentation hop keeps the
+	// other requests' drafts intact. Standalone windows retain only their own.
+	const retained = pendingIds ?? [requestId];
+	const nextDrafts = new Map([...drafts].filter(([key]) => retained.includes(key)));
+	if (retained.includes(requestId)) nextDrafts.set(requestId, current);
+	if (nextDrafts.size !== drafts.size || [...nextDrafts].some(([key, value]) => drafts.get(key) !== value)) {
+		setDrafts(nextDrafts);
+	}
+	const setDraft: Dispatch<SetStateAction<QuestionDraft>> = (update) => {
+		setDrafts((previous) => new Map(previous).set(requestId,
+			typeof update === "function" ? update(previous.get(requestId) ?? current) : update));
+	};
 
 	return owned ?? [current, setDraft];
 }
@@ -377,10 +392,14 @@ export function ApprovalQuestionPanel({
 		};
 	};
 
+	// The sending state locks both native touch handlers and their shared
+	// draft mutation path, including a gesture that started before Send.
+	const sending = delivery === "sending";
 	const patchDraft = (
 		index: number,
 		patch: { selected?: readonly string[]; text?: string },
 	): void => {
+		if (sending) return;
 		const question = questions[index];
 		if (!question) return;
 		const key = questionKey(question, index);
@@ -401,6 +420,7 @@ export function ApprovalQuestionPanel({
 	};
 
 	const toggleOption = (index: number, label: string): void => {
+		if (sending) return;
 		const question = questions[index];
 		if (!question) return;
 		const key = questionKey(question, index);
@@ -419,7 +439,6 @@ export function ApprovalQuestionPanel({
 	const submit = (): void => onSubmit(questionDraftResponse(readLiveDraft(), questions));
 	// While a send awaits omo's question_resolved the draft is locked exactly
 	// as submitted; a failed delivery re-enables it untouched (IS-6).
-	const sending = delivery === "sending";
 	const isLastQuestion = activeIndex >= questions.length - 1;
 	const unanswered = questions.filter((question, index) => {
 		const entry = draft.answers.get(questionKey(question, index));
