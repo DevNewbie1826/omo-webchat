@@ -380,7 +380,7 @@ export function useChatSession(
   // History retries and stale-page recovery re-create this socket binding;
   // they do not abort the provider's run.
   const recreateHistory = (): boolean => {
-    if (frameState.resyncDisabled) return false;
+    if (frameState.resyncDisabled || !frameState.canRecreateHistory()) return false;
     frameState.beginResync();
     releaseBadgeSourceRef.current();
     if (!sendControl({ type: "chat.close", sessionId: session.id }, t("chat.resyncError"))) {

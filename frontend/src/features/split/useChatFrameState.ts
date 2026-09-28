@@ -897,6 +897,12 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const markOpen = (): number => {
     olderHistoryInvalidationRef.current?.(true);
     clearHistoryStall();
+    // A replacement connection owns a new replay even if its predecessor's
+    // close callback never arrived. Retire the old resync fence with it.
+    replayQueueRef.current = [];
+    resyncGenerationRef.current = null;
+    resyncPendingRef.current = false;
+    setResyncBusy(false);
     resumeCoverage.current.reconnect();
     todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
     applyRecovery(recoveryAfterOpen(recoveryRef.current));
@@ -1058,6 +1064,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     failResync,
     resyncBusy,
     resyncDisabled: resyncBusy || historyStatus === "loading" || !connected,
+    canRecreateHistory: () => !resyncPendingRef.current && historyStatusRef.current !== "loading" && socketOpenRef.current,
     armControl: ledger.arm,
     rejectControl: ledger.reject,
     confirmedModelKey: controls.confirmedModelKey,
