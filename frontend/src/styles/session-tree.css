@@ -273,27 +273,19 @@
   color: var(--th-text);
 }
 
-/* A workspace's single disclosure owns both its name and caret. Its folder
-   is decoration in the leading gutter rather than an in-flow column; the
-   name therefore starts with the live heading/card titles without reducing
-   the E33 label width or doubling the row height. The row box reaches back
-   over that gutter (the name stays where it was), so hover, selection and
-   the focus ring enclose the folder too. */
+/* A workspace's single disclosure owns folder and name. The folder glyph
+   itself carries the open/closed state (no separate caret), at a fixed
+   leading column, and the whole run from the row edge is the toggle
+   target. The row box reaches back into the shell gutter so the folder
+   column starts at the row edge. */
 .th-tree-workspace > .th-tree-node {
   margin-inline-start: calc(-1 * var(--th-space-3));
-  padding-inline-start: calc(var(--th-space-2) + var(--th-space-3));
+  padding-inline-start: var(--th-space-2);
 }
 
-.th-tree-workspace > .th-tree-node > .th-tree-icon {
-  position: absolute;
-  left: var(--th-space-1);
-  width: calc(var(--th-space-3) - var(--th-space-0-5));
-  pointer-events: none;
-}
-
-.th-tree-workspace > .th-tree-node > .th-tree-icon svg {
-  width: calc(var(--th-space-3) - var(--th-space-0-5));
-  height: calc(var(--th-space-3) - var(--th-space-0-5));
+.th-tree-workspace-activation > .th-tree-icon svg {
+  width: calc(var(--th-space-3) + var(--th-space-0-5));
+  height: calc(var(--th-space-3) + var(--th-space-0-5));
 }
 
 .th-tree-workspace-activation {
@@ -306,13 +298,6 @@
 
 .th-tree--touch .th-tree-workspace > .th-tree-node {
   margin-inline-start: calc(-1 * var(--th-space-2));
-  padding-inline-start: calc(var(--th-space-2) + var(--th-space-2));
-}
-
-/* Touch rows keep the name column aligned with the open-session titles, so
-   the icon moves to the row edge to keep the desktop 6px icon-to-name gap. */
-.th-tree--touch .th-tree-workspace > .th-tree-node > .th-tree-icon {
-  left: 0;
 }
 
 .th-tree-source {
@@ -499,31 +484,12 @@
   pointer-events: none;
 }
 
-/* The badge shares the 44px disclosure target with its caret on touch
-   screens; neither takes space from the name or the 44px action target. */
-.th-tree--touch .th-tree-workspace-activation .th-tree-chevron {
-  box-sizing: border-box;
-  justify-content: flex-start;
-  padding-inline-start: var(--th-space-0-5);
-}
-
-.th-tree--touch .th-tree-workspace-activation .th-tree-chevron--open {
-  transform: none;
-}
-
-.th-tree--touch .th-tree-workspace-activation .th-tree-chevron svg {
-  transition: transform var(--th-dur) var(--th-ease);
-}
-
-.th-tree--touch .th-tree-workspace-activation .th-tree-chevron--open svg {
-  transform: rotate(90deg);
-}
-
-/* Nesting reads through indentation alone; no guide line. */
+/* Nesting reads through indentation alone; no guide line. A session's
+   leading dot starts under the workspace name. */
 .th-tree-children {
   min-width: 0;
-  margin: 0 0 0 var(--th-space-3);
-  padding: 0 0 0 var(--th-space-2);
+  margin: 0;
+  padding: 0;
   border: 0;
   display: flex;
   flex-direction: column;
