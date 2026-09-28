@@ -20,6 +20,12 @@
  * serves /api/fs/browse only for seeded paths (unseeded keeps the recorded 404);
  * systemStats: object serves /api/system/stats when present; /api/fs/search always
  * answers from the seeded files map so the composer file palette has a happy path.
+ * Question-flow hooks (plan question-tool-omo-parity todo 6): approval.respond
+ * is acked like the real wsbridge write receipt (command extension_ui_response);
+ * approval.progress is captured but never acked (one-way, omo contract);
+ * setAttachReplay(id, frames) replays persisted question state (failed
+ * approval frame, questions.snapshot, journaled notices) to every (re)attaching
+ * subscriber, mirroring the Go attach replay.
  */
 import { EventEmitter } from "node:events";
 import { resolve } from "node:path";
@@ -269,7 +275,11 @@ export function startFixture(options = {}) {
                 break;
               }
             }
-            send({ type: "entries", entries: run.entries, final: true }); break;
+            send({ type: "entries", entries: run.entries, final: true });
+            // Question-flow replay (plan todo 6): persisted question state
+            // reaches every (re)attaching pane, like the Go attach path.
+            for (const replay of run.attachReplay ?? []) send(replay);
+            break;
           }
           case 'ping':
             if (options.controlled) sendTo(ws, { type: 'pong' }); else unexpected.push({ frame });
@@ -316,6 +326,17 @@ export function startFixture(options = {}) {
             break;
           }
           case "chat.abort": deliver(frame.sessionId, { type: "run.done", reason: "stop" }); break;
+          case "approval.respond":
+            // Mirror the real wsbridge write receipt (ack shape per
+            // internal/wsbridge/answer_delivery_test.go) so the client's
+            // control ledger settles exactly as against the Go server.
+            send({ type: "ack", command: "extension_ui_response",
+              ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
+              ...(frame.id !== undefined ? { id: frame.id } : {}) });
+            break;
+          case "approval.progress":
+            // One-way draft progress (omo contract): recorded above, never acked.
+            break;
           case "hello": case "sessions.subscribe": case "activity.refresh": break;
           default: unexpected.push({ frame });
         }
@@ -326,6 +347,7 @@ export function startFixture(options = {}) {
   return {
     url: `http://127.0.0.1:${server.port}`, requests, frames, unexpected, opens, creates, traffic, reset, deliver,
     setDagRuns(id, completeRuns) { runFor(id).dagRuns = structuredClone(completeRuns); },
+    setAttachReplay(id, frames) { runFor(id).attachReplay = structuredClone(frames); },
     fileContent(path) { return files.get(path); },
     holdReplay(id, hold = true) { if (hold) heldReplaySessions.add(id); else heldReplaySessions.delete(id); },
     releaseReplay(token, { stateFirst = true } = {}) {
