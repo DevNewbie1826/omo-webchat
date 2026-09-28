@@ -88,3 +88,4 @@ dismisses an existing one. After correcting the assertion to expect the
 alreadyResolved notice to remain, ChatPane.question.test.tsx passed 7/7 with
 the ref absent. Therefore the ref hunk fixed no Q14 failure and remains reverted.
 The lead confirmed the ref was write-only dead code with no reader.
+split vitest delegated to r1-verify (full frontend run); questionEndedSignalRef left in place, write-only, no behaviour
