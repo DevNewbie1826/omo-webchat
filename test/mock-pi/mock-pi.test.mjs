@@ -142,24 +142,89 @@ function runMock(env = {}, args = []) {
   ok(mock.frames.some((frame) => frame.type === 'message_update' && frame.assistantMessageEvent?.type === 'text_delta'), 'streamed text after approval');
 }
 
-// Unknown approval IDs are one-way silent drops, including after an ask aborts.
+// Omo question requests carry identity/wait mode and emulate each host reply branch.
 {
-  const mock = runMock({ MOCK_PI_APPROVE: '1', MOCK_PI_QUESTION: '1' });
+  const mock = runMock({ MOCK_PI_APPROVE: '1', MOCK_PI_QUESTION: '1', MOCK_PI_QUESTION_WAIT: '0' });
   const approval = mock.waitFor(frame => frame.type === 'extension_ui_request', 'question request');
   mock.send({ type: 'prompt', id: 'ask', message: 'ask' });
   const request = await approval;
-  const resolved = mock.waitFor(frame => frame.type === 'question_resolved', 'question abort');
-  const settled = mock.waitFor(frame => frame.type === 'agent_settled', 'aborted question settlement');
-  mock.send({ type: 'abort', id: 'abort' });
-  await Promise.all([resolved, settled]);
-  const start = mock.frames.length;
-  const fence = mock.waitFor(frame => frame.id === 'after-stale', 'same-stream command fence');
+  ok(request.requestId === request.id && request.waitForAnswer === false, 'request carries requestId and waitForAnswer');
+  const incomplete = mock.waitFor(frame => frame.command === 'extension_ui_response', 'incomplete response');
+  mock.send({ type: 'extension_ui_response', id: request.id, answers: {} });
+  ok((await incomplete).error === 'question_incomplete', 'empty answer yields question_incomplete');
+  const update = mock.waitFor(frame => frame.type === 'question_updated', 'question update');
+  mock.send({ type: 'extension_ui_progress', id: request.id, answers: { q1: { selected: ['Go'] } } });
+  await update;
+  ok(true, 'progress yields question_updated');
+  const resolved = mock.waitFor(frame => frame.type === 'question_resolved', 'answered result');
+  const answerMessage = mock.waitFor(frame => frame.type === 'message', 'answer frame');
   mock.send({ type: 'extension_ui_response', id: request.id, answers: { q1: { selected: ['Go'] } } });
-  mock.send({ type: 'get_state', id: 'after-stale' });
+  ok((await resolved).outcome === 'answered', 'selected answer resolves answered');
+  ok((await answerMessage).message.content[0].text === '[Answer to question approve-1]\nStack: Go', 'non-blocking question emits answer-frame user message');
+  await mock.close();
+}
+
+{
+  const mock = runMock({ MOCK_PI_APPROVE: '1', MOCK_PI_QUESTION: '1' });
+  const asked = mock.waitFor(frame => frame.type === 'extension_ui_request', 'question request');
+  mock.send({ type: 'prompt', id: 'comment', message: 'ask' });
+  const request = await asked;
+  ok(request.waitForAnswer === true, 'question wait mode defaults to blocking');
+  const resolved = mock.waitFor(frame => frame.type === 'question_resolved', 'comment result');
+  mock.send({ type: 'extension_ui_response', id: request.id, answers: {}, comment: 'free text' });
+  ok((await resolved).outcome === 'comment-submitted', 'comment resolves comment-submitted');
+  await mock.close();
+}
+
+{
+  const mock = runMock({ MOCK_PI_APPROVE: '1', MOCK_PI_QUESTION: '1' });
+  const asked = mock.waitFor(frame => frame.type === 'extension_ui_request', 'question request');
+  mock.send({ type: 'prompt', id: 'throw-path', message: 'ask' });
+  const request = await asked;
+  const fence = mock.waitFor(frame => frame.command === 'get_state', 'throw-path fence');
+  mock.send({ type: 'extension_ui_response', id: request.id, answers: { q1: { text: 'free text' } } });
+  mock.send({ type: 'get_state', id: 'throw-fence' });
   await fence;
-  const after = mock.frames.slice(start);
-  ok(after.length === 1 && after[0].command === 'get_state', 'unknown approval is silently ignored: no acknowledgement, rejection, or resumed stream');
-  console.log('unknown approval frame flow:', JSON.stringify(after));
+  ok(!mock.frames.some(frame => frame.type === 'question_resolved' || frame.type === 'response' && frame.id === request.id), 'answer without selected array emits nothing');
+  await mock.close();
+}
+
+{
+  const mock = runMock({ MOCK_PI_APPROVE: '1', MOCK_PI_QUESTION: '1' });
+  const asked = mock.waitFor(frame => frame.type === 'extension_ui_request', 'question request');
+  mock.send({ type: 'prompt', id: 'cancel', message: 'ask' });
+  const request = await asked;
+  const resolved = mock.waitFor(frame => frame.type === 'question_resolved', 'cancel result');
+  mock.send({ type: 'extension_ui_response', id: request.id, cancelled: true });
+  ok((await resolved).outcome === 'cancelled', 'cancelled response resolves cancelled');
+  await mock.close();
+}
+
+{
+  const mock = runMock({ MOCK_PI_APPROVE: '1', MOCK_PI_QUESTION: '1', MOCK_PI_DROP_RESPONSE: '1' });
+  const asked = mock.waitFor(frame => frame.type === 'extension_ui_request', 'question request');
+  mock.send({ type: 'prompt', id: 'drop', message: 'ask' });
+  const request = await asked;
+  const fence = mock.waitFor(frame => frame.command === 'get_state', 'drop fence');
+  mock.send({ type: 'extension_ui_response', id: request.id, answers: { q1: { selected: ['Go'] } } });
+  mock.send({ type: 'get_state', id: 'drop-fence' });
+  await fence;
+  ok(!mock.frames.some(frame => frame.type === 'question_resolved'), 'first question response is dropped');
+  const resolved = mock.waitFor(frame => frame.type === 'question_resolved', 'second response result');
+  mock.send({ type: 'extension_ui_response', id: request.id, answers: { q1: { selected: ['Go'] } } });
+  ok((await resolved).outcome === 'answered', 'subsequent response is processed');
+  await mock.close();
+}
+
+{
+  const mock = runMock({ MOCK_PI_APPROVE: '1', MOCK_PI_QUESTION: '1' });
+  const asked = mock.waitFor(frame => frame.type === 'extension_ui_request', 'question request');
+  mock.send({ type: 'prompt', id: 'abort', message: 'ask' });
+  await asked;
+  const resolved = mock.waitFor(frame => frame.type === 'question_resolved', 'abort resolution');
+  mock.send({ type: 'abort', id: 'abort-now' });
+  ok((await resolved).outcome === 'cancelled', 'abort emits canonical cancelled outcome');
+  await mock.waitFor(frame => frame.type === 'agent_settled', 'settled after abort');
   await mock.close();
 }
 
