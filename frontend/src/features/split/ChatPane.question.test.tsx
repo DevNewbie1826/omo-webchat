@@ -225,6 +225,9 @@ describe("ChatPane structured question dock panel", () => {
 		}));
 		expect(container.querySelector(".th-question-closed-notice")?.textContent)
 			.toContain("question.delivery.alreadyResolved");
+		// Let that notice expire so the next assertion isolates the answered path.
+		act(() => { vi.advanceTimersByTime(8_001); });
+		expect(container.querySelector(".th-question-closed-notice")).toBeNull();
 
 		act(() => deliver(QUESTION_FRAME));
 		act(() => deliver({
