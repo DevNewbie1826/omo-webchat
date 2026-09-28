@@ -1,0 +1,74 @@
+/* Answer chip (IS-2): an omo answer frame rendered in the transcript as a
+   muted disclosure, never as the user's own bubble. The chrome reuses the
+   tool-record visual language — the light --th-tool-record-surface tint, a
+   1px neutral hairline, --th-radius-sm corners — with summary rows in the
+   muted read color and the full verbatim body behind the toggle. All spacing
+   from the --th-space-* scale; type from the --th-type-* scale. */
+
+.th-ask-answer {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  border: 1px solid var(--th-border-surface);
+  border-radius: var(--th-radius-sm);
+  background: var(--th-tool-record-surface);
+}
+
+.th-ask-answer-toggle {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: baseline;
+  gap: var(--th-space-2);
+  padding: var(--th-space-1) var(--th-space-2);
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: start;
+  font: inherit;
+  color: var(--th-muted);
+}
+
+.th-ask-answer-toggle:focus-visible {
+  outline: 2px solid var(--th-ring);
+  outline-offset: -2px;
+  border-radius: var(--th-radius-sm);
+}
+
+.th-ask-answer-chevron {
+  flex: none;
+  display: inline-flex;
+  align-self: center;
+  color: var(--th-muted);
+  transition: transform 120ms ease;
+}
+
+.th-ask-answer-chevron--open {
+  transform: rotate(90deg);
+}
+
+.th-ask-answer-rows {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.th-ask-answer-row {
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.th-ask-answer-body {
+  padding: var(--th-space-1) var(--th-space-2) var(--th-space-2);
+  border-top: 1px solid var(--th-border-surface);
+  color: var(--th-text-dim);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

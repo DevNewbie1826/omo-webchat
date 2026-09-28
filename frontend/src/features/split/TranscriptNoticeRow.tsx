@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import type { ChatNotice } from "./useChatFrameState";
 import { SummaryNoticeBox } from "./SummaryNoticeBox";
 
@@ -63,7 +64,25 @@ function payloadMessageText(payload: ChatNotice["payload"]): string | undefined 
 }
 
 export function TranscriptNoticeRow({ notice }: TranscriptNoticeRowProps) {
+  const { t } = useT();
   const payload = notice.payload;
+
+  // A question the engine closed while this client was disconnected (IS-6):
+  // a warning status line with the localized explanation plus the question
+  // headers, so the loss is visible in every pane that replays the journal.
+  if (notice.kind === "question_closed_while_disconnected") {
+    const headersValue = payload?.["headers"];
+    const headers = Array.isArray(headersValue)
+      ? headersValue.filter((header): header is string => typeof header === "string")
+      : [];
+    const suffix = headers.length > 0 ? ` ${headers.map((header) => `[${header}]`).join(" ")}` : "";
+    return (
+      <div className="th-notice-status th-notice-status--warning" role="status">
+        <span className="th-notice-status-text">{t("question.delivery.closedWhileDisconnected")}{suffix}</span>
+        <span className="th-notice-time">{formatNoticeTime(notice.at)}</span>
+      </div>
+    );
+  }
 
   if (notice.kind === "engine_notify") {
     const message = typeof payload?.["message"] === "string" ? payload["message"] : "";
