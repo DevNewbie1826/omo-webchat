@@ -76,3 +76,14 @@ Result:
 
 The focused 7/7, full split-suite 2394/2394, tsc exit 0, and browser 24/24
 results verify the corrected notice test and browser behavior.
+
+[Exact reason for questionEndedSignalRef]
+It was NOT needed for the Q14 fix. No failing test demonstrated a Q14 symptom
+without this ref. The only failure seen after removing it was the added
+"already-resolved notice while own answer outcomes stay silent" test asserting
+that the prior .th-question-closed-notice became null after a later
+outcome="answered". The old notice correctly remains visible until its normal
+expiry; "answered" is silent in that it creates/replaces no notice, not that it
+dismisses an existing one. After correcting the assertion to expect the
+alreadyResolved notice to remain, ChatPane.question.test.tsx passed 7/7 with
+the ref absent. Therefore the ref hunk fixed no Q14 failure and remains reverted.
