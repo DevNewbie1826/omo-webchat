@@ -442,6 +442,7 @@ function onCommand(S, cmd) {
       if (DO_QUESTION) {
         for (const [id, pending] of S.pendingApprovals) {
           S.pendingApprovals.delete(id);
+          S.resolvedQuestionIds.add(id);
           emit(S, { type: 'question_resolved', id, outcome: 'cancelled' });
           pending.resolve({ cancelled: true });
         }

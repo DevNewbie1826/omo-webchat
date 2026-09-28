@@ -185,7 +185,7 @@ function runMock(env = {}, args = []) {
   mock.send({ type: 'extension_ui_response', id: request.id, answers: { q1: { selected: ['Go'] } } });
   await resolved;
 
-  const fence = mock.waitFor(frame => frame.type === 'response' && frame.command === 'get_state', 're-answer fence');
+  const fence = mock.waitFor(frame => frame.type === 'response' && frame.command === 'get_state' && frame.id === 'reanswer-fence', 're-answer fence');
   mock.send({ type: 'extension_ui_response', id: request.id, answers: { q1: { selected: ['Go'] } } });
   mock.send({ type: 'get_state', id: 'reanswer-fence' });
   await fence;
@@ -195,10 +195,11 @@ function runMock(env = {}, args = []) {
   const fenceResponse = mock.frames.findIndex(frame => frame.type === 'response' && frame.command === 'get_state' && frame.id === 'reanswer-fence');
   ok(reanswerError !== -1 && reanswerError < fenceResponse, 're-answer error frame precedes same-stream fence response');
 
-  const unknownFence = mock.waitFor(frame => frame.type === 'response' && frame.command === 'get_state', 'unknown-id fence');
+  const unknownFence = mock.waitFor(frame => frame.type === 'response' && frame.command === 'get_state' && frame.id === 'unknown-fence', 'unknown-id fence');
   mock.send({ type: 'extension_ui_response', id: 'unknown-question', answers: { q1: { selected: ['Go'] } } });
   mock.send({ type: 'get_state', id: 'unknown-fence' });
-  await unknownFence;
+  const unknownFenceFrame = await unknownFence;
+  ok(unknownFenceFrame.id === 'unknown-fence', `unknown-id fence matched its own response, got ${unknownFenceFrame.id}`);
   ok(!mock.frames.some(frame => frame.type === 'response' && frame.command === 'extension_ui_response' && frame.id === 'unknown-question'), 'unknown question id keeps silent behaviour');
   await mock.close();
 }
@@ -247,11 +248,19 @@ function runMock(env = {}, args = []) {
   const mock = runMock({ MOCK_PI_APPROVE: '1', MOCK_PI_QUESTION: '1' });
   const asked = mock.waitFor(frame => frame.type === 'extension_ui_request', 'question request');
   mock.send({ type: 'prompt', id: 'abort', message: 'ask' });
-  await asked;
+  const request = await asked;
   const resolved = mock.waitFor(frame => frame.type === 'question_resolved', 'abort resolution');
   mock.send({ type: 'abort', id: 'abort-now' });
   ok((await resolved).outcome === 'cancelled', 'abort emits canonical cancelled outcome');
   await mock.waitFor(frame => frame.type === 'agent_settled', 'settled after abort');
+
+  const fence = mock.waitFor(frame => frame.type === 'response' && frame.command === 'get_state' && frame.id === 'abort-reanswer-fence', 'abort re-answer fence');
+  mock.send({ type: 'extension_ui_response', id: request.id, answers: { q1: { selected: ['Go'] } } });
+  mock.send({ type: 'get_state', id: 'abort-reanswer-fence' });
+  await fence;
+  const errorIndex = mock.frames.findIndex(frame => frame.type === 'response' && frame.command === 'extension_ui_response' && frame.id === request.id && frame.success === false && frame.error === 'question_already_resolved');
+  const fenceIndex = mock.frames.findIndex(frame => frame.type === 'response' && frame.command === 'get_state' && frame.id === 'abort-reanswer-fence');
+  ok(errorIndex !== -1 && errorIndex < fenceIndex, 'abort-ended question re-answer returns question_already_resolved before its fence');
   await mock.close();
 }
 
