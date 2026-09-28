@@ -150,6 +150,22 @@ describe("ChatPane composer reply mode (omo question parity)", () => {
 		expect(sent.some((frame) => frame.type === "chat.send")).toBe(false);
 	});
 
+	it("sends the reply instead of aborting a running non-blocking question", () => {
+		const { deliver, sent } = render();
+		act(() => deliver({ type: "state", sessionId: "chat-1", isStreaming: true, isCompacting: false }));
+		act(() => deliver(QUESTION_FRAME));
+		act(() => setTextareaValue(composer(), "answer while running"));
+		const send = requireElement(container.querySelector<HTMLButtonElement>(".th-chat-send-btn"), "send button");
+		expect(send.classList.contains("th-btn--danger")).toBe(false);
+		expect(send.textContent).toContain("chat.send");
+		act(() => send.click());
+		expect(sent.filter((frame) => frame.type === "approval.respond")).toHaveLength(1);
+		expect(sent.filter((frame) => frame.type === "approval.respond")[0]).toMatchObject({
+			id: "ask-1", comment: "answer while running",
+		});
+		expect(sent.some((frame) => frame.type === "chat.abort")).toBe(false);
+	});
+
 	it.each(["/help", "!ls"])("%s never routes to the answer", (text) => {
 		const { deliver, sent } = render();
 		act(() => deliver(QUESTION_FRAME));
@@ -275,6 +291,150 @@ describe("ChatPane composer reply mode (omo question parity)", () => {
 			"question.noLongerPending",
 		);
 	});
+
+	it("keeps the reply bound to A when A resolves while B stays pending", () => {
+		const { deliver, sent } = render();
+		act(() => {
+			deliver({ ...QUESTION_FRAME, requestId: "req-a" });
+			deliver({ ...QUESTION_FRAME, id: "ask-b", requestId: "req-b",
+				questions: [{ id: "q1", header: "Beta", question: "Other?" }] });
+		});
+		const textarea = composer();
+		act(() => setTextareaValue(textarea, "answer for A"));
+		act(() => deliver({ type: "approval.resolved", sessionId: "chat-1", id: "ask-1", outcome: "answered" }));
+		expect(container.querySelector(".th-chat-reply-label")).toBeNull();
+		expect(textarea.value).toBe("answer for A");
+		expect(container.querySelector(".th-chat-reply-ended")?.textContent).toBe("question.noLongerPending");
+		act(() => pressKey(textarea, "Enter"));
+		expect(sent.some((frame) => frame.type === "approval.respond" && frame.id === "ask-b")).toBe(false);
+	});
+
+	it("does not assign A's remaining text to a forced reply for blocking B", () => {
+		const { deliver, sent } = render();
+		act(() => deliver({ ...QUESTION_FRAME, requestId: "req-a" }));
+		const textarea = composer();
+		act(() => setTextareaValue(textarea, "answer for A"));
+		act(() => deliver({ ...BLOCKING_FRAME, id: "ask-b", requestId: "req-b" }));
+		act(() => deliver({ type: "approval.resolved", sessionId: "chat-1", id: "ask-1", outcome: "answered" }));
+		expect(container.querySelector(".th-chat-reply-label")).toBeNull();
+		expect(textarea.value).toBe("answer for A");
+		expect(container.querySelector(".th-chat-reply-ended")?.textContent).toBe("question.noLongerPending");
+		act(() => pressKey(textarea, "Enter"));
+		expect(sent.some((frame) => frame.type === "approval.respond" && frame.id === "ask-b")).toBe(false);
+	});
+
+	it("does not lose A's ending when one snapshot removes A and B together", () => {
+		const { deliver } = render();
+		act(() => {
+			deliver({ ...QUESTION_FRAME, requestId: "req-a" });
+			deliver({ ...QUESTION_FRAME, id: "ask-b", requestId: "req-b" });
+		});
+		const textarea = composer();
+		act(() => setTextareaValue(textarea, "answer for A"));
+		act(() => deliver({ type: "questions.snapshot", sessionId: "chat-1", ids: [] }));
+		expect(container.querySelector(".th-chat-reply-label")).toBeNull();
+		expect(textarea.value).toBe("answer for A");
+		expect(container.querySelector(".th-chat-reply-ended")?.textContent).toBe("question.noLongerPending");
+	});
+
+	it("keeps A's stable reply key when the displayed question cycles and A gets a new wire id", () => {
+		const { deliver, sent } = render();
+		act(() => {
+			deliver({ ...QUESTION_FRAME, requestId: "req-a" });
+			deliver({ ...QUESTION_FRAME, id: "ask-b", requestId: "req-b",
+				questions: [{ id: "q1", header: "Beta", question: "Other?" }] });
+		});
+		act(() => setTextareaValue(composer(), "for Alpha"));
+		act(() => container.querySelector<HTMLButtonElement>(".th-question-pending-next")?.click());
+		act(() => deliver({ ...QUESTION_FRAME, id: "ask-a-new", requestId: "req-a" }));
+		act(() => pressKey(composer(), "Enter"));
+		expect(sent.filter((frame) => frame.type === "approval.respond")).toHaveLength(1);
+		expect(sent.find((frame) => frame.type === "approval.respond")).toMatchObject({
+			id: "ask-a-new", comment: "for Alpha",
+		});
+	});
+
+	it("throttles composer reply edits with current answers and comment, cancelling on send", () => {
+		vi.useFakeTimers();
+		const { deliver, sent } = render();
+		act(() => deliver(QUESTION_FRAME));
+		const textarea = composer();
+		act(() => setTextareaValue(textarea, "first"));
+		act(() => vi.advanceTimersByTime(500));
+		act(() => setTextareaValue(textarea, "second"));
+		act(() => vi.advanceTimersByTime(500));
+		expect(sent.filter((frame) => frame.type === "approval.progress")).toEqual([{
+			type: "approval.progress", sessionId: "chat-1", id: "ask-1", answers: {}, comment: "second",
+		}]);
+		act(() => setTextareaValue(textarea, "third"));
+		act(() => vi.advanceTimersByTime(1_000));
+		expect(sent.filter((frame) => frame.type === "approval.progress")).toHaveLength(2);
+		expect(sent.filter((frame) => frame.type === "approval.progress")[1]).toMatchObject({
+			id: "ask-1", answers: {}, comment: "third",
+		});
+		act(() => setTextareaValue(textarea, "final"));
+		act(() => pressKey(textarea, "Enter"));
+		act(() => vi.advanceTimersByTime(1_000));
+		expect(sent.filter((frame) => frame.type === "approval.progress")).toHaveLength(2);
+	});
+
+	it("never reports progress for edits in normal-message mode", () => {
+		vi.useFakeTimers();
+		const { deliver, sent } = render();
+		act(() => deliver(QUESTION_FRAME));
+		act(() => setTextareaValue(composer(), "/normal"));
+		act(() => vi.advanceTimersByTime(2_500));
+		expect(sent.some((frame) => frame.type === "approval.progress")).toBe(false);
+	});
+
+	it("cancels an armed reply progress frame when switching to message mode", () => {
+		vi.useFakeTimers();
+		const { deliver, sent } = render();
+		act(() => deliver(QUESTION_FRAME));
+		act(() => setTextareaValue(composer(), "draft reply"));
+		act(() => requireElement(container.querySelector<HTMLButtonElement>(".th-chat-reply-toggle"), "reply toggle").click());
+		act(() => vi.advanceTimersByTime(1_000));
+		expect(sent.some((frame) => frame.type === "approval.progress")).toBe(false);
+	});
+
+	it("reports the question's selected draft alongside composer text and cancels on ending", () => {
+		vi.useFakeTimers();
+		const { deliver, sent } = render();
+		act(() => deliver(QUESTION_FRAME));
+		act(() => container.querySelector<HTMLButtonElement>(".th-question-band-open")?.click());
+		const option = Array.from(document.querySelectorAll<HTMLButtonElement>(".th-approval-question-option"))
+			.find((button) => button.textContent?.includes("Go"));
+		act(() => option?.click());
+		act(() => setTextareaValue(composer(), "comment in composer"));
+		act(() => vi.advanceTimersByTime(1_000));
+		expect(sent.filter((frame) => frame.type === "approval.progress").at(-1)).toMatchObject({
+			id: "ask-1", answers: { q1: { selected: ["Go"] } }, comment: "comment in composer",
+		});
+		act(() => setTextareaValue(composer(), "new text before closure"));
+		act(() => deliver({ type: "approval.resolved", sessionId: "chat-1", id: "ask-1", outcome: "answered" }));
+		const count = sent.filter((frame) => frame.type === "approval.progress").length;
+		act(() => vi.advanceTimersByTime(1_000));
+		expect(sent.filter((frame) => frame.type === "approval.progress")).toHaveLength(count);
+	});
+
+	it("shows the already resolved notice for a pending question's explicit outcome", () => {
+		const { deliver } = render();
+		act(() => deliver(QUESTION_FRAME));
+		act(() => deliver({ type: "approval.resolved", sessionId: "chat-1", id: "ask-1", outcome: "already_resolved" }));
+		expect(container.querySelector(".th-question-closed-notice")?.textContent).toBe(
+			"question.delivery.alreadyResolved",
+		);
+	});
+
+	it.each(["answered", "comment-submitted"] as const)(
+		"closes a normally %s question without an already-resolved notice",
+		(outcome) => {
+			const { deliver } = render();
+			act(() => deliver(QUESTION_FRAME));
+			act(() => deliver({ type: "approval.resolved", sessionId: "chat-1", id: "ask-1", outcome }));
+			expect(container.querySelector(".th-question-closed-notice")).toBeNull();
+		},
+	);
 
 	it("shows the pending count and cycles to the next question (IS-7)", () => {
 		const { deliver } = render();

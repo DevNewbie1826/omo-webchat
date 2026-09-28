@@ -86,7 +86,7 @@ interface ChatFrameHandlerBindings {
   readonly setCommands: StateSetter<readonly CommandEntry[]>;
   readonly setModels: StateSetter<ModelsFrame["models"]>;
   readonly setPendingApproval: StateSetter<ApprovalRequest | null>;
-  readonly setPendingQuestions: StateSetter<readonly ApprovalFrame[]>;
+  readonly setPendingQuestions: (value: readonly ApprovalFrame[] | ((current: readonly ApprovalFrame[]) => readonly ApprovalFrame[]), outcome?: string) => void;
   readonly setRestoreVersion: StateSetter<number>;
   readonly setSendError: StateSetter<JsonObject | null>;
   readonly pushNotice: (kind: string, payload: JsonObject | null, at?: number, nid?: string) => void;
@@ -378,7 +378,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           bindings.controls.ledger.dropRestoreRequest(frame.requestId);
         }
         bindings.setPendingApproval(current => current?.id === frame.id ? null : current);
-        bindings.setPendingQuestions(current => current.filter(question => question.id !== frame.id));
+        bindings.setPendingQuestions(current => current.filter(question => question.id !== frame.id), frame.outcome);
         if (frame.message) bindings.setError(frame.message);
         return;
       case "ack":

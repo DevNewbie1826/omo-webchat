@@ -511,6 +511,8 @@ export function useChatSession(
     }, 1_000) };
     progressTimers.current.set(key, entry);
   };
+  const questionIdForKey = (key: string): string | undefined =>
+    frameState.getPendingQuestions().find(question => (question.requestId ?? question.id) === key)?.id;
 
   const resendQuestion = (id: string): boolean => {
     const question = frameState.getPendingQuestions().find(candidate => candidate.id === id);
@@ -585,7 +587,16 @@ export function useChatSession(
     changeModel,
     respondApproval: (response: ApprovalResponse) => respondRequest(frameState.pendingApproval?.id, response),
     respondQuestion: (id: string, response: ApprovalResponse) => respondRequest(id, response),
+    respondQuestionByKey: (key: string, response: ApprovalResponse) => {
+      const id = questionIdForKey(key);
+      return id !== undefined && respondRequest(id, response);
+    },
     reportQuestionProgress,
+    reportQuestionProgressByKey: (key: string, draft: Pick<ApprovalProgressFrame, "answers" | "comment">) => {
+      const id = questionIdForKey(key);
+      if (id !== undefined) reportQuestionProgress(id, draft);
+    },
+    cancelQuestionProgressByKey: cancelQuestionProgress,
     resendQuestion,
   };
 }

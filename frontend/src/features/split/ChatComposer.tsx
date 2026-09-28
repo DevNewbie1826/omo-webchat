@@ -14,6 +14,7 @@ import { useFileMention } from "./useFileMention";
 import { useImageAttachment } from "./useImageAttachment";
 import { useSessionDraft } from "./sessionDraft";
 import type { ChatSessionRef } from "../workspace/workspace";
+import type { QuestionEndedSignal } from "./useChatFrameState";
 
 /** The shown pending question the composer can answer (omo's
  *  composerDestination = {kind:"answer"}): typing into the empty focused
@@ -21,6 +22,8 @@ import type { ChatSessionRef } from "../workspace/workspace";
  *  question's comment answer, and Alt+Enter or the toggle send a normal
  *  message. */
 export interface ComposerQuestionTarget {
+  /** Stable request identity, independent of a re-issued wire id. */
+  readonly key: string;
   /** The question's CURRENT wire id (re-issued ids keep the reply). */
   readonly id: string;
   /** First question's header for the reply label. */
@@ -30,6 +33,8 @@ export interface ComposerQuestionTarget {
   /** Option labels of the first unanswered question (1-9 shortcut). */
   readonly options: readonly string[];
   readonly onAnswer: (comment: string) => boolean;
+  readonly onProgress: (comment: string) => void;
+  readonly onCancelProgress: () => void;
   readonly onPickOption: (optionIndex: number) => void;
 }
 
@@ -42,7 +47,7 @@ interface ChatComposerProps {
   readonly blockingQuestion?: boolean;
   readonly questionTarget?: ComposerQuestionTarget | null;
   /** Fires when a question leaves the pending list (any outcome, any pane). */
-  readonly questionEndedSignal?: { readonly id: string; readonly seq: number } | null;
+  readonly questionEndedSignal?: QuestionEndedSignal | null;
   readonly isCompacting: boolean;
   readonly disabled?: boolean;
   readonly retryDraft: RecoveredChatDraft | null;
@@ -73,15 +78,17 @@ export function ChatComposer({ session, commands, running, blockingQuestion = fa
   const [replyMode, setReplyMode] = useState(false);
   const [sendAsMessage, setSendAsMessage] = useState(false);
   const [endedNotice, setEndedNotice] = useState(false);
+  const [replySuspended, setReplySuspended] = useState(false);
   const inputRef = useRef(input);
   inputRef.current = input;
-  // The targeted question id, tracked in an effect (NOT during render) so it
-  // survives the render that removes the question — the ended-signal effect
-  // below still needs to know which question the composer was answering.
-  const replyTargetIdRef = useRef<string | null>(null);
+  // Keep the destination selected when reply mode began, not the next
+  // question the pane chooses to display after this one ends or cycles.
+  const replyTargetRef = useRef<ComposerQuestionTarget | null>(null);
   useEffect(() => {
     if (questionTarget && (replyMode || questionTarget.forceReply)) {
-      replyTargetIdRef.current = questionTarget.id;
+      if (replyTargetRef.current === null || replyTargetRef.current.key === questionTarget.key) {
+        replyTargetRef.current = questionTarget;
+      }
     }
   }, [questionTarget, replyMode]);
   const fileId = useId();
@@ -126,19 +133,17 @@ export function ChatComposer({ session, commands, running, blockingQuestion = fa
   useEffect(() => {
     if (!questionEndedSignal || questionEndedSignal.seq === lastEndedSeqRef.current) return;
     lastEndedSeqRef.current = questionEndedSignal.seq;
-    if (replyTargetIdRef.current === null || questionEndedSignal.id !== replyTargetIdRef.current) return;
+    if (!questionEndedSignal.ended.some(question => question.key === replyTargetRef.current?.key)) return;
+    replyTargetRef.current = null;
     setReplyMode(false);
     setSendAsMessage(false);
+    setReplySuspended(inputRef.current !== "");
     if (inputRef.current !== "") setEndedNotice(true);
   }, [questionEndedSignal]);
 
-  // A new question target clears a stale ended notice.
-  const questionTargetId = questionTarget?.id ?? null;
-  useEffect(() => {
-    if (questionTargetId !== null) setEndedNotice(false);
-  }, [questionTargetId]);
-
-  const replyActive = questionTarget !== null && (replyMode || questionTarget.forceReply) && !sendAsMessage;
+  const replyTarget = replySuspended ? null : replyTargetRef.current ?? questionTarget;
+  const replyActive = replyTarget !== null && (replyMode || replyTarget.forceReply) && !sendAsMessage;
+  const stopSuppressed = blockingQuestion || (replyTarget !== null && (replyMode || replyTarget.forceReply));
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -219,9 +224,11 @@ export function ChatComposer({ session, commands, running, blockingQuestion = fa
     // Reply mode (omo submitAsyncQuestionComment): Enter and the send button
     // answer the shown question with the text as its comment. Text starting
     // with `/` or `!` and an attached image never route to the answer.
-    if (!forceMessage && questionTarget && replyActive && pendingImage === null && !/^[/!]/.test(input.trimStart())) {
-      if (questionTarget.onAnswer(input.trim())) {
+    if (!forceMessage && replyTarget && replyActive && pendingImage === null && !/^[/!]/.test(input.trimStart())) {
+      if (replyTarget.onAnswer(input.trim())) {
         resetInput();
+        replyTargetRef.current = null;
+        setReplySuspended(false);
         setReplyMode(false);
         setSendAsMessage(false);
         setEndedNotice(false);
@@ -241,7 +248,9 @@ export function ChatComposer({ session, commands, running, blockingQuestion = fa
       ...(draftCommand ? { command: draftCommand } : {}),
     };
     if (!onSubmit(draft)) return;
+    if (replyTarget) replyTarget.onCancelProgress();
     resetInput();
+    setReplySuspended(false);
   };
 
   const steer = (): void => {
@@ -281,16 +290,19 @@ export function ChatComposer({ session, commands, running, blockingQuestion = fa
           onClear={clearImage}
         />
         {isDragOver && <div className="th-chat-drop-hint" role="status">{t("chat.dropImage")}</div>}
-        {questionTarget && (replyMode || questionTarget.forceReply) && (
+        {replyTarget && (replyMode || replyTarget.forceReply) && (
           <div className="th-chat-reply-label">
             <span className="th-chat-reply-label-text">
-              {"↳ "}{t("question.reply.label", { header: questionTarget.header })}
+              {"↳ "}{t("question.reply.label", { header: replyTarget.header })}
             </span>
-            {!questionTarget.forceReply && (
+            {!replyTarget.forceReply && (
               <button
                 type="button"
                 className="th-btn th-btn--ghost th-chat-reply-toggle"
-                onClick={() => setSendAsMessage((value) => !value)}
+                onClick={() => {
+                  if (!sendAsMessage) replyTarget.onCancelProgress();
+                  setSendAsMessage((value) => !value);
+                }}
               >
                 {t(sendAsMessage ? "question.reply.backToAnswer" : "question.reply.sendAsMessage")}
               </button>
@@ -335,21 +347,25 @@ export function ChatComposer({ session, commands, running, blockingQuestion = fa
           isCompacting={false}
           disabled={disabled}
           running={running}
-          stopSuppressed={blockingQuestion}
+          stopSuppressed={stopSuppressed}
           steerVisible={blockingQuestion}
           steerVariant={blockingQuestion ? "message" : "steer"}
-          sendLabel={t(running && !blockingQuestion ? "chat.stop" : "chat.send")}
+          sendLabel={t(running && !stopSuppressed ? "chat.stop" : "chat.send")}
           steerLabel={t(blockingQuestion ? "question.reply.sendAsMessage" : "chat.steer")}
           canSteer={input.trim().length > 0}
           onCaret={setCaret}
           onInput={(value, at) => {
             // omo handleAskUserShortcut: a printable first char (never `/` or
             // `!`) typed into the EMPTY composer routes it to the question.
-            if (questionTarget && input === "" && value !== "" && !/^[/!]/.test(value)) {
+            if (questionTarget && !replySuspended && input === "" && value !== "" && !/^[/!]/.test(value)) {
+              replyTargetRef.current = questionTarget;
               setReplyMode(true);
               setSendAsMessage(false);
             }
+            if (value === "") setReplySuspended(false);
             if (value !== input) setEndedNotice(false);
+            if (replyActive && replyTarget && !sendAsMessage && value !== input) replyTarget.onProgress(value);
+            else if (questionTarget && !replySuspended && input === "" && value !== "" && !/^[/!]/.test(value)) questionTarget.onProgress(value);
             setInput(value);
             setDraftCommand(null);
             setCaret(at);
@@ -365,7 +381,7 @@ export function ChatComposer({ session, commands, running, blockingQuestion = fa
             },
             run: {
               running,
-              blockingQuestion,
+              blockingQuestion: stopSuppressed,
               onSteer: steer,
               onStop,
               onSubmit: () => submit(),

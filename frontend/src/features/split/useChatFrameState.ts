@@ -72,6 +72,11 @@ const NOTICE_LIMIT = 50;
 
 export type HistoryStatus = "loading" | "loaded" | "failed";
 
+export interface QuestionEndedSignal {
+  readonly seq: number;
+  readonly ended: readonly { readonly key: string; readonly id: string; readonly outcome?: string }[];
+}
+
 // Inactivity window since the last sign of history progress: active multi-page
 // loads may run indefinitely, while a silent provider cannot hide advisories forever.
 const HISTORY_STALL_MS = 30_000;
@@ -274,14 +279,19 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const [pendingQuestions, updatePendingQuestions] = useState<readonly ApprovalFrame[]>([]);
   const pendingQuestionsRef = useRef<readonly ApprovalFrame[]>([]);
   const [shownQuestionId, setShownQuestionId] = useState<string | null>(null);
-  const [questionEndedSignal, setQuestionEndedSignal] = useState<{ readonly id: string; readonly seq: number } | null>(null);
+  const [questionEndedSignal, setQuestionEndedSignal] = useState<QuestionEndedSignal | null>(null);
   const questionEndSeqRef = useRef(0);
-  const setPendingQuestions: typeof updatePendingQuestions = (value) => {
+  const setPendingQuestions = (value: Parameters<typeof updatePendingQuestions>[0], outcome?: string): void => {
     const next = typeof value === "function" ? value(pendingQuestionsRef.current) : value;
-    for (const previous of pendingQuestionsRef.current) {
-      if (!next.some(question => (question.requestId ?? question.id) === (previous.requestId ?? previous.id))) {
-        setQuestionEndedSignal({ id: previous.id, seq: ++questionEndSeqRef.current });
-      }
+    const ended = pendingQuestionsRef.current.filter(previous =>
+      !next.some(question => (question.requestId ?? question.id) === (previous.requestId ?? previous.id)))
+      .map(previous => ({
+        key: previous.requestId ?? previous.id,
+        id: previous.id,
+        ...(outcome ? { outcome } : {}),
+      }));
+    if (ended.length > 0) {
+      setQuestionEndedSignal({ ended, seq: ++questionEndSeqRef.current });
     }
     pendingQuestionsRef.current = next;
     updatePendingQuestions(next);

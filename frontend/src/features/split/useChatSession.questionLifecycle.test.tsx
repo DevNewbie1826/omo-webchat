@@ -78,7 +78,7 @@ it("keeps a question visible while sending, refuses duplicate sends, and waits f
   expect(state.shownQuestion?.delivery).toBe("sending");
   deliver({ type: "approval.resolved", sessionId: "s", id: "a", outcome: "answered" });
   expect(state.shownQuestion).toBeNull();
-  expect(state.questionEndedSignal).toEqual({ id: "a", seq: 1 });
+  expect(state.questionEndedSignal).toEqual({ ended: [{ key: "tool-a", id: "a", outcome: "answered" }], seq: 1 });
 });
 
 it("restores a rejected write and resends its submitted answer with the current id", () => {
@@ -100,7 +100,7 @@ it("prunes only absent snapshot keys and emits a question-ended signal", () => {
   deliver({ type: "questions.snapshot", sessionId: "s", ids: ["tool-b"] });
   expect(state.pendingQuestions.map(frame => frame.id)).toEqual(["b"]);
   expect(state.shownQuestion?.id).toBe("b");
-  expect(state.questionEndedSignal).toEqual({ id: "a", seq: 1 });
+  expect(state.questionEndedSignal).toEqual({ ended: [{ key: "tool-a", id: "a" }], seq: 1 });
 });
 
 it("sends the latest draft at fixed one-second throttle cadence, then cancels on send", () => {

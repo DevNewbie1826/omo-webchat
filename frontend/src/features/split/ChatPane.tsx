@@ -218,9 +218,13 @@ export function ChatPane({
   const endedSignal = chat.questionEndedSignal;
   useEffect(() => {
     if (!endedSignal) return;
-    const delivery = lastQuestionDeliveryRef.current.get(endedSignal.id);
-    lastQuestionDeliveryRef.current.delete(endedSignal.id);
-    if (delivery === "failed") setClosedNoticeSeq(endedSignal.seq);
+    for (const ended of endedSignal.ended) {
+      const delivery = lastQuestionDeliveryRef.current.get(ended.id);
+      lastQuestionDeliveryRef.current.delete(ended.id);
+      if (ended.outcome === "already_resolved" || (ended.outcome === undefined && delivery === "failed")) {
+        setClosedNoticeSeq(endedSignal.seq);
+      }
+    }
   }, [endedSignal]);
   useEffect(() => {
     if (closedNoticeSeq === 0) return;
@@ -241,14 +245,20 @@ export function ChatPane({
     const firstUnanswered = firstUnansweredIndex >= 0 ? questions[firstUnansweredIndex] : undefined;
     const frame = questionFrame;
     return {
+      key: frame.requestId ?? frame.id,
       id: frame.id,
       header: questions[0]?.header ?? frame.title ?? "",
       forceReply: frame.nonBlocking !== true && !questionWindowOpen,
       options: (firstUnanswered?.options ?? []).map((option) => option.label ?? ""),
       onAnswer: (comment: string): boolean => {
         const response = questionDraftResponse(questionDraftState[0], frame.questions ?? []);
-        return chat.respondQuestion(frame.id, { answers: response.answers, comment });
+        return chat.respondQuestionByKey(frame.requestId ?? frame.id, { answers: response.answers, comment });
       },
+      onProgress: (comment: string): void => {
+        const response = questionDraftResponse(questionDraftState[0], frame.questions ?? []);
+        chat.reportQuestionProgressByKey(frame.requestId ?? frame.id, { answers: response.answers, comment });
+      },
+      onCancelProgress: () => chat.cancelQuestionProgressByKey(frame.requestId ?? frame.id),
       onPickOption: (optionIndex: number): void => {
         if (firstUnansweredIndex < 0) return;
         const question = questions[firstUnansweredIndex];
