@@ -15,6 +15,12 @@ export interface ApprovalQuestionPanelProps {
 		comment?: string;
 	}) => void;
 	readonly onCancel: () => void;
+	/** Delivery confirmation (IS-6): "sending" disables every input until
+	 *  omo's question_resolved arrives; "failed" restores the draft with the
+	 *  error and a resend control. */
+	readonly delivery?: "sending" | "failed";
+	readonly deliveryError?: string;
+	readonly onResend?: () => void;
 }
 
 /** Draft state for a structured multi-question request: one entry per
@@ -120,11 +126,13 @@ function OptionButton({
 	label,
 	description,
 	selected,
+	disabled = false,
 	onToggle,
 }: {
 	readonly label: string;
 	readonly description: string | undefined;
 	readonly selected: boolean;
+	readonly disabled?: boolean;
 	readonly onToggle: () => void;
 }): ReactElement {
 	const buttonRef = useRef<HTMLButtonElement | null>(null);
@@ -199,6 +207,7 @@ function OptionButton({
 			type="button"
 			className="th-approval-question-option"
 			aria-pressed={selected}
+			disabled={disabled}
 			onClick={() => {
 				if (Date.now() - lastTouchActivation.current < TOUCH_CLICK_DEDUP_MS) return;
 				onToggle();
@@ -230,12 +239,16 @@ function OptionButton({
 }
 
 /** This owner stays mounted when the same request changes presentation. */
-export function QuestionDraftProvider({ requestId, submittedAnswer, children }: {
+export function QuestionDraftProvider({ requestId, submittedAnswer, draftState: provided, children }: {
 	readonly requestId: string;
 	readonly submittedAnswer?: SubmittedAnswer;
+	/** A draft lifted by an ancestor (the pane shares it with the composer,
+	 *  which answers with the current draft and reports edits as progress). */
+	readonly draftState?: QuestionDraftState;
 	readonly children: ReactElement<{ readonly request: { readonly questions?: readonly Question[] } }>;
 }) {
-	const draftState = useApprovalQuestionDraft(requestId, children.props.request.questions ?? [], submittedAnswer);
+	const own = useApprovalQuestionDraft(requestId, children.props.request.questions ?? [], submittedAnswer);
+	const draftState = provided ?? own;
 	return <QuestionDraftContext.Provider value={draftState}>
 		<RemovedQuestionNoticeContext.Provider value={draftState[0].removedQuestions}>{children}</RemovedQuestionNoticeContext.Provider>
 	</QuestionDraftContext.Provider>;
@@ -297,11 +310,22 @@ export function useApprovalQuestionDraft(requestId: string, questions?: readonly
 	return owned ?? [current, setDraft];
 }
 
+/** The delivery error line for a failed send: known engine/confirm failures
+ *  map to their translated explanation, anything else shows raw. */
+export function questionDeliveryErrorText(t: (key: string) => string, deliveryError: string | undefined): string {
+	if (deliveryError === "unconfirmed") return t("question.delivery.unconfirmed");
+	if (deliveryError === "question_incomplete") return t("question.delivery.incomplete");
+	return deliveryError ?? t("question.delivery.unconfirmed");
+}
+
 export function ApprovalQuestionPanel({
 	draftState: [storedDraft, setDraft],
 	questions,
 	onSubmit,
 	onCancel,
+	delivery,
+	deliveryError,
+	onResend,
 }: ApprovalQuestionPanelProps) {
 	const { t } = useT();
 	const commentId = useId();
@@ -393,6 +417,9 @@ export function ApprovalQuestionPanel({
 	};
 
 	const submit = (): void => onSubmit(questionDraftResponse(readLiveDraft(), questions));
+	// While a send awaits omo's question_resolved the draft is locked exactly
+	// as submitted; a failed delivery re-enables it untouched (IS-6).
+	const sending = delivery === "sending";
 	const isLastQuestion = activeIndex >= questions.length - 1;
 	const unanswered = questions.filter((question, index) => {
 		const entry = draft.answers.get(questionKey(question, index));
@@ -444,42 +471,45 @@ export function ApprovalQuestionPanel({
 						{options.length > 0 ? (
 							<>
 								<div className="th-approval-question-options">
-									{options.map((option) => {
-										const label = option.label ?? "";
-										return (
-											<OptionButton
-												key={label}
-												label={label}
-												description={option.description}
-												selected={entry.selected.includes(label)}
-												onToggle={() => toggleOption(index, label)}
-											/>
-										);
-									})}
+								{options.map((option) => {
+									const label = option.label ?? "";
+									return (
+										<OptionButton
+											key={label}
+											label={label}
+											description={option.description}
+											selected={entry.selected.includes(label)}
+											disabled={sending}
+											onToggle={() => toggleOption(index, label)}
+										/>
+									);
+								})}
 								</div>
 
 								{/* The question's own answer box: free text typed here is
 								 * submitted as THIS question's answer alongside any selected
 								 * option - never as the overall comment below. */}
-								<input
-									ref={answerInputRef}
-									type="text"
-									className="th-approval-input th-approval-question-text"
-									placeholder={t("approval.question.answerOptionPlaceholder")}
-									value={entry.text}
-									onChange={(event) => patchDraft(index, { text: event.target.value })}
-								/>
-							</>
-						) : (
 							<input
 								ref={answerInputRef}
 								type="text"
 								className="th-approval-input th-approval-question-text"
-								placeholder={t("approval.question.answerPlaceholder")}
+								placeholder={t("approval.question.answerOptionPlaceholder")}
 								value={entry.text}
+								disabled={sending}
 								onChange={(event) => patchDraft(index, { text: event.target.value })}
 							/>
-						)}
+						</>
+					) : (
+						<input
+							ref={answerInputRef}
+							type="text"
+							className="th-approval-input th-approval-question-text"
+							placeholder={t("approval.question.answerPlaceholder")}
+							value={entry.text}
+							disabled={sending}
+							onChange={(event) => patchDraft(index, { text: event.target.value })}
+						/>
+					)}
 					</div>
 				);
 			})}
@@ -487,38 +517,59 @@ export function ApprovalQuestionPanel({
 				<label className="th-approval-question-comment-label" htmlFor={commentId}>
 					{t("approval.question.commentLabel")}
 				</label>
-				<input
-					id={commentId}
-					type="text"
-					className="th-approval-input th-approval-question-comment"
-					placeholder={t("approval.question.commentPlaceholder")}
-					value={draft.comment}
-					onChange={(event) => setDraft({ ...readLiveDraft(), comment: event.target.value })}
-				/>
+			<input
+				id={commentId}
+				type="text"
+				className="th-approval-input th-approval-question-comment"
+				placeholder={t("approval.question.commentPlaceholder")}
+				value={draft.comment}
+				disabled={sending}
+				onChange={(event) => setDraft({ ...readLiveDraft(), comment: event.target.value })}
+			/>
+		</div>
+		{delivery === "sending" && (
+			<div className="th-question-delivery th-question-delivery--sending" role="status">
+				{t("question.delivery.sending")}
 			</div>
-			<div className="th-approval-question-actions">
-				{unanswered > 0 && (
-					<span className="th-approval-question-unanswered">
-						{t("approval.question.unanswered", { count: unanswered })}
-					</span>
-				)}
-				{isLastQuestion ? (
-					<button type="button" className="th-btn th-btn--primary" onClick={submit}>
-						{t("approval.submit")}
-				</button>
-				) : (
+		)}
+		{delivery === "failed" && (
+			<div className="th-question-delivery th-question-delivery--failed" role="alert">
+				<span className="th-question-delivery-error">{questionDeliveryErrorText(t, deliveryError)}</span>
+				{onResend && (
 					<button
 						type="button"
-						className="th-btn th-btn--primary"
-						onClick={() => setDraft({ ...readLiveDraft(), activeIndex: activeIndex + 1 })}
+						className="th-btn th-question-delivery-resend"
+						onClick={onResend}
 					>
-						{t("approval.question.next")}
+						{t("question.delivery.resend")}
 					</button>
 				)}
-				<button type="button" className="th-btn th-btn--ghost" onClick={onCancel}>
-					{t("approval.cancel")}
-				</button>
 			</div>
+		)}
+		<div className="th-approval-question-actions">
+			{unanswered > 0 && (
+				<span className="th-approval-question-unanswered">
+					{t("approval.question.unanswered", { count: unanswered })}
+				</span>
+			)}
+			{isLastQuestion ? (
+				<button type="button" className="th-btn th-btn--primary" disabled={sending} onClick={submit}>
+					{t("approval.submit")}
+			</button>
+			) : (
+				<button
+					type="button"
+					className="th-btn th-btn--primary"
+					disabled={sending}
+					onClick={() => setDraft({ ...readLiveDraft(), activeIndex: activeIndex + 1 })}
+				>
+					{t("approval.question.next")}
+				</button>
+			)}
+			<button type="button" className="th-btn th-btn--ghost" disabled={sending} onClick={onCancel}>
+				{t("approval.cancel")}
+			</button>
+		</div>
 		</div>
 	);
 }

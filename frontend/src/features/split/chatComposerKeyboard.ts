@@ -20,15 +20,31 @@ interface CommandKeyboardState {
 
 interface RunKeyboardState {
   readonly running: boolean;
+  /** A blocking question waits for its answer: Esc never aborts the run
+   *  (omo keeps the question alive while it is being answered). */
+  readonly blockingQuestion?: boolean;
   readonly onSteer: () => void;
   readonly onStop: () => void;
   readonly onSubmit: () => void;
+  /** Alt+Enter: always send as a normal chat message, even in reply mode
+   *  (omo's followUp key bypasses the question destination). */
+  readonly onSubmitMessage?: () => void;
+}
+
+interface QuestionKeyboardState {
+  /** The digit shortcut only fires on an empty composer (omo
+   *  handleAskUserShortcut). */
+  readonly inputEmpty: boolean;
+  /** Option labels of the shown question's first unanswered question. */
+  readonly options: readonly string[];
+  readonly onPickOption: (optionIndex: number) => void;
 }
 
 interface ChatComposerKeyboardContext {
   readonly file: FileKeyboardState;
   readonly command: CommandKeyboardState;
   readonly run: RunKeyboardState;
+  readonly question?: QuestionKeyboardState;
   /** True on touch-first devices (soft keyboard), where Enter inserts a
    *  newline instead of sending. Not tied to viewport width: a narrow desktop
    *  window still has a physical keyboard. */
@@ -107,9 +123,40 @@ export function handleChatComposerKeyDown(
       return;
     }
   }
-  if (event.key === "Escape" && context.run.running && !context.command.open) {
+  if (event.key === "Escape" && context.run.running && !context.run.blockingQuestion && !context.command.open) {
     event.preventDefault();
     context.run.onStop();
+    return;
+  }
+  // Empty composer + a shown question: 1-9 opens the question window with
+  // that option picked (omo handleAskUserShortcut); the digit never inserts.
+  if (
+    context.question
+    && context.question.inputEmpty
+    && !context.command.open
+    && !context.file.open
+    && /^[1-9]$/.test(event.key)
+    && !event.metaKey
+    && !event.ctrlKey
+    && !event.altKey
+  ) {
+    const optionIndex = Number(event.key) - 1;
+    if (context.question.options[optionIndex] !== undefined) {
+      event.preventDefault();
+      context.question.onPickOption(optionIndex);
+      return;
+    }
+  }
+  if (
+    event.key === "Enter"
+    && event.altKey
+    && !event.shiftKey
+    && !event.metaKey
+    && !event.ctrlKey
+    && context.run.onSubmitMessage
+  ) {
+    event.preventDefault();
+    context.run.onSubmitMessage();
     return;
   }
   if (

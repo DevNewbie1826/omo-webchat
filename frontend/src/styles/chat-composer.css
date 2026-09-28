@@ -499,3 +499,45 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-chat-input::after {
     height: max(0px, calc(env(safe-area-inset-bottom) - max(0px, 100lvh - var(--th-vv-top, 0px) - var(--th-vh-unit, 1vh) * 100) - var(--th-space-4)));
   }
 }
+
+/* Reply mode (omo composerDestination = answer): while the composer targets
+   a shown question, a context strip above the input row names the question
+   and carries the send-as-message toggle. It is a full-width row in the
+   wrapping capsule, like the attachment preview strip. */
+.th-chat-reply-label {
+  flex: 1 1 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  padding: var(--th-space-1) var(--th-space-2) 0;
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-chat-reply-label-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--th-text-dim);
+  font-weight: var(--th-weight-emphasize);
+}
+
+.th-chat-reply-toggle {
+  flex: none;
+}
+
+/* The targeted question ended while the composer still held its draft: the
+   text stays, and this status line says why it no longer answers (IS-8). */
+.th-chat-reply-ended {
+  flex: 1 1 100%;
+  min-width: 0;
+  padding: var(--th-space-1) var(--th-space-2) 0;
+  color: var(--th-warning);
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+}

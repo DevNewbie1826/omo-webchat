@@ -20,6 +20,9 @@ export interface ApprovalRequest {
 	readonly deadlineAtMs?: number;
 	readonly remainingMs?: number;
 	readonly questions?: readonly Question[];
+	/** Delivery confirmation state republished by the server (IS-6). */
+	readonly delivery?: "sending" | "failed";
+	readonly deliveryError?: string;
 }
 
 export interface ApprovalResponse {
@@ -42,6 +45,11 @@ export interface QuestionWindowProps {
 	/** Focus handoff target for every exit: the owning
 	 *  pane's composer. Optional so headless unit mounts stay valid. */
 	readonly focusComposer?: () => void;
+	/** Total pending questions; >1 shows the count and a next control. */
+	readonly pendingCount?: number;
+	readonly onNextQuestion?: () => void;
+	/** Re-send the stored submitted answer after a failed delivery. */
+	readonly onResend?: () => void;
 }
 
 const COUNTDOWN_TICK_MS = 1_000;
@@ -124,6 +132,9 @@ export function QuestionWindow({
 	onCollapse,
 	onRespond,
 	focusComposer,
+	pendingCount,
+	onNextQuestion,
+	onResend,
 }: QuestionWindowProps) {
 	const { t } = useT();
 	const titleId = useId();
@@ -251,6 +262,9 @@ export function QuestionWindow({
 				onRespondRef.current(response);
 			}}
 			onCancel={cancel}
+			{...(request.delivery ? { delivery: request.delivery } : {})}
+			{...(request.deliveryError ? { deliveryError: request.deliveryError } : {})}
+			{...(onResend ? { onResend } : {})}
 		/>
 	);
 
@@ -267,6 +281,22 @@ export function QuestionWindow({
 					<h3 id={titleId} className="th-question-window-title">
 						{request.title ?? t("approval.title")}
 					</h3>
+					{pendingCount !== undefined && pendingCount > 1 && (
+						<span className="th-question-pending">
+							<span className="th-question-pending-count">
+								{t("question.pending.count", { count: pendingCount })}
+							</span>
+							{onNextQuestion && (
+								<button
+									type="button"
+									className="th-btn th-btn--ghost th-question-pending-next"
+									onClick={onNextQuestion}
+								>
+									{t("question.pending.next")}
+								</button>
+							)}
+						</span>
+					)}
 					{countdownSeconds !== undefined && (
 						<span className="th-question-window-countdown">
 							{t("approval.remaining", { seconds: countdownSeconds })}

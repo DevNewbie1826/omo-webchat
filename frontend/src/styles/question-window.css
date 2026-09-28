@@ -153,3 +153,78 @@
   flex: none;
   margin-left: auto;
 }
+
+/* Pending roster (omo pendingOrder): with more than one question waiting,
+   the band and the window head show the count and a control cycling the
+   shown question. Plain micro text, same tier as the band count. */
+.th-question-pending {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--th-space-1);
+  min-width: 0;
+}
+
+.th-question-pending-count {
+  color: var(--th-muted);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-question-pending-next {
+  flex: none;
+}
+
+/* Delivery confirmation (IS-6): while a send awaits omo's resolved signal
+   the surfaces say so; a failed delivery shows the reason and the resend
+   action. Error text truncates inside the band's single-line row. */
+.th-question-delivery {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  min-width: 0;
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-question-delivery--sending {
+  color: var(--th-muted);
+}
+
+.th-question-delivery--failed {
+  color: var(--th-error);
+}
+
+.th-question-delivery-error {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.th-question-delivery-resend {
+  flex: none;
+}
+
+/* The window's delivery row is block chrome above the pinned action row,
+   not an inline fragment of the band: it wraps and keeps the resend action
+   reachable. */
+.th-question-window-body .th-question-delivery {
+  display: flex;
+  flex-wrap: wrap;
+  margin: var(--th-space-2) 0 0;
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+}
+
+/* A question that ended while its delivery was failed (answered or closed
+   elsewhere) leaves one transient status line where the band stood. */
+.th-question-closed-notice {
+  flex: none;
+  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
+  margin: var(--th-space-2) auto;
+  color: var(--th-warning);
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+}

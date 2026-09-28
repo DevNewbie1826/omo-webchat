@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { IconFolder, IconFolderOpen, IconMenu, IconPower, IconSplitH, IconSplitV, IconX } from "../../components/icons";
 import { ModalDialog } from "../../components/ModalDialog";
 import type { ToastKind } from "../../components/SessionTree";
@@ -10,8 +10,9 @@ import type { ChatSessionRef } from "../workspace/workspace";
 import { QuestionNoticeBand } from "./QuestionNoticeBand";
 import { QuestionWindow } from "./QuestionWindow";
 import type { ApprovalRequest, ApprovalResponse } from "./QuestionWindow";
-import { QuestionDraftProvider } from "./ApprovalDockQuestions";
+import { QuestionDraftProvider, questionDraftResponse, useApprovalQuestionDraft } from "./ApprovalDockQuestions";
 import { approvalRequestOf } from "./chatSessionState";
+import { questionKey } from "../../lib/chatWsParseApproval";
 import { ActivityShelf } from "./ActivityShelf";
 import { ChatComposer } from "./ChatComposer";
 import { ExternalWriteBanner } from "./ExternalWriteBanner";
@@ -57,6 +58,12 @@ interface QuestionSurfaceProps {
   readonly onCollapseWindow: () => void;
   readonly onRespond: (response: ApprovalResponse) => void;
   readonly focusComposer: () => void;
+  /** Total pending questions (omo pendingOrder.length); >1 shows the count
+   *  and a next-question control cycling the shown question. */
+  readonly pendingCount?: number;
+  readonly onNextQuestion?: () => void;
+  /** Re-send the stored submitted answer after a failed delivery. */
+  readonly onResend?: () => void;
 }
 
 /** One pending request's two surfaces: the notice band (always, while the
@@ -70,16 +77,28 @@ function QuestionSurface({
   onCollapseWindow,
   onRespond,
   focusComposer,
+  pendingCount,
+  onNextQuestion,
+  onResend,
 }: QuestionSurfaceProps) {
   return (
     <>
-      <QuestionNoticeBand request={request} onOpen={onOpenWindow} />
+      <QuestionNoticeBand
+        request={request}
+        onOpen={onOpenWindow}
+        {...(pendingCount !== undefined ? { pendingCount } : {})}
+        {...(onNextQuestion ? { onNextQuestion } : {})}
+        {...(onResend ? { onResend } : {})}
+      />
       <QuestionWindow
         request={request}
         open={windowOpen}
         onCollapse={onCollapseWindow}
         onRespond={onRespond}
         focusComposer={focusComposer}
+        {...(pendingCount !== undefined ? { pendingCount } : {})}
+        {...(onNextQuestion ? { onNextQuestion } : {})}
+        {...(onResend ? { onResend } : {})}
       />
     </>
   );
@@ -157,7 +176,102 @@ export function ChatPane({
   );
   const questionRequest = questionFrame === null
     ? null
-    : { ...approvalRequestOf({ ...questionFrame, method: "question" }), draftKey: questionFrame.requestId ?? questionFrame.id };
+    : {
+      ...approvalRequestOf({ ...questionFrame, method: "question" }),
+      draftKey: questionFrame.requestId ?? questionFrame.id,
+      ...(questionFrame.delivery ? { delivery: questionFrame.delivery } : {}),
+      ...(questionFrame.deliveryError ? { deliveryError: questionFrame.deliveryError } : {}),
+    };
+  // The question draft is lifted into the pane (the provider below just
+  // re-provides it) so the composer can answer with the current draft and
+  // draft edits can be reported to omo as progress (IS-5).
+  const questionDraftState = useApprovalQuestionDraft(
+    questionFrame?.requestId ?? questionFrame?.id ?? "",
+    questionFrame?.questions ?? [],
+    questionFrame?.delivery === "failed" ? questionFrame.submittedAnswer : undefined,
+  );
+  const questionDraft = questionDraftState[0];
+  const lastProgressRef = useRef("");
+  useEffect(() => {
+    if (!questionFrame) {
+      lastProgressRef.current = "";
+      return;
+    }
+    const response = questionDraftResponse(questionDraft, questionFrame.questions ?? []);
+    const serialized = JSON.stringify(response);
+    if (serialized === lastProgressRef.current) return;
+    lastProgressRef.current = serialized;
+    // An untouched draft carries nothing omo does not already know.
+    if (serialized === '{"answers":{}}') return;
+    chat.reportQuestionProgress(questionFrame.id, response);
+  }, [questionFrame, questionDraft, chat]);
+
+  // A question whose delivery failed and that then ends without a resend was
+  // answered or closed elsewhere: say so instead of vanishing silently.
+  const lastQuestionDeliveryRef = useRef(new Map<string, string>());
+  for (const question of chat.pendingQuestions) {
+    lastQuestionDeliveryRef.current.set(question.id, question.delivery ?? "pending");
+  }
+  const [closedNoticeSeq, setClosedNoticeSeq] = useState(0);
+  const endedSignal = chat.questionEndedSignal;
+  useEffect(() => {
+    if (!endedSignal) return;
+    const delivery = lastQuestionDeliveryRef.current.get(endedSignal.id);
+    lastQuestionDeliveryRef.current.delete(endedSignal.id);
+    if (delivery === "failed") setClosedNoticeSeq(endedSignal.seq);
+  }, [endedSignal]);
+  useEffect(() => {
+    if (closedNoticeSeq === 0) return;
+    const timer = setTimeout(() => setClosedNoticeSeq(0), 8_000);
+    return () => clearTimeout(timer);
+  }, [closedNoticeSeq]);
+
+  // The composer's question destination (omo handleAskUserShortcut): the
+  // shown question's first unanswered question provides the 1-9 options; a
+  // collapsed blocking window forces reply mode.
+  const composerQuestionTarget = useMemo(() => {
+    if (!questionFrame) return null;
+    const questions = questionFrame.questions ?? [];
+    const firstUnansweredIndex = questions.findIndex((question, index) => {
+      const entry = questionDraft.answers.get(questionKey(question, index));
+      return !entry || (entry.selected.length === 0 && entry.text.trim() === "");
+    });
+    const firstUnanswered = firstUnansweredIndex >= 0 ? questions[firstUnansweredIndex] : undefined;
+    const frame = questionFrame;
+    return {
+      id: frame.id,
+      header: questions[0]?.header ?? frame.title ?? "",
+      forceReply: frame.nonBlocking !== true && !questionWindowOpen,
+      options: (firstUnanswered?.options ?? []).map((option) => option.label ?? ""),
+      onAnswer: (comment: string): boolean => {
+        const response = questionDraftResponse(questionDraftState[0], frame.questions ?? []);
+        return chat.respondQuestion(frame.id, { answers: response.answers, comment });
+      },
+      onPickOption: (optionIndex: number): void => {
+        if (firstUnansweredIndex < 0) return;
+        const question = questions[firstUnansweredIndex];
+        const label = question?.options?.[optionIndex]?.label;
+        if (!question || !label) return;
+        const key = questionKey(question, firstUnansweredIndex);
+        const [draft, setDraft] = questionDraftState;
+        const previous = draft.answers.get(key) ?? { selected: [], text: "", completed: false };
+        setDraft({
+          ...draft,
+          activeIndex: firstUnansweredIndex,
+          answering: false,
+          answers: new Map(draft.answers).set(key, {
+            ...previous,
+            invalidated: false,
+            selected: question.multiSelect
+              ? previous.selected.includes(label) ? previous.selected : [...previous.selected, label]
+              : [label],
+            completed: question.multiSelect !== true,
+          }),
+        });
+        setQuestionWindowForId(frame.id);
+      },
+    };
+  }, [questionFrame, questionDraft, questionDraftState, questionWindowOpen, chat]);
   // Notices replay before history, so keep them gated until the monotonic
   // history lifecycle either completes or proves that history is unavailable.
   // Send-path command failures surface in the persistent banner below, so
@@ -456,6 +570,7 @@ export function ChatPane({
         {questionRequest && chat.shownQuestion && (
           <QuestionDraftProvider key={chat.shownQuestion.requestId ?? chat.shownQuestion.id}
             requestId={chat.shownQuestion.requestId ?? chat.shownQuestion.id}
+            draftState={questionDraftState}
             {...(chat.shownQuestion.delivery === "failed" && chat.shownQuestion.submittedAnswer
               ? { submittedAnswer: chat.shownQuestion.submittedAnswer } : {})}>
             <QuestionSurface
@@ -465,13 +580,24 @@ export function ChatPane({
               onCollapseWindow={() => setQuestionWindowForId(null)}
               onRespond={(response) => chat.respondQuestion(chat.shownQuestion?.id ?? "", response)}
               focusComposer={focusComposer}
+              pendingCount={chat.pendingQuestions.length}
+              onNextQuestion={chat.cycleQuestion}
+              onResend={() => chat.resendQuestion(chat.shownQuestion?.id ?? "")}
             />
           </QuestionDraftProvider>
+        )}
+        {closedNoticeSeq !== 0 && (
+          <div className="th-question-closed-notice" role="status">
+            {t("question.delivery.alreadyResolved")}
+          </div>
         )}
         <ChatComposer
           session={chatSession}
           commands={chat.commands}
           running={chat.running}
+          blockingQuestion={chat.blockingQuestionPending}
+          questionTarget={composerQuestionTarget}
+          questionEndedSignal={chat.questionEndedSignal}
           isCompacting={chat.isCompacting}
           disabled={chat.externalWriteDetected}
           retryDraft={chat.retryDraft}

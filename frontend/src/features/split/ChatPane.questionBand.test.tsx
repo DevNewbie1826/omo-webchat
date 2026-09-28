@@ -109,7 +109,10 @@ describe("ChatPane non-blocking question widget", () => {
 		return textarea;
 	}
 
-	it("a normal send does not answer the pending question", () => {
+	it("Alt+Enter sends a normal message that does not answer the pending question", () => {
+		// IS-4: typing into the empty focused composer now routes to the shown
+		// question (reply mode), so the old "a normal send does not answer"
+		// case moves to the explicit message escape — Alt+Enter.
 		const { deliver, sent } = renderWithFakeConnect();
 		act(() => deliver(QUESTION_FRAME));
 		const band = container.querySelector(".th-question-band");
@@ -121,7 +124,7 @@ describe("ChatPane non-blocking question widget", () => {
 		act(() => setTextareaValue(textarea, "just a normal message"));
 		act(() => {
 			textarea.dispatchEvent(
-				new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+				new KeyboardEvent("keydown", { key: "Enter", altKey: true, bubbles: true, cancelable: true }),
 			);
 		});
 

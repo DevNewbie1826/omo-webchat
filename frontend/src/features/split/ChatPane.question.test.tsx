@@ -235,7 +235,10 @@ describe("ChatPane structured question dock panel", () => {
 		expect(container.querySelector(".th-question-band")).not.toBeNull();
 	});
 
-	it("a normal composer send does not answer the pending question", () => {
+	// IS-4: a plain Enter on typed text now answers the shown question (reply
+	// mode), so the "normal send" case moves to the explicit message escape —
+	// Alt+Enter, which always sends a chat message even in reply mode.
+	it("Alt+Enter sends a normal message that does not answer the pending question", () => {
 		const { deliver, sent } = renderWithFakeConnect();
 		act(() => deliver(QUESTION_FRAME));
 		expect(document.querySelector(".th-modal")).not.toBeNull();
@@ -244,7 +247,7 @@ describe("ChatPane structured question dock panel", () => {
 		act(() => setTextareaValue(textarea, "just a normal message"));
 		act(() => {
 			textarea.dispatchEvent(
-				new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+				new KeyboardEvent("keydown", { key: "Enter", altKey: true, bubbles: true, cancelable: true }),
 			);
 		});
 
