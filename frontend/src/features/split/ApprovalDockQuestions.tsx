@@ -69,7 +69,7 @@ function reconcileDraft(draft: QuestionDraft, questions: readonly Question[]): Q
 		? draft : { ...draft, activeIndex, answers, questions, removedQuestions: removed.length ? [...draft.removedQuestions, ...removed] : draft.removedQuestions };
 }
 
-type QuestionDraftState = readonly [QuestionDraft, Dispatch<SetStateAction<QuestionDraft>>];
+type QuestionDraftState = readonly [QuestionDraft, Dispatch<SetStateAction<QuestionDraft>>, ReadonlyMap<string, QuestionDraft>];
 const QuestionDraftContext = createContext<QuestionDraftState | null>(null);
 
 /** How long after a touch gesture a click is treated as the same tap. */
@@ -322,7 +322,7 @@ export function useApprovalQuestionDraft(
 			typeof update === "function" ? update(previous.get(requestId) ?? current) : update));
 	};
 
-	return owned ?? [current, setDraft];
+	return owned ?? [current, setDraft, nextDrafts];
 }
 
 /** The delivery error line for a failed send: known engine/confirm failures

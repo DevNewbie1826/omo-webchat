@@ -245,43 +245,48 @@ export function ChatPane({
   // The composer's question destination (omo handleAskUserShortcut): the
   // shown question's first unanswered question provides the 1-9 options; a
   // collapsed blocking window forces reply mode.
-  const composerQuestionTarget = useMemo(() => {
-    if (!questionFrame) return null;
-    const questions = questionFrame.questions ?? [];
+  const composerQuestionTargets = chat.pendingQuestions.map(frame => {
+    const key = frame.requestId ?? frame.id;
+    const questions = frame.questions ?? [];
+    const draft = key === (questionFrame?.requestId ?? questionFrame?.id)
+      ? questionDraft : questionDraftState[2].get(key);
     const firstUnansweredIndex = questions.findIndex((question, index) => {
-      const entry = questionDraft.answers.get(questionKey(question, index));
+      const entry = draft?.answers.get(questionKey(question, index));
       return !entry || (entry.selected.length === 0 && entry.text.trim() === "");
     });
     const firstUnanswered = firstUnansweredIndex >= 0 ? questions[firstUnansweredIndex] : undefined;
-    const frame = questionFrame;
+    const response = () => {
+      const saved = draft && questionDraftResponse(draft, questions);
+      return frame.delivery === "failed" && frame.submittedAnswer
+        && (!saved || (Object.keys(saved.answers).length === 0 && !saved.comment))
+        ? frame.submittedAnswer : saved ?? { answers: {} };
+    };
     return {
-      key: frame.requestId ?? frame.id,
+      key,
       id: frame.id,
       header: questions[0]?.header ?? frame.title ?? "",
-      forceReply: frame.nonBlocking !== true && !questionWindowOpen,
+      forceReply: frame.nonBlocking !== true && key === (questionFrame?.requestId ?? questionFrame?.id) && !questionWindowOpen,
       options: (firstUnanswered?.options ?? []).map((option) => option.label ?? ""),
       onAnswer: (comment: string): boolean => {
-        const response = questionDraftResponse(questionDraftState[0], frame.questions ?? []);
-        return chat.respondQuestionByKey(frame.requestId ?? frame.id, { answers: response.answers, comment });
+        return chat.respondQuestionByKey(key, { answers: response().answers, comment });
       },
       onProgress: (comment: string): void => {
-        const response = questionDraftResponse(questionDraftState[0], frame.questions ?? []);
-        chat.reportQuestionProgressByKey(frame.requestId ?? frame.id, { answers: response.answers, comment });
+        chat.reportQuestionProgressByKey(key, { answers: response().answers, comment });
       },
-      onCancelProgress: () => chat.cancelQuestionProgressByKey(frame.requestId ?? frame.id),
+      onCancelProgress: () => chat.cancelQuestionProgressByKey(key),
       onPickOption: (optionIndex: number): void => {
-        if (firstUnansweredIndex < 0) return;
+        if (key !== (questionFrame?.requestId ?? questionFrame?.id) || firstUnansweredIndex < 0) return;
         const question = questions[firstUnansweredIndex];
         const label = question?.options?.[optionIndex]?.label;
         if (!question || !label) return;
-        const key = questionKey(question, firstUnansweredIndex);
+        const answerKey = questionKey(question, firstUnansweredIndex);
         const [draft, setDraft] = questionDraftState;
-        const previous = draft.answers.get(key) ?? { selected: [], text: "", completed: false };
+        const previous = draft.answers.get(answerKey) ?? { selected: [], text: "", completed: false };
         setDraft({
           ...draft,
           activeIndex: firstUnansweredIndex,
           answering: false,
-          answers: new Map(draft.answers).set(key, {
+          answers: new Map(draft.answers).set(answerKey, {
             ...previous,
             invalidated: false,
             selected: question.multiSelect
@@ -293,7 +298,9 @@ export function ChatPane({
         setQuestionWindowForId(frame.id);
       },
     };
-  }, [questionFrame, questionDraft, questionDraftState, questionWindowOpen, chat]);
+  });
+  const composerQuestionTarget = composerQuestionTargets.find(target =>
+    target.key === (questionFrame?.requestId ?? questionFrame?.id)) ?? null;
   // Notices replay before history, so keep them gated until the monotonic
   // history lifecycle either completes or proves that history is unavailable.
   // Send-path command failures surface in the persistent banner below, so
@@ -619,7 +626,7 @@ export function ChatPane({
           running={chat.running}
           blockingQuestion={chat.blockingQuestionPending}
           questionTarget={composerQuestionTarget}
-          questionEndedSignal={chat.questionEndedSignal}
+          questionTargets={composerQuestionTargets}
           isCompacting={chat.isCompacting}
           disabled={chat.externalWriteDetected}
           retryDraft={chat.retryDraft}

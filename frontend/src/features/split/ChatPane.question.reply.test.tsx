@@ -337,6 +337,26 @@ describe("ChatPane composer reply mode (omo question parity)", () => {
 		expect(container.querySelector(".th-chat-reply-ended")?.textContent).toBe("question.noLongerPending");
 	});
 
+	it("keeps A's ending when separate resolved frames share one React commit", () => {
+		const { deliver, sent } = render();
+		act(() => {
+			deliver({ ...QUESTION_FRAME, requestId: "req-a" });
+			deliver({ ...QUESTION_FRAME, id: "ask-b", requestId: "req-b" });
+		});
+		const textarea = composer();
+		act(() => setTextareaValue(textarea, "answer for A"));
+		act(() => {
+			deliver({ type: "approval.resolved", sessionId: "chat-1", id: "ask-1", outcome: "answered" });
+			deliver({ type: "approval.resolved", sessionId: "chat-1", id: "ask-b", outcome: "answered" });
+		});
+		expect(container.querySelector(".th-chat-reply-label")).toBeNull();
+		expect(container.querySelector(".th-chat-reply-ended")?.textContent).toBe("question.noLongerPending");
+		expect(textarea.value).toBe("answer for A");
+		act(() => pressKey(textarea, "Enter"));
+		expect(sent.some(frame => frame.type === "chat.send")).toBe(true);
+		expect(sent.some(frame => frame.type === "approval.respond")).toBe(false);
+	});
+
 	it("keeps A's stable reply key when the displayed question cycles and A gets a new wire id", () => {
 		const { deliver, sent } = render();
 		act(() => {
@@ -352,6 +372,43 @@ describe("ChatPane composer reply mode (omo question parity)", () => {
 		expect(sent.find((frame) => frame.type === "approval.respond")).toMatchObject({
 			id: "ask-a-new", comment: "for Alpha",
 		});
+	});
+
+	it("uses the restored answer without another keystroke after a sibling pane's failed send", () => {
+		const { deliver, sent } = render();
+		act(() => deliver(QUESTION_FRAME));
+		const textarea = composer();
+		act(() => setTextareaValue(textarea, "my additional comment"));
+		const submittedAnswer = { answers: { q1: { selected: ["Go"] } } };
+		act(() => deliver({ ...QUESTION_FRAME, delivery: "sending", submittedAnswer }));
+		act(() => deliver({ ...QUESTION_FRAME, delivery: "failed", deliveryError: "unconfirmed", submittedAnswer }));
+		act(() => pressKey(textarea, "Enter"));
+		expect(sent.filter(frame => frame.type === "approval.respond")).toMatchObject([{
+			id: "ask-1",
+			answers: { q1: { selected: ["Go"] } },
+			comment: "my additional comment",
+		}]);
+	});
+
+	it("answers the pinned question with its current draft after the display cycles", () => {
+		const { deliver, sent } = render();
+		act(() => {
+			deliver({ ...QUESTION_FRAME, requestId: "req-a" });
+			deliver({ ...QUESTION_FRAME, id: "ask-b", requestId: "req-b",
+				questions: [{ id: "q1", header: "Beta", question: "Other?" }] });
+		});
+		const textarea = composer();
+		act(() => setTextareaValue(textarea, "for Alpha"));
+		act(() => container.querySelector<HTMLButtonElement>(".th-question-pending-next")?.click());
+		act(() => deliver({ ...QUESTION_FRAME, id: "ask-a-new", requestId: "req-a",
+			delivery: "failed", deliveryError: "unconfirmed",
+			submittedAnswer: { answers: { q1: { selected: ["Go"] } } } }));
+		act(() => pressKey(textarea, "Enter"));
+		expect(sent.filter(frame => frame.type === "approval.respond")).toMatchObject([{
+			id: "ask-a-new",
+			answers: { q1: { selected: ["Go"] } },
+			comment: "for Alpha",
+		}]);
 	});
 
 	it("throttles composer reply edits with current answers and comment, cancelling on send", () => {
