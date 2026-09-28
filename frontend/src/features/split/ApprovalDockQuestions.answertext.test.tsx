@@ -114,6 +114,23 @@ describe("per-question free text under an options question", () => {
 		});
 	});
 
+	it("typing an own answer after picking an option replaces the pick, so the typed text is what gets sent", () => {
+		const onRespond = vi.fn();
+		renderWindow({ ...TWO_OPTIONS_QUESTIONS, questions: [TWO_OPTIONS_QUESTIONS.questions![1]!] }, onRespond);
+		click(option("eu-west"));
+		expect(option("eu-west")?.getAttribute("aria-pressed")).toBe("true");
+		const own = requireElement(document.querySelector<HTMLInputElement>(".th-approval-question-text"), "own answer");
+		type(own, "ap-southeast");
+		expect(option("eu-west")?.getAttribute("aria-pressed")).toBe("false");
+		const submit = Array.from(
+			document.querySelectorAll<HTMLButtonElement>(".th-approval-question-actions button"),
+		).find((button) => button.textContent === "approval.submit");
+		click(submit);
+		expect(onRespond).toHaveBeenCalledWith({
+			answers: { q2: { selected: [], text: "ap-southeast" } },
+		});
+	});
+
 	it.each(["option-first", "text-first"].flatMap(order =>
 		["submit", "next", "tab"].map(action => ({ order, action })),
 	))("preserves deferred IME text in $order order through $action", ({ order, action }) => {
