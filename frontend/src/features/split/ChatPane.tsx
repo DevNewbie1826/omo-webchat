@@ -215,13 +215,23 @@ export function ChatPane({
     lastQuestionDeliveryRef.current.set(question.id, question.delivery ?? "pending");
   }
   const [closedNoticeSeq, setClosedNoticeSeq] = useState(0);
+  const [closedNoticeText, setClosedNoticeText] = useState("question.delivery.alreadyResolved");
   const endedSignal = chat.questionEndedSignal;
   useEffect(() => {
     if (!endedSignal) return;
     for (const ended of endedSignal.ended) {
       const delivery = lastQuestionDeliveryRef.current.get(ended.id);
       lastQuestionDeliveryRef.current.delete(ended.id);
-      if (ended.outcome === "already_resolved" || (ended.outcome === undefined && delivery === "failed")) {
+      if (
+        ended.outcome === "already_resolved" ||
+        ended.outcome === "closed_while_disconnected" ||
+        (delivery === "failed" && ended.outcome !== "answered" && ended.outcome !== "comment-submitted")
+      ) {
+        setClosedNoticeText(
+          ended.outcome === "closed_while_disconnected"
+            ? "question.delivery.closedWhileDisconnected"
+            : "question.delivery.alreadyResolved",
+        );
         setClosedNoticeSeq(endedSignal.seq);
       }
     }
@@ -600,7 +610,7 @@ export function ChatPane({
         )}
         {closedNoticeSeq !== 0 && (
           <div className="th-question-closed-notice" role="status">
-            {t("question.delivery.alreadyResolved")}
+            {t(closedNoticeText)}
           </div>
         )}
         <ChatComposer

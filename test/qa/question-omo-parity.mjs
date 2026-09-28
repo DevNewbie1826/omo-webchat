@@ -515,7 +515,7 @@ scenarios['Q14'] = {
       `() => !!document.querySelector('.th-question-window .th-question-delivery--failed')`);
     await kit.deliverAndWait(resolved('q-other', 'closed_while_disconnected'),
       `() => !!document.querySelector('.th-question-closed-notice')`);
-    assert.ok((await page.locator('.th-question-closed-notice').textContent()).includes(KO.alreadyResolved));
+    assert.ok((await page.locator('.th-question-closed-notice').textContent()).includes(KO.closedWhileDisconnected));
     const resent = fixture.wait('frame', frame => frame.type === 'approval.respond' && frame.id === 'q-b');
     await page.locator('.th-question-window .th-question-delivery-resend').click();
     const resentFrame = await resent;

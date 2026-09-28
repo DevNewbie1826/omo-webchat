@@ -195,6 +195,47 @@ describe("ChatPane structured question dock panel", () => {
 		expect(container.querySelector(".th-question-band")).toBeNull();
 	});
 
+	it("shows the closure notice when a failed question closes while disconnected", () => {
+		const { deliver } = renderWithFakeConnect();
+		act(() => deliver(QUESTION_FRAME));
+		const failedQuestion = { ...QUESTION_FRAME, delivery: "failed" } as const;
+		act(() => deliver(failedQuestion));
+		act(() => deliver({
+			type: "approval.resolved",
+			sessionId: "chat-1",
+			id: "ask-1",
+			outcome: "closed_while_disconnected",
+		}));
+
+		const notice = container.querySelector(".th-question-closed-notice");
+		expect(notice).not.toBeNull();
+		expect(notice?.textContent).toContain("question.delivery.closedWhileDisconnected");
+	});
+
+	it("shows already-resolved notice while own answer outcomes stay silent", () => {
+		const { deliver } = renderWithFakeConnect();
+		vi.useFakeTimers();
+		act(() => deliver(QUESTION_FRAME));
+		vi.advanceTimersByTime(8_001);
+		act(() => deliver({
+			type: "approval.resolved",
+			sessionId: "chat-1",
+			id: "ask-1",
+			outcome: "already_resolved",
+		}));
+		expect(container.querySelector(".th-question-closed-notice")?.textContent)
+			.toContain("question.delivery.alreadyResolved");
+
+		act(() => deliver(QUESTION_FRAME));
+		act(() => deliver({
+			type: "approval.resolved",
+			sessionId: "chat-1",
+			id: "ask-1",
+			outcome: "answered",
+		}));
+		expect(container.querySelector(".th-question-closed-notice")).toBeNull();
+	});
+
 	it("a single-question non-blocking request keeps the one-line band alone, not the window", () => {
 		const { deliver } = renderWithFakeConnect();
 		act(() =>

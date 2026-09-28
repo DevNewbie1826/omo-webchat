@@ -279,7 +279,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const [pendingQuestions, updatePendingQuestions] = useState<readonly ApprovalFrame[]>([]);
   const pendingQuestionsRef = useRef<readonly ApprovalFrame[]>([]);
   const [shownQuestionId, setShownQuestionId] = useState<string | null>(null);
-  const [questionEndedSignal, setQuestionEndedSignal] = useState<QuestionEndedSignal | null>(null);
+  const [questionEndedSignal, updateQuestionEndedSignal] = useState<QuestionEndedSignal | null>(null);
+  const questionEndedSignalRef = useRef<QuestionEndedSignal | null>(null);
   const questionEndSeqRef = useRef(0);
   const setPendingQuestions = (value: Parameters<typeof updatePendingQuestions>[0], outcome?: string): void => {
     const next = typeof value === "function" ? value(pendingQuestionsRef.current) : value;
@@ -291,7 +292,9 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
         ...(outcome ? { outcome } : {}),
       }));
     if (ended.length > 0) {
-      setQuestionEndedSignal({ ended, seq: ++questionEndSeqRef.current });
+      const signal = { ended, seq: ++questionEndSeqRef.current };
+      questionEndedSignalRef.current = signal;
+      updateQuestionEndedSignal(signal);
     }
     pendingQuestionsRef.current = next;
     updatePendingQuestions(next);
