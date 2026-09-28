@@ -129,6 +129,24 @@
   cursor: not-allowed;
 }
 
+/* Send-as-message (blocking question reply mode): the same slot would
+   otherwise render a second identical solid arrow button next to send. The
+   message role gets a ghost outline and its own bubble glyph so the two
+   controls read as distinct actions at every width, icon-only included. */
+.th-chat-input .th-chat-steer-btn--message,
+.th-chat-input .th-chat-steer-btn--message:hover:not(:disabled) {
+  background: transparent;
+  color: var(--th-send);
+  box-shadow: inset 0 0 0 1px var(--th-send);
+}
+
+.th-chat-input .th-chat-steer-btn--message:disabled,
+.th-chat-input .th-chat-steer-btn--message:disabled:hover {
+  background: transparent;
+  color: var(--th-disabled-fg);
+  box-shadow: inset 0 0 0 1px var(--th-disabled-bg);
+}
+
 /* The visible control is the glyph alone; the name stays machine-readable. */
 .th-chat-send-label {
   position: absolute;

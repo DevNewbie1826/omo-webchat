@@ -1,5 +1,5 @@
 import type { ClipboardEventHandler, KeyboardEventHandler, RefObject } from "react";
-import { IconArrowUp, IconX } from "../../components/icons";
+import { IconArrowUp, IconMessage, IconX } from "../../components/icons";
 
 interface ChatComposerEditorProps {
   readonly textareaRef: RefObject<HTMLTextAreaElement>;
@@ -16,6 +16,10 @@ interface ChatComposerEditorProps {
   readonly stopSuppressed?: boolean;
   /** Show the steer/send-as-message control even without a running turn. */
   readonly steerVisible?: boolean;
+  /** "message" marks the send-as-message role beside a blocking question:
+   *  the control must never be mistaken for the primary send button, so it
+   *  gets a distinct icon and ghost treatment at every width. */
+  readonly steerVariant?: "steer" | "message";
   readonly sendLabel: string;
   readonly steerLabel: string;
   /** A run-time steer needs text; an empty draft leaves the action disabled. */
@@ -40,6 +44,7 @@ export function ChatComposerEditor({
   running,
   stopSuppressed = false,
   steerVisible = false,
+  steerVariant = "steer",
   sendLabel,
   steerLabel,
   canSteer,
@@ -80,12 +85,12 @@ export function ChatComposerEditor({
       {(running || steerVisible) && (
         <button
           type="button"
-          className="th-btn th-chat-steer-btn"
+          className={`th-btn th-chat-steer-btn${steerVariant === "message" ? " th-chat-steer-btn--message" : ""}`}
           disabled={disabled || !canSteer}
           title={steerLabel}
           onClick={onSteer}
         >
-          <IconArrowUp size={18} />
+          {steerVariant === "message" ? <IconMessage size={18} /> : <IconArrowUp size={18} />}
           <span className="th-chat-send-label">{steerLabel}</span>
         </button>
       )}

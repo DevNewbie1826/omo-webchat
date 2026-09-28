@@ -391,6 +391,29 @@ describe("ChatPane composer reply mode (omo question parity)", () => {
 			expect(sent.some((frame) => frame.type === "chat.send")).toBe(true);
 			expect(sent.some((frame) => frame.type === "approval.respond")).toBe(false);
 		});
+
+		it("the send-as-message control is visually and nominally distinct from send", () => {
+			renderBlocking();
+			const steer = requireElement(
+				container.querySelector<HTMLButtonElement>(".th-chat-steer-btn"),
+				"steer button",
+			);
+			const send = requireElement(
+				container.querySelector<HTMLButtonElement>(".th-chat-send-btn"),
+				"send button",
+			);
+			// Different accessible names (the visually hidden label is the name).
+			expect(steer.textContent).toContain("question.reply.sendAsMessage");
+			expect(send.textContent).toContain("chat.send");
+			expect(steer.textContent).not.toBe(send.textContent);
+			// Different visible content: a distinct message glyph, not a second
+			// copy of the send arrow, plus the ghost modifier class.
+			expect(steer.classList.contains("th-chat-steer-btn--message")).toBe(true);
+			const steerIcon = steer.querySelector("svg")?.innerHTML;
+			const sendIcon = send.querySelector("svg")?.innerHTML;
+			expect(steerIcon).toBeTruthy();
+			expect(steerIcon).not.toBe(sendIcon);
+		});
 	});
 
 	it("without a pending question Stop and Esc behave as before", () => {

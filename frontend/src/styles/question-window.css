@@ -179,11 +179,14 @@
    the surfaces say so; a failed delivery shows the reason and the resend
    action. Error text truncates inside the band's single-line row. */
 .th-question-delivery {
-  flex: none;
+  /* Shrinkable (unlike the buttons): on narrow bands the error text
+     truncates first so the resend/open actions never overflow the band. */
+  flex: 0 1 auto;
   display: inline-flex;
   align-items: center;
   gap: var(--th-space-2);
   min-width: 0;
+  overflow: hidden;
   letter-spacing: var(--th-type-micro-tracking);
 }
 

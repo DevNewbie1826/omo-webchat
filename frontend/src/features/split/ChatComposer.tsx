@@ -337,6 +337,7 @@ export function ChatComposer({ session, commands, running, blockingQuestion = fa
           running={running}
           stopSuppressed={blockingQuestion}
           steerVisible={blockingQuestion}
+          steerVariant={blockingQuestion ? "message" : "steer"}
           sendLabel={t(running && !blockingQuestion ? "chat.stop" : "chat.send")}
           steerLabel={t(blockingQuestion ? "question.reply.sendAsMessage" : "chat.steer")}
           canSteer={input.trim().length > 0}
