@@ -79,6 +79,11 @@
   padding: var(--th-space-2) var(--th-space-5) var(--th-space-4);
   border-top: 1px solid var(--th-border-overlay);
   background: var(--th-surface-overlay);
+  /* The row sits flush with the modal's bottom edge; round its bottom
+     corners to the panel's inner radius (outer radius minus the 1px
+     border) so the opaque band never squares off the rounded panel. */
+  border-bottom-left-radius: calc(var(--th-radius-xl) - 1px);
+  border-bottom-right-radius: calc(var(--th-radius-xl) - 1px);
 }
 
 /* One-line notice band: the pending request's calm floating chip above the

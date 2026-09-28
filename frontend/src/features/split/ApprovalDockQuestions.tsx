@@ -405,13 +405,17 @@ export function ApprovalQuestionPanel({
 		const key = questionKey(question, index);
 		const liveDraft = readLiveDraft();
 		const previous = liveDraft.answers.get(key) ?? { selected: [], text: "", completed: false };
+		// As in omo (setOwnAnswer): typing an own answer replaces the picked
+		// option. omo reports a picked option ahead of any text, so keeping the
+		// pick would silently drop what the user typed.
+		const typed = patch.text !== undefined && patch.text.trim() !== "";
 		setDraft({
 			...liveDraft,
 			answering: patch.text !== undefined ? true : liveDraft.answering,
 			answers: new Map(liveDraft.answers).set(key, {
 				...previous,
 				invalidated: false,
-				selected: patch.selected ?? previous.selected,
+				selected: typed ? [] : patch.selected ?? previous.selected,
 				text: patch.text ?? previous.text,
 				completed: patch.selected !== undefined && !question.multiSelect,
 				...(patch.text !== undefined ? { textAnswered: false } : {}),

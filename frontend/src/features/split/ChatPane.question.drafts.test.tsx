@@ -44,8 +44,10 @@ describe("request-owned question drafts", () => {
       questions: [{ id: "other", question: "Beta", options: [{ label: "C" }] }] };
     act(() => { deliver(alpha); deliver(beta); });
     ensureWindowOpen();
-    click("A");
+    // Text first, then the pick: typing an own answer clears a pick (omo), so
+    // this order keeps both a selection and text to carry through cycling.
     input(".th-approval-question-text", "retained own answer");
+    click("A");
     input(".th-approval-question-comment", "retained comment");
 
     act(() => requireElement(document.querySelector<HTMLButtonElement>(".th-modal .th-question-pending-next"), "next question").click());
