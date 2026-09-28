@@ -148,6 +148,7 @@ function createSessionState() {
     holdGeneration: 0,
     releaseChunk: undefined,
     approvalSequence: 0,
+    resolvedQuestionIds: new Set(),
     pendingApprovals: new Map(),
     droppedQuestionResponse: false,
     compactGeneration: 0,   // provider compaction request ids ("compact-provider-N")
@@ -593,9 +594,14 @@ function onCommand(S, cmd) {
     case 'extension_ui_response': {
       if (DO_QUESTION) {
         const pending = S.pendingApprovals.get(cmd.id);
+        if (!pending && S.resolvedQuestionIds.has(cmd.id)) {
+          emit(S, { type: 'response', command: 'extension_ui_response', success: false, error: 'question_already_resolved', id: cmd.id });
+          return;
+        }
         if (cmd.cancelled) {
           if (pending) {
             S.pendingApprovals.delete(cmd.id);
+            S.resolvedQuestionIds.add(cmd.id);
             emit(S, { type: 'question_resolved', id: cmd.id, outcome: 'cancelled' });
             pending.resolve({ cancelled: true });
           }
@@ -613,6 +619,7 @@ function onCommand(S, cmd) {
           return;
         }
         S.pendingApprovals.delete(cmd.id);
+        S.resolvedQuestionIds.add(cmd.id);
         const outcome = cmd.comment?.trim() ? 'comment-submitted' : 'answered';
         emit(S, { type: 'question_resolved', id: cmd.id, outcome });
         if (!QUESTION_WAIT) {

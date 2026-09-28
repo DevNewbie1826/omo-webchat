@@ -179,6 +179,33 @@ function runMock(env = {}, args = []) {
 {
   const mock = runMock({ MOCK_PI_APPROVE: '1', MOCK_PI_QUESTION: '1' });
   const asked = mock.waitFor(frame => frame.type === 'extension_ui_request', 'question request');
+  mock.send({ type: 'prompt', id: 'reanswer', message: 'ask' });
+  const request = await asked;
+  const resolved = mock.waitFor(frame => frame.type === 'question_resolved', 'first answer resolution');
+  mock.send({ type: 'extension_ui_response', id: request.id, answers: { q1: { selected: ['Go'] } } });
+  await resolved;
+
+  const fence = mock.waitFor(frame => frame.type === 'response' && frame.command === 'get_state', 're-answer fence');
+  mock.send({ type: 'extension_ui_response', id: request.id, answers: { q1: { selected: ['Go'] } } });
+  mock.send({ type: 'get_state', id: 'reanswer-fence' });
+  await fence;
+  const errors = mock.frames.filter(frame => frame.type === 'response' && frame.command === 'extension_ui_response' && frame.id === request.id);
+  ok(errors.length === 1 && errors[0].success === false && errors[0].error === 'question_already_resolved', 'resolved question re-answer returns question_already_resolved before fence');
+  const reanswerError = mock.frames.findIndex(frame => frame.type === 'response' && frame.command === 'extension_ui_response' && frame.id === request.id);
+  const fenceResponse = mock.frames.findIndex(frame => frame.type === 'response' && frame.command === 'get_state' && frame.id === 'reanswer-fence');
+  ok(reanswerError !== -1 && reanswerError < fenceResponse, 're-answer error frame precedes same-stream fence response');
+
+  const unknownFence = mock.waitFor(frame => frame.type === 'response' && frame.command === 'get_state', 'unknown-id fence');
+  mock.send({ type: 'extension_ui_response', id: 'unknown-question', answers: { q1: { selected: ['Go'] } } });
+  mock.send({ type: 'get_state', id: 'unknown-fence' });
+  await unknownFence;
+  ok(!mock.frames.some(frame => frame.type === 'response' && frame.command === 'extension_ui_response' && frame.id === 'unknown-question'), 'unknown question id keeps silent behaviour');
+  await mock.close();
+}
+
+{
+  const mock = runMock({ MOCK_PI_APPROVE: '1', MOCK_PI_QUESTION: '1' });
+  const asked = mock.waitFor(frame => frame.type === 'extension_ui_request', 'question request');
   mock.send({ type: 'prompt', id: 'throw-path', message: 'ask' });
   const request = await asked;
   const fence = mock.waitFor(frame => frame.command === 'get_state', 'throw-path fence');
