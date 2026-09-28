@@ -18,8 +18,8 @@ const deliver = (raw: unknown) => {
   if (!frame) throw new Error("Invalid test frame");
   act(() => handlers.onFrame(frame));
 };
-const answer = (structured: boolean) => {
-  act(() => expect(structured ? state.respondQuestion({ answers: { choice: { selected: ["Go"] } } }) : state.respondApproval({ cancelled: true })).toBe(true));
+const answer = (structured: boolean, id = state.shownQuestion?.id) => {
+  act(() => expect(structured ? state.respondQuestion(id ?? "", { answers: { choice: { selected: ["Go"] } } }) : state.respondApproval({ cancelled: true })).toBe(true));
   const response = sent.at(-1);
   if (response?.type !== "approval.respond") throw new Error("Missing response");
   return response;
@@ -48,6 +48,8 @@ it.each([false, true])("bounds live restore maps when 30 responses settle, struc
     deliver(structured ? question(`bounded-${index}`) : fallback(`bounded-${index}`));
     latest = answer(structured);
     deliver({ type: "ack", sessionId: session.id, command: "extension_ui_response", id: latest.id, requestId: latest.requestId });
+    // IS-6: the engine resolution, not this ACK, retires a question.
+    if (structured) deliver({ type: "approval.resolved", sessionId: session.id, id: latest.id, outcome: "answered" });
     writes.mock.calls.forEach(([key, value], call) => {
       if (key === latest?.requestId || value === latest?.requestId) {
         const map = writes.mock.contexts[call];
@@ -61,7 +63,7 @@ it.each([false, true])("bounds live restore maps when 30 responses settle, struc
   for (const map of restoreMaps) expect(map.size).toBeLessThanOrEqual(1);
   if (latest?.type !== "approval.respond") throw new Error("Missing latest response");
   reject(latest.requestId);
-  expect((structured ? state.pendingQuestion : state.pendingApproval)?.id).toBe("bounded-29");
+  expect(structured ? state.pendingQuestions : state.pendingApproval?.id).toEqual(structured ? [] : "bounded-29");
 });
 
 it.each([false, true])("restores only the latest request when both sends fail, structured=%s", structured => {
@@ -69,12 +71,13 @@ it.each([false, true])("restores only the latest request when both sends fail, s
   deliver(structured ? question("old") : fallback("old"));
   const old = answer(structured);
   deliver(structured ? question("new") : fallback("new"));
-  const latest = answer(structured);
+  const latest = answer(structured, "new");
   // When the obsolete response fails before the latest response.
   reject(old.requestId); reject(latest.requestId);
   // Then only the latest request is restored and remains answerable.
-  expect((structured ? state.pendingQuestion : state.pendingApproval)?.id).toBe("new");
-  expect(answer(structured).id).toBe("new");
+  // IS-7: two distinct questions coexist; neither other's failure removes it.
+  expect(structured ? state.pendingQuestions.map(item => item.id) : state.pendingApproval?.id).toEqual(structured ? ["old", "new"] : "new");
+  expect(answer(structured, "new").id).toBe("new");
 });
 
 it.each([false, true].flatMap(nonBlocking => [false, true].map(structuredFirst => ({ nonBlocking, structuredFirst }))))(
@@ -84,8 +87,8 @@ it.each([false, true].flatMap(nonBlocking => [false, true].map(structuredFirst =
     // When the same id arrives with a different shape.
     deliver(structuredFirst ? fallback("same", nonBlocking) : question("same", nonBlocking));
     // Then precisely the replacement remains answerable.
-    expect(structuredFirst ? state.pendingQuestion : state.pendingApproval).toBeNull();
-    expect((structuredFirst ? state.pendingApproval : state.pendingQuestion)?.id).toBe("same");
+    expect(structuredFirst ? state.shownQuestion : state.pendingApproval).toBeNull();
+    expect((structuredFirst ? state.pendingApproval : state.shownQuestion)?.id).toBe("same");
     expect(answer(!structuredFirst).id).toBe("same");
   },
 );
@@ -98,7 +101,7 @@ it.each([false, true])("does not restore an obsolete shape after a replacement, 
   // When the obsolete send fails.
   reject(old.requestId);
   // Then the obsolete surface stays retired and the new representation can send.
-  expect(structuredFirst ? state.pendingQuestion : state.pendingApproval).toBeNull();
+  expect(structuredFirst ? state.shownQuestion : state.pendingApproval).toBeNull();
   expect(answer(!structuredFirst).id).toBe("same");
 });
 
@@ -111,7 +114,7 @@ it.each([false, true])("keeps a replacement answerable while its obsolete shape 
   const latest = answer(!structuredFirst);
   reject(old.requestId); reject(latest.requestId);
   // Then only the latest shape returns and can be answered again.
-  expect(structuredFirst ? state.pendingQuestion : state.pendingApproval).toBeNull();
+  expect(structuredFirst ? state.shownQuestion : state.pendingApproval).toBeNull();
   expect(answer(!structuredFirst).id).toBe("same");
 });
 
@@ -120,13 +123,14 @@ it.each([false, true])("preserves latest late-error recovery when an obsolete AC
   deliver(structured ? question("old") : fallback("old"));
   const old = answer(structured);
   deliver(structured ? question("latest") : fallback("latest"));
-  const latest = answer(structured);
+  const latest = answer(structured, "latest");
   deliver({ type: "ack", sessionId: session.id, command: "extension_ui_response", id: latest.id, requestId: latest.requestId });
   // When the obsolete response settles before a late error for the latest.
   deliver({ type: "ack", sessionId: session.id, command: "extension_ui_response", id: old.id, requestId: old.requestId });
   reject(latest.requestId);
   // Then the latest owner remains recoverable.
-  expect((structured ? state.pendingQuestion : state.pendingApproval)?.id).toBe("latest");
+  expect(structured ? state.pendingQuestions.find(item => item.id === "latest")?.delivery : state.pendingApproval?.id)
+    .toBe(structured ? undefined : "latest");
 });
 
 it.each([false, true])("rolls back distinct surfaces independently, structuredFails=%s", structuredFails => {
@@ -136,6 +140,8 @@ it.each([false, true])("rolls back distinct surfaces independently, structuredFa
   // When only one send fails.
   reject((structuredFails ? structured : plain).requestId);
   // Then only that request returns.
-  expect(state.pendingQuestion?.id ?? null).toBe(structuredFails ? "question" : null);
+  // IS-6: even an ACK for the other approval cannot retire a live question.
+  expect(state.shownQuestion?.id).toBe("question");
+  expect(state.shownQuestion?.delivery).toBe(structuredFails ? undefined : "sending");
   expect(state.pendingApproval?.id ?? null).toBe(structuredFails ? null : "fallback");
 });

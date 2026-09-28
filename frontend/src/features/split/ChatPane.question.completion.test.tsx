@@ -72,7 +72,7 @@ it.each([true, false].flatMap(inline => ["selection", "text"].map(kind => ({ inl
 		clickTab("Empty draft");
 		click("approval.submit");
 		expect(sent.filter(frame => frame.type === "approval.respond").map(frame => frame.answers)).toEqual([
-			{ replacement: { selected: ["NEW"] }, last: selection ? { selected: ["B"] } : { text } },
+			{ replacement: { selected: ["NEW"] }, last: selection ? { selected: ["B"] } : { selected: [], text } },
 		]);
 	},
 );

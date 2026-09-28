@@ -187,7 +187,10 @@ describe("ChatPane structured question dock panel", () => {
 			},
 			comment: "ship it",
 		});
-		// The answered request leaves the pane: window and band both go.
+		// IS-6: sending alone cannot remove the question; omo must resolve it.
+		expect(document.querySelector(".th-modal")).not.toBeNull();
+		expect(container.querySelector(".th-question-band")).not.toBeNull();
+		act(() => deliver({ type: "approval.resolved", sessionId: "chat-1", id: "ask-1", outcome: "answered" }));
 		expect(document.querySelector(".th-modal")).toBeNull();
 		expect(container.querySelector(".th-question-band")).toBeNull();
 	});

@@ -87,7 +87,9 @@ describe("question request ownership", () => {
     const multi = { ...question, questions: [{ ...question.questions[0], multiSelect: true }] };
     act(() => deliver(multi)); ensureWindowOpen(); click("Go"); act(() => deliver({ ...multi }));
     expect(button("Go").getAttribute("aria-pressed")).toBe("true");
-    // When a different request replaces it.
+    // IS-7: a different request joins the queue; settle the old one before
+    // asserting that the next request starts with a clean draft.
+    act(() => deliver({ type: "approval.resolved", sessionId: "chat-1", id: multi.id, outcome: "answered" }));
     act(() => deliver({ ...multi, id: "new", questions: [{ id: "new-choice", multiSelect: true, options: [{ label: "Rust" }, { label: "Swift" }] }] }));
     ensureWindowOpen();
     // Then no stale selection can be sent (the panel's Submit is live; only
@@ -104,7 +106,8 @@ describe("question request ownership", () => {
     act(() => deliver(textQuestion)); ensureWindowOpen(); input(".th-approval-question-text", "old draft");
     act(() => deliver({ ...textQuestion }));
     expect(document.querySelector<HTMLInputElement>(".th-approval-question-text")?.value).toBe("old draft");
-    // When the request identity changes.
+    // IS-7: a distinct id is another question, not a replacement of this one.
+    act(() => deliver({ type: "approval.resolved", sessionId: "chat-1", id: textQuestion.id, outcome: "answered" }));
     act(() => deliver({ ...textQuestion, id: "new-text" })); ensureWindowOpen();
     // Then the new request has an empty draft.
     expect(document.querySelector<HTMLInputElement>(".th-approval-question-text")?.value).toBe("");
@@ -140,6 +143,8 @@ describe("question request ownership", () => {
     expect(button("Go").getAttribute("aria-pressed")).toBe("true");
     expect(document.querySelector<HTMLInputElement>(".th-approval-question-comment")?.value).toBe("keep me");
     expect(sent.filter(f => f.type === "approval.respond")).toHaveLength(0);
+    // IS-7: the next question is shown after the current one ends.
+    act(() => deliver({ type: "approval.resolved", sessionId: "chat-1", id: question.id, outcome: "answered" }));
     act(() => deliver({ ...question, id: "new-panel", nonBlocking: false }));
     expect(button("Go").getAttribute("aria-pressed")).toBe("false");
     expect(document.querySelector<HTMLInputElement>(".th-approval-question-comment")?.value).toBe("");

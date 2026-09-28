@@ -58,7 +58,7 @@ describe("request-owned question drafts", () => {
       // Then all answers, including those entered before the hop, use their own keys.
       expect(sent.filter(frame => frame.type === "approval.respond")).toEqual([{
         type: "approval.respond", sessionId: "chat-1", requestId: expect.any(String), id: "moving-draft",
-        answers: { first: { selected: ["A"] }, second: { selected: ["B", "C"] }, notes: { text: "draft notes" } },
+        answers: { first: { selected: ["A"] }, second: { selected: ["B", "C"] }, notes: { selected: [], text: "draft notes" } },
         ...(!surfaces[0] ? { comment: "keep comment" } : {}),
       }]);
     },
@@ -84,6 +84,30 @@ describe("request-owned question drafts", () => {
     expect(document.querySelector('.th-approval-question [role="tab"][aria-selected="true"]')?.textContent).toBe("Notes");
     expect(document.querySelector<HTMLInputElement>(".th-approval-question-text")?.value).toBe("unfinished");
     expect(document.querySelector<HTMLInputElement>(".th-approval-question-comment")?.value).toBe("in progress");
+  });
+
+  it("preserves a local draft across a new dialog id for the same requestId", async () => {
+    const { deliver, sent } = renderChatPane(root);
+    const first = { ...request, id: "dialog-old", requestId: "tool-stable" };
+    await act(async () => deliver(first));
+    click("A"); click("Notes"); input(".th-approval-question-text", "my draft");
+    // When omo reissues the dialog for the same tool request.
+    act(() => deliver({ ...first, id: "dialog-new", delivery: "failed", deliveryError: "unconfirmed",
+      submittedAnswer: { answers: { first: { selected: [] } }, comment: "older submission" } }));
+    // Then the local draft wins and the response targets the current dialog id.
+    expect(document.querySelector<HTMLInputElement>(".th-approval-question-text")?.value).toBe("my draft");
+    click("approval.submit");
+    expect(sent.filter(frame => frame.type === "approval.respond").at(-1)).toMatchObject({
+      id: "dialog-new", answers: { first: { selected: ["A"] }, notes: { selected: [], text: "my draft" } },
+    });
+  });
+
+  it("restores a composer-submitted comment into an empty draft on failed replay", async () => {
+    const { deliver } = renderChatPane(root);
+    await act(async () => deliver({ ...request, id: "replay", requestId: "tool-replay",
+      delivery: "failed", deliveryError: "unconfirmed",
+      submittedAnswer: { answers: {}, comment: "from composer" } }));
+    expect(document.querySelector<HTMLInputElement>(".th-approval-question-comment")?.value).toBe("from composer");
   });
 
   const clickTab = (index: number) => act(() => {
@@ -119,6 +143,11 @@ describe("request-owned question drafts", () => {
     // When identity changes, or the old request settles and is delivered anew.
     if (action === "settle") {
       act(() => deliver({ ...request, nonBlocking: false })); click("approval.cancel");
+      // IS-6: only engine resolution ends this draft's lifetime, not Send.
+      act(() => deliver({ type: "approval.resolved", sessionId: "chat-1", id: request.id, outcome: "cancelled" }));
+    } else {
+      // IS-7: a new id queues behind the old question until that one resolves.
+      act(() => deliver({ type: "approval.resolved", sessionId: "chat-1", id: request.id, outcome: "answered" }));
     }
     act(() => deliver({ ...request, id: action === "replace" ? "new-draft" : request.id, nonBlocking: false }));
     // Then the new lifetime has no answers, comment, active-tab offset, or text.

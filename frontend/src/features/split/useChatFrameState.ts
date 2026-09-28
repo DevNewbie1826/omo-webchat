@@ -271,7 +271,38 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const [commands, setCommands] = useState<readonly CommandEntry[]>([]);
   const [models, setModels] = useState<readonly { readonly provider: string; readonly modelId: string; readonly name?: string; readonly input?: readonly string[] }[]>([]);
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | null>(null);
-  const [pendingQuestion, setPendingQuestion] = useState<ApprovalFrame | null>(null);
+  const [pendingQuestions, updatePendingQuestions] = useState<readonly ApprovalFrame[]>([]);
+  const pendingQuestionsRef = useRef<readonly ApprovalFrame[]>([]);
+  const [shownQuestionId, setShownQuestionId] = useState<string | null>(null);
+  const [questionEndedSignal, setQuestionEndedSignal] = useState<{ readonly id: string; readonly seq: number } | null>(null);
+  const questionEndSeqRef = useRef(0);
+  const setPendingQuestions: typeof updatePendingQuestions = (value) => {
+    const next = typeof value === "function" ? value(pendingQuestionsRef.current) : value;
+    for (const previous of pendingQuestionsRef.current) {
+      if (!next.some(question => (question.requestId ?? question.id) === (previous.requestId ?? previous.id))) {
+        setQuestionEndedSignal({ id: previous.id, seq: ++questionEndSeqRef.current });
+      }
+    }
+    pendingQuestionsRef.current = next;
+    updatePendingQuestions(next);
+    setShownQuestionId(current => current !== null && next.some(question => (question.requestId ?? question.id) === current)
+      ? current : next[0]?.requestId ?? next[0]?.id ?? null);
+  };
+  const cycleQuestion = (): void => {
+    const index = pendingQuestionsRef.current.findIndex(question => (question.requestId ?? question.id) === shownQuestionId);
+    const next = pendingQuestionsRef.current[(index + 1) % pendingQuestionsRef.current.length];
+    if (next) setShownQuestionId(next.requestId ?? next.id);
+  };
+  const markQuestionSending = (id: string): void => {
+    setPendingQuestions(current => current.map(question => {
+      if (question.id !== id) return question;
+      const { deliveryError: _error, ...rest } = question;
+      return { ...rest, delivery: "sending" };
+    }));
+  };
+  const restoreQuestion = (id: string, previous: ApprovalFrame): void => {
+    setPendingQuestions(current => current.map(question => question.id === id && question.delivery === "sending" ? previous : question));
+  };
   const [restoreVersion, setRestoreVersion] = useState(0);
   const [retryDraft, setRetryDraft] = useState<RecoveredChatDraft | null>(null);
   const [sendError, setSendError] = useState<JsonObject | null>(null);
@@ -750,7 +781,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     setCommands,
     setModels,
     setPendingApproval,
-    setPendingQuestion,
+    setPendingQuestions,
     setRestoreVersion,
     setSendError,
     pushNotice,
@@ -1018,7 +1049,11 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     models,
     currentModelKey: controls.currentModelKey,
     pendingApproval,
-    pendingQuestion,
+    pendingQuestions,
+    shownQuestion: pendingQuestions.find(question => (question.requestId ?? question.id) === shownQuestionId) ?? pendingQuestions[0] ?? null,
+    cycleQuestion,
+    questionEndedSignal,
+    blockingQuestionPending: pendingQuestions.some(question => question.nonBlocking !== true),
     restoreVersion,
     retryDraft,
     failedDrafts,
@@ -1054,7 +1089,10 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     setThinkingLevel: controls.setThinkingLevel,
     setCurrentModelKey: controls.setCurrentModelKey,
     setPendingApproval,
-    setPendingQuestion,
+    setPendingQuestions,
+    getPendingQuestions: () => pendingQuestionsRef.current,
+    markQuestionSending,
+    restoreQuestion,
     reportError: applyError,
     reportParseError,
     beginExternalWriteRecovery,

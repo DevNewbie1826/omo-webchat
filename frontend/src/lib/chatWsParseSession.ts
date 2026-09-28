@@ -16,7 +16,7 @@ import {
   sanitizeJson,
 } from "./chatWsParseFields";
 
-type SessionFrameType = "state" | "stats" | "extensionEvent" | "sessions.activity" | "approval" | "commands" | "models" | "entries" | "chat.goal" | "queue";
+type SessionFrameType = "state" | "stats" | "extensionEvent" | "sessions.activity" | "approval" | "questions.snapshot" | "commands" | "models" | "entries" | "chat.goal" | "queue";
 
 function parseQueueItem(record: Record<string, unknown>): QueueItem | null {
   const id = reqString(record, "id");
@@ -202,6 +202,12 @@ export function parseSessionFrame(
     case "approval": {
       if (sessionId === null) return null;
       return parseApprovalFrame(msg, sessionId);
+    }
+    case "questions.snapshot": {
+      if (sessionId === null) return null;
+      const ids = msg["ids"];
+      if (!Array.isArray(ids) || !ids.every((id: unknown) => typeof id === "string")) return null;
+      return { type, sessionId, ids };
     }
     case "commands": {
       if (sessionId === null) return null;

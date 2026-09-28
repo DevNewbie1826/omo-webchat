@@ -148,7 +148,7 @@ describe("ChatPane non-blocking question widget", () => {
 		expect(document.querySelector(".th-modal")?.textContent).toContain("Which stack?");
 	});
 
-	it("answering through the band-opened window sends the structured answer and dismisses it", () => {
+	it("keeps the answer pending until omo resolves it after submission (IS-6)", () => {
 		const { deliver, sent } = renderWithFakeConnect();
 		act(() => deliver(QUESTION_FRAME));
 		expect(container.querySelector(".th-question-band")).not.toBeNull();
@@ -180,11 +180,14 @@ describe("ChatPane non-blocking question widget", () => {
 			id: "ask-1",
 			answers: { q1: { selected: ["Go"] } },
 		});
+		expect(container.querySelector(".th-question-band")).not.toBeNull();
+		expect(document.querySelector(".th-modal")).not.toBeNull();
+		act(() => deliver({ type: "approval.resolved", sessionId: "chat-1", id: "ask-1", outcome: "answered" }));
 		expect(container.querySelector(".th-question-band")).toBeNull();
 		expect(document.querySelector(".th-modal")).toBeNull();
 	});
 
-	it("a rejected response restores the question to its band without reopening the window", () => {
+	it("a rejected response restores the pending question without losing its draft (IS-6)", () => {
 		const { deliver, sent } = renderWithFakeConnect();
 		act(() => deliver(QUESTION_FRAME));
 		// Non-blocking arrival: band only, no auto-opened window.
@@ -217,9 +220,9 @@ describe("ChatPane non-blocking question widget", () => {
 			id: "ask-1",
 			answers: { q1: { selected: ["Go"] } },
 		});
-		// The optimistic removal dismisses both band and window.
-		expect(container.querySelector(".th-question-band")).toBeNull();
-		expect(document.querySelector(".th-modal")).toBeNull();
+		// IS-6: the question remains visible while the write is unconfirmed.
+		expect(container.querySelector(".th-question-band")).not.toBeNull();
+		expect(document.querySelector(".th-modal")).not.toBeNull();
 		// The server rejects the response: an error carrying the response's
 		// requestId and the extension_ui_response command rolls the request
 		// back (the same non-blocking id is pending again).
@@ -237,14 +240,10 @@ describe("ChatPane non-blocking question widget", () => {
 				message: "rejected",
 			});
 		});
-		// The restored non-blocking question stays in its notice band; no dialog
-		// opens and no tab takes focus without a second explicit Open gesture —
-		// the same contract as the initial arrival.
+		// The already-open window retains its answer across a failed write.
 		expect(container.querySelector(".th-question-band")).not.toBeNull();
-		expect(document.querySelector(".th-modal")).toBeNull();
-		expect(document.activeElement).not.toBe(
-			document.querySelector(".th-approval-question-tab"),
-		);
+		expect(document.querySelector(".th-modal")).not.toBeNull();
+		expect(option?.getAttribute("aria-pressed")).toBe("true");
 	});
 
 	it("a request without the non-blocking flag auto-opens the window (blocking presentation)", () => {

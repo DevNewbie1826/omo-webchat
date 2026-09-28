@@ -149,7 +149,7 @@ export function ChatPane({
     approvalId,
     approvalId === null ? "preserve" : "open",
   );
-  const questionFrame = chat.pendingQuestion;
+  const questionFrame = chat.shownQuestion;
   const questionId = questionFrame?.id ?? null;
   const [questionWindowOpen, setQuestionWindowForId] = useRequestWindow(
     questionId,
@@ -157,7 +157,7 @@ export function ChatPane({
   );
   const questionRequest = questionFrame === null
     ? null
-    : approvalRequestOf({ ...questionFrame, method: "question" });
+    : { ...approvalRequestOf({ ...questionFrame, method: "question" }), draftKey: questionFrame.requestId ?? questionFrame.id };
   // Notices replay before history, so keep them gated until the monotonic
   // history lifecycle either completes or proves that history is unavailable.
   // Send-path command failures surface in the persistent banner below, so
@@ -453,14 +453,17 @@ export function ChatPane({
            and sends one structured response keyed by question id. The draft
            provider stays mounted across window collapse/reopen so typed
            answers never reset. */}
-        {questionRequest && chat.pendingQuestion && (
-          <QuestionDraftProvider key={chat.pendingQuestion.id} requestId={chat.pendingQuestion.id}>
+        {questionRequest && chat.shownQuestion && (
+          <QuestionDraftProvider key={chat.shownQuestion.requestId ?? chat.shownQuestion.id}
+            requestId={chat.shownQuestion.requestId ?? chat.shownQuestion.id}
+            {...(chat.shownQuestion.delivery === "failed" && chat.shownQuestion.submittedAnswer
+              ? { submittedAnswer: chat.shownQuestion.submittedAnswer } : {})}>
             <QuestionSurface
               request={questionRequest}
               windowOpen={questionWindowOpen}
-              onOpenWindow={() => setQuestionWindowForId(chat.pendingQuestion?.id ?? null)}
+              onOpenWindow={() => setQuestionWindowForId(chat.shownQuestion?.id ?? null)}
               onCollapseWindow={() => setQuestionWindowForId(null)}
-              onRespond={chat.respondQuestion}
+              onRespond={(response) => chat.respondQuestion(chat.shownQuestion?.id ?? "", response)}
               focusComposer={focusComposer}
             />
           </QuestionDraftProvider>

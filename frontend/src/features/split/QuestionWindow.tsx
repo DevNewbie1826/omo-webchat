@@ -10,6 +10,7 @@ import { ApprovalQuestionPanel, useApprovalQuestionDraft } from "./ApprovalDockQ
  *  (chatSessionState.approvalRequestOf keeps defined fields only). */
 export interface ApprovalRequest {
 	readonly id: string;
+	readonly draftKey?: string;
 	readonly method: "select" | "confirm" | "input" | "editor" | "question" | "fallback";
 	readonly title?: string;
 	readonly message?: string;
@@ -128,7 +129,8 @@ export function QuestionWindow({
 	const titleId = useId();
 	const contentRef = useRef<HTMLDivElement>(null);
 	const [text, setText] = useState(request.prefill ?? "");
-	const questionDraft = useApprovalQuestionDraft(request.id);
+	const draftKey = request.draftKey ?? request.id;
+	const questionDraft = useApprovalQuestionDraft(draftKey);
 	const countdownSeconds = useApprovalDeadlineCountdown(request);
 	// True from the moment a respond callback fires until the unmount cleanup
 	// consumes it: an exit the WINDOW initiated hands focus to the composer
@@ -176,10 +178,10 @@ export function QuestionWindow({
 		// A same-id mount after this instance's unmount is a remount, not an
 		// exit: cancel any handoff a previous unmount of this request deferred.
 		const cancelPending = (): void => {
-			const timer = pendingFocusHandoffs.get(request.id);
+			const timer = pendingFocusHandoffs.get(draftKey);
 			if (timer !== undefined) {
 				clearTimeout(timer);
-				pendingFocusHandoffs.delete(request.id);
+				pendingFocusHandoffs.delete(draftKey);
 			}
 		};
 		cancelPending();
@@ -207,7 +209,7 @@ export function QuestionWindow({
 			// No local exit — an external resolution would still deserve the
 			// composer, but a remount must not steal focus. Defer by one task:
 			// a same-id mount (same commit or later tick) cancels it.
-			const id = request.id;
+			const id = draftKey;
 			const stale = pendingFocusHandoffs.get(id);
 			if (stale !== undefined) clearTimeout(stale);
 			const timer = setTimeout(() => {
@@ -220,9 +222,8 @@ export function QuestionWindow({
 			}, 0);
 			pendingFocusHandoffs.set(id, timer);
 		};
-		// request.id is read through the closure; the effect runs once per
-		// mount and the latest id is what a remount cancels against.
-	}, [request.id]);
+		// A reissued dialog id for the same tool request is not a window exit.
+	}, [draftKey]);
 
 	const submitValue = (value: string): void => {
 		exitedRef.current = true;
