@@ -10,6 +10,7 @@ import { getChatActivity } from "./activityHistory";
 import { getChatGoal, type ChatGoal } from "./goalState";
 import { COMPACT_COMMAND, isCuratedCompact, isCuratedReload, RELOAD_COMMAND } from "./curatedCommands";
 import { useChatFrameState } from "./useChatFrameState";
+import { useOlderHistory } from "./useOlderHistory";
 import { bindAttachedBadgeSource, ingestExtensionEvent, releaseAttachedBadgeSource } from "../workspace/liveBadgeStore";
 
 export function useChatSession(
@@ -45,6 +46,7 @@ export function useChatSession(
   markCloseRef.current = frameState.markClose;
   const nextRequestId = (): string => `req-${session.id}-${++requestSeqRef.current}`;
   const nextSendRequestId = (): string => newUuid();
+  const olderHistory = useOlderHistory(session, frameState, () => recreateHistory());
 
   useEffect(() => {
     let opened = false;
@@ -363,7 +365,7 @@ export function useChatSession(
   // down a live turn — and the busy marker ends at the ready or terminal
   // entries frame, or on a terminal history error.
   const resync = (): boolean => {
-    if (frameState.resyncDisabled) return false;
+    if (!frameState.canRecreateHistory()) return false;
     if (frameState.running) {
       frameState.reportError(t("chat.resyncBusyResponding"));
       return false;
@@ -372,6 +374,13 @@ export function useChatSession(
       frameState.reportError(t("chat.resyncBusyCompacting"));
       return false;
     }
+    return recreateHistory();
+  };
+
+  // History retries and stale-page recovery re-create this socket binding;
+  // they do not abort the provider's run.
+  const recreateHistory = (): boolean => {
+    if (!frameState.canRecreateHistory()) return false;
     frameState.beginResync();
     releaseBadgeSourceRef.current();
     if (!sendControl({ type: "chat.close", sessionId: session.id }, t("chat.resyncError"))) {
@@ -383,6 +392,10 @@ export function useChatSession(
       return false;
     }
     return true;
+  };
+  const retryHistory = (): void => {
+    if (frameState.messages.length === 0) recreateHistory();
+    else resync();
   };
 
   const changeThinkingLevel = (level: string): boolean => {
@@ -482,6 +495,10 @@ export function useChatSession(
     historyLoaded: frameState.historyLoaded,
     historyStatus: frameState.historyStatus,
     historyWarming: frameState.historyWarming,
+    historyRootKnown: frameState.historyRootKnown,
+    historyFailedEmpty: frameState.historyFailedEmpty,
+    olderHistory,
+    retryHistory,
     connected: frameState.connected,
     recovery: frameState.recovery,
     commands: frameState.commands,

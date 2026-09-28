@@ -264,7 +264,7 @@ export function parseSessionFrame(
       const segment = optString(msg, "segment");
       const historyComplete = optBoolean(msg, "historyComplete");
       if (final === null || segment === null || historyComplete === null) return null;
-      if (segment !== undefined && segment !== "head") return null;
+      if (segment !== undefined && segment !== "head" && segment !== "preview") return null;
       return {
         type: "entries",
         sessionId,

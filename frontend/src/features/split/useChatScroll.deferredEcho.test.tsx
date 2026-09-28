@@ -3,21 +3,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useChatScroll, type ChatScrollState } from "./useChatScroll";
 
-// Restore clears grace today. Inject the ambiguous residual-grace state without
-// delivering post-attach physical input or mocking the attribution/scroll logic.
-const grace = vi.hoisted(() => ({ ref: null as { current: number } | null }));
-vi.mock("react", async (importOriginal) => {
-  const react = await importOriginal<typeof import("react")>();
-  return {
-    ...react,
-    useRef: <T,>(initial: T) => {
-      const ref = react.useRef(initial);
-      if (initial === -Infinity) grace.ref = ref as { current: number };
-      return ref;
-    },
-  };
-});
-
 let container: HTMLDivElement;
 let root: Root;
 let state: ChatScrollState;
@@ -25,8 +10,8 @@ let body: HTMLDivElement;
 let height: number;
 let notifyResize: () => void;
 
-function Harness({ restoreVersion = 0, historyWarming = true }: { restoreVersion?: number; historyWarming?: boolean }) {
-  state = useChatScroll(restoreVersion, false, undefined, historyWarming);
+function Harness({ restoreVersion = 0 }: { restoreVersion?: number }) {
+  state = useChatScroll(restoreVersion, false, undefined);
   return <div ref={state.scrollRef} onScroll={state.onScroll}>
     <div ref={state.contentRef} />
     {state.showScrollToBottom && <button onClick={() => state.scrollToBottom()}>jump</button>}
@@ -83,28 +68,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it("T1: keeps follow after an unowned deferred echo above the bottom", () => {
-  expect(state.isRecentProgrammaticWrite(9000)).toBe(false);
-  scrollTo(9000, 116);
-  expect.soft(state.isFollowing()).toBe(true);
-  expect.soft(container.querySelector("button")).toBeNull();
-  expect.soft(state.isReaderInputActive()).toBe(false);
-  height += 1000;
-  act(() => notifyResize());
-  expect(body.scrollTop).toBe(11600);
-});
-
-it("T2: two unowned deferred echoes cannot acquire reader ownership", () => {
-  for (const [top, now] of [[9000, 116], [8800, 132]] as const) {
-    expect(state.isRecentProgrammaticWrite(top)).toBe(false);
-    scrollTo(top, now);
-    expect.soft(state.isFollowing()).toBe(true);
-    expect.soft(container.querySelector("button")).toBeNull();
-    expect.soft(state.isReaderInputActive()).toBe(false);
-  }
-});
-
-it("T4: reader momentum releases follow after physical grace expires", () => {
+it("reader momentum renews grace, then expires it and releases follow", () => {
   scrollTo(10600, 100);
   act(() => {
     body.dispatchEvent(new TouchEvent("touchstart"));
@@ -127,106 +91,7 @@ it("T4: reader momentum releases follow after physical grace expires", () => {
   expect(body.scrollTop).toBe(10550);
 });
 
-it("T5: a whole unowned motion chain never releases follow", () => {
-  for (const [top, now] of [[9000, 116], [8800, 200], [8600, 350], [8400, 501], [8200, 700]] as const) {
-    scrollTo(top, now);
-    expect(state.isReaderInputActive()).toBe(false);
-    expect(state.isFollowing()).toBe(true);
-    expect(container.querySelector("button")).toBeNull();
-  }
-  height += 1000;
-  act(() => notifyResize());
-  expect(body.scrollTop).toBe(11600);
-});
-
-it("T9: after warming, unattributed navigation releases follow without engagement", () => {
-  act(() => root.render(<Harness historyWarming={false} />));
-  expect(state.isReaderInputActive()).toBe(false);
-  expect(state.isRecentProgrammaticWrite(9000)).toBe(false);
-  scrollTo(9000, 116);
-  expect.soft(state.isFollowing()).toBe(false);
-  expect.soft(container.querySelector("button")).not.toBeNull();
-  height += 1000;
-  act(() => notifyResize());
-  expect(body.scrollTop).toBe(9000);
-});
-
-it("T10: warming protects the same unattributed navigation", () => {
-  scrollTo(9000, 116);
-  expect(state.isReaderInputActive()).toBe(false);
-  expect(state.isFollowing()).toBe(true);
-  expect(container.querySelector("button")).toBeNull();
-  height += 1000;
-  act(() => notifyResize());
-  expect(body.scrollTop).toBe(11600);
-});
-
-it("T11: engagement unlocks during warming and a fresh attach re-arms", () => {
-  act(() => body.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp" })));
-  scrollTo(9000, 116);
-  expect(state.isFollowing()).toBe(false);
-  expect(container.querySelector("button")).not.toBeNull();
-  act(() => root.render(<Harness historyWarming={false} />));
-  act(() => root.render(<Harness restoreVersion={1} historyWarming />));
-  scrollTo(8800, 132);
-  expect(state.isReaderInputActive()).toBe(false);
-  expect(state.isFollowing()).toBe(true);
-  expect(container.querySelector("button")).toBeNull();
-  height += 1000;
-  act(() => notifyResize());
-  expect(body.scrollTop).toBe(11600);
-});
-
-function injectResidualGrace(): void {
-  if (!grace.ref) throw new Error("missing reader grace ref");
-  grace.ref.current = performance.now();
-  expect(state.isReaderInputActive()).toBe(true);
-}
-
-it("T6: attach lock keeps follow despite residual physical grace and deferred echoes", () => {
-  act(() => body.dispatchEvent(new TouchEvent("touchstart")));
-  act(() => root.render(<Harness restoreVersion={1} />));
-  injectResidualGrace();
-  expect(state.isRecentProgrammaticWrite(9000)).toBe(false);
-  scrollTo(9000, 116);
-  expect.soft(state.isFollowing()).toBe(true);
-  expect.soft(container.querySelector("button")).toBeNull();
-  height += 1000;
-  act(() => notifyResize());
-  expect(body.scrollTop).toBe(11600);
-});
-
-it("T7: post-attach wheel engagement releases follow on reader scroll-up", () => {
-  act(() => root.render(<Harness restoreVersion={1} />));
-  act(() => body.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
-  scrollTo(9000, 116);
-  expect(state.isFollowing()).toBe(false);
-  expect(container.querySelector("button")).not.toBeNull();
-  height += 1000;
-  act(() => notifyResize());
-  expect(body.scrollTop).toBe(9000);
-});
-
-it("T8: another restore re-arms the lock after reader engagement", () => {
-  act(() => root.render(<Harness restoreVersion={1} />));
-  act(() => body.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
-  scrollTo(9000, 116);
-  expect(state.isFollowing()).toBe(false);
-  expect(container.querySelector("button")).not.toBeNull();
-  act(() => root.render(<Harness restoreVersion={2} />));
-  expect(body.scrollTop).toBe(10600);
-  expect(state.isFollowing()).toBe(true);
-  expect(container.querySelector("button")).toBeNull();
-  injectResidualGrace();
-  scrollTo(8800, 132);
-  expect.soft(state.isFollowing()).toBe(true);
-  expect.soft(container.querySelector("button")).toBeNull();
-  height += 1000;
-  act(() => notifyResize());
-  expect(body.scrollTop).toBe(11600);
-});
-
-it("T3: active pointer scroll-up still revokes follow and exposes the jump control", () => {
+it("active pointer scroll-up still revokes follow and exposes the jump control", () => {
   act(() => body.dispatchEvent(new PointerEvent("pointerdown", {
     pointerId: 1, pointerType: "touch", buttons: 1, bubbles: true,
   })));
@@ -239,4 +104,27 @@ it("T3: active pointer scroll-up still revokes follow and exposes the jump contr
   height += 1000;
   act(() => notifyResize());
   expect(body.scrollTop).toBe(8800);
+});
+
+it("post-restore wheel engagement releases follow on reader scroll-up", () => {
+  act(() => root.render(<Harness restoreVersion={1} />));
+  act(() => body.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
+  scrollTo(9000, 116);
+  expect(state.isFollowing()).toBe(false);
+  expect(container.querySelector("button")).not.toBeNull();
+  height += 1000;
+  act(() => notifyResize());
+  expect(body.scrollTop).toBe(9000);
+});
+
+it("unattributed navigation releases follow without engagement", () => {
+  act(() => root.render(<Harness />));
+  expect(state.isReaderInputActive()).toBe(false);
+  expect(state.isRecentProgrammaticWrite(9000)).toBe(false);
+  scrollTo(9000, 116);
+  expect.soft(state.isFollowing()).toBe(false);
+  expect.soft(container.querySelector("button")).not.toBeNull();
+  height += 1000;
+  act(() => notifyResize());
+  expect(body.scrollTop).toBe(9000);
 });

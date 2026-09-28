@@ -500,7 +500,9 @@ func TestHistoryReplayPriorityObserverRejectsOvertakeAndInvalidStreams(t *testin
 }
 
 func TestHistoryHybridReplayThroughWebSocketMergesDaemonTailExactlyOnce(t *testing.T) {
-	h := newHistoryBridgeHarness(t, historyE2ETestBudget*2/3)
+	// This 10 MiB replay uses the production history budget, including under
+	// race instrumentation; the shorter timeout is tested separately below.
+	h := newHistoryBridgeHarness(t, session.DefaultHistoryTimeout)
 	path, diskLeaf, expected := seedLargeHybridHistory(t, h)
 	h.saveChat(t, "large-history", path)
 	epoch, _ := h.client.CurrentEpoch()
@@ -509,7 +511,7 @@ func TestHistoryHybridReplayThroughWebSocketMergesDaemonTailExactlyOnce(t *testi
 	releaseTail := h.daemon.BlockHandlerForPath(omorpc.CmdGetEntries, path)
 	defer releaseTail()
 	conn, frames := h.connect(t, 1024)
-	deadline := time.Now().Add(historyE2ETestBudget)
+	deadline := time.Now().Add(session.DefaultHistoryTimeout)
 	writeClient(t, conn, map[string]any{
 		"type": "chat.create", "wsId": h.workspace.ID, "chatId": "large-history",
 	})
@@ -574,11 +576,11 @@ func TestHistoryHybridReplayThroughWebSocketMergesDaemonTailExactlyOnce(t *testi
 }
 
 func TestHistoryHybridSecondSocketReplayAndLateControlOutcome(t *testing.T) {
-	h := newHistoryBridgeHarness(t, historyE2ETestBudget*2/3)
+	h := newHistoryBridgeHarness(t, session.DefaultHistoryTimeout)
 	path, diskLeaf, expected := seedLargeHybridHistory(t, h)
 	h.saveChat(t, "combined-history", path)
 	epoch, _ := h.client.CurrentEpoch()
-	deadline := time.Now().Add(historyE2ETestBudget)
+	deadline := time.Now().Add(session.DefaultHistoryTimeout)
 
 	firstConn, firstFrames := h.connect(t, 0)
 	writeClient(t, firstConn, map[string]any{

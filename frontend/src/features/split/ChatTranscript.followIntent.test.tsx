@@ -380,7 +380,7 @@ describe("reader ownership provenance and contacts", () => {
   let height: number;
   let notifyResize: () => void;
   function Harness({ focused = false, disclosure = false }: { focused?: boolean; disclosure?: boolean }) {
-    state = useChatScroll(0, focused, undefined, false);
+    state = useChatScroll(0, focused, undefined);
     return <div ref={state.scrollRef} onScroll={state.onScroll}>
       <div ref={state.contentRef} />
       {disclosure && <button aria-label="disclosure" onClick={state.holdDisclosurePosition}>disclosure</button>}

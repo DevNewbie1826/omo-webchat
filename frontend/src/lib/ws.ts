@@ -12,6 +12,9 @@
  * Carried v1 transport patterns (behavioral invariants):
  * - capped exponential backoff: 1s, 2s, 4s, ... capped at 10s; reset on open
  * - application ping/pong heartbeat: ping every 20s, pong timeout 10s
+ * - every inbound frame re-arms an outstanding pong deadline from the latest
+ *   data, but never extends one ping's wait beyond the absolute 60s cap; only a
+ *   pong clears the outstanding ping
  * - visibilitychange probe replacing a stale socket on return to foreground
  * - resume liveness probe: on return to the foreground with an OPEN socket,
  *   ping immediately under a short 2s pong deadline (the 20s heartbeat would
@@ -61,6 +64,8 @@ const PING_INTERVAL_MS = 20_000;
 const PONG_TIMEOUT_MS = 10_000;
 /** Pong deadline for the resume-time liveness probe on an OPEN socket. */
 const RESUME_PONG_TIMEOUT_MS = 2_000;
+/** Absolute maximum age for an outstanding ping, even while data is flowing. */
+const MAX_PONG_WAIT_MS = 60_000;
 /** Upgrade deadline: a socket that never leaves CONNECTING (a stalled
  * mobile handshake dispatches neither onopen nor onclose) is recycled so the
  * pane cannot sit on "reconnecting" forever. */
@@ -89,8 +94,13 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
   let retryTimer = 0;
   let pingTimer = 0;
   let pongTimer = 0;
+  let pongCapTimer = 0;
   let openTimer = 0;
   let awaitingPong = false;
+  let pongTimeoutMs = PONG_TIMEOUT_MS;
+  let pongDeadline = 0;
+  let pingStartedAt = 0;
+  let heartbeatTick = (): void => undefined;
   // True while the short resume liveness probe is outstanding (suspect
   // window): the socket looks OPEN but may be dead, so sends fail fast.
   let suspect = false;
@@ -98,8 +108,11 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
   const clearTimers = (): void => {
     window.clearTimeout(pingTimer);
     window.clearTimeout(pongTimer);
+    window.clearTimeout(pongCapTimer);
     awaitingPong = false;
     suspect = false;
+    pongDeadline = 0;
+    pingStartedAt = 0;
   };
 
   const backoffDelay = (): number => Math.min(BACKOFF_BASE_MS * 2 ** attempt, BACKOFF_CAP_MS);
@@ -151,6 +164,27 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
     // False until this socket's onopen fires: a close before that means the
     // HTTP upgrade itself was refused, not a dropped live connection.
     let opened = false;
+    heartbeatTick = (): void => {
+      if (closed || ws.readyState !== WebSocket.OPEN) return;
+      if (awaitingPong) {
+        // The pong and absolute-cap timers own the outstanding ping.
+        return;
+      }
+      awaitingPong = true;
+      pongTimeoutMs = PONG_TIMEOUT_MS;
+      pingStartedAt = Date.now();
+      pongDeadline = pingStartedAt + PONG_TIMEOUT_MS;
+      ws.send(JSON.stringify(heartbeatPing()));
+      pongTimer = window.setTimeout(() => {
+        if (awaitingPong && Date.now() >= pongDeadline) handleLivenessLoss(ws);
+      }, PONG_TIMEOUT_MS);
+      pongCapTimer = window.setTimeout(() => {
+        if (awaitingPong) handleLivenessLoss(ws);
+      }, MAX_PONG_WAIT_MS - (Date.now() - pingStartedAt));
+      pingTimer = window.setTimeout(() => {
+        if (!awaitingPong) heartbeatTick();
+      }, PING_INTERVAL_MS);
+    };
 
     ws.onopen = () => {
       window.clearTimeout(openTimer);
@@ -161,6 +195,16 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
     };
     ws.onmessage = (ev: MessageEvent) => {
       if (typeof ev.data !== "string") return;
+      if (awaitingPong) {
+        // Any inbound bytes prove recent transport activity, but only a pong
+        // answers the ping. Keep the original hard cap while re-arming the
+        // silence deadline from this frame.
+        window.clearTimeout(pongTimer);
+        pongDeadline = Date.now() + pongTimeoutMs;
+        pongTimer = window.setTimeout(() => {
+          if (awaitingPong) handleLivenessLoss(ws);
+        }, pongTimeoutMs);
+      }
       let parsed: unknown;
       try {
         parsed = JSON.parse(ev.data);
@@ -174,6 +218,11 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
         awaitingPong = false;
         suspect = false;
         window.clearTimeout(pongTimer);
+        window.clearTimeout(pongCapTimer);
+        pongDeadline = 0;
+        pingStartedAt = 0;
+        window.clearTimeout(pingTimer);
+        pingTimer = window.setTimeout(heartbeatTick, PING_INTERVAL_MS);
         return;
       }
       handlers.onMessage(parsed);
@@ -245,27 +294,7 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
   /** Periodic application-level ping; a missing pong means the socket died. */
   const startHeartbeat = (ws: WebSocket): void => {
     clearTimers();
-    const tick = (): void => {
-      if (closed || ws.readyState !== WebSocket.OPEN) return;
-      if (awaitingPong) {
-        if (suspect) {
-          // The resume probe owns the outstanding ping's deadline; a periodic
-          // tick landing inside the suspect window must not preempt it.
-          pingTimer = window.setTimeout(tick, PING_INTERVAL_MS);
-          return;
-        }
-        // Previous ping unanswered — the connection is dead. Force a reconnect.
-        handleLivenessLoss(ws);
-        return;
-      }
-      awaitingPong = true;
-      ws.send(JSON.stringify(heartbeatPing()));
-      pongTimer = window.setTimeout(() => {
-        if (awaitingPong) handleLivenessLoss(ws);
-      }, PONG_TIMEOUT_MS);
-      pingTimer = window.setTimeout(tick, PING_INTERVAL_MS);
-    };
-    pingTimer = window.setTimeout(tick, PING_INTERVAL_MS);
+    pingTimer = window.setTimeout(heartbeatTick, PING_INTERVAL_MS);
   };
 
   /** On returning to the foreground, probe the socket instead of waiting. */
@@ -292,15 +321,24 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
     // backgrounded (no onclose fires). Probe now under the short deadline
     // instead of waiting for the next heartbeat tick plus pong timeout.
     suspect = true;
+    pongTimeoutMs = RESUME_PONG_TIMEOUT_MS;
     if (!awaitingPong) {
       awaitingPong = true;
+      pingStartedAt = Date.now();
       ws.send(JSON.stringify(heartbeatPing()));
+      pongCapTimer = window.setTimeout(() => {
+        if (awaitingPong) handleLivenessLoss(ws);
+      }, MAX_PONG_WAIT_MS - (Date.now() - pingStartedAt));
+    } else {
+      // The already-running hard cap remains measured from the original ping.
+      pongTimeoutMs = RESUME_PONG_TIMEOUT_MS;
     }
     // (Re)arm only the pong deadline; if a heartbeat ping was already
     // outstanding, its deadline simply shortens to the resume timeout.
     window.clearTimeout(pongTimer);
+    pongDeadline = Date.now() + RESUME_PONG_TIMEOUT_MS;
     pongTimer = window.setTimeout(() => {
-      if (awaitingPong) handleLivenessLoss(ws);
+      if (awaitingPong && Date.now() >= pongDeadline) handleLivenessLoss(ws);
     }, RESUME_PONG_TIMEOUT_MS);
   };
   document.addEventListener("visibilitychange", onVisibility);

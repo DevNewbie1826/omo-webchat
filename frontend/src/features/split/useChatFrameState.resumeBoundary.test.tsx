@@ -150,3 +150,62 @@ it("retains entries between shared anchors in authoritative order", () => {
   expect(accepted.resumed).toBe(true);
   expect(accepted.frame.entries).toEqual(["a","b","c","d"].map(id => entry(id)));
 });
+
+it("resumes a same-socket subrange echo after REST expanded the committed head", () => harness(({state,deliver}) => {
+  deliver({type:"ready",sessionId:"s",resumed:true,piSessionId:"durable"});
+  deliver(page(["c","d"],{historyComplete:false}));
+  const resume = state().getHistoryResume();
+  deliver(page(["a","b"],{segment:"head"}));
+  const before = state().messages;
+  const restore = state().restoreVersion;
+  deliver({type:"ready",sessionId:"s",resumed:true,piSessionId:"durable"});
+  deliver(page(["e"],{resume,historyComplete:false}));
+  expect(state().messages.map(message => message.id)).toEqual(["a","b","c","d","e"]);
+  expect(state().messages.slice(0,4)).toEqual(before);
+  expect(state().restoreVersion).toBe(restore);
+  expect(state().historyRootKnown).toBe(true);
+}));
+
+it("binds transferred live frames before a same-socket resumed page filters duplicate ids", () => harness(({state,deliver}) => {
+  deliver({type:"ready",sessionId:"s",resumed:true,piSessionId:"durable"});
+  deliver(page(["a","b"]));
+  const resume = state().getHistoryResume();
+  deliver({type:"ready",sessionId:"s",resumed:true,piSessionId:"durable"});
+  deliver({type:"message",sessionId:"s",message:{role:"user",content:"c"}});
+  deliver({type:"entry.appended",sessionId:"s",id:"c",parentId:"b",role:"user",textPrefix:"c"});
+  expect(state().messages.at(-1)?.id).toBe("c");
+  deliver(page(["c"],{resume}));
+  expect(state().messages.map(message => message.id)).toEqual(["a","b","c"]);
+}));
+
+it.each(["before", "after"])("merges a live entry id arriving %s its terminal page", order => harness(({state,deliver}) => {
+  deliver({type:"ready",sessionId:"s",resumed:true,piSessionId:"durable"});
+  deliver(page(["a","b"]));
+  const resume = state().getHistoryResume();
+  deliver({type:"ready",sessionId:"s",resumed:true,piSessionId:"durable"});
+  if (order === "after") deliver(page(["c"], {resume}));
+  deliver({type:"message",sessionId:"s",message:{role:"user",content:"c"}});
+  deliver({type:"entry.appended",sessionId:"s",id:"c",parentId:"b",role:"user",textPrefix:"c"});
+  if (order === "before") deliver(page(["c"], {resume}));
+  expect(state().messages.map(message => message.id)).toEqual(["a","b","c"]);
+  // A merged baseline row must not become a live suffix on the next replacement.
+  deliver(page(["new-tail"], {historyComplete:false}));
+  expect(state().messages.map(message => message.id)).toEqual(["new-tail"]);
+}));
+
+it("binds equal-text live messages FIFO, respecting role and Unicode code-point prefixes", () => harness(({state,deliver}) => {
+  const text = "\u{1f600}".repeat(127) + "xy";
+  deliver(page(["a"]));
+  for (const role of ["assistant","user","user"]) {
+    deliver({type:"message",sessionId:"s",message:{role,blocks:[
+      {kind:"thinking",thinking:"excluded"},
+      {kind:"text",text:text.slice(0,100)},
+      {kind:"text",text:text.slice(100)},
+    ]}});
+  }
+  const prefix = Array.from(text).slice(0,128).join("");
+  deliver({type:"entry.appended",sessionId:"s",id:"first",parentId:"a",role:"user",textPrefix:prefix});
+  expect(state().messages.map(message => message.id)).toEqual(["a",undefined,"first",undefined]);
+  deliver({type:"entry.appended",sessionId:"s",id:"second",parentId:"first",role:"user",textPrefix:prefix});
+  expect(state().messages.map(message => message.id)).toEqual(["a",undefined,"first","second"]);
+}));

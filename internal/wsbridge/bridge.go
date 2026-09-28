@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -27,14 +28,17 @@ import (
 )
 
 const (
-	ContractVersion = 3
-	// MinContractVersion is the oldest client dialect this server serves. A
-	// version-2 client keeps the complete root-to-leaf stream: only clients at
-	// ContractVersion or newer receive segmented head pages.
-	MinContractVersion  = 2
-	defaultWriteTimeout = 10 * time.Second
-	controlFrameTimeout = 15 * time.Second
-	closeFrameTimeout   = 2 * time.Second
+	ContractVersion = 4
+	// MinContractVersion is the oldest client dialect this server serves.
+	// Version 2 keeps the complete root-to-leaf stream. Segmented head pages
+	// start at progressiveHistoryVersion; bounded tails without those pages
+	// start at onDemandHistoryVersion.
+	MinContractVersion        = 2
+	progressiveHistoryVersion = 3
+	onDemandHistoryVersion    = 4
+	defaultWriteTimeout       = 10 * time.Second
+	controlFrameTimeout       = 15 * time.Second
+	closeFrameTimeout         = 2 * time.Second
 	// openFrameTimeout preserves the previous effective HistoryTimeout maximum
 	// while making the route-layer opening budget explicit.
 	openFrameTimeout          = 120 * time.Second
@@ -209,6 +213,8 @@ type Config struct {
 	WriteTimeout      time.Duration
 	// HistoryTimeout is independent of the 15-second interactive command budget.
 	HistoryTimeout time.Duration
+	// Now supplies the clock used by the subscriber recovery health budget.
+	Now func() time.Time
 	// PrepareChat validates workspace/chat metadata immediately before attach.
 	PrepareChat func(context.Context, string, string) error
 	// PrepareChatVersion captures a deletion generation atomically with prepare;
@@ -247,6 +253,9 @@ func New(cfg Config) *Handler {
 	}
 	if cfg.HistoryTimeout <= 0 {
 		cfg.HistoryTimeout = session.DefaultHistoryTimeout
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
 	}
 	h := &Handler{cfg: cfg}
 	if cfg.Manager != nil {
@@ -343,7 +352,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		cancel:             cancel,
 		work:               make(chan []byte, 64),
 		queueWork:          make(chan queuePublication, 64),
-		subscriberRecovery: make(chan subscriberRecovery, 1),
+		subscriberRecovery: make(chan struct{}, 1),
 	}
 	c.sub = newSubscriber(c)
 	h.conns.Store(sock, c)
@@ -427,8 +436,13 @@ type queuePublication struct {
 }
 
 type subscriberRecovery struct {
-	sub       *subscriber
-	bindingID string
+	sub        *subscriber
+	attempt    *subscriberAttempt
+	bindingID  string
+	generation uint64
+	occurredAt time.Time
+	ready      bool
+	taken      bool
 }
 
 type connection struct {
@@ -455,7 +469,10 @@ type connection struct {
 	helloVersion       int
 	work               chan []byte
 	queueWork          chan queuePublication
-	subscriberRecovery chan subscriberRecovery
+	subscriberRecovery chan struct{}
+	recoveryCount      int
+	healthySince       time.Time
+	recoveryExhausted  bool
 	closed             atomic.Bool
 }
 
@@ -464,6 +481,13 @@ func (c *connection) logger() *slog.Logger {
 		return c.bridge.cfg.Logger
 	}
 	return slog.Default()
+}
+
+func (c *connection) now() time.Time {
+	if c.bridge != nil && c.bridge.cfg.Now != nil {
+		return c.bridge.cfg.Now()
+	}
+	return time.Now()
 }
 
 func (c *connection) write(v any) error {
@@ -569,17 +593,33 @@ func (c *connection) closeWebSocket(code uint16, reason string) {
 }
 
 func (c *connection) unbind() (string, *session.Session) {
-	c.stopGoalWatch()
+	return c.unbindSubscriber(nil)
+}
+
+func (c *connection) unbindSubscriber(expected *subscriber) (string, *session.Session) {
+	id, sess, sub := c.detachBinding(expected)
+	sub.releaseTransfer()
+	return id, sess
+}
+
+func (c *connection) detachBinding(expected *subscriber) (string, *session.Session, *subscriber) {
 	c.stateMu.Lock()
-	id, s, detach := c.chatID, c.sess, c.detach
+	if expected != nil && c.sub != expected {
+		c.stateMu.Unlock()
+		return "", nil, nil
+	}
+	id, s, detach, sub := c.chatID, c.sess, c.detach, c.sub
 	c.invalidateTodoWatchLocked()
 	c.wsID, c.chatID, c.sess, c.detach = "", "", nil, nil
 	c.bindingGeneration++
+	c.healthySince = time.Time{}
+	c.sub = nil
 	c.stateMu.Unlock()
+	c.stopGoalWatch()
 	if detach != nil {
 		detach()
 	}
-	return id, s
+	return id, s, sub
 }
 
 func (c *connection) binding() (string, *session.Session) {
@@ -618,40 +658,97 @@ func (c *connection) run() {
 			return
 		case raw := <-c.work:
 			c.route(raw)
-		case recovery := <-c.subscriberRecovery:
-			c.recoverSubscriber(recovery)
+		case <-c.subscriberRecovery:
+			c.recoverSubscriber()
 		}
 	}
 }
 
 func (c *connection) enqueueSubscriberRecovery(recovery subscriberRecovery) {
+	c.logger().Debug("subscriber recovery enqueue", "sub", fmt.Sprintf("%p", recovery.sub), "bindingID", recovery.bindingID, "transferKey", recovery.sub.transferID, "generation", recovery.generation)
 	select {
-	case c.subscriberRecovery <- recovery:
+	case c.subscriberRecovery <- struct{}{}:
 	case <-c.ctx.Done():
 	default:
-		c.bridge.cfg.Logger.Warn("subscriber overflow recovery queue full; closing cleanly", "reason", "subscriber_recovery_queue_overflow")
-		c.sendError("subscriber_overflow", "could not recover the session stream; please reconnect", "", "")
-		c.shutdown()
+		// The channel is a wake signal, not storage for recovery ownership.
 	}
 }
 
-func (c *connection) recoverSubscriber(recovery subscriberRecovery) {
+func (c *connection) recoverSubscriber() {
 	c.stateMu.Lock()
-	current := !c.closed.Load() && c.sub == recovery.sub && c.wsID != "" && c.chatID != "" && c.sess != nil
-	workspaceID, chatID := c.wsID, c.chatID
+	sub := c.sub
 	c.stateMu.Unlock()
-	if !current || recovery.sub.bindingIdentity() != recovery.bindingID {
+	if sub == nil {
 		return
+	}
+	// Delivery takes subscriber.mu before stateMu. Take ownership AND replace
+	// the current object under those same locks, so no concurrent bind can
+	// turn a checked recovery into an unbind of its successor.
+	sub.mu.Lock()
+	c.stateMu.Lock()
+	recovery := sub.attempt.recovery
+	if c.closed.Load() || c.recoveryExhausted || c.sub != sub || c.sess == nil || c.chatID == "" || c.wsID == "" ||
+		recovery == nil || !recovery.ready || recovery.taken || recovery.attempt != sub.attempt ||
+		recovery.bindingID != sub.bindingID || recovery.generation != c.bindingGeneration {
+		c.stateMu.Unlock()
+		sub.mu.Unlock()
+		return
+	}
+	recovery.taken = true
+	workspaceID, chatID := c.wsID, c.chatID
+	c.logger().Debug("subscriber recovery dequeue", "sub", fmt.Sprintf("%p", sub), "bindingID", recovery.bindingID, "transferKey", sub.transferID, "generation", recovery.generation)
+	if !c.healthySince.IsZero() && recovery.occurredAt.Sub(c.healthySince) >= 120*time.Second {
+		c.recoveryCount = 0
+	}
+	if c.recoveryCount >= 3 {
+		c.stateMu.Unlock()
+		sub.mu.Unlock()
+		c.exhaustSubscriberRecovery(chatID, sub)
+		return
+	}
+	c.recoveryCount++
+	c.healthySince = time.Time{}
+	replacement := newSubscriber(c)
+	replacement.transferID, replacement.transfer = sub.transferID, sub.transfer
+	replacement.automatic = true
+	sub.transfer = nil
+	sub.abandoned = true
+	var resume *wscontract.HistoryResumeCursor
+	if cursor := sub.deliveredCursor; cursor != nil {
+		resume = &wscontract.HistoryResumeCursor{SessionID: cursor.SessionID, FirstEntryID: cursor.FirstEntryID, LastEntryID: cursor.LastEntryID, HistoryComplete: cursor.HistoryComplete}
+	}
+	detach := c.detach
+	c.invalidateTodoWatchLocked()
+	c.wsID, c.chatID, c.sess, c.detach = "", "", nil, nil
+	c.bindingGeneration++
+	c.sub = replacement
+	c.stateMu.Unlock()
+	sub.mu.Unlock()
+	c.stopGoalWatch()
+	if detach != nil {
+		detach()
 	}
 	c.bridge.cfg.Logger.Warn("subscriber overflow; reattaching transport", "chat_id", chatID, "reason", "subscriber_queue_overflow")
 	ctx, cancel := context.WithTimeout(c.ctx, openFrameTimeout)
 	defer cancel()
-	c.createWithTransfer(ctx, &wscontract.ChatCreateFrame{Type: "chat.create", WsID: workspaceID, ChatID: chatID}, recovery.sub.SubscriberOverflowTransferKey())
-	boundID, boundSession := c.binding()
-	if c.closed.Load() || boundID == chatID && boundSession != nil {
+	if !c.createWithTransfer(ctx, &wscontract.ChatCreateFrame{Type: "chat.create", WsID: workspaceID, ChatID: chatID, Resume: resume}, replacement) && !c.closed.Load() {
+		c.exhaustSubscriberRecovery(chatID, replacement)
+	}
+}
+
+func (c *connection) exhaustSubscriberRecovery(chatID string, sub *subscriber) {
+	c.stateMu.Lock()
+	if c.closed.Load() || c.recoveryExhausted || c.sub != sub {
+		c.stateMu.Unlock()
 		return
 	}
+	// Reserve the terminal transition before releasing the binding lock.
+	// Concurrent reconciliation must not install a healthy successor between
+	// the failure decision and the error/close writes.
+	c.recoveryExhausted = true
+	c.stateMu.Unlock()
 	c.bridge.cfg.Logger.Warn("subscriber overflow recovery exhausted; closing cleanly", "chat_id", chatID, "reason", "subscriber_recovery_exhausted")
+	c.sendError("subscriber_overflow", "could not recover the session stream; please reconnect", "", "")
 	c.shutdown()
 }
 
@@ -1013,28 +1110,41 @@ func (op *chatSendOperation) bindingCurrent() bool { return op.bindingMatchesSes
 func (op *chatSendOperation) bindResumed(ctx context.Context, stale, acquired *session.Session, started bool, sub *subscriber, acquiredDetach func()) bool {
 	wrappedDetach := sub.wrapDetach(acquiredDetach)
 	op.conn.stateMu.Lock()
-	if op.conn.closed.Load() || op.conn.wsID != op.workspaceID || op.conn.chatID != op.chatID ||
+	if op.conn.closed.Load() || op.conn.recoveryExhausted || op.conn.wsID != op.workspaceID || op.conn.chatID != op.chatID ||
 		op.conn.bindingGeneration != op.bindingGeneration || op.conn.sess != stale {
 		op.conn.stateMu.Unlock()
 		wrappedDetach()
+		sub.releaseTransfer()
 		return false
 	}
-	oldDetach := op.conn.detach
+	oldDetach, oldSub := op.conn.detach, op.conn.sub
 	op.conn.invalidateTodoWatchLocked()
 	op.conn.sess, op.conn.detach, op.conn.sub = acquired, wrappedDetach, sub
 	op.conn.stateMu.Unlock()
+	sub.signalRecovery()
 	if err := sub.activate(ctx, !started); err != nil {
 		op.conn.stateMu.Lock()
-		if op.conn.bindingGeneration == op.bindingGeneration && op.conn.sess == acquired {
-			op.conn.sess, op.conn.detach = stale, oldDetach
+		if op.conn.bindingGeneration == op.bindingGeneration && op.conn.sess == acquired && op.conn.sub == sub {
+			op.conn.sess, op.conn.detach, op.conn.sub = stale, oldDetach, oldSub
 		}
+		restored := op.conn.sub == oldSub
 		op.conn.stateMu.Unlock()
 		wrappedDetach()
+		sub.releaseTransfer()
+		if !restored {
+			if oldDetach != nil {
+				oldDetach()
+			}
+			oldSub.releaseTransfer()
+		} else if oldSub != nil {
+			oldSub.signalRecovery()
+		}
 		return false
 	}
 	if oldDetach != nil {
 		oldDetach()
 	}
+	oldSub.releaseTransfer()
 	op.conn.initializeBinding(ctx, op.chatID, acquired)
 	return true
 }
@@ -1086,6 +1196,15 @@ func (op *chatSendOperation) resumeAndRetry(stale *session.Session, admitted boo
 	if op.bindingMatchesSession(stale) {
 		sub = &operationSubscriber{subscriber: newSubscriber(op.conn), op: op}
 		attachSub = sub
+		stagedSub := sub.subscriber
+		defer func() {
+			op.conn.stateMu.Lock()
+			installed := op.conn.sub == stagedSub
+			op.conn.stateMu.Unlock()
+			if !installed {
+				stagedSub.releaseTransfer()
+			}
+		}()
 	}
 	initialize := func(acquired *session.Session, started bool, detach func()) {
 		stagedSession, stagedStarted, stagedDetach = acquired, started, detach
@@ -1210,18 +1329,43 @@ func resumeFailureInfo(err error) session.ErrorInfo {
 }
 
 func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFrame) {
-	c.createWithTransfer(routeCtx, f, "")
+	sub := newSubscriber(c)
+	oldChat, _, old := c.detachBinding(nil)
+	if old != nil && oldChat == f.ChatID {
+		// An explicit same-chat resync can overtake a queued overflow wake.
+		// Retain that stream, rather than replacing it with the 50-notice
+		// journal. detachBinding joined finalization before this handoff.
+		old.mu.Lock()
+		sub.transferID, sub.transfer = old.transferID, old.transfer
+		old.transfer = nil
+		old.abandoned = true
+		old.mu.Unlock()
+	} else {
+		old.releaseTransfer()
+	}
+	c.stateMu.Lock()
+	if c.closed.Load() || c.recoveryExhausted {
+		c.stateMu.Unlock()
+		sub.releaseTransfer()
+		return
+	}
+	c.recoveryCount = 0
+	c.sub = sub
+	c.stateMu.Unlock()
+	c.createWithTransfer(routeCtx, f, sub)
 }
 
-func (c *connection) createWithTransfer(routeCtx context.Context, f *wscontract.ChatCreateFrame, transferID string) {
+func (c *connection) createWithTransfer(routeCtx context.Context, f *wscontract.ChatCreateFrame, sub *subscriber) (success bool) {
 	ctx, cancel := context.WithTimeout(routeCtx, c.bridge.cfg.HistoryTimeout)
 	defer cancel()
-	c.unbind()
-	c.sub = newSubscriber(c)
-	if transferID != "" {
-		c.sub.transferID = transferID
+	defer func() {
+		if !success {
+			sub.releaseTransfer()
+		}
+	}()
+	if c.closed.Load() || (sub.automatic && ctx.Err() != nil) {
+		return
 	}
-	sub := c.sub
 	var preparedGeneration uint64
 	guarded := c.bridge.cfg.PrepareChatVersion != nil && c.bridge.cfg.ChatVersion != nil
 	if guarded {
@@ -1275,6 +1419,7 @@ func (c *connection) createWithTransfer(routeCtx context.Context, f *wscontract.
 		c.sendError("unsupported_provider", ErrUnsupportedProvider.Error(), "", "")
 		return
 	}
+	c.previewHistory(ctx, f, rec, sub)
 	// A second-device attach rejected by the in-place activity gate can be
 	// retried explicitly: force authorizes this create attempt's acquisition
 	// at CursorForOpen exactly like the REST open path does. The attempt owns
@@ -1294,15 +1439,16 @@ func (c *connection) createWithTransfer(routeCtx context.Context, f *wscontract.
 	commitBinding := func(acquired *session.Session, started bool, acquiredDetach func()) error {
 		wrappedDetach := sub.wrapDetach(acquiredDetach)
 		c.stateMu.Lock()
-		if c.closed.Load() {
+		if c.closed.Load() || c.recoveryExhausted || c.sub != sub {
 			c.stateMu.Unlock()
 			wrappedDetach()
-			return nil
+			return session.ErrSubscriberDetached
 		}
 		c.bindingGeneration++
 		c.invalidateTodoWatchLocked()
 		c.wsID, c.chatID, c.sess, c.detach = f.WsID, f.ChatID, acquired, wrappedDetach
 		c.stateMu.Unlock()
+		sub.signalRecovery()
 		if activateErr := sub.activate(ctx, !started); activateErr != nil {
 			if errors.Is(activateErr, session.ErrSubscriberOverflow) {
 				c.stateMu.Lock()
@@ -1314,7 +1460,9 @@ func (c *connection) createWithTransfer(routeCtx context.Context, f *wscontract.
 				c.stateMu.Unlock()
 				return activateErr
 			}
-			c.unbind()
+			if !sub.automatic {
+				c.unbindSubscriber(sub)
+			}
 			return activateErr
 		}
 		c.initializeBinding(ctx, f.ChatID, acquired)
@@ -1357,14 +1505,14 @@ func (c *connection) createWithTransfer(routeCtx context.Context, f *wscontract.
 			after := func(*session.Session) error { return initializeErr }
 			if recovery {
 				sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedWithRecoveryAndRun(ctx, ref, sub, initialize, nil, after)
-			} else if transferID != "" {
+			} else if sub.automatic {
 				sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRun(ctx, ref, sub, initialize, nil, after)
 			} else {
 				sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRunRecovering(ctx, ref, sub, initialize, nil, after)
 			}
 		} else if recovery {
 			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedWithRecoveryAndRun(ctx, ref, sub, stage, validate, commit)
-		} else if transferID != "" {
+		} else if sub.automatic {
 			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRun(ctx, ref, sub, stage, validate, commit)
 		} else {
 			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRunRecovering(ctx, ref, sub, stage, validate, commit)
@@ -1379,11 +1527,15 @@ func (c *connection) createWithTransfer(routeCtx context.Context, f *wscontract.
 		c.bridge.cfg.Logger.Warn("retrying overflowed recovery attach", "chat_id", f.ChatID, "attempt", 2)
 		acquire()
 	}
-	if errors.Is(err, omorpc.ErrDisconnected) {
-		c.unbind()
+	if errors.Is(err, omorpc.ErrDisconnected) && !sub.automatic {
+		c.unbindSubscriber(sub)
 		if waitErr := c.bridge.cfg.Manager.WaitForConnection(ctx); waitErr == nil {
 			sub = newSubscriber(c)
-			c.sub = sub
+			c.stateMu.Lock()
+			if !c.closed.Load() {
+				c.sub = sub
+			}
+			c.stateMu.Unlock()
 			acquire()
 		}
 	}
@@ -1391,8 +1543,13 @@ func (c *connection) createWithTransfer(routeCtx context.Context, f *wscontract.
 		if detach != nil {
 			detach()
 		}
-		c.unbind()
+		if !sub.automatic {
+			c.unbindSubscriber(sub)
+		}
 		c.bridge.cfg.Logger.Warn("opening v2 chat session", "chat_id", f.ChatID, "error", err)
+		if sub.automatic {
+			return
+		}
 		var drift *session.ExternalWriteError
 		if errors.As(err, &drift) {
 			c.sendExternalWriteError(drift, "", "")
@@ -1424,9 +1581,15 @@ func (c *connection) createWithTransfer(routeCtx context.Context, f *wscontract.
 		}
 		return
 	}
+	sub.mu.Lock()
 	c.stateMu.Lock()
-	stillBound := c.sess == sess
+	stillBound := !c.closed.Load() && c.sub == sub && c.sess == sess
+	recoveryFailed := sub.automatic && (sub.historyFailed || ctx.Err() != nil)
+	if stillBound && !sub.detached && !recoveryFailed {
+		c.healthySince = c.now()
+	}
 	c.stateMu.Unlock()
+	sub.mu.Unlock()
 	if !stillBound && detach != nil {
 		detach()
 	}
@@ -1437,6 +1600,7 @@ func (c *connection) createWithTransfer(routeCtx context.Context, f *wscontract.
 			c.startGoalWatch(fresh)
 		}
 	}
+	return stillBound && !recoveryFailed
 }
 
 func (c *connection) handleQueueRemove(chatID string, sess *session.Session, f *wscontract.ChatQueueRemoveFrame) {
@@ -1859,12 +2023,18 @@ func (c *connection) queryCurrentLocked(q queryBinding) bool {
 // writeIfCurrent keeps the binding claim through the socket write, so a rebind
 // cannot split validation from delivery.
 func (c *connection) writeIfCurrent(q queryBinding, v any) error {
+	_, err := c.writeIfCurrentResult(q, v)
+	return err
+}
+
+func (c *connection) writeIfCurrentResult(q queryBinding, v any) (bool, error) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	if !c.queryCurrentLocked(q) {
-		return nil
+		return false, nil
 	}
-	return c.write(v)
+	err := c.write(v)
+	return err == nil, err
 }
 
 func sessionErrorFrame(err error, command, requestID, sessionID string) any {

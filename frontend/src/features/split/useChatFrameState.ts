@@ -4,7 +4,7 @@ import type { ChatClient, ChatServerFrame, CommandEntry, ContextUsage, JsonObjec
 import type { ApprovalRequest } from "./QuestionWindow";
 import type { ApprovalFrame } from "../../lib/contract/types_gen";
 import { useConfirmedControls } from "./chatConfirmedControls";
-import { concatEntries, messageText, type UiMessage } from "./chatEntries";
+import { concatEntries, messageText, parseEntries, type UiMessage } from "./chatEntries";
 import type { HistoryResumeCursor } from "../../lib/contract/types_gen";
 import {
   applyActivityEvent,
@@ -25,7 +25,7 @@ import { parseDagCounts } from "./activityParseDag";
 import { emptyTodoAuthority, unbindTodoAuthority } from "./todoAuthority";
 import { useEntriesPageBuffer } from "./useEntriesPageBuffer";
 import { useStreamingBuffer } from "./useStreamingBuffer";
-import { recordSteerMark, forgetSteerMark, steerMarks } from "./chatSteerMarks";
+import { recordSteerMark, forgetSteerMark } from "./chatSteerMarks";
 import * as chatState from "./chatSessionState";
 import { useSessionDraft, useSessionSends } from "./sessionDraft";
 import type { ChatSendRequest } from "./chatSendState";
@@ -43,14 +43,6 @@ import {
 } from "./recoveryState";
 
 export type { RecoveryPhase, RecoveryState } from "./recoveryState";
-
-function nextUserOrdinal(sessionId: string, messages: readonly UiMessage[]): number {
-  const marks = steerMarks(sessionId);
-  return Math.max(
-    messages.filter(message => message.role === "user").length,
-    ...marks.map(mark => mark.ordinal),
-  ) + 1;
-}
 
 /**
  * Set when a resume_failed error frame proved the stored identity dangling:
@@ -181,8 +173,9 @@ export function createHistoryResumeCoverage() {
       const echo = frame.resume;
       let resumed = continuity && echo !== undefined && cursor !== undefined
         && frame.historySessionId === cursor.sessionId
-        && echo.sessionId === cursor.sessionId && echo.firstEntryId === cursor.firstEntryId
-        && echo.lastEntryId === cursor.lastEntryId && echo.historyComplete === cursor.historyComplete;
+        && echo.sessionId === cursor.sessionId
+        && committed.some(entry => historyEntryId(entry) === echo.firstEntryId)
+        && echo.lastEntryId === cursor.lastEntryId;
       if (frame.segment === "head") {
         if (committed.length === 0) return { frame, resumed: false };
         // Head echoes describe the original request, not the advancing cursor.
@@ -206,13 +199,14 @@ export function createHistoryResumeCoverage() {
         pending = [];
         continuity = true;
       }
+      const historyComplete = frame.historyComplete === true || (resumed && cursor?.historyComplete === true);
       const firstEntryId = historyEntryId(committed[0]);
       const lastEntryId = historyEntryId(committed[committed.length - 1]);
       const sessionId = frame.historySessionId ?? (frame.segment === "head" ? cursor?.sessionId : undefined);
       cursor = firstEntryId && lastEntryId && sessionId ? {
-        sessionId, firstEntryId, lastEntryId, historyComplete: frame.historyComplete === true,
+        sessionId, firstEntryId, lastEntryId, historyComplete,
       } : undefined;
-      return { frame: { ...frame, entries: committed }, resumed };
+      return { frame: { ...frame, entries: committed, ...(historyComplete ? { historyComplete } : {}) }, resumed };
     },
   };
 }
@@ -225,6 +219,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const controls = useConfirmedControls();
   const ledger = controls.ledger;
   const [messages, setMessages] = useState<readonly UiMessage[]>([]);
+  const [previewMessages, setPreviewMessages] = useState<readonly UiMessage[] | null>(null);
   const streaming = useStreamingBuffer();
   const entriesBuffer = useEntriesPageBuffer();
   const resumeCoverage = useRef(createHistoryResumeCoverage());
@@ -232,6 +227,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const pageBuffer = {
     ...entriesBuffer,
     reset: () => {
+      setPreviewMessages(null);
       entriesBuffer.reset();
       resumeCoverage.current.reconnect();
       historyPageCommittedRef.current = false;
@@ -250,7 +246,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const [isCompacting, setIsCompacting] = useState(false);
   const [historyStatus, updateHistoryStatus] = useState<HistoryStatus>("loading");
   const historyStatusRef = useRef(historyStatus);
-  // Unlike historyStatus (which opens on the tail), this spans the head fill.
+  // Initial hydration only; older pages are fetched on demand.
   const [historyWarming, updateHistoryWarming] = useState(true);
   const historyWarmingRef = useRef(historyWarming);
   // Frames can batch: watchdog eligibility must see each transition immediately.
@@ -258,7 +254,10 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     const next = typeof value === "function" ? value(historyStatusRef.current) : value;
     historyStatusRef.current = next;
     updateHistoryStatus(next);
-    if (next !== "loading" && !historyWarmingRef.current) clearHistoryStall();
+    if (next !== "loading") {
+      setPreviewMessages(null);
+      clearHistoryStall();
+    }
   };
   const setHistoryWarming: typeof updateHistoryWarming = (value) => {
     const next = typeof value === "function" ? value(historyWarmingRef.current) : value;
@@ -337,6 +336,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const externalRecoveryHistoryRef = useRef(false);
   const replayGenerationRef = useRef(0);
   const connectionGenerationRef = useRef(0);
+  const olderHistoryInvalidationRef = useRef<((newConnection: boolean) => void) | null>(null);
   const replayQueueRef = useRef<Array<{
     readonly generation: number;
     readonly connectionGeneration: number;
@@ -375,9 +375,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   // task-count delivery must not replace it, and a later-arriving older
   // hydration response can never lower it.
   const dagRunCountAdmissionRef = useRef<LiveCountAdmission | null>(null);
-  // Steers accepted while the client holds only a bounded tail: a
-  // root-relative ordinal cannot be computed from the loaded tail, so the
-  // occurrence waits here and is recorded once the branch root is known.
+  // Steer echoes wait for their persisted entry identity, independently of
+  // whether the branch root has been loaded.
   const pendingSteersRef = useRef<Array<{
     readonly requestId: string;
     readonly text: string;
@@ -540,6 +539,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   // already released the action's own busy marker, fencing older page streams
   // away from the reset buffer.
   const beginResync = (): void => {
+    olderHistoryInvalidationRef.current?.(false);
     resumeCoverage.current.reset();
     todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
     const generation = beginReplay(connectionGenerationRef.current);
@@ -553,8 +553,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     // occurrence from the replaced load must never resolve against it.
     pendingSteersRef.current = [];
     clearSteerPending();
-    setHistoryWarming(true);
     setHistoryStatus("loading");
+    setHistoryWarming(true);
     applyError("");
     setResyncBusy(true);
   };
@@ -584,18 +584,13 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     historyStallTimerRef.current = null;
   };
   const armHistoryStall = (refresh: boolean): void => {
-    if (historyStatusRef.current !== "loading" && !historyWarmingRef.current) return;
+    if (historyStatusRef.current !== "loading") return;
     if (historyStallTimerRef.current !== null && !refresh) return;
     clearHistoryStall();
     const connectionGeneration = connectionGenerationRef.current;
     historyStallTimerRef.current = window.setTimeout(() => {
       historyStallTimerRef.current = null;
       if (connectionGeneration !== connectionGenerationRef.current) return;
-      // A committed tail stays loaded: head inactivity only lifts the hold.
-      if (historyStatusRef.current !== "loading") {
-        setHistoryWarming(false);
-        return;
-      }
       const stalled = replayQueueRef.current.filter((candidate) =>
         candidate.connectionGeneration === connectionGeneration);
       replayQueueRef.current = replayQueueRef.current.filter((candidate) =>
@@ -610,40 +605,17 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     }, HISTORY_STALL_MS);
   };
 
-  // Resolve retained steer occurrences in send order against the reconciled
-  // branch. An occurrence whose echo already materialized resolves to THAT
-  // message's root-relative ordinal; one still waiting for its echo keeps
-  // the append rule used when the whole branch is already held. Returns true
-  // when marks were recorded so the caller applies them in the same pass.
-  const settlePendingSteers = (sessionId: string, messages: readonly UiMessage[]): boolean => {
-    const pending = pendingSteersRef.current;
-    if (pending.length === 0) return false;
-    pendingSteersRef.current = [];
-    for (const steer of pending) {
-      let ordinal: number | null = null;
-      if (steer.echo !== undefined) {
-        let position = 0;
-        for (const message of messages) {
-          if (message.role !== "user") continue;
-          position += 1;
-          if (message === steer.echo) {
-            ordinal = position;
-            break;
-          }
-        }
-      }
-      if (ordinal === null) {
-        ordinal = nextUserOrdinal(steer.sessionId, messages);
-      }
-      recordSteerMark(steer.sessionId, { requestId: steer.requestId, text: steer.text, ordinal });
-    }
-    return true;
+  const bindSteerEntry = (message: UiMessage, bound: UiMessage): void => {
+    const steer = pendingSteersRef.current.find(pending => pending.echo === message);
+    if (!steer || bound.id === undefined) return;
+    recordSteerMark(steer.sessionId, { requestId: steer.requestId, text: steer.text, entryId: bound.id });
+    pendingSteersRef.current = pendingSteersRef.current.filter(pending => pending !== steer);
   };
   // Bind a live user message to the oldest retained steer occurrence still
   // waiting for its echo: the occurrence identity survives warming, so
   // settlement resolves the message that was actually sent. The same echo is
   // the engine consuming that steer, which also retires its pending summary.
-  const bindPendingSteerEcho = (sessionId: string, message: UiMessage): void => {
+  const bindPendingSteerEcho = (sessionId: string, message: UiMessage): UiMessage => {
     const text = messageText(message);
     // Correlate the echo with the oldest outstanding send of this text, not
     // with whichever confirmation is still on screen. Retiring that request id
@@ -653,17 +625,17 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
       outstandingSteersRef.current = outstandingSteersRef.current.filter(item => item !== matched);
       dropSteerPending(matched.requestId);
     }
-    if (pendingSteersRef.current.length === 0) return;
     const match = pendingSteersRef.current.find(pending =>
       pending.sessionId === sessionId && pending.echo === undefined && pending.text === text);
-    if (match === undefined) return;
+    if (match === undefined) return message;
+    const echo = { ...message, customType: "steer" };
     pendingSteersRef.current = pendingSteersRef.current.map(pending =>
-      pending === match ? { ...pending, echo: message } : pending);
+      pending === match ? { ...pending, echo } : pending);
+    return echo;
   };
-  // A run boundary without an echo retires the retained occurrences that
-  // never materialized; occurrences whose echo already arrived survive.
+  // Persisted marks survive; occurrences that never bound an entry retire.
   const retireUnmaterializedPendingSteers = (): void => {
-    pendingSteersRef.current = pendingSteersRef.current.filter(pending => pending.echo !== undefined);
+    pendingSteersRef.current = [];
   };
   const dropPendingSteer = (requestId: string): void => {
     pendingSteersRef.current = pendingSteersRef.current.filter(pending => pending.requestId !== requestId);
@@ -676,10 +648,24 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   };
 
   const baseHandleFrame = createChatFrameHandler({
+    showHistoryPreview: (frame) => {
+      if (!socketOpenRef.current || historyStatusRef.current !== "loading"
+        || historyPageCommittedRef.current || messagesRef.current.length > 0
+        || resumeCoverage.current.entries().length > 0) return;
+      setPreviewMessages(parseEntries(frame.entries));
+    },
     acceptHistoryPage: (frame) => {
       if (frame.segment === "head" && !historyPageCommittedRef.current) return null;
+      const previousCursor = resumeCoverage.current.cursor();
       const accepted = resumeCoverage.current.accept(frame);
       if (frame.segment === "head" || frame.final !== false) {
+        // A replacement retires requests even when its socket and durable
+        // session survive. A head only replaces on a durable contradiction.
+        if ((frame.segment !== "head" && !accepted.resumed)
+          || (previousCursor !== undefined && frame.historySessionId !== undefined
+            && previousCursor.sessionId !== frame.historySessionId)) {
+          olderHistoryInvalidationRef.current?.(false);
+        }
         // Coverage already produced the whole accepted list, including replacement.
         entriesBuffer.reset();
         historyPageCommittedRef.current = true;
@@ -695,7 +681,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     submitLatchRef,
     sends,
     offerFailedDraft,
-    settlePendingSteers,
+    bindSteerEntry,
     bindPendingSteerEcho,
     retireUnmaterializedPendingSteers,
     dropPendingSteer,
@@ -779,7 +765,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   // browser socket stays open, so it is the only cycle start that flow gets.
   const handleFrame = (frame: ChatServerFrame, connectionGeneration = 0): "refresh_stats" | void => {
     if (frame.type === "ready") applyRecovery(recoveryAfterReady(recoveryRef.current, frame.resumed));
-    else if (frame.type === "entries") applyRecovery(recoveryAfterHistory(recoveryRef.current, frame.final !== false));
+    else if (frame.type === "entries" && frame.segment !== "preview") applyRecovery(recoveryAfterHistory(recoveryRef.current, frame.final !== false));
     else if (frame.type === "error") {
       applyRecovery(frame.code === "provider_disconnected"
         ? recoveryAfterProviderLoss(recoveryRef.current)
@@ -875,14 +861,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     }
     if (kind === "steer") {
       confirmSteer(requestId, text);
-      if (pageBuffer.historyRootKnown()) {
-        const ordinal = nextUserOrdinal(sessionId, messagesRef.current);
-        recordSteerMark(sessionId, { requestId, text, ordinal });
-      } else {
-        // A bounded tail cannot resolve the root-relative ordinal; retain the
-        // occurrence and resolve it when the history completes.
-        pendingSteersRef.current = [...pendingSteersRef.current, { requestId, text, sessionId }];
-      }
+      pendingSteersRef.current = [...pendingSteersRef.current, { requestId, text, sessionId }];
     }
     let accepted = false;
     try {
@@ -916,7 +895,14 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     sendDraft({ text, image: null }, requestId, sessionId, client, "steer");
 
   const markOpen = (): number => {
+    olderHistoryInvalidationRef.current?.(true);
     clearHistoryStall();
+    // A replacement connection owns a new replay even if its predecessor's
+    // close callback never arrived. Retire the old resync fence with it.
+    replayQueueRef.current = [];
+    resyncGenerationRef.current = null;
+    resyncPendingRef.current = false;
+    setResyncBusy(false);
     resumeCoverage.current.reconnect();
     todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
     applyRecovery(recoveryAfterOpen(recoveryRef.current));
@@ -948,6 +934,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     return connectionGeneration;
   };
   const markClose = (): void => {
+    setPreviewMessages(null);
+    olderHistoryInvalidationRef.current?.(true);
     todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
     applyRecovery(recoveryAfterClose(recoveryRef.current, socketOpenRef.current));
     socketOpenRef.current = false;
@@ -976,6 +964,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   };
 
   const beginExternalWriteRecovery = (): void => {
+    olderHistoryInvalidationRef.current?.(false);
     resumeCoverage.current.reset();
     todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
     externalRecoveryPendingRef.current = true;
@@ -984,8 +973,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     historyLoadedRef.current = false;
     pageBuffer.reset();
     pendingSteersRef.current = [];
-    setHistoryWarming(true);
     setHistoryStatus("loading");
+    setHistoryWarming(true);
     applyError("");
   };
 
@@ -1001,7 +990,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   }, []);
 
   return {
-    messages,
+    messages: previewMessages ?? messages,
     streaming: streaming.streaming,
     thinking,
     toolCalls,
@@ -1021,6 +1010,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     historyLoaded,
     historyStatus,
     historyWarming,
+    historyRootKnown: historyLoaded && pageBuffer.historyRootKnown(),
+    historyFailedEmpty: connected && historyStatus === "failed" && messages.length === 0,
     connected,
     commands,
     thinkingLevel: controls.thinkingLevel,
@@ -1044,6 +1035,14 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     recovery,
     handleFrame,
     getHistoryResume: () => resumeCoverage.current.cursor(),
+    olderHistoryInvalidationRef,
+    getOlderHistoryContext: () => ({
+      connectionGeneration: connectionGenerationRef.current,
+      replayGeneration: replayGenerationRef.current,
+      cursor: resumeCoverage.current.cursor(),
+      ready: socketOpenRef.current && historyStatusRef.current === "loaded",
+      rootKnown: pageBuffer.historyRootKnown(),
+    }),
     beginActivityHydration,
     cancelActivityHydration,
     hydrateActivities,
@@ -1065,6 +1064,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     failResync,
     resyncBusy,
     resyncDisabled: resyncBusy || historyStatus === "loading" || !connected,
+    canRecreateHistory: () => !resyncPendingRef.current && historyStatusRef.current !== "loading" && socketOpenRef.current,
     armControl: ledger.arm,
     rejectControl: ledger.reject,
     confirmedModelKey: controls.confirmedModelKey,

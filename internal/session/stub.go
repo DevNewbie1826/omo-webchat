@@ -175,6 +175,7 @@ const (
 	FrameRunStarted       FrameKind = "run.started"
 	FrameRunDone          FrameKind = "run.done"
 	FrameMessage          FrameKind = "message"
+	FrameEntryAppended    FrameKind = "entry.appended"
 	FrameMessageDelta     FrameKind = "message.delta"
 	FrameTool             FrameKind = "tool"
 	FrameState            FrameKind = "state"
@@ -270,6 +271,11 @@ type HistoryResumeSubscriber interface {
 
 type ProgressiveHistorySubscriber interface {
 	ProgressiveHistory() bool
+}
+
+// OnDemandHistorySubscriber requests a bounded tail without warm head pages.
+type OnDemandHistorySubscriber interface {
+	OnDemandHistory() bool
 }
 
 // Stats preserves provider statistics verbatim so structured token/cache data

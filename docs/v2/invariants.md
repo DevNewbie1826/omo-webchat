@@ -235,6 +235,37 @@ Proof: `api:session_recency_test.go:TestUnifiedSessionRecency`,
     writer; concurrent send/close fails fast and still reaps.
     Sources: `process_group_unix_test.go:TestProcessCloseKillsEntireGroup,TestProcessContextCancelKillsEntireGroup`; `process_stderr_test.go:TestProcessCapturesBoundedRotatingStderr`; `process_writer_lifecycle_test.go:TestProcessFailedStartDoesNotSpawnWriter,TestProcessNaturalEOFReapsWriter,TestProcessConcurrentSendCloseFailsFastAndReapsWriter`; `api:chat_lifecycle_stderr_test.go:TestProviderStderrPathUsesEffectiveStateDir,TestChatProviderStderrUsesStateDir`.
 
+23. **On-demand history (v4 hello) keeps open, reconnect, and recovery off the
+    whole branch**: a replay target whose `OnDemandHistory()` is true (hello version >= 4)
+    receives ONLY the bounded tail (`hydrationTailBudget = 60` entries) plus the live
+    engine tail as the terminal page; no `segment:"head"` pages are ever emitted, on any
+    path (open, reconnect, resume, recovery). The terminal page carries
+    `historyComplete = (first emitted branch index == 0)`; the resume path computes it as
+    `(cursor first index == 0)`. The complete-branch notice derivation and compaction fold
+    (`deriveCompleteHistoryBranch`) still run root-to-leaf before the terminal commit, so
+    compaction counts and transcript notices match v3 exactly. `entry.appended` is emitted
+    only to v4 subscribers and only for `message` entries, with `textPrefix` = the first
+    128 Unicode code points of the concatenated text blocks exactly as persisted. Older
+    pages are served by `GET /api/workspaces/{wsId}/chats/{chatId}/history`
+    (limit clamped to [1,100], page bounded by coldhistory `PageBytes` = 4 MiB;
+    409 `history_cursor_stale` on session mismatch, off-branch `before`, or external-write
+    quarantine; 404 on unknown/moved chat or missing session file). The client loader keeps
+    at most one request in flight per pane, fences every request by connection generation
+    and history session id, resyncs at most once per 409, and never resyncs on 404.
+    Overflow recovery uses the capacity-1 wake channel as a signal only (coalesced),
+    per-attempt pending ownership, transfer release by session+key+instance, and a budget
+    of 3 consecutive automatic recoveries reset after 120 s healthy or an explicit
+    `chat.create`; exhaustion closes via the single `subscriber_recovery_exhausted` path.
+    Progressive gating keys off `progressiveHistoryVersion = 3`, never off
+    `ContractVersion`, so a contract bump never demotes v3 clients to the v2 stream.
+    Sources: `.omo/plans/on-demand-history.md` (G4-G14); `session.go:34-36,2085-2160,2472-2530`
+    (`hydrateEntriesValidated`, `deriveCompleteHistoryBranch`); `internal/wsbridge/subscriber.go`
+    (`ProgressiveHistory`, `deliveredCursor`, `noteHistoryDelivered`); `internal/wsbridge/bridge.go`
+    (`recoverSubscriber`, `exhaustSubscriberRecovery`, budget reset); `internal/coldhistory/coldhistory.go`;
+    `internal/wsbridge/hello_progressive_test.go`, `replay_live_overlap_e2e_test.go`;
+    `internal/session/broadcast_history_delivery_test.go`, `broadcast_transfer_ownership_test.go`,
+    `broadcast_transfer_recovery_test.go`. See `docs/v2/stage15-on-demand-history.md`.
+
 ## ROUTE PARITY TABLE
 
 All v1 routes from `internal/api/router.go`. v2 must keep the external HTTP contract unless
@@ -270,6 +301,8 @@ either engine-independent (fs/layout/system/auth) or is the only chat-control su
 | 24 | `PUT /api/layout` | Save UI layout | KEEP (engine-independent) |
 | 25 | `GET /api/system/stats` | Host/system stats for the dashboard | KEEP (engine-independent) |
 
+| 25 | `GET /api/workspaces/{wsId}/chats/{chatId}/history` | On-demand history pages: bounded (100 entries / 4 MiB) branch-order pages before a cursor entry; 409 `history_cursor_stale`; 404 missing chat/file (invariant 23) | NEW |
+
 Engine-adjacent helper behavior that must survive with routes 9-11: 1 MiB JSON body cap
 (`decodeJSON`), store sentinel mapping (404 `ErrNotFound`, 409 `ErrDuplicate`, 500 otherwise),
 and the embedded-SPA static handler with immutable `assets/` caching + no-cache `index.html`
@@ -292,7 +325,8 @@ Server -> SPA (engine/manager to client):
 - `stats` — `{tokens?, cost?, contextUsage?}`.
 - `approval` — approval request `{id, method, title?, message?, options?, prefill?, placeholder?, timeout?}`.
 - `commands` — get_commands inventory in Omo's real schema `{commands[{name, description?, source?, syntax?, sourceInfo?}]}` (invariant 19).
-- `entries` — paged history `{entries, leafId?, final}` — `final` on every frame, bounds per invariant 18.
+- `entries` — paged history `{entries, leafId?, final}`, `final` on every frame, bounds per invariant 18; v4 tail-only hydration and `historyComplete` per invariant 23.
+- `entry.appended`, v4 only, message entries only: persisted entry id `{id, parentId, role, textPrefix, bindingId?}` (invariant 23).
 - `models` — available models `{models[{provider, modelId, name?, input?}]}`.
 - `run.started` — a run began (client prompt or provider wake turn).
 - `run.done` — run settled `{reason}` (only after agent_settled per invariant 16).

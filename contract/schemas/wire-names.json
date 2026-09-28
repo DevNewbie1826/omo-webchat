@@ -8,7 +8,7 @@
       "additionalProperties": false,
       "required": ["contractVersion", "server", "client"],
       "properties": {
-        "contractVersion": { "type": "integer" },
+        "contractVersion": { "type": "integer", "description": "Current wire contract version. v4 adds entry.appended; the minimum accepted client hello remains 2." },
         "server": {
           "type": "object",
           "description": "v2 FrameKind -> wire type emitted on the socket",

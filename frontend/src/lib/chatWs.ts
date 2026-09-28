@@ -78,12 +78,23 @@ type NoticeFrameSeam = Omit<ct.NoticeFrame, "at" | "payload"> & {
  * `entries` stays `unknown` because features construct page payloads from
  * untyped history records (the parser still emits the generated array type).
  */
-type EntriesFrameSeam = Omit<ct.EntriesFrame, "entries" | "final"> & {
+type EntriesFrameSeam = Omit<ct.EntriesFrame, "entries" | "final" | "segment"> & {
   readonly entries: unknown;
   readonly final?: boolean;
-  readonly segment?: "head";
+  readonly segment?: "head" | "preview";
   readonly historyComplete?: boolean;
 };
+
+/** v4 identity hint for a newly persisted message entry. */
+export interface EntryAppendedFrame {
+  readonly type: "entry.appended";
+  readonly sessionId: string;
+  readonly id: string;
+  readonly parentId: string | null;
+  readonly role: string;
+  readonly textPrefix: string;
+  readonly bindingId?: string;
+}
 
 /**
  * Seam adapter: block arguments stay `unknown` at the client boundary —
@@ -174,6 +185,7 @@ export type ChatServerFrame =
   | ct.ModelsFrame
   | ct.QueueFrame
   | EntriesFrameSeam
+  | EntryAppendedFrame
   | ct.CompactionStartedFrame
   | ct.CompactionDoneFrame
   | ct.RunStartedFrame
@@ -243,7 +255,7 @@ export type ChatConnector = (handlers: ChatHandlers) => ChatClient;
  * Wire contract version this client speaks. The server's hello must match;
  * a mismatch warns and proceeds (contract: version skew is never fatal).
  */
-export const CHAT_WIRE_VERSION = 3;
+export const CHAT_WIRE_VERSION = 4;
 export const CHAT_WS_ENDPOINT = "/api/v2/ws";
 
 /** Validate the connector's handshake frame against the generated HelloFrame. */

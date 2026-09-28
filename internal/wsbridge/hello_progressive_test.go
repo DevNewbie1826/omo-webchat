@@ -3,10 +3,12 @@ package wsbridge
 // Contract negotiation for progressive history: a version-2 client keeps the
 // full root-to-leaf stream with no head pages; a version-3 client gets the
 // bounded tail, the terminal live-tail page, then head pages warming the
-// earlier branch newest-first with historyComplete on the last one.
+// earlier branch newest-first with historyComplete on the last one. A
+// version-4 client stops after that terminal page.
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -359,7 +361,7 @@ func TestProgressiveSecondSocketAttachKeepsSequencesIsolated(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	firstConn, firstFrames := connectHistoryVersion(t, h, ContractVersion, 0)
+	firstConn, firstFrames := connectHistoryVersion(t, h, progressiveHistoryVersion, 0)
 	writeClient(t, firstConn, map[string]any{"type": "chat.create", "wsId": h.workspace.ID, "chatId": "live-progressive"})
 	firstPages := awaitWireHistory(t, firstFrames, progressiveSecondSocketComplete)
 	if len(firstPages) != 5 {
@@ -371,7 +373,7 @@ func TestProgressiveSecondSocketAttachKeepsSequencesIsolated(t *testing.T) {
 	baseline, _, _ := firstFrames.takeDecoded(0)
 	baselineCount := len(baseline)
 
-	secondConn, secondFrames := connectHistoryVersion(t, h, ContractVersion, 0)
+	secondConn, secondFrames := connectHistoryVersion(t, h, progressiveHistoryVersion, 0)
 	writeClient(t, secondConn, map[string]any{"type": "chat.create", "wsId": h.workspace.ID, "chatId": "live-progressive"})
 	secondPages := awaitWireHistory(t, secondFrames, progressiveSecondSocketComplete)
 
@@ -442,5 +444,118 @@ func TestProgressiveSecondSocketAttachKeepsSequencesIsolated(t *testing.T) {
 		if frame.typ == "error" {
 			t.Fatalf("first socket received an error during second attach: %s", frame.raw)
 		}
+	}
+}
+
+// TestOnDemandVersionFourNoCursorWire mirrors the v3 no-cursor golden: the
+// same 300-entry fixture, but a version-4 hello stops after the bounded tail
+// and the terminal page. No segment:"head" page is part of that wire.
+func TestOnDemandVersionFourNoCursorWire(t *testing.T) {
+	h := newHistoryBridgeHarness(t, historyE2ETestBudget)
+	path := filepath.Join(t.TempDir(), "review.jsonl")
+	body := "{\"type\":\"session\",\"version\":3,\"id\":\"review-durable\",\"cwd\":\"/tmp\"}\n"
+	for i := 0; i < 300; i++ {
+		var parent any
+		if i > 0 {
+			parent = fmt.Sprintf("e-%03d", i-1)
+		}
+		raw, err := json.Marshal(map[string]any{"type": "message", "id": fmt.Sprintf("e-%03d", i), "parentId": parent, "message": map[string]any{"role": "user", "content": "fixture"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body += string(raw) + "\n"
+	}
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.daemon.LoadSessionFile(path); err != nil {
+		t.Fatal(err)
+	}
+	h.saveChat(t, "review-chat", path)
+	conn, frames := connectHistoryVersion(t, h, onDemandHistoryVersion, 0)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": h.workspace.ID, "chatId": "review-chat"})
+
+	deadline := time.Now().Add(historyE2ETestBudget)
+	scanned := 0
+	var wire bytes.Buffer
+	complete := false
+	for !time.Now().After(deadline) {
+		batch, closed, signal := frames.takeDecoded(scanned)
+		scanned += len(batch)
+		for _, f := range batch {
+			if f.typ == "error" {
+				t.Fatalf("wire error: %s", f.raw)
+			}
+			if f.typ != "entries" {
+				continue
+			}
+			var data map[string]any
+			if err := json.Unmarshal(f.raw, &data); err != nil {
+				t.Fatal(err)
+			}
+			if segment, _ := data["segment"].(string); segment != "" {
+				t.Fatalf("v4 entries frame carries segment %q: %s", segment, f.raw)
+			}
+			wire.Write(f.raw)
+			wire.WriteByte('\n')
+			if f.final {
+				complete = true
+			}
+		}
+		if complete {
+			if closed {
+				break
+			}
+			if err := frames.waitAfter(signal, 500*time.Millisecond); err != nil {
+				break
+			}
+			continue
+		}
+		if closed {
+			t.Fatal("closed")
+		}
+		if err := frames.waitAfter(signal, time.Until(deadline)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !complete {
+		t.Fatal("timed out waiting for the v4 terminal page")
+	}
+
+	lines := bytes.Split(bytes.TrimRight(wire.Bytes(), "\n"), []byte("\n"))
+	if len(lines) != 2 {
+		t.Fatalf("v4 entries frames = %d, want tail and terminal only", len(lines))
+	}
+	var tail, terminal map[string]any
+	if err := json.Unmarshal(lines[0], &tail); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(lines[1], &terminal); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := tail["entries"].([]any)
+	if tail["final"] == true || len(entries) != 60 {
+		t.Fatalf("tail page final=%v entries=%d, want non-final 60", tail["final"], len(entries))
+	}
+	first, _ := entries[0].(map[string]any)
+	last, _ := entries[len(entries)-1].(map[string]any)
+	if first["id"] != "e-240" || last["id"] != "e-299" {
+		t.Fatalf("tail range %v..%v, want e-240..e-299", first["id"], last["id"])
+	}
+	terminalEntries, _ := terminal["entries"].([]any)
+	if terminal["final"] != true || terminal["historyComplete"] != false || terminal["leafId"] != "e-299" || len(terminalEntries) != 0 || terminal["segment"] != nil {
+		t.Fatalf("terminal = %s", lines[1])
+	}
+	if out := os.Getenv("REVIEW_WIRE_DIR"); out != "" {
+		if err := os.WriteFile(filepath.Join(out, "wire-v4.jsonl"), wire.Bytes(), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	baseline, err := os.ReadFile(filepath.Join("testdata", "resume-wire", "wire-v4.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(baseline, wire.Bytes()) {
+		t.Fatalf("v4 no-cursor wire changed: baseline=%d actual=%d bytes", len(baseline), wire.Len())
 	}
 }

@@ -37,6 +37,59 @@
   min-width: 0;
 }
 
+/* Measurement-gated paint (ChatTranscript settle gate): a batch admission
+   lays its rows out with frozen estimates for a frame or two while real
+   heights measure in. Keep the layer invisible — but laid out, unlike
+   display:none — until the gate reveals it, so the first visible frame
+   already shows measured geometry and nothing visibly jumps. */
+.th-chat-history--settling {
+  visibility: hidden;
+}
+
+/* The sentinel never contributes height. Older-history status floats above
+   the scrollport without moving its rows; failed-empty status stays in flow
+   because there is no committed message to anchor. */
+.th-chat-history-loading,
+.th-chat-history-error {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 1;
+  background: var(--th-bg);
+}
+
+.th-chat-history-loading,
+.th-chat-history-error,
+.th-chat-history-failed {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--th-space-2);
+  padding: var(--th-space-2) 0;
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  color: var(--th-text-dim);
+}
+
+.th-chat-history-error,
+.th-chat-history-failed {
+  color: var(--th-error);
+}
+
+.th-chat-history-spinner {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border: 1px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: th-chat-status-spin 700ms linear infinite;
+}
+
+.th-chat-history-retry {
+  flex: none;
+}
+
 .th-chat-markdown {
   white-space: normal;
 }

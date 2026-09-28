@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
+	"net"
 	"sync"
 	"time"
 
@@ -19,6 +21,7 @@ type subscriberAttempt struct {
 	readyOnce    sync.Once
 	detachSignal chan struct{}
 	detachOnce   sync.Once
+	recovery     *subscriberRecovery
 }
 
 func newSubscriberAttempt() *subscriberAttempt {
@@ -30,21 +33,30 @@ func newSubscriberAttempt() *subscriberAttempt {
 // activation and is written synchronously, with the connection deadline
 // bounding each page.
 type subscriber struct {
-	resume         *coldhistory.ResumeCursor
-	conn           *connection
-	mu             sync.Mutex
-	active         bool
-	detached       bool
-	detachReason   error
-	replaying      bool
-	treatAsResumed bool
-	claim          queryBinding
-	bindingID      string
-	transferID     string
-	recoveryID     string
-	pending        []session.Frame
-	overflowed     bool
-	attempt        *subscriberAttempt
+	resume          *coldhistory.ResumeCursor
+	conn            *connection
+	mu              sync.Mutex
+	active          bool
+	detached        bool
+	detachReason    error
+	replaying       bool
+	treatAsResumed  bool
+	claim           queryBinding
+	bindingID       string
+	transferID      string
+	transfer        *session.SubscriberOverflowTransfer
+	abandoned       bool
+	automatic       bool
+	deliveredCursor *coldhistory.ResumeCursor
+	historyCursor   coldhistory.ResumeCursor
+	historyWritten  bool
+	historyFailed   bool
+	lastWriteError  error
+	lastWriteKind   session.FrameKind
+	lastWriteSize   int
+	pending         []session.Frame
+	overflowed      bool
+	attempt         *subscriberAttempt
 }
 
 func newSubscriber(c *connection) *subscriber {
@@ -95,6 +107,11 @@ func (s *subscriber) DiscardHydrationAttempt() {
 	s.bindingID = rand.Text()
 	s.detached = false
 	s.detachReason = nil
+	s.deliveredCursor = nil
+	s.historyCursor = coldhistory.ResumeCursor{}
+	s.historyWritten = false
+	s.historyFailed = false
+	s.lastWriteError = nil
 	s.attempt = newSubscriberAttempt()
 }
 func (s *subscriber) ReplayBackpressure() (<-chan struct{}, bool) {
@@ -103,14 +120,22 @@ func (s *subscriber) ReplayBackpressure() (<-chan struct{}, bool) {
 	return s.attempt.detachSignal, s.replaying
 }
 
+func (s *subscriber) HistoryResume() *coldhistory.ResumeCursor { return s.resume }
+
 // ProgressiveHistory reports whether the socket's client hello negotiated a
 // contract version that accepts segmented head pages after the terminal tail
 // page.
-func (s *subscriber) HistoryResume() *coldhistory.ResumeCursor { return s.resume }
-
 func (s *subscriber) ProgressiveHistory() bool {
-	return s.conn.clientHelloVersion() >= ContractVersion
+	return s.conn.clientHelloVersion() >= progressiveHistoryVersion
 }
+
+// OnDemandHistory reports whether the socket's client hello negotiated a
+// bounded tail without warm head pages.
+func (s *subscriber) OnDemandHistory() bool {
+	return s.conn.clientHelloVersion() >= onDemandHistoryVersion
+}
+
+var _ session.OnDemandHistorySubscriber = (*subscriber)(nil)
 
 func (s *subscriber) Deliver(f session.Frame) { _ = s.DeliverFrame(f) }
 func (s *subscriber) DeliverFrame(f session.Frame) error {
@@ -120,8 +145,12 @@ func (s *subscriber) DeliverFrame(f session.Frame) error {
 		attempt.readyOnce.Do(func() { close(attempt.ready) })
 	}
 	if s.detached {
+		err := s.detachReason
+		if err == nil {
+			err = session.ErrSubscriberDetached
+		}
 		s.mu.Unlock()
-		return nil
+		return err
 	}
 	if !s.active {
 		if len(s.pending) >= preActivationBufferCapacity {
@@ -196,6 +225,9 @@ func (s *subscriber) activate(ctx context.Context, reattach bool) error {
 			go s.Cancel()
 			return nil
 		}
+		if f.Kind == session.FrameEntries {
+			s.noteHistoryDelivered(f)
+		}
 	}
 	s.pending = nil
 	return nil
@@ -247,15 +279,33 @@ func (s *subscriber) wrapDetach(detach func()) func() {
 }
 func (s *subscriber) Cancel() error {
 	s.signalDetach()
-	s.conn.logger().Warn("subscriber canceled; closing websocket cleanly", "reason", "subscriber_cancel")
+	s.mu.Lock()
+	err, kind, size := s.lastWriteError, s.lastWriteKind, s.lastWriteSize
+	s.mu.Unlock()
+	cause := "detached"
+	var timeout net.Error
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		cause = "write_timeout"
+	} else if err != nil || s.conn.closed.Load() {
+		cause = "closed"
+	}
+	s.conn.logger().Warn("subscriber canceled; closing websocket cleanly", "reason", "subscriber_cancel", "cause", cause, "kind", kind, "size", size, "error", err)
 	s.conn.closeWebSocket(1011, "subscriber canceled")
 	return nil
 }
 
 func (s *subscriber) CancelDelivery() error {
 	s.mu.Lock()
-	s.recoveryID = s.bindingID
 	attempt := s.attempt
+	if attempt.recovery == nil {
+		s.conn.stateMu.Lock()
+		generation := uint64(0)
+		if s.conn.sub == s && s.conn.sess != nil {
+			generation = s.conn.bindingGeneration
+		}
+		s.conn.stateMu.Unlock()
+		attempt.recovery = &subscriberRecovery{sub: s, attempt: attempt, bindingID: s.bindingID, generation: generation, occurredAt: s.conn.now()}
+	}
 	s.mu.Unlock()
 	s.signalDetachAttemptWithReason(attempt, session.ErrSubscriberOverflow)
 	return nil
@@ -263,36 +313,147 @@ func (s *subscriber) CancelDelivery() error {
 
 func (s *subscriber) RecoverSubscriberOverflow() {
 	s.mu.Lock()
-	recoveryID := s.recoveryID
+	if recovery := s.attempt.recovery; recovery != nil {
+		recovery.ready = true
+	}
 	s.mu.Unlock()
-	s.conn.enqueueSubscriberRecovery(subscriberRecovery{sub: s, bindingID: recoveryID})
+	s.signalRecovery()
 }
 
-func (s *subscriber) bindingIdentity() string {
+func (s *subscriber) signalRecovery() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.bindingID
+	recovery := s.attempt.recovery
+	if recovery == nil || !recovery.ready || recovery.taken {
+		return
+	}
+	s.conn.stateMu.Lock()
+	if s.conn.sub == s && s.conn.sess != nil && recovery.generation == 0 {
+		recovery.generation = s.conn.bindingGeneration
+	}
+	s.conn.stateMu.Unlock()
+	s.conn.enqueueSubscriberRecovery(*recovery)
+}
+
+// The handle identifies the broadcaster AND the exact retained transfer. A
+// late callback after unbind must release its own instance, not a newer one.
+func (s *subscriber) RetainSubscriberOverflowTransfer(transfer *session.SubscriberOverflowTransfer) {
+	s.mu.Lock()
+	if s.abandoned || s.conn.closed.Load() {
+		s.mu.Unlock()
+		transfer.Release()
+		return
+	}
+	old := s.transfer
+	s.transfer = transfer
+	s.mu.Unlock()
+	if old != nil {
+		old.Release()
+	}
+}
+
+func (s *subscriber) releaseTransfer() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.abandoned = true
+	transfer := s.transfer
+	s.transfer = nil
+	s.mu.Unlock()
+	if transfer != nil {
+		transfer.Release()
+	}
 }
 
 func (s *subscriber) SubscriberOverflowTransferKey() string { return s.transferID }
 
+func (s *subscriber) SubscriberOverflowTransfer() *session.SubscriberOverflowTransfer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transfer
+}
+
 func (s *subscriber) deliver(f session.Frame) error {
-	wire, err := mapFrame(f, s.claim.chatID, s.treatAsResumed)
+	s.historyWritten = false
+	wire, err := mapFrame(f, s.claim.chatID, s.treatAsResumed, s.conn.clientHelloVersion())
 	if err != nil {
 		return err
 	}
 	if wire == nil {
 		return nil
 	}
-	if err := s.conn.writeIfCurrent(s.claim, wire); err != nil {
+	written, err := s.conn.writeIfCurrentResult(s.claim, wire)
+	if err != nil {
+		s.lastWriteError, s.lastWriteKind = err, f.Kind
+		if data, marshalErr := json.Marshal(wire); marshalErr == nil {
+			s.lastWriteSize = len(data)
+		}
 		return err
 	}
+	s.historyWritten = written
 	if f.Kind == session.FrameReady {
 		s.conn.startTodoWatch(s.claim)
 	} else if todoInvalidation(f) {
 		s.conn.markTodoDirty(s.claim)
 	}
 	return nil
+}
+
+// HistoryFrameDelivered is called by the subscription pump only after a
+// successful delivery, before the terminal replay barrier is acknowledged.
+func (s *subscriber) HistoryFrameDelivered(f session.Frame) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.noteHistoryDelivered(f)
+}
+
+func (s *subscriber) noteHistoryDelivered(f session.Frame) {
+	if f.Kind == session.FrameError && s.historyWritten {
+		s.historyFailed = true
+		s.historyWritten = false
+		return
+	}
+	page, ok := f.Data.(session.EntriesFrame)
+	if f.Kind != session.FrameEntries || !ok || !s.historyWritten {
+		return
+	}
+	s.historyWritten = false
+	if page.Resume != nil && s.historyCursor.SessionID == "" {
+		s.historyCursor = *page.Resume
+	}
+	if page.HistorySessionID != "" {
+		s.historyCursor.SessionID = page.HistorySessionID
+	} else if s.historyCursor.SessionID == "" {
+		s.historyCursor.SessionID = f.SessionID
+	}
+	var first, last string
+	for _, raw := range page.Entries {
+		var entry struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(raw, &entry) == nil && entry.ID != "" {
+			if first == "" {
+				first = entry.ID
+			}
+			last = entry.ID
+		}
+	}
+	if first != "" && (s.historyCursor.FirstEntryID == "" || page.Segment == "head") {
+		s.historyCursor.FirstEntryID = first
+	}
+	if last != "" && page.Segment != "head" {
+		s.historyCursor.LastEntryID = last
+	}
+	if page.HistoryComplete != nil {
+		s.historyCursor.HistoryComplete = *page.HistoryComplete
+	} else if page.Final {
+		s.historyCursor.HistoryComplete = true
+	}
+	if (page.Final || s.deliveredCursor != nil) && s.historyCursor.SessionID != "" && s.historyCursor.FirstEntryID != "" && s.historyCursor.LastEntryID != "" {
+		cursor := s.historyCursor
+		s.deliveredCursor = &cursor
+	}
 }
 
 func (c *connection) subscriberClaim(s *subscriber) (queryBinding, bool) {
@@ -307,7 +468,43 @@ func (c *connection) subscriberClaim(s *subscriber) (queryBinding, bool) {
 	return claim, ok
 }
 
-func mapFrame(f session.Frame, chatID string, reattach bool) (any, error) {
+func mapFrame(f session.Frame, chatID string, reattach bool, helloVersion ...int) (any, error) {
+	// Callers that omit helloVersion are mapped as the current contract.
+	// deliver passes the socket hello so older clients skip entry.appended.
+	version := ContractVersion
+	if len(helloVersion) > 0 {
+		version = helloVersion[0]
+	}
+	if f.Kind == session.FrameEntryAppended {
+		if version < onDemandHistoryVersion {
+			return nil, nil
+		}
+		if chatID == "" {
+			chatID = f.SessionID
+		}
+		info, ok := f.Data.(session.EntryAppendedInfo)
+		if !ok {
+			if pointed, pointedOK := f.Data.(*session.EntryAppendedInfo); pointedOK && pointed != nil {
+				info, ok = *pointed, true
+			}
+		}
+		if !ok {
+			return mergedFrame("entry.appended", chatID, f.Data)
+		}
+		out := wscontract.EntryAppendedFrame{
+			Type:       "entry.appended",
+			SessionID:  chatID,
+			ID:         info.ID,
+			ParentID:   info.ParentID,
+			Role:       info.Role,
+			TextPrefix: info.TextPrefix,
+		}
+		if f.BindingID != "" {
+			bindingID := f.BindingID
+			out.BindingID = &bindingID
+		}
+		return out, nil
+	}
 	typ, ok := wscontract.FrameKindToWireName[string(f.Kind)]
 	if !ok {
 		return nil, nil

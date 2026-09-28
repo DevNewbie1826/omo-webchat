@@ -9,7 +9,7 @@
       "required": ["type", "version", "serverVersion"],
       "properties": {
         "type": { "const": "hello" },
-        "version": { "type": "integer", "description": "Wire contract version this server speaks" },
+        "version": { "type": "integer", "description": "Wire contract version this server speaks. Current contract is 4; hello versions 2 through 4 are accepted." },
         "serverVersion": { "type": "string", "description": "Human-readable server build identity" }
       }
     },
@@ -19,7 +19,7 @@
       "required": ["type", "version"],
       "properties": {
         "type": { "const": "hello" },
-        "version": { "type": "integer", "description": "Wire contract version the client expects" }
+        "version": { "type": "integer", "description": "Wire contract version the client expects. Clients send version 4; versions 2 through 4 are accepted." }
       }
     }
   }

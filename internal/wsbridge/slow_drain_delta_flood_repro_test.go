@@ -2,8 +2,8 @@ package wsbridge
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
+	"net"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,27 +14,31 @@ import (
 )
 
 // slowDrainCollector reproduces a busy browser tab: its main thread consumes
-// frames slower than the engine produces them, so every incoming message is
-// held for a fixed delay while slow is armed. That throttles the socket read
-// loop and creates real TCP backpressure against the server-side subscriber
-// pump, unlike lock-holding tests which stall the pump in process.
+// frames slower than the engine produces them. Each eight ingested deltas
+// grant at most one read while slow is armed. This creates real TCP
+// backpressure without confusing queue overflow with a wall-clock write
+// timeout on a busy test machine.
 type slowDrainCollector struct {
 	collector
-	slow atomic.Bool
+	slow    atomic.Bool
+	credits chan struct{}
+	resume  chan struct{}
 }
 
 func (c *slowDrainCollector) OnMessage(conn *gws.Conn, m *gws.Message) {
 	if c.slow.Load() {
-		time.Sleep(15 * time.Millisecond)
+		select {
+		case <-c.credits:
+		case <-c.resume:
+		}
 	}
 	c.collector.OnMessage(conn, m)
 }
 
 func connectSlowDrain(t *testing.T, h *inPlaceBridgeHarness) (*gws.Conn, *slowDrainCollector) {
 	t.Helper()
-	frames := &slowDrainCollector{}
+	frames := &slowDrainCollector{credits: make(chan struct{}, 1), resume: make(chan struct{})}
 	frames.notify = make(chan struct{}, 64)
-	frames.slow.Store(true)
 	conn, _, err := gws.NewClient(frames, &gws.ClientOption{Addr: "ws" + strings.TrimPrefix(h.server.URL, "http")})
 	if err != nil {
 		t.Fatal(err)
@@ -43,18 +47,6 @@ func connectSlowDrain(t *testing.T, h *inPlaceBridgeHarness) (*gws.Conn, *slowDr
 	frames.next(t, "hello")
 	writeClient(t, conn, map[string]any{"type": "hello", "version": 2})
 	return conn, frames
-}
-
-func (c *slowDrainCollector) transportClosed() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.streamClosed
-}
-
-func (c *slowDrainCollector) snapshot() []json.RawMessage {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]json.RawMessage(nil), c.frames...)
 }
 
 // A live turn streams message deltas far faster than a busy browser tab can
@@ -68,6 +60,20 @@ func TestDeltaFloodWithSlowDrainingClientKeepsTransportAlive(t *testing.T) {
 	conn, frames := connectSlowDrain(t, h)
 	defer func() { _ = conn.WriteClose(1000, nil) }()
 	attachAndAwaitHistory(t, conn, &frames.collector, "slow-drain-flood")
+	serverTCP, ok := h.soleServerConnection(t).socket.NetConn().(*net.TCPConn)
+	if !ok {
+		t.Fatal("expected a real TCP server socket")
+	}
+	clientTCP, ok := conn.NetConn().(*net.TCPConn)
+	if !ok {
+		t.Fatal("expected a real TCP client socket")
+	}
+	if err := serverTCP.SetWriteBuffer(4096); err != nil {
+		t.Fatal(err)
+	}
+	if err := clientTCP.SetReadBuffer(4096); err != nil {
+		t.Fatal(err)
+	}
 
 	sess, ok := h.manager.Get("slow-drain-flood")
 	if !ok || sess == nil {
@@ -76,6 +82,14 @@ func TestDeltaFloodWithSlowDrainingClientKeepsTransportAlive(t *testing.T) {
 	observer := &overflowNoticeObserver{frames: make(chan session.Frame, 4096)}
 	detach := sess.Attach(observer)
 	defer detach()
+	frames.slow.Store(true)
+	defer func() {
+		select {
+		case <-frames.resume:
+		default:
+			close(frames.resume)
+		}
+	}()
 
 	h.daemon.EmitSession(h.path, map[string]any{"type": "agent_start"})
 	awaitSlowDrainObserver(t, observer)
@@ -93,6 +107,12 @@ func TestDeltaFloodWithSlowDrainingClientKeepsTransportAlive(t *testing.T) {
 			},
 		})
 		awaitSlowDrainObserver(t, observer)
+		if i%8 == 7 {
+			select {
+			case frames.credits <- struct{}{}:
+			default:
+			}
+		}
 	}
 
 	h.daemon.EmitSession(h.path, map[string]any{
@@ -104,13 +124,23 @@ func TestDeltaFloodWithSlowDrainingClientKeepsTransportAlive(t *testing.T) {
 	awaitSlowDrainObserver(t, observer)
 
 	frames.slow.Store(false)
+	close(frames.resume)
 
 	sawFinal, sawDone := false, false
+	deltas := 0
 	scanned := 0
-	scan := func() {
-		all := frames.snapshot()
-		for ; scanned < len(all); scanned++ {
-			raw := all[scanned]
+	deadline := time.Now().Add(45 * time.Second)
+	for !(sawFinal && sawDone) {
+		batch, closed, generation := frames.takeDecoded(scanned)
+		scanned += len(batch)
+		if closed {
+			t.Fatal("transport was torn down during a delta flood (subscriber overflow storm)")
+		}
+		for _, frame := range batch {
+			raw := frame.raw
+			if frame.typ == "messageDelta" {
+				deltas++
+			}
 			if bytes.Contains(raw, []byte(`"final answer"`)) && bytes.Contains(raw, []byte(`"message"`)) {
 				sawFinal = true
 			}
@@ -121,21 +151,15 @@ func TestDeltaFloodWithSlowDrainingClientKeepsTransportAlive(t *testing.T) {
 				t.Fatalf("subscriber_overflow error frame observed: %s", raw)
 			}
 		}
-	}
-	deadline := time.Now().Add(45 * time.Second)
-	for !(sawFinal && sawDone) {
-		if frames.transportClosed() {
-			t.Fatal("transport was torn down during a delta flood (subscriber overflow storm)")
-		}
-		scan()
 		if sawFinal && sawDone {
 			break
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("terminal frames never arrived: final=%v done=%v closed=%v undrained=%d",
-				sawFinal, sawDone, frames.transportClosed(), len(frames.snapshot())-scanned)
+		if err := frames.waitAfter(generation, time.Until(deadline)); err != nil {
+			t.Fatalf("terminal frames never arrived: final=%v done=%v error=%v", sawFinal, sawDone, err)
 		}
-		time.Sleep(25 * time.Millisecond)
+	}
+	if deltas == 0 || deltas >= flood {
+		t.Fatalf("expected real delivery and preview shedding under TCP backpressure, delivered %d/%d deltas", deltas, flood)
 	}
 
 	h.daemon.EmitSession(h.path, map[string]any{"type": "agent_start"})
@@ -143,22 +167,22 @@ func TestDeltaFloodWithSlowDrainingClientKeepsTransportAlive(t *testing.T) {
 	sawRestart := false
 	deadline = time.Now().Add(10 * time.Second)
 	for !sawRestart {
-		if frames.transportClosed() {
+		batch, closed, generation := frames.takeDecoded(scanned)
+		scanned += len(batch)
+		if closed {
 			t.Fatal("transport did not survive the flood for the next turn")
 		}
-		all := frames.snapshot()
-		for ; scanned < len(all); scanned++ {
-			if bytes.Contains(all[scanned], []byte(`"run.started"`)) {
+		for _, frame := range batch {
+			if bytes.Contains(frame.raw, []byte(`"run.started"`)) {
 				sawRestart = true
 			}
 		}
 		if sawRestart {
 			break
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("post-flood turn never produced run.started")
+		if err := frames.waitAfter(generation, time.Until(deadline)); err != nil {
+			t.Fatalf("post-flood turn never produced run.started: %v", err)
 		}
-		time.Sleep(25 * time.Millisecond)
 	}
 }
 

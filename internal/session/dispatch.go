@@ -249,6 +249,9 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		s.rememberRecentMessageEntryLocked(entry)
 		s.deriveEntryNoticeLocked(entry)
 		s.publishShownCustomEntryLocked(ev)
+		if info, ok := messageEntryAppendedInfo(entry); ok {
+			s.publishLocked(Frame{Kind: FrameEntryAppended, SessionID: s.durableID, Data: info})
+		}
 	case "continuation_error":
 		// Observed wire event: the engine's continuation failure text is the
 		// event payload. Publish it as a durable notice, verbatim.

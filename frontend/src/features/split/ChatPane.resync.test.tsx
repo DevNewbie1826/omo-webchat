@@ -1,10 +1,12 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatConnector, ChatServerFrame } from "../../lib/chatWs";
+import type { ChatClientFrame, ChatConnector, ChatServerFrame } from "../../lib/chatWs";
 import { I18nContext, translate, type I18nValue } from "../../i18n";
 import { messageText } from "./chatEntries";
 import { ChatPane } from "./ChatPane";
+import { ChatTranscript } from "./ChatTranscript";
+import { mergeTranscriptItems } from "./useChatFrameState";
 import { useChatSession } from "./useChatSession";
 import {
 	chatSession,
@@ -46,6 +48,7 @@ function settleInitial(deliver: (frame: ChatServerFrame) => void): void {
 interface SessionProbeState {
 	readonly connected: boolean;
 	readonly historyStatus: "loading" | "loaded" | "failed";
+	readonly historyFailedEmpty: boolean;
 	readonly resyncBusy: boolean;
 	readonly resyncDisabled: boolean;
 }
@@ -56,14 +59,16 @@ function renderSessionProbe(root: Root): {
 	readonly disconnect: () => void;
 	readonly resync: () => boolean;
 	readonly state: () => SessionProbeState;
+	readonly sent: ChatClientFrame[];
 } {
 	let handlers: Parameters<ChatConnector>[0] | undefined;
 	let resync = (): boolean => false;
 	let state: SessionProbeState | undefined;
+	const sent: ChatClientFrame[] = [];
 	const connect: ChatConnector = (nextHandlers) => {
 		handlers = nextHandlers;
 		nextHandlers.onOpen?.();
-		return { send: vi.fn(() => true), close: vi.fn() };
+		return { send: vi.fn((frame) => { sent.push(frame); return true; }), close: vi.fn() };
 	};
 	function Probe() {
 		const chat = useChatSession(chatSession, connect);
@@ -71,10 +76,27 @@ function renderSessionProbe(root: Root): {
 		state = {
 			connected: chat.connected,
 			historyStatus: chat.historyStatus,
+			historyFailedEmpty: chat.historyFailedEmpty,
 			resyncBusy: chat.resyncBusy,
 			resyncDisabled: chat.resyncDisabled,
 		};
-		return <div data-testid="messages">{chat.messages.map(messageText).join("|")}</div>;
+		return <>
+			<div data-testid="messages">{chat.messages.map(messageText).join("|")}</div>
+			<ChatTranscript
+				items={mergeTranscriptItems(chat.messages, [])}
+				streaming={chat.streaming}
+				thinking={chat.thinking}
+				toolCalls={chat.toolCalls}
+				doneReason={chat.doneReason}
+				error={chat.error}
+				restoreVersion={chat.restoreVersion}
+				focused
+				historyLoaded={chat.historyLoaded}
+				olderHistory={chat.olderHistory}
+				historyFailedEmpty={chat.historyFailedEmpty}
+				onRetryHistory={chat.retryHistory}
+			/>
+		</>;
 	}
 	act(() => {
 		root.render(
@@ -88,6 +110,7 @@ function renderSessionProbe(root: Root): {
 		reconnect: () => handlers?.onOpen?.(),
 		disconnect: () => handlers?.onClose?.(1006),
 		resync: () => resync(),
+		sent,
 		state: () => {
 			if (!state) throw new Error("session probe did not render");
 			return state;
@@ -162,6 +185,141 @@ describe("ChatPane resync", () => {
 		});
 		const transcript = requireElement(container.querySelector('[data-testid="messages"]'), "message probe");
 		expect(transcript.textContent).toContain("reconnect branch");
+	});
+
+	it("retries failed empty history after a socket reconnect and second terminal error", () => {
+		const probe = renderSessionProbe(root);
+		const fail = () => probe.deliver({
+			type: "error", sessionId: "chat-1", code: "incomplete_history", message: "history failed",
+		});
+		act(() => {
+			probe.deliver(ready());
+			fail();
+		});
+		expect(probe.state().historyFailedEmpty).toBe(true);
+		act(() => probe.disconnect());
+		expect(container.querySelector(".th-chat-history-retry")).toBeNull();
+		act(() => {
+			probe.reconnect();
+			probe.deliver(ready());
+			fail();
+		});
+		expect(probe.state()).toMatchObject({
+			connected: true, historyStatus: "failed", resyncBusy: false, resyncDisabled: false,
+			historyFailedEmpty: true,
+		});
+		act(() => requireElement(container.querySelector<HTMLButtonElement>(".th-chat-history-retry"), "retry").click());
+		expect(probe.sent.slice(-2).map((frame) => frame.type)).toEqual(["chat.close", "chat.create"]);
+	});
+
+	it("retries a failed empty history after reconnecting into a stalled replay", () => {
+		vi.useFakeTimers();
+		try {
+			const probe = renderSessionProbe(root);
+			act(() => vi.advanceTimersByTime(30_000));
+			expect(probe.state().historyFailedEmpty).toBe(true);
+			act(() => probe.disconnect());
+			expect(container.querySelector(".th-chat-history-retry")).toBeNull();
+			act(() => {
+				probe.reconnect();
+				probe.deliver(ready());
+				vi.advanceTimersByTime(30_000);
+			});
+			expect(probe.state()).toMatchObject({
+				connected: true, historyStatus: "failed", resyncBusy: false, resyncDisabled: false,
+				historyFailedEmpty: true,
+			});
+			act(() => requireElement(container.querySelector<HTMLButtonElement>(".th-chat-history-retry"), "retry").click());
+			expect(probe.sent.slice(-2).map((frame) => frame.type)).toEqual(["chat.close", "chat.create"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("sends one close and create for each retry across a failed retry and reconnect", () => {
+		const probe = renderSessionProbe(root);
+		const fail = () => probe.deliver({
+			type: "error", sessionId: "chat-1", code: "incomplete_history", message: "history failed",
+		});
+		act(() => {
+			probe.deliver(ready());
+			fail();
+		});
+		const first = probe.sent.length;
+		act(() => requireElement(container.querySelector<HTMLButtonElement>(".th-chat-history-retry"), "retry").click());
+		expect(probe.sent.slice(first).map(frame => frame.type)).toEqual(["chat.close", "chat.create"]);
+		act(() => {
+			probe.deliver(ready());
+			fail();
+		});
+		act(() => probe.disconnect());
+		expect(container.querySelector(".th-chat-history-retry")).toBeNull();
+		act(() => {
+			probe.reconnect();
+			probe.deliver(ready());
+			fail();
+		});
+
+		const second = probe.sent.length;
+		act(() => requireElement(container.querySelector<HTMLButtonElement>(".th-chat-history-retry"), "retry").click());
+
+		expect(probe.sent.slice(second).map(frame => frame.type)).toEqual(["chat.close", "chat.create"]);
+		expect(probe.state()).toMatchObject({ historyStatus: "loading", resyncBusy: true });
+	});
+
+	it("admits only one failed-row retry from two rapid clicks after reconnect", () => {
+		const probe = renderSessionProbe(root);
+		const fail = () => probe.deliver({
+			type: "error", sessionId: "chat-1", code: "incomplete_history", message: "history failed",
+		});
+		act(() => {
+			probe.deliver(ready());
+			fail();
+		});
+		act(() => probe.disconnect());
+		act(() => {
+			probe.reconnect();
+			probe.deliver(ready());
+			fail();
+		});
+		const retry = requireElement(container.querySelector<HTMLButtonElement>(".th-chat-history-retry"), "retry");
+		const before = probe.sent.length;
+		act(() => {
+			retry.click();
+			retry.click();
+		});
+		expect(probe.sent.slice(before).map((frame) => frame.type)).toEqual(["chat.close", "chat.create"]);
+		act(() => fail());
+		expect(probe.state()).toMatchObject({
+			connected: true, historyStatus: "failed", resyncBusy: false, resyncDisabled: false,
+		});
+	});
+
+	it("releases a failed retry's busy marker on a replacement socket's terminal error", () => {
+		const probe = renderSessionProbe(root);
+		act(() => {
+			probe.deliver(ready());
+			probe.deliver({
+				type: "error", sessionId: "chat-1", code: "incomplete_history", message: "history failed",
+			});
+		});
+		act(() => requireElement(container.querySelector<HTMLButtonElement>(".th-chat-history-retry"), "retry").click());
+		expect(probe.state().resyncBusy).toBe(true);
+		// A replacement can open before the old connection's close callback.
+		act(() => {
+			probe.reconnect();
+			probe.deliver(ready());
+			probe.deliver({
+				type: "error", sessionId: "chat-1", code: "incomplete_history", message: "history failed again",
+			});
+		});
+		expect(probe.state()).toMatchObject({
+			connected: true, historyStatus: "failed", resyncBusy: false, resyncDisabled: false,
+			historyFailedEmpty: true,
+		});
+		const before = probe.sent.length;
+		act(() => requireElement(container.querySelector<HTMLButtonElement>(".th-chat-history-retry"), "retry").click());
+		expect(probe.sent.slice(before).map((frame) => frame.type)).toEqual(["chat.close", "chat.create"]);
 	});
 
 	it("closes a ready-only fresh attach before claiming a later resync terminal", () => {

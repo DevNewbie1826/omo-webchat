@@ -34,14 +34,12 @@ export function useChatScroll(
   // measurement compensation queued for replay is moot once the viewport is
   // deliberately sent to the end, so the owner discards it here.
   onScrollToBottomIntent: (() => void) | undefined,
-  historyWarming: boolean,
 ): ChatScrollState {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
   const disclosureAnchorRef = useRef(false);
   const disclosureReaderMotionRef = useRef(false);
-  const readerEngagedRef = useRef(false);
   const lastReaderSignalRef = useRef(-Infinity);
   // Physical contacts survive an explicit handoff; only their ownership is
   // relinquished until genuine movement reclaims it.
@@ -72,7 +70,6 @@ export function useChatScroll(
     const element = scrollRef.current;
     if (!element) return;
     const noteSignal = (): void => {
-      readerEngagedRef.current = true;
       lastReaderSignalRef.current = performance.now();
     };
     const pointerDown = (event: PointerEvent): void => {
@@ -197,12 +194,6 @@ export function useChatScroll(
       return;
     }
     disclosureAnchorRef.current = false;
-    // Only the history fill locks attach intent against unattributed movement.
-    if (historyWarming && !readerEngagedRef.current) {
-      followRef.current = true;
-      setShowScrollToBottom(false);
-      return;
-    }
     const atBottom = element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_EPSILON;
     const readerActive = isReaderInputActive();
     const origin = echoOrigin ?? (readerMotion ? undefined : recentProgrammaticWrite(element.scrollTop)?.origin);
@@ -216,12 +207,9 @@ export function useChatScroll(
       return;
     }
     if (!atBottom && appOwned) return;
-    // During fill, unowned layout echoes remain neutral. Afterwards, browser
-    // find/AT/off-port keyboard navigation need not supply a physical signal.
-    if (!atBottom && historyWarming) return;
     followRef.current = atBottom;
     setShowScrollToBottom(!atBottom);
-  }, [historyWarming, isReaderInputActive, recentProgrammaticWrite]);
+  }, [isReaderInputActive, recentProgrammaticWrite]);
 
   const onScroll = useCallback<UIEventHandler<HTMLDivElement>>(() => {
     const element = scrollRef.current;
@@ -260,7 +248,6 @@ export function useChatScroll(
   useLayoutEffect(() => {
     if (restoredVersionRef.current === restoreVersion) return;
     restoredVersionRef.current = restoreVersion;
-    readerEngagedRef.current = false;
     scrollToBottom();
   }, [restoreVersion, scrollToBottom]);
 

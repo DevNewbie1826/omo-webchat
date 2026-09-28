@@ -77,13 +77,16 @@ func overlapDelta(text string) map[string]any {
 	}
 }
 
-// countToken counts how many times token occurs across the JSON encoding of
-// every collected frame (entries pages carry it once per replayed copy,
-// message frames once per live copy).
+// countToken counts delivered messages: persisted entries in history pages
+// and live message frames. A v4 entry.appended frame identifies a message,
+// but does not deliver another copy of it.
 func countToken(frames []Frame, token string, t *testing.T) int {
 	t.Helper()
 	total := 0
 	for _, f := range frames {
+		if f.Kind != FrameEntries && f.Kind != FrameMessage {
+			continue
+		}
 		b, err := json.Marshal(f)
 		if err != nil {
 			t.Fatalf("marshal frame: %v", err)

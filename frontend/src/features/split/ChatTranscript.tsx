@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type TransitionEvent } from "react";
 import { flushSync } from "react-dom";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { defaultRangeExtractor, measureElement, useVirtualizer } from "@tanstack/react-virtual";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
@@ -162,16 +162,21 @@ export function userTurnStart(items: readonly TranscriptItem[], index: number): 
   return !previous || previous.kind !== "message" || previous.message.role !== "user";
 }
 
+const clientMessageKeys = new WeakMap<UiMessage, string>();
+
 export function transcriptItemKeys(items: readonly TranscriptItem[]): readonly string[] {
-  let messageOrdinal = 0;
   return items.map((item) => {
     if (item.kind === "notice") return `notice:${item.notice.id}`;
     const message = item.message;
-    const fallback = messageOrdinal++;
     if (message.id !== undefined) return `message:${message.id}`;
-    // Notice insertion/dismissal does not change the authoritative message
-    // ordinal, so even legacy id-less messages retain their virtual row.
-    return `message-ordinal:${fallback}`;
+    // Live messages retain their object until replaced by authoritative
+    // entries. Their identity must not depend on where history inserts them.
+    let key = clientMessageKeys.get(message);
+    if (key === undefined) {
+      key = `client:${crypto.randomUUID()}`;
+      clientMessageKeys.set(message, key);
+    }
+    return key;
   });
 }
 
@@ -315,8 +320,19 @@ interface ChatTranscriptProps {
   readonly restoreVersion: number;
   readonly focused: boolean;
   readonly historyLoaded: boolean;
-  readonly historyWarming?: boolean;
+  /** On-demand older-history loader owned by the session hook. The top
+   * sentinel calls loadOlder() when the reader scrolls into it and is not
+   * bottom-following; absent where no older history can exist (tests). */
+  readonly olderHistory?: { readonly state: OlderHistoryViewState; readonly loadOlder: () => void };
+  /** History failed with zero committed messages: an inline, retryable
+   * status row renders at the top of the transcript; notices still render
+   * below it. */
+  readonly historyFailedEmpty?: boolean;
+  /** Retry callback for the failed-empty row (resync/recreate history). */
+  readonly onRetryHistory?: () => void;
 }
+
+export type OlderHistoryViewState = "idle" | "loading" | "error" | "complete" | "unavailable";
 
 export function ChatTranscript({
   items,
@@ -328,7 +344,9 @@ export function ChatTranscript({
   restoreVersion,
   focused,
   historyLoaded,
-  historyWarming = false,
+  olderHistory,
+  historyFailedEmpty = false,
+  onRetryHistory,
   mediaSource,
 }: ChatTranscriptProps) {
   const { t, fontSize, font } = useT();
@@ -341,7 +359,87 @@ export function ChatTranscript({
   const clearDeferredAdjustment = useCallback(() => {
     deferredAdjustmentRef.current = 0;
   }, []);
-  const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom, holdDisclosurePosition, isFollowing, isReaderInputActive, noteProgrammaticWrite, isRecentProgrammaticWrite } = useChatScroll(restoreVersion, focused, clearDeferredAdjustment, historyWarming);
+  const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom, holdDisclosurePosition, isFollowing, isReaderInputActive, noteProgrammaticWrite, isRecentProgrammaticWrite } = useChatScroll(restoreVersion, focused, clearDeferredAdjustment);
+  // On-demand older history (G9 view): a sentinel above the virtualized rows
+  // is observed against the scrollport with a 600px top margin. When it
+  // enters the margin and the reader is not bottom-following, the next page
+  // loads. The observer only fires on crossings, so each landing while the
+  // reader parks inside the margin re-checks manually to keep paging.
+  const olderState = olderHistory?.state ?? "complete";
+  const sentinelMounted = olderHistory !== undefined && olderState !== "complete" && olderState !== "unavailable";
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const sentinelInViewRef = useRef(false);
+  const olderHistoryRef = useRef(olderHistory);
+  olderHistoryRef.current = olderHistory;
+  const maybeLoadOlder = useCallback((upwardIntent = false) => {
+    const handle = olderHistoryRef.current;
+    if (!historyLoaded || handle === undefined || handle.state !== "idle") return;
+    const scrollport = scrollRef.current;
+    // A short/empty tail cannot emit an upward scroll. Only its explicit
+    // wheel, touch or keyboard path may request a page, never mount/resize
+    // or the previous page's idle transition.
+    if (!upwardIntent && (isFollowing() || scrollport === null
+      || scrollport.scrollHeight <= scrollport.clientHeight)) return;
+    // The hook owns synchronous single-flight admission. It may decline
+    // while disconnected, so a view-side pending flag can never be sound.
+    handle.loadOlder();
+  }, [historyLoaded, isFollowing, scrollRef]);
+  useEffect(() => {
+    const scrollport = scrollRef.current;
+    if (!sentinelMounted || scrollport === null) return;
+    const readUp = (): void => {
+      if (!historyLoaded || scrollport.scrollHeight > scrollport.clientHeight) return;
+      holdDisclosurePosition();
+      maybeLoadOlder(true);
+    };
+    const wheel = (event: WheelEvent): void => { if (event.deltaY < 0) readUp(); };
+    let touchY: number | null = null;
+    const touchStart = (event: TouchEvent): void => { touchY = event.touches[0]?.clientY ?? null; };
+    const touchMove = (event: TouchEvent): void => {
+      const nextY = event.touches[0]?.clientY;
+      if (nextY === undefined) return;
+      if (touchY !== null && nextY > touchY) readUp();
+      touchY = nextY;
+    };
+    const keyDown = (event: KeyboardEvent): void => {
+      if (event.target === scrollport && ["PageUp", "Home", "ArrowUp"].includes(event.key)) readUp();
+    };
+    scrollport.addEventListener("wheel", wheel, { passive: true });
+    scrollport.addEventListener("touchstart", touchStart, { passive: true });
+    scrollport.addEventListener("touchmove", touchMove, { passive: true });
+    scrollport.addEventListener("keydown", keyDown);
+    return () => {
+      scrollport.removeEventListener("wheel", wheel);
+      scrollport.removeEventListener("touchstart", touchStart);
+      scrollport.removeEventListener("touchmove", touchMove);
+      scrollport.removeEventListener("keydown", keyDown);
+    };
+  }, [sentinelMounted, historyLoaded, scrollRef, holdDisclosurePosition, maybeLoadOlder]);
+  useEffect(() => {
+    if (!sentinelMounted) return;
+    const element = sentinelRef.current;
+    const scrollport = scrollRef.current;
+    if (element === null || scrollport === null || typeof IntersectionObserver !== "function") return;
+    const observer = new IntersectionObserver((entries) => {
+      const entry = entries[entries.length - 1];
+      if (entry === undefined) return;
+      sentinelInViewRef.current = entry.isIntersecting;
+      if (entry.isIntersecting) maybeLoadOlder();
+    }, { root: scrollport, rootMargin: "600px 0px 0px 0px" });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [sentinelMounted, scrollRef, maybeLoadOlder]);
+  useEffect(() => {
+    if (!sentinelMounted || olderState !== "idle") return;
+    const element = sentinelRef.current;
+    const scrollport = scrollRef.current;
+    if (element === null || scrollport === null) return;
+    const rootRect = scrollport.getBoundingClientRect();
+    const rect = element.getBoundingClientRect();
+    const topMargin = 600;
+    if (rect.bottom < rootRect.top - topMargin || rect.top > rootRect.bottom) return;
+    maybeLoadOlder();
+  }, [sentinelMounted, olderState, scrollRef, maybeLoadOlder]);
   // Lane width feeding the row-height estimator. Tracked via ResizeObserver
   // so metrics recompute only on an actual width change, never per render.
   const [laneWidth, setLaneWidth] = useState(0);
@@ -602,32 +700,76 @@ export function ChatTranscript({
   const leadingKeyRef = useRef<string | undefined>(undefined);
   const previousStartsRef = useRef(new Map<string, number>());
   const anchorRef = useRef<{ readonly key: string; readonly index: number; readonly start: number } | null>(null);
+  // Keep the old window mounted while a prepend's new rows measure. Rendering
+  // only the estimated window can evict the reader's DOM before compensation.
+  const measuringPrependRef = useRef<readonly string[]>([]);
+  const retainedWindowRef = useRef<readonly string[]>([]);
+  const prependViewportRef = useRef<{
+    readonly key: string;
+    readonly top: number;
+    readonly started: number;
+    frames: number;
+  } | null>(null);
+  const followMeasurementRef = useRef(false);
+  const measuredRowsRef = useRef(new WeakMap<Element, number>());
+  const historyRef = useRef<HTMLDivElement>(null);
   // Row identity is assigned over the FULL merged list before any hiding:
   // an empty assistant completion (invisible but state-retained as a
-  // current-turn tool anchor) permanently occupies its message ordinal, so
+  // current-turn tool anchor) retains its own identity, so
   // it materializing a tool row — or appearing or disappearing — never
   // shifts any other row's key and no visible row remounts. Only after
   // identity assignment are zero-renderable-block rows hidden from the
   // virtualized window.
-  const itemKeys = useMemo(() => transcriptItemKeys(items), [items]);
-  // Mounting each earlier-history chunk changes the scrollport height before
-  // the bottom pin catches up. While following during fill, keep the same
-  // leading row instead; release on completion, reader takeover or a missing
-  // seam (for example an orphan result folded into its loaded invocation).
-  const fillHoldKeyRef = useRef<string | null>(null);
-  if (!historyWarming || !isFollowing()) fillHoldKeyRef.current = null;
-  else if (fillHoldKeyRef.current === null) fillHoldKeyRef.current = itemKeys[0] ?? null;
-  const holdIndex = fillHoldKeyRef.current === null ? 0 : itemKeys.indexOf(fillHoldKeyRef.current);
-  const heldItems = useMemo(() => holdIndex > 0 ? items.slice(holdIndex) : items, [items, holdIndex]);
-  const heldKeys = useMemo(() => holdIndex > 0 ? itemKeys.slice(holdIndex) : itemKeys, [itemKeys, holdIndex]);
-
+  const committedIdentityRef = useRef<{
+    readonly items: readonly TranscriptItem[];
+    readonly keys: readonly string[];
+  }>({ items: [], keys: [] });
+  const itemKeys = useMemo(() => {
+    const canonical = transcriptItemKeys(items);
+    const previous = committedIdentityRef.current;
+    const previousCanonical = transcriptItemKeys(previous.items);
+    const currentIds = new Set(canonical);
+    const retained = new Map(previousCanonical.map((key, index) => [key, previous.keys[index] ?? key]));
+    const foldedTools = new Map<string, string>();
+    const scroll = scrollRef.current;
+    const visibleKey = [...scroll?.querySelectorAll<HTMLElement>(".th-chat-row[data-entry-key]") ?? []]
+      .find((row) => row.getBoundingClientRect().bottom > (scroll?.getBoundingClientRect().top ?? 0))?.dataset["entryKey"];
+    previous.items.forEach((item, index) => {
+      if (item.kind !== "message" || currentIds.has(previousCanonical[index] ?? "")) return;
+      const key = previous.keys[index];
+      if (key === undefined) return;
+      for (const block of item.message.blocks ?? []) {
+        if (block.id === undefined || !["tool", "toolCall", "toolResult"].includes(block.kind)) continue;
+        if (!foldedTools.has(block.id) || key === visibleKey) foldedTools.set(block.id, key);
+      }
+    });
+    // A standalone result at a page boundary becomes part of its invocation.
+    // Keep its presentation identity, not its canonical message id (which
+    // reconciliation still needs). Existing invocations always keep their key.
+    const claimed = new Set(canonical.flatMap((key) => retained.get(key) ?? []));
+    return items.map((item, index) => {
+      const key = canonical[index] ?? "missing";
+      const existing = retained.get(key);
+      if (existing !== undefined) return existing;
+      if (item.kind !== "message") return key;
+      const candidates = (item.message.blocks ?? []).flatMap((block) =>
+        block.id === undefined ? [] : foldedTools.get(block.id) ?? []);
+      const inherited = candidates.find((candidate) => candidate === visibleKey && !claimed.has(candidate))
+        ?? candidates.find((candidate) => !claimed.has(candidate));
+      if (inherited === undefined) return key;
+      claimed.add(inherited);
+      return inherited;
+    });
+  }, [items, scrollRef]);
+  useLayoutEffect(() => {
+    committedIdentityRef.current = { items, keys: itemKeys };
+  }, [items, itemKeys]);
   const { rows, keys } = useMemo(() => {
-    const items = heldItems;
-    const allKeys = heldKeys;
+    const allKeys = itemKeys;
     const rows: TranscriptItem[] = [];
     const keys: string[] = [];
     items.forEach((item, index) => {
-      const key = allKeys[index] ?? `missing:${index}`;
+      const key = allKeys[index]!;
       // Freeze at first key appearance, not at the virtualizer's first request.
       if (!estimateCache.has(key)) estimateCache.set(key, estimateRowHeight(item, rowMetrics));
       if (item.kind === "message" && !hasRenderableContent(item.message)) return;
@@ -676,18 +818,49 @@ export function ChatTranscript({
     // its committed start (not zero). A replaced chat has no surviving row.
     const leading = keys[0];
     if (leading !== leadingKeyRef.current) {
-      if (anchorRef.current === null) {
-        const seam = keys.findIndex((key) => previousStartsRef.current.has(key));
-        const key = keys[seam];
-        const start = key === undefined ? undefined : previousStartsRef.current.get(key);
-        if (seam > 0 && key !== undefined && start !== undefined) {
+      const seam = keys.findIndex((key) => previousStartsRef.current.has(key));
+      const key = keys[seam];
+      const start = key === undefined ? undefined : previousStartsRef.current.get(key);
+      if (seam > 0 && key !== undefined && start !== undefined) {
+        const needsAnchor = anchorRef.current === null;
+        if (needsAnchor) {
           anchorRef.current = { key, index: seam, start };
+        }
+        if (!isFollowing()) {
+          const mounted = [...scrollRef.current?.querySelectorAll<HTMLElement>(".th-chat-row[data-entry-key]") ?? []];
+          const top = scrollRef.current?.scrollTop ?? 0;
+          // Successive pages must keep DOM correction on the warm anchor.
+          // A newly visible predecessor can grow with the next page; holding
+          // it instead would undo warm compensation for the retained row.
+          const retainedAnchor = needsAnchor ? undefined
+            : mounted.find((row) => row.dataset["entryKey"] === anchorRef.current?.key);
+          const visible = retainedAnchor ?? mounted.find((row) => {
+            const rowKey = row.dataset["entryKey"];
+            const rowStart = rowKey === undefined ? undefined : previousStartsRef.current.get(rowKey);
+            return rowStart !== undefined && rowStart + row.offsetHeight > top
+              && rowKey !== undefined && keys.includes(rowKey);
+          });
+          const visibleKey = visible?.dataset["entryKey"];
+          const visibleStart = visibleKey === undefined ? undefined : previousStartsRef.current.get(visibleKey);
+          if (visible !== undefined && visibleKey !== undefined) {
+            prependViewportRef.current = {
+              key: visibleKey,
+              top: visible.getBoundingClientRect().top - (scrollRef.current?.getBoundingClientRect().top ?? 0),
+              started: performance.now(),
+              frames: 0,
+            };
+          }
+          if (needsAnchor && visibleKey !== undefined && visibleStart !== undefined) {
+            anchorRef.current = { key: visibleKey, index: keys.indexOf(visibleKey), start: visibleStart };
+          }
+          retainedWindowRef.current = mounted.flatMap((row) => row.dataset["entryKey"] ?? []);
+          measuringPrependRef.current = keys.slice(0, seam);
         }
       }
       leadingKeyRef.current = leading;
     }
     return { rows, keys };
-  }, [heldItems, heldKeys, rowMetrics, estimateCache]);
+  }, [items, itemKeys, rowMetrics, estimateCache]);
 
   // New-row entrance (chat-transcript.css .th-chat-enter): applied once per
   // new entry identity — appended live rows only, never history loads or
@@ -716,13 +889,33 @@ export function ChatTranscript({
   // updates still hit the frozen per-key estimate cache; measured sizes
   // in the virtualizer's itemSizeCache continue to win.
   const getItemKey = useCallback(
-    (index: number) => keys[index] ?? `missing:${index}`,
+    (index: number) => keys[index] ?? "missing",
     [keys, rowMetrics],
   );
+  const measuringPrepend = measuringPrependRef.current;
+  const retainedWindow = retainedWindowRef.current;
+  const restoringAnchorRef = useRef(false);
+  const rangeExtractor = useCallback((range: Parameters<typeof defaultRangeExtractor>[0]) => {
+    const indexes = new Set(defaultRangeExtractor(range));
+    for (const key of [...measuringPrepend, ...retainedWindow]) {
+      const index = keys.indexOf(key);
+      if (index >= 0) indexes.add(index);
+    }
+    return [...indexes].sort((a, b) => a - b);
+  }, [keys, measuringPrepend, retainedWindow]);
   const virtualizer = useVirtualizer({
     count: rows.length,
     getItemKey,
+    rangeExtractor,
     getScrollElement: () => scrollRef.current,
+    measureElement: (element, entry, instance) => {
+      const size = measureElement(element, entry, instance);
+      const previous = measuredRowsRef.current.get(element);
+      measuredRowsRef.current.set(element, size);
+      if (entry !== undefined && previous !== undefined && previous !== size
+        && isFollowing() && !isReaderInputActive()) followMeasurementRef.current = true;
+      return size;
+    },
     // Total: the virtualizer can ask about an index after the row list
     // shrinks (chat switch). A miss still returns a content-derived
     // estimate — never undefined, never a magic constant.
@@ -754,7 +947,7 @@ export function ChatTranscript({
         // parked since the request: only current follow intent authorizes the
         // write (jump/focus/restore hand that intent back before positioning).
         // A rejected stale request must not discard measurement compensation.
-        if (!isFollowing()) return;
+        if (!isFollowing() && !restoringAnchorRef.current) return;
         // Explicit jump/focus/restore relinquishes reader ownership and clears
         // our queue in scrollToBottom. A library retry does neither. Its delta
         // is already queued: do not write it early or accumulate it twice.
@@ -848,6 +1041,7 @@ export function ChatTranscript({
   // is and the reader is not scrolling backward.
   useLayoutEffect(() => {
     virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
+      if (followMeasurementRef.current && isFollowing()) return true;
       const anchor = anchorRef.current;
       if (anchor !== null && item.index < anchor.index) return false;
       const element = scrollRef.current;
@@ -855,10 +1049,12 @@ export function ChatTranscript({
       // The offset the reader will end up at: what the scrollport shows now
       // plus any compensation held back until the current gesture ends.
       const anchorStart = anchor === null ? undefined : instance.measurementsCache[anchor.index]?.start;
-      const warmAdjustment = anchor !== null && anchorStart !== undefined ? anchorStart - anchor.start : 0;
-      const fold = element.scrollTop + deferredAdjustmentRef.current + warmAdjustment;
+      const origin = historyRef.current?.offsetTop ?? 0;
+      const warmAdjustment = anchor !== null && anchorStart !== undefined ? anchorStart + origin - anchor.start : 0;
+      const fold = element.scrollTop + deferredAdjustmentRef.current + warmAdjustment - origin;
       if (!instance.itemSizeCache.has(item.key)) return item.start < fold;
-      return item.start + item.size <= fold && instance.scrollDirection !== "backward";
+      return item.start + item.size <= fold
+        && (!instance.isScrolling || instance.scrollDirection !== "backward");
     };
   }, [virtualizer, scrollRef]);
 
@@ -874,22 +1070,41 @@ export function ChatTranscript({
     const anchor = anchorRef.current;
     const element = scrollRef.current;
     if (anchor === null || element === null) return;
-    const start = virtualizer.measurementsCache[anchor.index]?.start;
-    if (start === undefined || start === anchor.start) return;
+    const rowStart = virtualizer.measurementsCache[anchor.index]?.start;
+    if (rowStart === undefined) return;
+    // Loading/retry chrome above the history can disappear with this page.
+    // Anchor in scroll-content coordinates, not only the virtual list's space.
+    const start = rowStart + (historyRef.current?.offsetTop ?? 0);
+    if (start === anchor.start) return;
     const previous = element.scrollTop;
-    element.scrollTop += start - anchor.start;
+    if (!virtualizer.elementsCache.get(anchor.key)?.isConnected) {
+      // Re-enter the anchor's window before correcting its saved offset.
+      // This is a one-shot reader restoration, never a new follow intent or
+      // a numeric-index reconciliation that may outlive the next prepend.
+      restoringAnchorRef.current = true;
+      virtualizer.scrollToIndex(anchor.index, { align: "start" });
+      restoringAnchorRef.current = false;
+      virtualizer.scrollBy(0);
+    }
+    element.scrollTop = previous + start - anchor.start;
     // Ref measurements can advance before the DOM sizer's next commit. Only
     // retire the applied delta; browser clamping leaves the rest for that
     // commit even when the measurement itself no longer changes.
     anchorRef.current = { ...anchor, start: anchor.start + element.scrollTop - previous };
-    if (element.scrollTop !== previous) noteProgrammaticWrite("measurement");
+    if (element.scrollTop !== previous) {
+      noteProgrammaticWrite("measurement");
+      // The native scroll echo arrives after paint. Keep the rendered window
+      // at the compensated viewport in this commit, not at the old offset.
+      virtualizer.scrollOffset = element.scrollTop;
+      setPinSyncVersion((version) => version + 1);
+    }
   });
 
   useLayoutEffect(() => {
     const starts = new Map<string, number>();
     keys.forEach((key, index) => {
       const item = virtualizer.measurementsCache[index];
-      if (item !== undefined) starts.set(key, item.start);
+      if (item !== undefined) starts.set(key, item.start + (historyRef.current?.offsetTop ?? 0));
     });
     previousStartsRef.current = starts;
   });
@@ -908,7 +1123,14 @@ export function ChatTranscript({
       // null without clearing virtual-core's deferred iOS measurement delta.
       virtualizer.scrollBy(0);
     }
-    if (isReaderInputActive() || !isRecentProgrammaticWrite(event.currentTarget.scrollTop)) anchorRef.current = null;
+    if (isReaderInputActive() || !isRecentProgrammaticWrite(event.currentTarget.scrollTop)) {
+      anchorRef.current = null;
+      retainedWindowRef.current = [];
+      prependViewportRef.current = null;
+    }
+    // The sentinel can already sit inside the margin when follow intent ends
+    // (short transcript): no crossing fires, so re-check after every scroll.
+    if (sentinelInViewRef.current) maybeLoadOlder();
   };
 
   // Replay the compensation dropped during a scroll gesture once that
@@ -924,7 +1146,11 @@ export function ChatTranscript({
       deferredAdjustmentRef.current = 0;
       const previous = element.scrollTop;
       element.scrollTop += pending;
-      if (element.scrollTop !== previous) noteProgrammaticWrite("measurement");
+      if (element.scrollTop !== previous) {
+        noteProgrammaticWrite("measurement");
+        virtualizer.scrollOffset = element.scrollTop;
+        setPinSyncVersion((version) => version + 1);
+      }
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
     const onScrollDebounce = (): void => {
@@ -957,38 +1183,249 @@ export function ChatTranscript({
     };
   }, [scrollRef, noteProgrammaticWrite]);
 
+  // The virtualizer learns DOM scroll writes only from the asynchronous
+  // scroll observation: scrollToIndex writes the scroll position at once
+  // (custom scrollToFn above), but the instance adopts the new offset when
+  // the browser echoes the scroll event — after this commit has painted. The
+  // window rendered by this commit would still describe the previous
+  // viewport, so an open would paint one frame there before auto-scrolling
+  // to the tail (the visible row count drops for a frame, then regrows).
+  // Mirror the written position onto the instance — the same write
+  // applyScrollAdjustment makes for measurement corrections — and bump state
+  // so React re-renders this component before paint: the first paint of a
+  // mounted/admitted history is already the tail window.
+  const [, setPinSyncVersion] = useState(0);
+  const pinTailBeforePaint = useCallback(() => {
+    if (rows.length === 0) return;
+    virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
+    const element = scrollRef.current;
+    if (element === null) return;
+    const offset = element.scrollTop;
+    if (virtualizer.scrollOffset === offset) return;
+    virtualizer.scrollOffset = offset;
+    setPinSyncVersion((version) => version + 1);
+  }, [rows.length, virtualizer, scrollRef]);
+
   // Focus GAIN / session-restore pin to the end regardless of follow intent.
   // Losing focus must NOT move the viewport: the reader keeps their parked
-  // position. Row-count growth only follows when already at the bottom.
+  // position. Scheduled before paint so a restored session never flashes the
+  // pre-restore viewport.
   const prevRestoreVersionRef = useRef(restoreVersion);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const restoreChanged = prevRestoreVersionRef.current !== restoreVersion;
     prevRestoreVersionRef.current = restoreVersion;
-    if (rows.length === 0) return;
     if (!focused && !restoreChanged) return;
-    virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
-    // rows.length is read for the target index, not as a trigger.
+    pinTailBeforePaint();
+    // pinTailBeforePaint and rows.length are read for the target index, not
+    // as triggers: appending rows while focused must not yank a parked
+    // reader — only focus gain and session restore pin regardless of intent.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focused, restoreVersion, virtualizer]);
+  }, [focused, restoreVersion]);
 
-  // Before paint: the held earlier history mounts in one commit, so a pin
-  // scheduled after paint would let the reader see one frame at the
-  // pre-admission offset.
+  // Before paint: history admitted in this commit (the hydrating tail, an
+  // on-demand older page, a live append while following) must surface at the
+  // tail immediately — a pin scheduled after paint would let the reader see
+  // one frame at the pre-admission offset.
   useLayoutEffect(() => {
-    if (rows.length === 0 || !isFollowing()) return;
-    virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
-  }, [rows.length, isFollowing, virtualizer]);
+    if (!isFollowing()) return;
+    pinTailBeforePaint();
+  }, [rows.length, isFollowing, pinTailBeforePaint]);
+
+  useLayoutEffect(() => {
+    if (!followMeasurementRef.current) return;
+    followMeasurementRef.current = false;
+    if (isFollowing() && !isReaderInputActive()) pinTailBeforePaint();
+  });
+
+  // Measurement-gated paint for batch admissions. A hydrating tail, an
+  // on-demand older page, or a session restore first lays its rows out with
+  // frozen estimates; real heights land a frame or two later and re-flow the
+  // whole window (live QA on a 44 MB session: rendered/visible rows 19/10 ->
+  // 12/4 right after open, and a 10 -> 6 dip on 3 of 39 prepended pages).
+  // Hold the history layer visually hidden — visibility, NOT display, so the
+  // absolute rows still mount and measure — for the commits it takes to apply
+  // the tail pin / warm-anchor compensation on measured geometry, then reveal.
+  // Measurement is synchronous in the row refs (offsetHeight -> itemSizeCache)
+  // before any layout effect runs, so by the verification commit every mounted
+  // row already reports its real height and the revealed frame IS the measured
+  // layout. The reveal is a layout-effect setState: it commits before paint,
+  // the first visible frame never shows estimated positions, and the commit
+  // budget guarantees the layer is never held hidden (no tail-position
+  // condition the pin could fail to satisfy). Live appends (leading key
+  // unchanged) never arm the gate, so streaming content is never gated.
+  const settleSnapshotRef = useRef<{
+    readonly leading: string | undefined;
+    readonly length: number;
+    readonly restoreVersion: number;
+  } | null>(null);
+  const settleActiveRef = useRef(false);
+  const settleRunsRef = useRef(0);
+  const [, setSettleVersion] = useState(0);
+  const settleSnapshot = settleSnapshotRef.current;
+  // A batch admission arms the gate: the very first population, a population
+  // after an empty mount, a session restore (any replacement carries a new
+  // restoreVersion), or a prepend (the list grew and its leading key changed).
+  // Identity comes from the same keys the virtualizer keys its rows by.
+  const admissionArmed = keys.length > 0 && (
+    settleSnapshot === null
+    || settleSnapshot.restoreVersion !== restoreVersion
+    || settleSnapshot.length === 0
+    || (keys.length > settleSnapshot.length && keys[0] !== settleSnapshot.leading)
+  );
+  settleSnapshotRef.current = { leading: keys[0], length: keys.length, restoreVersion };
+  if (admissionArmed) {
+    settleActiveRef.current = true;
+    settleRunsRef.current = 0;
+  }
+  const settling = settleActiveRef.current;
+  const revealSettled = useCallback(() => {
+    settleActiveRef.current = false;
+    settleRunsRef.current = 0;
+    measuringPrependRef.current = [];
+    prependViewportRef.current = null;
+    setSettleVersion((version) => version + 1);
+  }, []);
+  // A disconnected/clamped anchor may need another window/measurement frame.
+  // Count frames, not React commits: several layout commits can precede one
+  // paint. Cancel on every commit/unmount so no retired admission can reveal
+  // a newer one. The watchdog also advances when no measurement notifies.
+  useLayoutEffect(() => {
+    const target = prependViewportRef.current;
+    if (!settleActiveRef.current || target === null) return;
+    const frame = requestAnimationFrame(() => {
+      target.frames += 1;
+      flushSync(() => setSettleVersion((version) => version + 1));
+    });
+    return () => cancelAnimationFrame(frame);
+  });
+  useLayoutEffect(() => {
+    if (!settleActiveRef.current) return;
+    settleRunsRef.current += 1;
+    const target = prependViewportRef.current;
+    if (target !== null && (target.frames >= 6 || performance.now() - target.started >= 100)) {
+      revealSettled();
+      return;
+    }
+    // rows emptied (chat cleared mid-settle): nothing to hide.
+    if (rows.length === 0) {
+      revealSettled();
+      return;
+    }
+    const rendered = virtualizer.getVirtualItems();
+    if (rendered.length === 0) {
+      // No window yet: poll until it exists, but the budget always reveals.
+      if (target !== null) return;
+      if (settleRunsRef.current >= 4) revealSettled();
+      else setSettleVersion((version) => version + 1);
+      return;
+    }
+    // A user scroll can suppress the virtualizer's ref measurement. Explicitly
+    // measure admitted rows here instead of revealing after a fixed number of
+    // estimated commits. resizeItem schedules the measured sizer/positions.
+    let measured = false;
+    const measureKeys = target === null
+      ? measuringPrependRef.current
+      : rendered.map((item) => String(item.key));
+    for (const key of measureKeys) {
+      if (target === null && virtualizer.itemSizeCache.has(key)) continue;
+      const row = virtualizer.elementsCache.get(key);
+      const index = keys.indexOf(key);
+      if (row instanceof HTMLElement && index >= 0) {
+        const height = row.offsetHeight;
+        // A row without a layout box cannot replace a ResizeObserver
+        // measurement (for example while an ancestor pane is hidden).
+        if (height > 0 && virtualizer.measurementsCache[index]?.size !== height) {
+          virtualizer.resizeItem(index, height);
+          measured = true;
+        }
+      }
+    }
+    if (measured) {
+      setSettleVersion((version) => version + 1);
+      return;
+    }
+    if (target !== null && !isFollowing()) {
+      const scroll = scrollRef.current;
+      const anchor = virtualizer.elementsCache.get(target.key);
+      if (scroll === null) return;
+      if (!anchor?.isConnected) {
+        const index = keys.indexOf(target.key);
+        if (index >= 0) {
+          restoringAnchorRef.current = true;
+          virtualizer.scrollToIndex(index, { align: "start" });
+          restoringAnchorRef.current = false;
+          virtualizer.scrollBy(0);
+        }
+      } else {
+        const delta = anchor.getBoundingClientRect().top - scroll.getBoundingClientRect().top - target.top;
+        if (Math.abs(delta) <= 1) {
+          revealSettled();
+          return;
+        }
+        const previous = scroll.scrollTop;
+        scroll.scrollTop += delta;
+        // This corrects the viewport, not the virtual row's measured start.
+        // Feeding it into the warm baseline makes that effect undo this
+        // correction on the next commit and starts a layout-update loop.
+        if (scroll.scrollTop !== previous) noteProgrammaticWrite("measurement");
+      }
+      if (virtualizer.scrollOffset !== scroll.scrollTop) {
+        virtualizer.scrollOffset = scroll.scrollTop;
+        setSettleVersion((version) => version + 1);
+      }
+      return;
+    }
+    // Apply (or converge) the tail pin on the current geometry. The pin's own
+    // scrollOffset mirror bumps state when it moves the window, which schedules
+    // the next verification run before paint.
+    if (isFollowing()) pinTailBeforePaint();
+    // The armed commit pins and schedules a verification pass; the
+    // verification commit — whose row refs have all measured by the time this
+    // effect runs — reveals. The budget caps the hidden frames no matter what.
+    if (settleRunsRef.current >= 2) revealSettled();
+    else setSettleVersion((version) => version + 1);
+  });
 
   return (
     <div className="th-chat-scrollport">
-      <div className="th-chat-body" ref={scrollRef} onScroll={onTranscriptScroll}
+      <div className="th-chat-body" ref={scrollRef} tabIndex={0} onScroll={onTranscriptScroll}
         onClickCapture={onDisclosureClickCapture} onClick={onDisclosureClick}
         onTransitionEndCapture={onDisclosureTransitionEnd}>
         <div className="th-chat-content" ref={contentRef}>
+          {historyFailedEmpty && (
+            <div className="th-chat-history-failed" role="status">
+              <span>{t("chat.historyFailedEmpty")}</span>
+              <button type="button" className="th-btn th-btn--ghost th-chat-history-retry" onClick={onRetryHistory}>
+                {t("common.retry")}
+              </button>
+            </div>
+          )}
+          {sentinelMounted && (
+            <div ref={sentinelRef} className="th-chat-history-sentinel" data-state={olderState}>
+              {olderState === "loading" && (
+                <div className="th-chat-history-loading" role="status">
+                  <span className="th-chat-history-spinner" aria-hidden="true" />
+                  <span>{t("chat.loadingOlder")}</span>
+                </div>
+              )}
+              {olderState === "error" && (
+                <div className="th-chat-history-error" role="status">
+                  <span>{t("chat.historyOlderFailed")}</span>
+                  <button type="button" className="th-btn th-btn--ghost th-chat-history-retry" onClick={() => olderHistory?.loadOlder()}>
+                    {t("common.retry")}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
           {!historyLoaded && rows.length === 0 && !streaming && Object.keys(toolCalls).length === 0 && !error && !doneReason && (
             <div className="th-chat-loading" role="status">{t("chat.loading")}</div>
           )}
-          <div className="th-chat-history" style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+          <div
+            ref={historyRef}
+            className={`th-chat-history${settling ? " th-chat-history--settling" : ""}`}
+            style={{ height: virtualizer.getTotalSize(), position: "relative" }}
+          >
             {virtualizer.getVirtualItems().map((virtualItem) => {
               const item = rows[virtualItem.index];
               if (!item) return null;
@@ -997,6 +1434,7 @@ export function ChatTranscript({
                   <div
                     key={virtualItem.key}
                     data-index={virtualItem.index}
+                    data-entry-key={virtualItem.key}
                     ref={virtualizer.measureElement}
                     className="th-chat-row th-chat-row--notice"
                     style={{ position: "absolute", top: 0, transform: `translateY(${virtualItem.start}px)` }}
@@ -1015,6 +1453,7 @@ export function ChatTranscript({
                 <div
                   key={virtualItem.key}
                   data-index={virtualItem.index}
+                  data-entry-key={virtualItem.key}
                   ref={virtualizer.measureElement}
                   className={`th-chat-row th-chat-row--${message.role}${userTurnStart(rows, virtualItem.index) ? " th-chat-row--turn-start" : ""}`}
                   style={{ position: "absolute", top: 0, transform: `translateY(${virtualItem.start}px)` }}

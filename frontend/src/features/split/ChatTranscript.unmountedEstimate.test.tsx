@@ -33,7 +33,7 @@ vi.mock("./chatRowEstimate", async (importOriginal) => {
 });
 vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 
-it("keeps total size unchanged when a never-mounted ordinal row gains an image after metrics settle", async () => {
+it("keeps total size unchanged when a never-mounted entry gains an image after metrics settle", async () => {
   const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(0);
   const observers = new Map<ResizeObserver, { callback: ResizeObserverCallback; targets: Set<Element> }>();
   const OriginalObserver = ResizeObserver;
@@ -56,7 +56,7 @@ it("keeps total size unchanged when a never-mounted ordinal row gains an image a
   const root = createRoot(container);
   const items: TranscriptItem[] = Array.from({ length: 300 }, (_, index) => ({
     kind: "message",
-    message: { role: "assistant", blocks: [{ kind: "text", text: `row ${index}` }] },
+    message: { id: `entry-${index}`, role: "assistant", blocks: [{ kind: "text", text: `row ${index}` }] },
   }));
   const render = async (next: readonly TranscriptItem[]): Promise<void> => {
     await act(async () => {
@@ -86,7 +86,7 @@ it("keeps total size unchanged when a never-mounted ordinal row gains an image a
     const instance = observed.current;
     if (!instance) throw new Error("missing virtualizer");
     const key = instance.options.getItemKey(41);
-    expect(key).toBe("message-ordinal:41");
+    expect(key).toBe("message:entry-41");
     expect(container.querySelectorAll(".th-chat-row[data-index]").length).toBeGreaterThan(0);
     expect(container.querySelector('[data-index="41"]')).toBeNull();
     expect(instance.itemSizeCache.has(key)).toBe(false);
@@ -96,7 +96,7 @@ it("keeps total size unchanged when a never-mounted ordinal row gains an image a
 
     const changed = items.map((item, index): TranscriptItem => index === 41 ? {
       kind: "message",
-      message: { role: "assistant", blocks: [{ kind: "image", data: "QUJD", mimeType: "image/png" }] },
+      message: { id: "entry-41", role: "assistant", blocks: [{ kind: "image", data: "QUJD", mimeType: "image/png" }] },
     } : item);
     expect(transcriptItemKeys(changed)).toEqual(transcriptItemKeys(items));
     await render(changed);

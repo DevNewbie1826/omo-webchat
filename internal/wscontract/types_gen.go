@@ -174,7 +174,7 @@ type ToolPayload struct {
 
 type ClientHelloFrame struct {
 	Type string `json:"type"`
-	// Wire contract version the client expects
+	// Wire contract version the client expects. Clients send version 4; versions 2 through 4 are accepted.
 	Version int64 `json:"version"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
@@ -184,7 +184,7 @@ type HelloFrame struct {
 	// Human-readable server build identity
 	ServerVersion string `json:"serverVersion"`
 	Type          string `json:"type"`
-	// Wire contract version this server speaks
+	// Wire contract version this server speaks. Current contract is 4; hello versions 2 through 4 are accepted.
 	Version int64 `json:"version"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
@@ -355,10 +355,23 @@ type EntriesFrame struct {
 	// Present only on the terminal page
 	LeafID *string              `json:"leafId,omitempty"`
 	Resume *HistoryResumeCursor `json:"resume,omitempty"`
-	// Backward warm chunk of earlier history; the only value is head. Absent keeps today's meaning.
+	// head is a backward warm chunk; preview is an uncommitted v4 disk tail sent before engine acquisition. Absent keeps today's meaning.
 	Segment   *string `json:"segment,omitempty"`
 	SessionID string  `json:"sessionId"`
 	Type      string  `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+// EntryAppendedFrame — v4 server frame for a persisted message entry append. Emitted only to hello version >= 4 subscribers. sessionId is the chat id. textPrefix is the first 128 Unicode code points of the concatenated text content blocks, exactly as persisted. parentId is null when the entry is the branch root.
+type EntryAppendedFrame struct {
+	BindingID  *string `json:"bindingId,omitempty"`
+	ID         string  `json:"id"`
+	ParentID   *string `json:"parentId"`
+	Role       string  `json:"role"`
+	SessionID  string  `json:"sessionId"`
+	TextPrefix string  `json:"textPrefix"`
+	Type       string  `json:"type"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -1449,6 +1462,24 @@ func (v EntriesFrame) MarshalJSON() ([]byte, error) {
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
+func (v *EntryAppendedFrame) UnmarshalJSON(data []byte) error {
+	type plain EntryAppendedFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"bindingId", "id", "parentId", "role", "sessionId", "textPrefix", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v EntryAppendedFrame) MarshalJSON() ([]byte, error) {
+	type plain EntryAppendedFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
 func (v *ErrorFrame) UnmarshalJSON(data []byte) error {
 	type plain ErrorFrame
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
@@ -2460,6 +2491,7 @@ func (ApprovalResolvedFrame) serverFrame()  {}
 func (CommandsFrame) serverFrame()          {}
 func (ModelsFrame) serverFrame()            {}
 func (EntriesFrame) serverFrame()           {}
+func (EntryAppendedFrame) serverFrame()     {}
 func (CompactionStartedFrame) serverFrame() {}
 func (CompactionDoneFrame) serverFrame()    {}
 func (RunStartedFrame) serverFrame()        {}
@@ -2664,6 +2696,8 @@ func NewServerFrame(wireType string) ServerFrame {
 		return new(ModelsFrame)
 	case "entries":
 		return new(EntriesFrame)
+	case "entry.appended":
+		return new(EntryAppendedFrame)
 	case "compaction.started":
 		return new(CompactionStartedFrame)
 	case "compaction.done":
@@ -2762,7 +2796,11 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "entries":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"entries": validationSchema{Type: "array", Items: &validationSchema{}}, "final": validationSchema{Type: "boolean"}, "historyComplete": validationSchema{Type: "boolean"}, "historySessionId": validationSchema{Type: "string"}, "leafId": validationSchema{Type: "string"}, "resume": validationSchema{Type: "object", Properties: map[string]validationSchema{"firstEntryId": validationSchema{Type: "string"}, "historyComplete": validationSchema{Type: "boolean"}, "lastEntryId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}}, Required: []string{"sessionId", "firstEntryId", "lastEntryId", "historyComplete"}}, "segment": validationSchema{Type: "string", Const: "head"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "entries"}}, Required: []string{"type", "sessionId", "entries", "final"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"entries": validationSchema{Type: "array", Items: &validationSchema{}}, "final": validationSchema{Type: "boolean"}, "historyComplete": validationSchema{Type: "boolean"}, "historySessionId": validationSchema{Type: "string"}, "leafId": validationSchema{Type: "string"}, "resume": validationSchema{Type: "object", Properties: map[string]validationSchema{"firstEntryId": validationSchema{Type: "string"}, "historyComplete": validationSchema{Type: "boolean"}, "lastEntryId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}}, Required: []string{"sessionId", "firstEntryId", "lastEntryId", "historyComplete"}}, "segment": validationSchema{Type: "string", Enum: []string{"head", "preview"}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "entries"}}, Required: []string{"type", "sessionId", "entries", "final"}}); err != nil {
+				return nil, err
+			}
+		case "entry.appended":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"bindingId": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "parentId": validationSchema{AnyOf: []validationSchema{validationSchema{Type: "null"}, validationSchema{Type: "string"}}}, "role": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "textPrefix": validationSchema{Type: "string"}, "type": validationSchema{Const: "entry.appended"}}, Required: []string{"type", "sessionId", "id", "parentId", "role", "textPrefix"}}); err != nil {
 				return nil, err
 			}
 		case "compaction.started":
@@ -2847,6 +2885,7 @@ func ServerFrameTypes() []string {
 		"commands",
 		"models",
 		"entries",
+		"entry.appended",
 		"compaction.started",
 		"compaction.done",
 		"run.started",
