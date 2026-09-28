@@ -1022,7 +1022,7 @@ export function ChatTranscript({
   const [disclosureVersion, setDisclosureVersion] = useState(0);
   const onDisclosureClickCapture = (event: MouseEvent<HTMLDivElement>): void => {
     if (!(event.target instanceof Element) ||
-      !event.target.closest(".th-tool-head, .th-chat-thinking-head")) return;
+      !event.target.closest(".th-tool-head, .th-chat-thinking-head, .th-ask-answer-toggle")) return;
     holdDisclosurePosition();
     const row = event.target.closest<HTMLElement>(".th-chat-row[data-index]");
     if (row === null) return;

@@ -1,8 +1,24 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import type { Virtualizer } from "@tanstack/react-virtual";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { translate, type I18nValue } from "../../i18n";
 import { renderChatPane, i18n as identityI18n } from "./chatPaneTestHarness";
+
+// Same seam as ChatTranscript.disclosureMeasure.test.tsx: observe the real
+// virtualizer so a chip toggle can be asserted to re-measure its row.
+const observedVirtualizer = vi.hoisted(() => ({ current: undefined as Virtualizer<Element, Element> | undefined }));
+vi.mock("@tanstack/react-virtual", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@tanstack/react-virtual")>();
+	return {
+		...actual,
+		useVirtualizer: (...args: Parameters<typeof actual.useVirtualizer>) => {
+			const instance = actual.useVirtualizer(...args);
+			observedVirtualizer.current = instance;
+			return instance;
+		},
+	};
+});
 
 const koI18n: I18nValue = {
 	...identityI18n,
@@ -179,6 +195,50 @@ describe("ChatPane omo answer frames (IS-2, IS-9)", () => {
 		);
 		expect(head?.textContent).toContain("[QA1]");
 		expect(head?.textContent).toContain("answered; 1 answered; 0 unanswered");
+	});
+
+	it("re-measures the chip row when the disclosure expands, so the next row never overlaps", async () => {
+		vi.stubGlobal("ResizeObserver", class {
+			observe() {}
+			unobserve() {}
+			disconnect() {}
+		});
+		// The chip row is 40px collapsed and 120px once its body opens.
+		vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+			if (this.matches(".th-chat-row") && this.querySelector(".th-ask-answer") !== null) {
+				return this.querySelector(".th-ask-answer-body") !== null ? 120 : 40;
+			}
+			return 40;
+		});
+		const { deliver } = renderChatPane(root, undefined, koI18n);
+		act(() => {
+			deliverQuestionToolCall(deliver);
+			deliver({
+				type: "message",
+				sessionId: "chat-1",
+				message: {
+					role: "user",
+					blocks: [{ kind: "text", text: "[Answer to question toolu_x]\nQA1: A" }],
+				},
+			} as never);
+		});
+		const virtualizer = observedVirtualizer.current;
+		if (!virtualizer) throw new Error("missing virtualizer");
+		const chipRow = container.querySelector<HTMLElement>(".th-chat-row:has(.th-ask-answer)");
+		if (!chipRow) throw new Error("missing chip row");
+		const chipIndex = Number(chipRow.dataset["index"]);
+		expect(virtualizer.measurementsCache[chipIndex]?.size).toBe(40);
+
+		const toggle = container.querySelector<HTMLButtonElement>(".th-ask-answer-toggle");
+		if (!toggle) throw new Error("missing chip toggle");
+		await act(async () => {
+			toggle.click();
+		});
+		expect(virtualizer.measurementsCache[chipIndex]?.size).toBe(120);
+		await act(async () => {
+			toggle.click();
+		});
+		expect(virtualizer.measurementsCache[chipIndex]?.size).toBe(40);
 	});
 
 	it("renders the journaled question_closed_while_disconnected notice with its headers", () => {
