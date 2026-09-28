@@ -11,6 +11,57 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
 )
 
+func TestManagerAcquireReplacesDeadEpochBeforeObserver(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 64)
+	entered, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	mgr.SetQueueCallbacks(nil, func(string, *Session) {
+		close(entered)
+		<-release
+	})
+	chat := testChat{id: "dead-epoch-acquire", cwd: t.TempDir()}
+	// No subscriber or active work: only acquisition will drive reconnection.
+	prior, _, detach := acquire(t, mgr, chat, nil)
+	t.Cleanup(detach)
+	d.EmitSession(prior.SessionFile(), map[string]any{
+		"type": "queue_update", "pendingMessageCount": 0,
+	})
+	select {
+	case <-entered:
+	case <-time.After(testTimeout):
+		t.Fatal("observer did not enter queue callback")
+	}
+	_, oldEvents := client.CurrentEpoch()
+	d.Restart()
+	select {
+	case _, ok := <-oldEvents:
+		if ok {
+			t.Fatal("old epoch delivered an unexpected event instead of closing")
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("old epoch did not close")
+	}
+	if err := prior.acquisitionError(); err != nil {
+		t.Fatalf("observer processed transport loss while parked: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	replacement, started, detachReplacement, err := mgr.Acquire(ctx, chat, nil)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	t.Cleanup(detachReplacement)
+	if replacement == prior || !started {
+		t.Fatalf("Acquire reused dead transport: replacement == prior: %v, started: %v", replacement == prior, started)
+	}
+	if replacement.ID() != prior.ID() || replacement.SessionFile() != prior.SessionFile() {
+		t.Fatal("replacement did not resume the durable session")
+	}
+}
+
 func TestManagerReacquirePreservesReusedRoute(t *testing.T) {
 	for _, checked := range []bool{false, true} {
 		name := "ordinary"
