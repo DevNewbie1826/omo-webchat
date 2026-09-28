@@ -584,7 +584,8 @@ func newCancellableSub() *cancellableSub {
 	return &cancellableSub{entered: make(chan struct{}), stop: make(chan struct{})}
 }
 func (s *cancellableSub) Deliver(f Frame) {
-	if f.Kind == FrameReady {
+	// IS-10: attach control frames do not stand in for a blocked data write.
+	if f.Kind == FrameReady || f.Kind == FrameQuestionsSnapshot {
 		return
 	}
 	s.once.Do(func() { close(s.entered) })

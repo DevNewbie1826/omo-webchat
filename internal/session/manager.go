@@ -1262,6 +1262,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	s := newSession(m, chatID, chat.CWD(), data, resumed, epoch, name, cur.NameSource)
 	s.restoreTranscriptNoticesLocked()
 	s.inheritWork(replaced, data.State)
+	s.inheritQuestions(replaced, data.State)
 	s.inheritSendOperationOwner(sendOwner)
 	sendOwnerAdopted := false
 	defer func() {

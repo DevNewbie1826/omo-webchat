@@ -46,3 +46,24 @@ func TestQuestionAnswersReachEngineWhenBrowserResponds(t *testing.T) {
 		t.Fatalf("structured response lost: %v", got)
 	}
 }
+
+func TestQuestionProgressReachesEngineWithLatestDraft(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "question-progress")
+	conn, frames := h.connect(t)
+	attachAndAwaitHistory(t, conn, frames, "question-progress")
+	h.daemon.EmitSession(h.path, map[string]any{"type": "extension_ui_request", "id": "ask",
+		"requestId": "tool-call", "method": "question"})
+	frames.next(t, "approval")
+
+	for _, comment := range []string{"a", "ab", "abc"} {
+		writeClient(t, conn, map[string]any{"type": "approval.progress",
+			"sessionId": "question-progress", "id": "ask", "comment": comment})
+	}
+	if !h.daemon.AwaitRequestCount(omorpc.CmdExtensionUIProgress, 1, 5*time.Second) {
+		t.Fatal("question progress was not sent")
+	}
+	got := h.daemon.LastRequest(omorpc.CmdExtensionUIProgress)
+	if got["id"] != "ask" || got["comment"] != "abc" || got["sessionId"] == "" {
+		t.Fatalf("latest draft not forwarded: %v", got)
+	}
+}

@@ -105,6 +105,10 @@ type daemonSession struct {
 	enqueueSeq    int
 	runActive     bool
 	compactActive bool
+
+	pendingQuestions []map[string]any
+	otherApprovalIDs map[string]struct{}
+	reaskQuestions   bool
 }
 
 // queueSnapshotLocked is the session's queue as the wire sees it: the
@@ -168,34 +172,36 @@ type Daemon struct {
 	sockPath   string
 	sessionsDn string
 
-	mu                  sync.Mutex
-	ln                  net.Listener
-	conns               map[net.Conn]struct{}
-	serverVersion       string
-	protocolVersion     int
-	capabilities        []string
-	mode                string
-	handlerGate         map[string]<-chan struct{}
-	handlerGateByPath   map[string]map[string]<-chan struct{}
-	failNext            map[string]string
-	pathFailures        map[string]openFailure
-	media               map[mediaRef]map[string]any
-	nextOpenIdentity    string
-	evictUsedSession    bool
-	refuse              bool
-	connections         int
-	handshakes          int
-	refusals            int
-	opens               int
-	closes              int
-	rpcCounter          int
-	registry            map[string]*daemonSession
-	rpcPaths            map[string]string // every minted routing id -> durable path
-	promptScripts       map[string][]map[string]any
-	compactScripts      map[string][]map[string]any
-	promptHolds         map[string]chan struct{}
-	promptApplyBarriers map[string]*promptApplyBarrier
-	requests            []map[string]any
+	mu                   sync.Mutex
+	ln                   net.Listener
+	conns                map[net.Conn]struct{}
+	serverVersion        string
+	protocolVersion      int
+	capabilities         []string
+	mode                 string
+	handlerGate          map[string]<-chan struct{}
+	handlerGateByPath    map[string]map[string]<-chan struct{}
+	failNext             map[string]string
+	pathFailures         map[string]openFailure
+	media                map[mediaRef]map[string]any
+	nextOpenIdentity     string
+	evictUsedSession     bool
+	refuse               bool
+	connections          int
+	handshakes           int
+	refusals             int
+	opens                int
+	closes               int
+	rpcCounter           int
+	questionCounter      int
+	registry             map[string]*daemonSession
+	rpcPaths             map[string]string // every minted routing id -> durable path
+	promptScripts        map[string][]map[string]any
+	compactScripts       map[string][]map[string]any
+	promptHolds          map[string]chan struct{}
+	promptApplyBarriers  map[string]*promptApplyBarrier
+	requests             []map[string]any
+	dropQuestionResponse bool
 
 	legacyEmptyUnknownHistory bool
 	omitActivityFields        bool
@@ -209,11 +215,12 @@ type Daemon struct {
 	defaultPromptScript []map[string]any
 	writeMu             sync.Mutex
 
-	requestFeed   chan map[string]any
-	historyFeed   chan struct{}
-	handshakeFeed chan struct{}
-	refusalFeed   chan struct{}
-	closeFeed     chan struct{}
+	requestFeed      chan map[string]any
+	questionDropFeed chan struct{}
+	historyFeed      chan struct{}
+	handshakeFeed    chan struct{}
+	refusalFeed      chan struct{}
+	closeFeed        chan struct{}
 }
 
 // New creates a stopped daemon that will serve unix://<dir>/d.sock. The
@@ -242,6 +249,7 @@ func New(dir string) *Daemon {
 		promptHolds:         map[string]chan struct{}{},
 		promptApplyBarriers: map[string]*promptApplyBarrier{},
 		requestFeed:         make(chan map[string]any, 256),
+		questionDropFeed:    make(chan struct{}, 1),
 		historyFeed:         make(chan struct{}, 256),
 		handshakeFeed:       make(chan struct{}, 1),
 		refusalFeed:         make(chan struct{}, 1),
@@ -297,6 +305,7 @@ func (d *Daemon) Stop() {
 	d.conns = map[net.Conn]struct{}{}
 	for _, rec := range d.registry {
 		rec.live = false
+		rec.reaskQuestions = true
 	}
 	d.mu.Unlock()
 	for _, c := range conns {
@@ -411,16 +420,6 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 		})
 		return
 	}
-	if cmd == omorpc.CmdExtensionUIResponse {
-		if sid == "" {
-			d.write(conn, map[string]any{
-				"id": id, "type": "response", "command": cmd,
-				"success": false, "error": omorpc.ErrCodeMissingSessionID,
-			})
-		}
-		return
-	}
-
 	switch cmd {
 	case omorpc.CmdGetProtocolInfo:
 		d.mu.Lock()
@@ -473,6 +472,13 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 	}
 
 	// Session-scoped commands from here on.
+	if sid == "" && (cmd == omorpc.CmdExtensionUIResponse || cmd == "extension_ui_progress") {
+		d.write(conn, map[string]any{
+			"id": id, "type": "response", "command": cmd,
+			"success": false, "error": omorpc.ErrCodeMissingSessionID,
+		})
+		return
+	}
 	d.mu.Lock()
 	rec := d.sessionByRPC(sid)
 	live := rec != nil && rec.live
@@ -499,6 +505,14 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 	}
 
 	switch cmd {
+	case omorpc.CmdExtensionUIResponse:
+		d.handleQuestionResponse(conn, rec, req)
+		return
+
+	case "extension_ui_progress":
+		d.handleQuestionProgress(conn, rec, req)
+		return
+
 	case omorpc.CmdCloseSession:
 		d.mu.Lock()
 		rec.live = false
@@ -647,6 +661,7 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 	case omorpc.CmdGetState:
 		d.mu.Lock()
 		followUp, ordered, pending := queueSnapshotLocked(rec)
+		questions := pendingQuestionsLocked(rec)
 		running, compacting, omitActivity := rec.runActive, rec.compactActive, d.omitActivityFields
 		d.mu.Unlock()
 		state := map[string]any{
@@ -659,6 +674,7 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 			"followUp":            followUp,
 			"ordered":             ordered,
 			"pendingMessageCount": pending,
+			"pendingQuestions":    questions,
 		}
 		if omitActivity {
 			delete(state, "isStreaming")
@@ -767,6 +783,7 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 	rec.used = false
 	rec.opens++
 	rec.clientCaps = append([]string(nil), d.clientCaps[conn]...)
+	reasks := d.reaskQuestionsLocked(rec)
 	if cwd != "" {
 		rec.cwd = cwd
 	}
@@ -791,6 +808,7 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 			"followUp":            []any{},
 			"ordered":             []any{},
 			"pendingMessageCount": 0,
+			"pendingQuestions":    pendingQuestionsLocked(rec),
 		},
 	})
 	if d.omitActivityFields {
@@ -801,6 +819,9 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 	d.mu.Unlock()
 
 	d.write(conn, response)
+	for _, event := range reasks {
+		d.write(conn, event)
+	}
 }
 
 // SetOmitActivityFields models engines that omit optional activity snapshots
@@ -913,6 +934,7 @@ func (d *Daemon) emitScript(conn net.Conn, rpcID string, rec *daemonSession, scr
 		e["sessionId"] = rpcID
 		d.mu.Lock()
 		applyActivityEventLocked(rec, ev)
+		applyQuestionEventLocked(rec, e)
 		d.mu.Unlock()
 		d.write(conn, e)
 		if typ, _ := ev["type"].(string); typ == EventAgentSettled {
@@ -955,6 +977,11 @@ func (d *Daemon) write(conn net.Conn, v map[string]any) {
 // Emit injects an unsolicited event, verbatim, on every live connection.
 func (d *Daemon) Emit(event map[string]any) {
 	d.mu.Lock()
+	if sid, _ := event["sessionId"].(string); sid != "" {
+		if rec := d.sessionByRPC(sid); rec != nil {
+			applyQuestionEventLocked(rec, event)
+		}
+	}
 	conns := make([]net.Conn, 0, len(d.conns))
 	for c := range d.conns {
 		conns = append(conns, c)

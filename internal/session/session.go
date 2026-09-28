@@ -157,8 +157,7 @@ type Session struct {
 	dagSnapshots                                                            dagSnapshotCache
 	taskSnapshots                                                           taskSnapshotCache
 	engineQueue                                                             EngineQueueSnapshot
-	pendingApproval                                                         *Frame
-	activeApprovals                                                         map[string]struct{}
+	pendingApprovals                                                        []*pendingApproval
 
 	transcriptNotices transcriptNoticeState
 	todoRead          todoReadState
@@ -1591,11 +1590,10 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 			initial = append(initial, outcome)
 		}
 	}
-	// A pending interactive ask outlives its live broadcast: replay it to a
-	// subscriber that attached after the request was published so every client
-	// sees the question the session is still waiting on.
-	if s.pendingApproval != nil {
-		initial = append(initial, *s.pendingApproval)
+	// An unpublished session must deliver ready before its questions. Once
+	// ready, each later attach receives the full ordered question snapshot.
+	if s.readyPublished {
+		initial = append(initial, s.questionReplayLocked()...)
 	}
 	// Journaled durable notices replay after retained send outcomes. The
 	// journal fence spans snapshot and subscriber registration, placing each
@@ -1607,8 +1605,15 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 	attach := func(notices []Frame) {
 		initial = append(initial, notices...)
 		queueSize := s.queueSize
-		if queueSize < len(initial) {
-			queueSize = len(initial)
+		// Ready and the question snapshot are control frames. Reserve one
+		// data slot so an immediate live event cannot overflow a subscriber
+		// before its pump drains the attach replay.
+		minQueue := len(initial) + 1
+		if !s.readyPublished {
+			minQueue += 1 + len(s.questionReplayLocked())
+		}
+		if queueSize < minQueue {
+			queueSize = minQueue
 		}
 		id, target, rawDetach, attachErr = s.broadcast.attachWithError(sub, queueSize, initial)
 	}
@@ -1778,6 +1783,7 @@ func (s *Session) completeClose(txn *closeTransaction, route string, callErr err
 	newlyClosed := !s.closed
 	if newlyClosed {
 		s.closed = true
+		s.stopQuestionTimersLocked()
 		s.closing = false
 		s.closeTxn = nil
 		s.closeRunSettled = false
@@ -1810,6 +1816,7 @@ func definitiveCloseFailure(err error) bool {
 func (s *Session) retireReplaced() {
 	s.lifecycleMu.Lock()
 	s.closed = true
+	s.stopQuestionTimersLocked()
 	s.cancelIdleLocked()
 	s.lifecycleMu.Unlock()
 	s.broadcast.retireAll(ErrSubscriberSessionEnd)
@@ -1866,10 +1873,7 @@ func (s *Session) markProviderUnloadedLocked() {
 	s.providerRunActive = false
 	s.compactionActive = false
 	s.localCommandActive = false
-	// Retire requests for live clients as well as reconnect replay.
-	for id := range s.activeApprovals {
-		s.resolveApprovalLocked(id, "", "expired", errApprovalExpired.Error())
-	}
+	s.failQuestionsOnLossLocked()
 	s.cancelIdleLocked()
 	s.notifyActivityLocked()
 }
@@ -1910,6 +1914,11 @@ func (s *Session) publishLocked(f Frame) {
 	}
 	if f.Kind == FrameReady {
 		s.readyPublished = true
+		s.broadcast.publish(f)
+		for _, question := range s.questionReplayLocked() {
+			s.broadcast.publish(question)
+		}
+		return
 	}
 	if f.Kind == FrameMessage {
 		// Message-occurrence sequence for replay dedup, assigned before
@@ -1935,9 +1944,7 @@ func (s *Session) invalidate(code, message string) {
 	s.providerRunActive = false
 	s.compactionActive = false
 	s.localCommandActive = false
-	for id := range s.activeApprovals {
-		s.resolveApprovalLocked(id, "", "expired", errApprovalExpired.Error())
-	}
+	s.failQuestionsOnLossLocked()
 	s.cancelIdleLocked()
 	s.publishLocked(Frame{Kind: FrameError, SessionID: s.durableID, Data: ErrorInfo{Code: code, Message: message}})
 	s.lifecycleMu.Unlock()

@@ -16,7 +16,7 @@
           "required": [
             "ready", "message.delta", "message", "tool", "state", "name", "stats",
             "models", "commands", "entries", "compaction.started", "compaction.done",
-            "control.result", "ack", "approval", "approval.resolved", "notice", "extensionEvent", "error",
+            "control.result", "ack", "approval", "approval.resolved", "questions.snapshot", "notice", "extensionEvent", "error",
             "run.started", "run.done"
           ],
           "properties": {
@@ -36,6 +36,7 @@
             "ack": { "const": "ack" },
             "approval": { "const": "approval" },
             "approval.resolved": { "const": "approval.resolved" },
+            "questions.snapshot": { "const": "questions.snapshot" },
             "notice": { "const": "notice" },
             "extensionEvent": { "const": "extensionEvent" },
             "error": { "const": "error" },
@@ -49,7 +50,7 @@
           "additionalProperties": { "type": "string" },
           "required": [
             "ping", "chat.create", "chat.send", "chat.abort", "chat.set",
-            "approval.respond", "chat.commands", "chat.compact", "chat.models",
+            "approval.respond", "approval.progress", "chat.commands", "chat.compact", "chat.models",
             "chat.stats", "activity.refresh", "sessions.subscribe", "chat.resume", "chat.close", "chat.disconnect", "chat.queue.remove", "chat.queue.move", "chat.queue.clear"
           ],
           "properties": {
@@ -59,6 +60,7 @@
             "chat.abort": { "const": "chat.abort" },
             "chat.set": { "const": "chat.set" },
             "approval.respond": { "const": "approval.respond" },
+            "approval.progress": { "const": "approval.progress" },
             "chat.commands": { "const": "chat.commands" },
             "chat.compact": { "const": "chat.compact" },
             "chat.models": { "const": "chat.models" },

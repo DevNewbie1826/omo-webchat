@@ -26,30 +26,36 @@ func (s *Session) RespondApprovalFrame(ctx context.Context, frame wscontract.App
 	response := omorpc.ExtensionUIResponse{
 		ID: frame.ID, Value: encoded, Confirmed: frame.Confirmed,
 		Cancelled: frame.Cancelled != nil && *frame.Cancelled,
-		Answers:   frame.Answers, Comment: frame.Comment,
+		Answers:   omorpc.NormalizeQuestionAnswers(frame.Answers), Comment: frame.Comment,
 	}
 	// Structured answers travel as fields, not as a JSON-encoded legacy value.
-	if frame.Answers != nil && frame.Value == nil {
+	if (frame.Answers != nil || frame.Comment != nil) && frame.Value == nil {
 		response.Value = nil
 	}
 	return s.respondExtensionUI(ctx, requestID, response)
 }
 
 var errApprovalExpired = errors.New("This question has expired. Ask the assistant to request it again.")
+var errQuestionDelivering = errors.New("question_delivering")
 
 func (s *Session) respondExtensionUI(ctx context.Context, requestID string, response omorpc.ExtensionUIResponse) error {
 	if err := s.prepareWrite(ctx); err != nil {
 		s.lifecycleMu.Lock()
-		s.resolveApprovalLocked(response.ID, requestID, "expired", errApprovalExpired.Error())
+		if pending := s.pendingByID(response.ID); pending != nil && !pending.question() {
+			s.resolveApprovalLocked(response.ID, requestID, "expired", errApprovalExpired.Error())
+		}
 		s.lifecycleMu.Unlock()
 		return err
 	}
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	route, err := s.routeLocked()
-	_, active := s.activeApprovals[response.ID]
-	if err == nil && !active {
+	pending := s.pendingByID(response.ID)
+	if err == nil && pending == nil {
 		err = errApprovalExpired
+	}
+	if err == nil && pending.question() && pending.delivering {
+		return errQuestionDelivering
 	}
 	if err == nil {
 		response.SessionID = route
@@ -59,12 +65,33 @@ func (s *Session) respondExtensionUI(ctx context.Context, requestID string, resp
 		err = s.client.Notify(ctx, response)
 	}
 	if err != nil {
-		s.resolveApprovalLocked(response.ID, requestID, "expired", errApprovalExpired.Error())
+		if pending != nil && !pending.question() {
+			s.resolveApprovalLocked(response.ID, requestID, "expired", errApprovalExpired.Error())
+		}
 		return err
 	}
-	delete(s.activeApprovals, response.ID)
-	if s.pendingApproval != nil && s.pendingApproval.ApprovalID == response.ID {
-		s.pendingApproval = nil
+	if pending.question() {
+		pending.stopTimers()
+		pending.submitted = map[string]any{"answers": map[string]omorpc.QuestionAnswer{}}
+		if response.Answers != nil {
+			pending.submitted["answers"] = response.Answers
+		}
+		if response.Comment != nil {
+			pending.submitted["comment"] = *response.Comment
+		}
+		pending.delivering = true
+		s.setQuestionDeliveryLocked(pending, "sending", "")
+		pending.confirmTimer = questionAfterFunc(questionConfirmTimeout, func() {
+			s.lifecycleMu.Lock()
+			defer s.lifecycleMu.Unlock()
+			if s.pendingByID(response.ID) == pending && pending.delivering {
+				pending.delivering = false
+				pending.confirmTimer = nil
+				s.setQuestionDeliveryLocked(pending, "failed", "unconfirmed")
+			}
+		})
+	} else {
+		s.removeApprovalLocked(response.ID)
 	}
 	s.publishLocked(Frame{Kind: FrameAck, SessionID: s.durableID, Command: omorpc.CmdExtensionUIResponse, RequestID: requestID, ApprovalID: response.ID})
 	return nil
@@ -73,10 +100,7 @@ func (s *Session) respondExtensionUI(ctx context.Context, requestID string, resp
 // A terminal outcome is distinct from a successful answer acknowledgement.
 // Clear only this request; a late response must not retire its replacement.
 func (s *Session) resolveApprovalLocked(id, requestID, outcome, message string) {
-	delete(s.activeApprovals, id)
-	if s.pendingApproval != nil && s.pendingApproval.ApprovalID == id {
-		s.pendingApproval = nil
-	}
+	s.removeApprovalLocked(id)
 	payload := map[string]any{"id": id, "outcome": outcome}
 	if requestID != "" {
 		payload["requestId"] = requestID

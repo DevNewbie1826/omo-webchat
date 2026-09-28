@@ -140,11 +140,9 @@ func TestAnswerDeliveryProviderResumeRetiresApproval(t *testing.T) {
 		t.Fatal("session did not resume on a new provider route")
 	}
 	writeClient(t, conn, map[string]any{"type": "approval.respond", "sessionId": "resumed-answer", "requestId": "after-resume", "id": "old-ask", "confirmed": true})
-	resolved := frames.next(t, "approval.resolved")
 	failure := frames.nextMatching(t, "error", 5*time.Second, func(f map[string]any) bool { return f["requestId"] == "after-resume" })
-	if resolved["id"] != "old-ask" {
-		t.Fatalf("wrong expired identity: %v", resolved)
-	}
+	// The provider unload already sent the terminal frame; a stale later
+	// response is rejected without publishing a second resolution.
 	t.Logf("resumed route rejected stale approval: %v", failure)
 }
 
@@ -154,6 +152,7 @@ func TestAnswerDeliveryEngineRejectionAfterAck(t *testing.T) {
 	attachAndAwaitHistory(t, conn, frames, "rejected-answer")
 	h.daemon.EmitSession(h.path, map[string]any{"type": "extension_ui_request", "id": "ask", "method": "question"})
 	frames.next(t, "approval")
+	h.daemon.DropNextQuestionResponse()
 	writeClient(t, conn, map[string]any{"type": "approval.respond", "sessionId": "rejected-answer", "requestId": "answer", "id": "ask", "answers": map[string]any{}})
 	frames.next(t, "ack")
 	// A one-way write can succeed before the engine reports that its waiter

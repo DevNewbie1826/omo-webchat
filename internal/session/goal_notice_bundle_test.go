@@ -49,8 +49,8 @@ func TestDispatchGoalActivationNotifyStaysSilent(t *testing.T) {
 			injectEvent(t, s, map[string]any{"type": "extension_ui_request", "method": "notify", "message": tc.message, "notifyType": tc.notifyType})
 			frames := dropAttachReady(publishCompactionMarker(t, s, sub))
 			if !tc.shown {
-				if len(frames) != 0 || s.manager.journalLen(s.chatID) != 0 || s.pendingApproval != nil {
-					t.Fatalf("goal activation published or retained: frames=%+v journal=%d approval=%+v", frames, s.manager.journalLen(s.chatID), s.pendingApproval)
+				if len(frames) != 0 || s.manager.journalLen(s.chatID) != 0 || len(s.pendingApprovals) != 0 {
+					t.Fatalf("goal activation published or retained: frames=%+v journal=%d approval=%+v", frames, s.manager.journalLen(s.chatID), s.pendingApprovals)
 				}
 				return
 			}

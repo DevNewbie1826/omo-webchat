@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
 
 // mustJSON marshals v or fails the test.
@@ -93,6 +95,46 @@ func TestProtocolExtensionUIResponseOneWay(t *testing.T) {
 	want := `{"id":"dlg-42","sessionId":"rpc-7","type":"extension_ui_response","value":{"choice":"ok"}}` + "\n"
 	if string(got) != want {
 		t.Fatalf("wire mismatch\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestProtocolQuestionAnswersIncludeEmptySelection(t *testing.T) {
+	text := "written answer"
+	browserAnswers := map[string]wscontract.QuestionAnswer{"q1": {Text: &text}}
+	answers := NormalizeQuestionAnswers(&browserAnswers)
+	if browserAnswers["q1"].Selected != nil {
+		t.Fatal("normalization mutated the browser answer")
+	}
+
+	tests := []struct {
+		name string
+		cmd  Notification
+		want string
+	}{
+		{
+			name: "response",
+			cmd:  ExtensionUIResponse{SessionID: "rpc-7", ID: "dlg-42", Answers: answers},
+			want: `{"answers":{"q1":{"selected":[],"text":"written answer"}},"id":"dlg-42","sessionId":"rpc-7","type":"extension_ui_response"}` + "\n",
+		},
+		{
+			name: "progress",
+			cmd:  ExtensionUIProgress{SessionID: "rpc-7", ID: "dlg-42", Answers: answers},
+			want: `{"answers":{"q1":{"selected":[],"text":"written answer"}},"id":"dlg-42","sessionId":"rpc-7","type":"extension_ui_progress"}` + "\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := EncodeNotification(tt.cmd)
+			if err != nil {
+				t.Fatalf("EncodeNotification: %v", err)
+			}
+			if string(got) != tt.want {
+				t.Fatalf("wire mismatch\n got: %s\nwant: %s", got, tt.want)
+			}
+		})
+	}
+	if NormalizeQuestionAnswers(nil) != nil {
+		t.Fatal("nil answers must stay absent")
 	}
 }
 
@@ -377,6 +419,25 @@ func TestProtocolSessionStateDecoding(t *testing.T) {
 	if data.State.SessionID != "d0b0-uuid" || data.State.SessionFile != "/home/.omo/sessions/d0b0-uuid.jsonl" ||
 		data.State.ThinkingLevel != "medium" || data.State.SessionName != "Established name" || data.State.MessageCount != 0 {
 		t.Fatalf("state: %+v", data.State)
+	}
+}
+
+func TestProtocolSessionStatePendingQuestions(t *testing.T) {
+	var state SessionState
+	line := `{"sessionId":"d0b0-uuid","pendingQuestions":[{"id":"dlg-new","requestId":"tool-1",` +
+		`"questions":[{"id":"q1","header":"Pick","question":"Choose an option"}],` +
+		`"deadlineAtMs":1700000000000,"remainingMs":15000}]}`
+	if err := json.Unmarshal([]byte(line), &state); err != nil {
+		t.Fatalf("unmarshal SessionState: %v", err)
+	}
+	if len(state.PendingQuestions) != 1 {
+		t.Fatalf("pendingQuestions = %+v", state.PendingQuestions)
+	}
+	q := state.PendingQuestions[0]
+	if q.ID != "dlg-new" || q.RequestID != "tool-1" || q.DeadlineAtMs != 1700000000000 ||
+		q.RemainingMs != 15000 || len(q.Questions) != 1 || q.Questions[0].Header == nil ||
+		*q.Questions[0].Header != "Pick" {
+		t.Fatalf("pending question = %+v", q)
 	}
 }
 

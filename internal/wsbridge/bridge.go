@@ -929,6 +929,8 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 		if err := sess.RespondApprovalFrame(ctx, *f); err != nil {
 			c.sendSessionError(err, "approval.respond", deref(f.RequestID))
 		}
+	case *wscontract.ApprovalProgressFrame:
+		sess.ProgressApproval(ctx, *f)
 	case *wscontract.ChatCommandsFrame:
 		c.queryRecovering(ctx, recoveryBinding{workspaceID: workspaceID, stale: queryBinding{chatID: bound, generation: bindingGeneration, session: sess}}, recoverableQuery{command: "get_commands", run: c.queryCommands})
 	case *wscontract.ChatCompactFrame:
@@ -2261,6 +2263,8 @@ func clientSessionID(f wscontract.ClientFrame) string {
 	case *wscontract.ChatSetFrame:
 		return x.SessionID
 	case *wscontract.ApprovalRespondFrame:
+		return x.SessionID
+	case *wscontract.ApprovalProgressFrame:
 		return x.SessionID
 	case *wscontract.ChatCommandsFrame:
 		return x.SessionID
