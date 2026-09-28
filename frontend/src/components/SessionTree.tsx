@@ -1,9 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useT } from "../i18n";
 import {
-  IconChevron,
   IconEdit,
   IconFolder,
+  IconFolderOpen,
   IconMore,
   IconPlus,
   IconTerminal,
@@ -267,19 +267,16 @@ export function SessionTree({
         return (
           <div key={ws.id} className="th-tree-workspace">
             <div className="th-tree-node">
-              <span className="th-tree-icon">
-                <IconFolder size={14} />
-              </span>
               {renamingWs ? (
                 <>
                   <button
                     type="button"
-                    className={`th-tree-chevron${isOpen ? " th-tree-chevron--open" : ""}`}
+                    className="th-tree-chevron th-tree-icon"
                     aria-label={isOpen ? t("sidebar.collapse") : t("sidebar.expand")}
                     aria-expanded={isOpen}
                     onClick={() => onToggle(ws.id)}
                   >
-                    <IconChevron size={13} />
+                    {isOpen ? <IconFolderOpen size={14} /> : <IconFolder size={14} />}
                   </button>
                   <RenameInput initial={ws.name} onCommit={(v) => commitRename(renamingWs, v)} />
                 </>
@@ -293,12 +290,12 @@ export function SessionTree({
                   aria-expanded={isOpen}
                   onClick={() => onToggle(ws.id)}
                 >
+                  <span className="th-tree-icon" aria-hidden="true">
+                    {isOpen ? <IconFolderOpen size={14} /> : <IconFolder size={14} />}
+                  </span>
                   <span className="th-tree-label-text" aria-hidden="true">
                     <span className="th-tree-label-head">{nameHead}</span>
                     <span className="th-tree-label-tail">{nameTail}</span>
-                  </span>
-                  <span className={`th-tree-chevron${isOpen ? " th-tree-chevron--open" : ""}`} aria-hidden="true">
-                    <IconChevron size={13} />
                   </span>
                 </button>
               )}
