@@ -3,11 +3,11 @@ package omorpctest
 import (
 	"context"
 	"encoding/json"
-	"net"
 	"testing"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/transport"
 )
 
 func askQuestion(q *queueTest, id, requestID string) {
@@ -150,7 +150,7 @@ func TestDaemonQuestionUnknownIDReturnsAlreadyResolved(t *testing.T) {
 func TestDaemonQuestionProgressUpdatesDeadlineAndState(t *testing.T) {
 	q := newQueueTest(t)
 	askQuestion(q, "ask-1", "tool-1")
-	conn, err := net.Dial("unix", q.d.SocketPath())
+	conn, err := transport.Dial(context.Background(), q.d.SocketPath())
 	if err != nil {
 		t.Fatal(err)
 	}
