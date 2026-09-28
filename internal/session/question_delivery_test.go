@@ -494,7 +494,20 @@ func TestQuestionDroppedResponseReacquiresNewIDAndResends(t *testing.T) {
 	}
 
 	d.EvictSessionWithEvent(prior.SessionFile(), "session_unloaded")
+	_, oldEvents := prior.client.CurrentEpoch()
 	d.Restart()
+	timeout := time.After(testTimeout)
+waitForEpochLoss:
+	for {
+		select {
+		case _, ok := <-oldEvents:
+			if !ok {
+				break waitForEpochLoss
+			}
+		case <-timeout:
+			t.Fatal("old epoch did not close")
+		}
+	}
 	replacement, started, detach := acquire(t, prior.manager, chat, nil)
 	t.Cleanup(detach)
 	if !started || replacement == prior {
