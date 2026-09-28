@@ -62,7 +62,7 @@ const KO = {
 };
 
 /** Scenario chrome: one fixture + one context + one page per scenario. */
-async function boot({ chromium, scenario, evidenceDir, viewport, touch = false, seed = {} }) {
+async function boot({ chromium, scenario, evidenceDir, viewport, touch = false, seed = {}, shots = 'qa' }) {
   const { startFixture } = await import('./pane-workspace-ui.mjs');
   // controlled: true keeps sends held (frames still captured) and answers
   // pings with pong, so fixture.unexpected stays meaningful.
@@ -93,7 +93,7 @@ async function boot({ chromium, scenario, evidenceDir, viewport, touch = false, 
       await domOn(page, predicate, timeout);
     },
     shot(name, target = page) {
-      return target.screenshot({ path: join(evidenceDir, 'qa', `${scenario}-${name}.png`) });
+      return target.screenshot({ path: join(evidenceDir, shots, `${scenario}-${name}.png`) });
     },
   };
   return kit;
@@ -561,6 +561,261 @@ scenarios['Q15'] = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Revise-r1 scenarios (review-r1.md REQUIRED items 1-6, in review order).
+// Each reproduces the review's own reproduction exactly: the same fixture
+// seeds, frames, viewports and touch gestures, asserting the review's
+// required result. Screenshots land under qa-r1/.
+// ---------------------------------------------------------------------------
+
+/** Review item 1: the answer-mode send button never becomes Stop, even
+ *  while the run is active on a phone (the review's running nonBlocking
+ *  reproduction; Q1-phone never creates a running state). */
+scenarios['Q16'] = {
+  title: 'running non-blocking question: the phone send button answers, never Stop',
+  viewport: PHONE_VIEWPORT,
+  touch: true,
+  shots: 'qa-r1',
+  seed: { running: [SESSION] },
+  async run(kit) {
+    const { page, fixture } = kit;
+    await kit.deliverAndWait(question('q-r1-run', { nonBlocking: true, requestId: 'req-r1-run' }),
+      `() => !!document.querySelector('.th-question-band')`);
+    // Precondition (the review's "before" state): without reply mode the
+    // running send slot IS Stop — this pins that the scenario really built
+    // the running + non-blocking combination.
+    assert.ok(await page.locator('.th-chat-send-btn.th-btn--danger').count() === 1,
+      'precondition: the send slot shows Stop while running before the composer answers');
+    await composer(kit).click();
+    await page.keyboard.type('answer while running', { delay: 20 });
+    await domOn(page, `() => (document.querySelector('.th-chat-reply-label-text')?.textContent ?? '').includes(${JSON.stringify(KO.replyLabel('QA1'))})`);
+    await kit.shot('reply-mode-running');
+    const responded = fixture.wait('frame', frame => frame.type === 'approval.respond' && frame.comment === 'answer while running');
+    await page.tap('.th-chat-send-btn');
+    const frame = await responded;
+    assert.equal(frame.sessionId, SESSION);
+    assert.equal(frame.id, 'q-r1-run');
+    assert.ok(deep(frame.answers ?? {}, {}), `answers must be empty, got ${JSON.stringify(frame.answers)}`);
+    assert.equal(replies(kit).length, 1, 'the answer is written exactly once');
+    assert.ok(outgoing(fixture, f => f.type === 'chat.abort').length === 0,
+      'the answer-mode button must never abort the run, running or not');
+    await kit.shot('after-answer');
+  },
+};
+
+/** Review item 2: the composer's answer target stays the question typing
+ *  began for; its ending (another pane answering it, or a snapshot prune)
+ *  leaves reply mode with the notice and the kept text, never retargeting
+ *  the next displayed question. */
+scenarios['Q17'] = {
+  title: 'the answered question ending never retargets the composer draft to the next question',
+  viewport: DESKTOP_VIEWPORT,
+  shots: 'qa-r1',
+  async run(kit) {
+    const { page, fixture } = kit;
+    const alpha = question('a', { nonBlocking: true, requestId: 'req-a',
+      questions: [{ header: 'Alpha', question: '하나 고르세요', options: [{ label: 'A' }, { label: 'B' }] }] });
+    const beta = question('b', { nonBlocking: true, requestId: 'req-b',
+      questions: [{ header: 'Beta', question: '둘 고르세요', options: [{ label: 'X' }, { label: 'Y' }] }] });
+    await kit.deliverAndWait(alpha, `() => !!document.querySelector('.th-question-band')`);
+    await kit.deliverAndWait(beta, `() => (document.querySelector('.th-question-pending-count')?.textContent ?? '').includes(${JSON.stringify(KO.pendingCount(2))})`);
+    await composer(kit).click();
+    await page.keyboard.type('answer intended for Alpha', { delay: 15 });
+    await domOn(page, `() => (document.querySelector('.th-chat-reply-label-text')?.textContent ?? '').includes(${JSON.stringify(KO.replyLabel('Alpha'))})`);
+    // Alpha ends exactly the way another pane answering it would end it.
+    await kit.deliverAndWait(resolved('a', 'answered'),
+      `() => !document.querySelector('.th-chat-reply-label') && !!document.querySelector('.th-chat-reply-ended')`);
+    assert.ok((await page.locator('.th-chat-reply-ended').textContent()).includes(KO.noLongerPending),
+      'the ended notice is shown for the finished question');
+    assert.equal(await composer(kit).inputValue(), 'answer intended for Alpha', 'the draft text is kept');
+    await kit.shot('alpha-ended');
+    // The review's nextEnterFrame check: Enter must answer NOTHING — least
+    // of all Beta, the next displayed question (approval.respond{id:"b"}).
+    const nextFrame = fixture.wait('frame', frame =>
+      (frame.type === 'chat.send' && frame.run?.message === 'answer intended for Alpha') || frame.type === 'approval.respond');
+    await page.keyboard.press('Enter');
+    const sent = await nextFrame;
+    assert.ok(!(sent.type === 'approval.respond' && sent.id === 'b'),
+      `the draft must never retarget the next question: ${JSON.stringify(sent)}`);
+    if (sent.type === 'chat.send') assert.equal(sent.run.message, 'answer intended for Alpha');
+    await kit.deliverAndWait(resolved('b', 'answered'), `() => !document.querySelector('.th-question-band')`);
+    // The review's second reproduction: a live questions.snapshot{ids:[]}
+    // removing BOTH questions must still end the composer's own target —
+    // not only the last displayed one.
+    const gamma = question('c', { nonBlocking: true, requestId: 'req-c',
+      questions: [{ header: 'Gamma', question: '셋 고르세요', options: [{ label: 'G1' }, { label: 'G2' }] }] });
+    const delta = question('d', { nonBlocking: true, requestId: 'req-d',
+      questions: [{ header: 'Delta', question: '넷 고르세요', options: [{ label: 'D1' }, { label: 'D2' }] }] });
+    await kit.deliverAndWait(gamma, `() => !!document.querySelector('.th-question-band')`);
+    await kit.deliverAndWait(delta, `() => (document.querySelector('.th-question-pending-count')?.textContent ?? '').includes(${JSON.stringify(KO.pendingCount(2))})`);
+    await composer(kit).click();
+    await page.keyboard.type('second attempt', { delay: 15 });
+    await domOn(page, `() => (document.querySelector('.th-chat-reply-label-text')?.textContent ?? '').includes(${JSON.stringify(KO.replyLabel('Gamma'))})`);
+    await kit.deliverAndWait({ type: 'questions.snapshot', ids: [] },
+      `() => !document.querySelector('.th-question-band') && !document.querySelector('.th-chat-reply-label') && !!document.querySelector('.th-chat-reply-ended')`);
+    assert.ok((await page.locator('.th-chat-reply-ended').textContent()).includes(KO.noLongerPending),
+      'a multi-removal snapshot prune ends the composer target with its notice');
+    assert.equal(await composer(kit).inputValue(), 'second attempt', 'the snapshot keeps the draft text');
+    await kit.shot('snapshot-pruned');
+  },
+};
+
+/** Review item 3: drafts are owned per pending question — an A -> B -> A
+ *  cycle keeps the option, free text and comment, and they send whole. */
+scenarios['Q18'] = {
+  title: 'cycling A -> B -> A keeps each question own option, free text and comment',
+  viewport: DESKTOP_VIEWPORT,
+  shots: 'qa-r1',
+  async run(kit) {
+    const { page, fixture } = kit;
+    const alpha = question('q-draft-a', { requestId: 'req-draft-a', title: 'Alpha',
+      questions: [{ header: 'Alpha', question: '자유로이 답하세요', options: [{ label: 'A' }, { label: 'B' }, { label: 'C' }] }] });
+    const beta = question('q-draft-b', { requestId: 'req-draft-b', title: 'Beta',
+      questions: [{ header: 'Beta', question: '다르게 답하세요', options: [{ label: 'X' }, { label: 'Y' }] }] });
+    await kit.deliverAndWait(alpha, `() => !!document.querySelector('.th-question-window')`);
+    await kit.deliverAndWait(beta, `() => (document.querySelector('.th-question-pending-count')?.textContent ?? '').includes(${JSON.stringify(KO.pendingCount(2))})`);
+    await page.locator('.th-question-window').getByRole('button', { name: 'A', exact: true }).click();
+    await page.locator('.th-question-window .th-approval-question-text').pressSequentially('retained own answer', { delay: 15 });
+    await page.locator('.th-question-window .th-approval-question-comment').pressSequentially('retained comment', { delay: 15 });
+    await page.locator('.th-question-window .th-question-pending-next').click();
+    await domOn(page, `() => (document.querySelector('.th-question-window-title')?.textContent ?? '').includes('Beta')`);
+    await page.locator('.th-question-window .th-question-pending-next').click();
+    await domOn(page, `() => (document.querySelector('.th-question-window-title')?.textContent ?? '').includes('Alpha')`);
+    const pressed = await page.locator('.th-question-window button[aria-pressed="true"]').allTextContents();
+    assert.deepEqual(pressed.filter(text => text.trim().length > 0), ['A'], 'the picked option survives the cycle');
+    assert.equal(await page.locator('.th-question-window .th-approval-question-text').inputValue(), 'retained own answer',
+      'the free text survives the cycle');
+    assert.equal(await page.locator('.th-question-window .th-approval-question-comment').inputValue(), 'retained comment',
+      'the comment survives the cycle');
+    await kit.shot('after-cycle');
+    const responded = fixture.wait('frame', frame => frame.type === 'approval.respond' && frame.id === 'q-draft-a');
+    await windowSubmit(kit).click();
+    const sent = await responded;
+    assert.ok(deep(sent.answers, { q1: { selected: ['A'], text: 'retained own answer' } }),
+      `the cycled draft sends whole: ${JSON.stringify(sent)}`);
+    assert.equal(sent.comment, 'retained comment');
+    await kit.shot('sent-after-cycle');
+  },
+};
+
+/** Review item 4: composer reply-mode editing feeds the SAME non-resetting
+ *  1000ms draft throttle the question window uses (the review froze the
+ *  Playwright clock; the window-comment surface is Q7 on the real clock). */
+scenarios['Q19'] = {
+  title: 'reply-mode composer editing sends throttled approval.progress with the comment',
+  viewport: DESKTOP_VIEWPORT,
+  shots: 'qa-r1',
+  async run(kit) {
+    const { page, fixture } = kit;
+    await kit.deliverAndWait(question('q-cprog', { nonBlocking: true, requestId: 'req-cprog' }),
+      `() => !!document.querySelector('.th-question-band')`);
+    await composer(kit).click();
+    // Freeze the page clock exactly like the review: typing advances nothing
+    // until page.clock.runFor moves it, so the throttle cadence is the
+    // behaviour under test (a permitted clock control, not a sleep).
+    await page.clock.install();
+    await page.clock.pauseAt(await page.evaluate(() => Date.now()));
+    const text = 'editing in composer';
+    for (const char of text) {
+      await page.keyboard.type(char);
+      await page.clock.runFor(300);
+    }
+    // 19 edits at 300ms virtual: the armed-at-first-edit 1000ms timer fires
+    // at t=1000/2200/3400/4600 with the 4/8/12/16-char drafts; the re-armed
+    // timer (edit at t=4800) fires at 5800 with the full draft — runFor
+    // past it before counting.
+    await page.clock.runFor(1000);
+    let observed = progresses(kit).filter(frame => frame.id === 'q-cprog');
+    assert.equal(observed.length, 5,
+      `expected the non-resetting throttle to fire five times mid-typing, got ${JSON.stringify(observed.map(f => f.comment))}`);
+    assert.ok(observed.every(frame => typeof frame.comment === 'string' && frame.comment.length > 0 && text.startsWith(frame.comment)),
+      `each frame carries a live draft prefix: ${JSON.stringify(observed.map(f => f.comment))}`);
+    for (let i = 1; i < observed.length; i += 1) {
+      assert.ok(observed[i].comment.length > observed[i - 1].comment.length,
+        'later frames carry later drafts (the timer never resets mid-editing)');
+    }
+    assert.equal(observed.at(-1).comment, text, 'the last mid-typing frame carries the full draft');
+    assert.ok(observed.every(frame => frame.sessionId === SESSION), 'progress frames carry the session');
+    const responded = fixture.wait('frame', frame => frame.type === 'approval.respond' && frame.comment === text);
+    await page.keyboard.press('Enter');
+    await responded;
+    // Observation window: any stray or uncancelled throttle timer fires here.
+    await page.clock.runFor(2000);
+    observed = progresses(kit).filter(frame => frame.id === 'q-cprog');
+    assert.equal(observed.length, 5, `no progress after Send: ${JSON.stringify(observed.map(f => f.comment))}`);
+    await page.clock.resume();
+    await kit.shot('composer-progress');
+  },
+};
+
+/** Review item 5: the closure notice follows the resolved outcome, not the
+ *  previous delivery state — a merely pending question resolved
+ *  already_resolved must still tell the user (Go dispatch.go contract). */
+scenarios['Q20'] = {
+  title: 'approval.resolved{already_resolved} on a merely pending question shows the closure notice',
+  viewport: DESKTOP_VIEWPORT,
+  shots: 'qa-r1',
+  async run(kit) {
+    const { page } = kit;
+    await kit.deliverAndWait(question('closure', { requestId: 'req-closure' }),
+      `() => !!document.querySelector('.th-question-window')`);
+    // Never sent from this pane: the question is still pending when the
+    // engine reports it was already resolved elsewhere.
+    await kit.deliverAndWait(resolved('closure', 'already_resolved'),
+      `() => !document.querySelector('.th-question-window') && !document.querySelector('.th-question-band')`);
+    const notice = page.locator('.th-question-closed-notice');
+    await notice.waitFor({ timeout: 20_000 });
+    assert.ok((await notice.textContent()).includes(KO.alreadyResolved),
+      'the notice is the accurate already-resolved text');
+    await kit.shot('already-resolved-notice');
+  },
+};
+
+/** Review item 6: sending locks option changes against REAL touches — the
+ *  native touchstart/touchend path, focus inside the window, not just the
+ *  disabled attribute (the review's phone reproduction). */
+scenarios['Q21'] = {
+  title: 'sending locks option changes against real touches, not just the disabled attribute',
+  viewport: PHONE_VIEWPORT,
+  touch: true,
+  shots: 'qa-r1',
+  async run(kit) {
+    const { page, fixture } = kit;
+    await kit.deliverAndWait(question('q-tlock', { requestId: 'req-tlock' }),
+      `() => !!document.querySelector('.th-question-window')`);
+    await page.locator('.th-question-window').getByRole('button', { name: 'A', exact: true }).tap();
+    await domOn(page, `() => (document.querySelector('.th-question-window button[aria-pressed="true"]')?.textContent ?? '').trim() === 'A'`);
+    const responded = fixture.wait('frame', frame => frame.type === 'approval.respond' && frame.id === 'q-tlock');
+    await windowSubmit(kit).tap();
+    const sent = await responded;
+    assert.ok(deep(sent.answers, { q1: { selected: ['A'] } }), `unexpected answers ${JSON.stringify(sent.answers)}`);
+    await domOn(page, `() => !!document.querySelector('.th-question-window .th-question-delivery--sending')`);
+    const optionA = page.locator('.th-question-window').getByRole('button', { name: 'A', exact: true });
+    const optionB = page.locator('.th-question-window').getByRole('button', { name: 'B', exact: true });
+    assert.ok(await optionA.isDisabled() && await optionB.isDisabled(),
+      'options carry the disabled attribute while sending');
+    await kit.shot('sending-locked');
+    // The review taps the question tab first — focus inside the window —
+    // then touches option B's centre for real, and re-touches A. Each touch
+    // is asserted the moment it lands: a single-select group can mask a B
+    // change if the A re-touch is only checked at the end.
+    await page.locator('.th-question-window [role="tab"]').first().tap();
+    const pressedNow = async () =>
+      (await page.locator('.th-question-window button[aria-pressed="true"]').allTextContents())
+        .filter(text => text.trim().length > 0);
+    const boxB = await optionB.boundingBox();
+    await page.touchscreen.tap(boxB.x + boxB.width / 2, boxB.y + boxB.height / 2);
+    assert.deepEqual(await pressedNow(), ['A'],
+      'touching option B while sending must not move the selection off the sent answer');
+    const boxA = await optionA.boundingBox();
+    await page.touchscreen.tap(boxA.x + boxA.width / 2, boxA.y + boxA.height / 2);
+    assert.deepEqual(await pressedNow(), ['A'],
+      're-touching the sent option while sending must not toggle it off');
+    assert.equal(replies(kit).length, 1, 'no second write');
+    await kit.shot('touch-locked');
+  },
+};
+
 export const QUESTION_PARITY_SCENARIOS = scenarios;
 
 /** Run one scenario end to end; resolves {pass, ...facts} or throws. */
@@ -568,11 +823,12 @@ export async function runScenario(id, { chromium, evidenceDir = DEFAULT_EVIDENCE
   const scenario = scenarios[id];
   if (scenario === undefined) throw new Error(`unknown question parity scenario ${id}`);
   if (chromium === undefined) throw new Error('runScenario needs {chromium} (from the qa driver entry)');
-  await mkdir(join(evidenceDir, 'qa'), { recursive: true });
+  await mkdir(join(evidenceDir, scenario.shots ?? 'qa'), { recursive: true });
   const startedAt = Date.now();
   const kit = await boot({
     chromium, scenario: id, evidenceDir,
     viewport: scenario.viewport ?? DESKTOP_VIEWPORT, touch: scenario.touch ?? false, seed: scenario.seed ?? {},
+    shots: scenario.shots ?? 'qa',
   });
   let receipts;
   try {

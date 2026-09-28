@@ -12,7 +12,7 @@ import { qaDriverSkipOption, resolveQaDriver } from './qa-driver.mjs';
 const qaDriver = await resolveQaDriver();
 
 test('question parity catalogue registers every planned scenario', () => {
-  for (const id of ['Q1', 'Q1-phone', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10', 'Q11', 'Q12', 'Q13', 'Q14', 'Q15']) {
+  for (const id of ['Q1', 'Q1-phone', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10', 'Q11', 'Q12', 'Q13', 'Q14', 'Q15', 'Q16', 'Q17', 'Q18', 'Q19', 'Q20', 'Q21']) {
     expect(typeof QUESTION_PARITY_SCENARIOS[id]?.run, `${id} must be registered`).toBe('function');
   }
 });
