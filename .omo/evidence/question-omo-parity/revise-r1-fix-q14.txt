@@ -41,3 +41,38 @@ Browser QA:
 Initial browser result before correcting the stale Q14 expectation:
   23 pass, 1 fail. The notice was present; the assertion expected the old
   alreadyResolved text. After updating that expected text, all 24 passed.
+
+[Lead review follow-up: signal ref scope]
+The extra questionEndedSignalRef change was out of scope and was reverted.
+The first focused run without the ref reported:
+  ChatPane.question.test.tsx: 1 failed | 6 passed (7)
+The failing assertion expected the prior alreadyResolved notice to disappear
+immediately after a subsequent answered resolution. That assertion was invalid:
+answered closes silently (does not create/replace a notice); it does not dismiss
+an existing notice. The test was corrected to keep asserting the alreadyResolved
+notice text. After that correction, with no signal ref change:
+  npx vitest run --maxWorkers=2 src/features/split/ChatPane.question.test.tsx
+  Test Files 1 passed (1); Tests 7 passed (7)
+This confirms the ref change was unnecessary for Q14 and is absent from the
+final change.
+
+[Lead review follow-up: verification]
+Command:
+  cd frontend && npx vitest run --maxWorkers=2 src/features/split
+Result:
+First follow-up attempt: remained at RUN with ChatPane.question.test.tsx
+  reporting 1 failed, then was interrupted with Ctrl+C. No final summary.
+Second follow-up attempt with corrected assertion:
+  Test Files 207 passed (207)
+  Tests 2394 passed (2394)
+  Duration 73.77s (transform 2.55s, setup 935ms, import 25.49s, tests 31.04s,
+    environment 73.94s)
+  watcher completed (exit code 0)
+
+Command:
+  cd frontend && npx tsc --noEmit
+Result:
+  exit code 0; no diagnostics printed.
+
+The focused 7/7, full split-suite 2394/2394, tsc exit 0, and browser 24/24
+results verify the corrected notice test and browser behavior.
