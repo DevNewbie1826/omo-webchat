@@ -231,6 +231,23 @@ it("measures a second prepend while the previous measured anchor remains armed",
   }
 });
 
+it("converges when a prepend changes the viewport anchor's layout origin", async () => {
+  const tail = rows("tail", 60);
+  await render(tail);
+  park(2000);
+  const anchor = firstVisible();
+  const before = anchor.getBoundingClientRect().top;
+  const oldIndex = Number(anchor.dataset["index"]);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    const shift = this === anchor && Number(this.dataset["index"]) > oldIndex ? 20 : 0;
+    return new DOMRect(0, this.matches(".th-chat-row") ? offset(this) + shift : 0, 800, this.offsetHeight);
+  });
+  await render([...rows("head", 100), ...tail]);
+  expect(anchor.isConnected).toBe(true);
+  expect(Math.abs(anchor.getBoundingClientRect().top - before)).toBeLessThan(4);
+  expect(container.querySelector(".th-chat-history--settling")).toBeNull();
+});
+
 it.each([true, "error"] as const)("preserves the anchor when older chrome appears and disappears (%s)", async (status) => {
   const style = document.createElement("style");
   style.textContent = readFileSync("src/styles/chat-transcript.css", "utf8");

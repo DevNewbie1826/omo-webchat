@@ -229,6 +229,22 @@ it.each([false, true])("retries failed empty history while running (compacting=%
   expect(state.running).toBe(true);
 });
 
+it.each([false, true])("retries from live reconnect state before the loading render commits, once only (retained=%s)", retained => {
+  if (retained) tail();
+  deliver({ type: "error", sessionId: session.id, code: "incomplete_history", message: "broken branch" });
+  act(() => { handlers.onClose?.(1006); handlers.onOpen?.(); });
+  expect(state.resyncDisabled).toBe(true);
+  const before = sent.length;
+  act(() => {
+    handlers.onFrame({ type: "ready", sessionId: session.id, piSessionId: "durable", resumed: true });
+    handlers.onFrame({ type: "error", sessionId: session.id, code: "incomplete_history", message: "broken branch" });
+    state.retryHistory();
+    state.retryHistory();
+  });
+  expect(sent.slice(before).map(frame => frame.type)).toEqual(["chat.close", "chat.create"]);
+  expect(state.historyStatus).toBe("loading");
+});
+
 it("shows failed empty history only while connected and never over committed messages", () => {
   deliver({ type: "error", sessionId: session.id, code: "incomplete_history", message: "broken branch" });
   expect(state.historyFailedEmpty).toBe(true);

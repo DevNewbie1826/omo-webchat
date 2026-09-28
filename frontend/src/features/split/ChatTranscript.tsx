@@ -1359,8 +1359,9 @@ export function ChatTranscript({
         }
         const previous = scroll.scrollTop;
         scroll.scrollTop += delta;
-        const warm = anchorRef.current;
-        if (warm !== null) anchorRef.current = { ...warm, start: warm.start + scroll.scrollTop - previous };
+        // This corrects the viewport, not the virtual row's measured start.
+        // Feeding it into the warm baseline makes that effect undo this
+        // correction on the next commit and starts a layout-update loop.
         if (scroll.scrollTop !== previous) noteProgrammaticWrite("measurement");
       }
       if (virtualizer.scrollOffset !== scroll.scrollTop) {
