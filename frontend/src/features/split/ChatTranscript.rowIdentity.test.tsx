@@ -231,6 +231,35 @@ it("measures a second prepend while the previous measured anchor remains armed",
   }
 });
 
+it("keeps both prepend corrections on the retained anchor when its visible predecessor grows", async () => {
+  // The scrollport's padding leaves the last prepended row partly visible
+  // above the original anchor, as in Q2's consecutive older-page responses.
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    return this.matches(".th-chat-history") ? 20 : 0;
+  });
+  const tail = rows("tail", 60);
+  await render(tail);
+  park(0);
+  const anchor = firstVisible();
+  const before = offset(anchor);
+  const head = rows("head", 20);
+  heights.set("message:head-19", 121);
+  await render([...head, ...tail]);
+  expect(offset(anchor)).toBe(before);
+  const predecessor = row("message:head-19");
+  expect(offset(predecessor)).toBe(before - 121);
+  expect(firstVisible()).toBe(predecessor);
+
+  // The next page expands that predecessor (e.g. a folded image result).
+  // Warm compensation still owns the original anchor. DOM correction must
+  // not switch to the predecessor and undo its 318px compensation.
+  heights.set("message:head-19", 439);
+  await render([...rows("earlier", 20), ...head, ...tail]);
+  expect(row(anchor.dataset["entryKey"] ?? "")).toBe(anchor);
+  expect(offset(anchor)).toBe(before);
+  expect(container.querySelector(".th-chat-history--settling")).toBeNull();
+});
+
 it("converges when a prepend changes the viewport anchor's layout origin", async () => {
   const tail = rows("tail", 60);
   await render(tail);

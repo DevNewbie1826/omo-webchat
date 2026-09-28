@@ -829,7 +829,12 @@ export function ChatTranscript({
         if (!isFollowing()) {
           const mounted = [...scrollRef.current?.querySelectorAll<HTMLElement>(".th-chat-row[data-entry-key]") ?? []];
           const top = scrollRef.current?.scrollTop ?? 0;
-          const visible = mounted.find((row) => {
+          // Successive pages must keep DOM correction on the warm anchor.
+          // A newly visible predecessor can grow with the next page; holding
+          // it instead would undo warm compensation for the retained row.
+          const retainedAnchor = needsAnchor ? undefined
+            : mounted.find((row) => row.dataset["entryKey"] === anchorRef.current?.key);
+          const visible = retainedAnchor ?? mounted.find((row) => {
             const rowKey = row.dataset["entryKey"];
             const rowStart = rowKey === undefined ? undefined : previousStartsRef.current.get(rowKey);
             return rowStart !== undefined && rowStart + row.offsetHeight > top

@@ -236,6 +236,37 @@ describe("ChatPane resync", () => {
 		}
 	});
 
+	it("sends one close and create for each retry across a failed retry and reconnect", () => {
+		const probe = renderSessionProbe(root);
+		const fail = () => probe.deliver({
+			type: "error", sessionId: "chat-1", code: "incomplete_history", message: "history failed",
+		});
+		act(() => {
+			probe.deliver(ready());
+			fail();
+		});
+		const first = probe.sent.length;
+		act(() => requireElement(container.querySelector<HTMLButtonElement>(".th-chat-history-retry"), "retry").click());
+		expect(probe.sent.slice(first).map(frame => frame.type)).toEqual(["chat.close", "chat.create"]);
+		act(() => {
+			probe.deliver(ready());
+			fail();
+		});
+		act(() => probe.disconnect());
+		expect(container.querySelector(".th-chat-history-retry")).toBeNull();
+		act(() => {
+			probe.reconnect();
+			probe.deliver(ready());
+			fail();
+		});
+
+		const second = probe.sent.length;
+		act(() => requireElement(container.querySelector<HTMLButtonElement>(".th-chat-history-retry"), "retry").click());
+
+		expect(probe.sent.slice(second).map(frame => frame.type)).toEqual(["chat.close", "chat.create"]);
+		expect(probe.state()).toMatchObject({ historyStatus: "loading", resyncBusy: true });
+	});
+
 	it("admits only one failed-row retry from two rapid clicks after reconnect", () => {
 		const probe = renderSessionProbe(root);
 		const fail = () => probe.deliver({
