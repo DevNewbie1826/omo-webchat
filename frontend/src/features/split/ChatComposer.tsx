@@ -83,9 +83,11 @@ export function ChatComposer({ session, commands, running, blockingQuestion = fa
   // Keep the destination selected when reply mode began, not the next
   // question the pane chooses to display after this one ends or cycles.
   const replyTargetKeyRef = useRef<string | null>(null);
+  const pinnedForceRef = useRef(false);
   useEffect(() => {
     if (questionTarget && !replySuspended && (replyMode || questionTarget.forceReply) && replyTargetKeyRef.current === null) {
       replyTargetKeyRef.current = questionTarget.key;
+      pinnedForceRef.current = questionTarget.forceReply;
     }
   }, [questionTarget, replyMode, replySuspended]);
   const fileId = useId();
@@ -137,8 +139,15 @@ export function ChatComposer({ session, commands, running, blockingQuestion = fa
 
   const replyTarget = replySuspended ? null : replyTargetKeyRef.current === null
     ? questionTarget : questionTargets.find(question => question.key === replyTargetKeyRef.current) ?? null;
-  const replyActive = replyTarget !== null && (replyMode || replyTarget.forceReply) && !sendAsMessage;
-  const stopSuppressed = blockingQuestion || (replyTarget !== null && (replyMode || replyTarget.forceReply));
+  // A forced answer (collapsed blocking window) stays forced while the pane
+  // displays another question: only the pinned question's own display state
+  // may lift it, so cycling never turns the answer into a chat message.
+  if (replyTargetKeyRef.current === null) pinnedForceRef.current = false;
+  else if (questionTarget?.key === replyTargetKeyRef.current) pinnedForceRef.current = questionTarget.forceReply;
+  const replyForced = replyTarget !== null
+    && (replyTargetKeyRef.current === null ? replyTarget.forceReply : pinnedForceRef.current);
+  const replyActive = replyTarget !== null && (replyMode || replyForced) && !sendAsMessage;
+  const stopSuppressed = blockingQuestion || (replyTarget !== null && (replyMode || replyForced));
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -285,12 +294,12 @@ export function ChatComposer({ session, commands, running, blockingQuestion = fa
           onClear={clearImage}
         />
         {isDragOver && <div className="th-chat-drop-hint" role="status">{t("chat.dropImage")}</div>}
-        {replyTarget && (replyMode || replyTarget.forceReply) && (
+        {replyTarget && (replyMode || replyForced) && (
           <div className="th-chat-reply-label">
             <span className="th-chat-reply-label-text">
               {"↳ "}{t("question.reply.label", { header: replyTarget.header })}
             </span>
-            {!replyTarget.forceReply && (
+            {!replyForced && (
               <button
                 type="button"
                 className="th-btn th-btn--ghost th-chat-reply-toggle"
@@ -354,6 +363,7 @@ export function ChatComposer({ session, commands, running, blockingQuestion = fa
             // `!`) typed into the EMPTY composer routes it to the question.
             if (questionTarget && !replySuspended && input === "" && value !== "" && !/^[/!]/.test(value)) {
               replyTargetKeyRef.current = questionTarget.key;
+              pinnedForceRef.current = questionTarget.forceReply;
               setReplyMode(true);
               setSendAsMessage(false);
             }

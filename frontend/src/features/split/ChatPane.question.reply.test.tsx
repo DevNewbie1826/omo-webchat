@@ -593,6 +593,38 @@ describe("ChatPane composer reply mode (omo question parity)", () => {
 			});
 		});
 
+		it("keeps a forced answer on its blocking question when the display cycles to another", () => {
+			const rendered = render();
+			act(() => {
+				rendered.deliver({ type: "state", sessionId: "chat-1", isStreaming: true, isCompacting: false });
+			});
+			// Text typed before any question arrives: reply mode was never entered.
+			act(() => setTextareaValue(composer(), "prepared answer"));
+			act(() => rendered.deliver({ ...BLOCKING_FRAME, requestId: "req-block" }));
+			act(() => rendered.deliver({ ...QUESTION_FRAME, id: "ask-b", requestId: "req-b" }));
+			act(() => {
+				document
+					.querySelector<HTMLButtonElement>(".th-modal .th-modal-close, .th-modal [aria-label='common.close']")
+					?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+			});
+			expect(document.querySelector(".th-modal")).toBeNull();
+			expect(container.querySelector(".th-chat-reply-label")).not.toBeNull();
+			act(() => requireElement(
+				container.querySelector<HTMLButtonElement>(".th-question-band .th-question-pending-next"),
+				"next question",
+			).click());
+			// The band now shows the non-blocking question; the composer still
+			// answers the blocking one it was forced onto.
+			expect(container.querySelector(".th-chat-reply-label")).not.toBeNull();
+			act(() => {
+				pressKey(composer(), "Enter");
+			});
+			const responses = rendered.sent.filter((frame) => frame.type === "approval.respond");
+			expect(responses).toHaveLength(1);
+			expect(responses[0]).toMatchObject({ id: "ask-block", comment: "prepared answer" });
+			expect(rendered.sent.some((frame) => frame.type === "chat.send" || frame.type === "chat.abort")).toBe(false);
+		});
+
 		it("the steer button is the send-as-message control", () => {
 			const { sent } = renderBlocking();
 			const steer = requireElement(
