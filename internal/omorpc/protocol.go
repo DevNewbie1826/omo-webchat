@@ -68,6 +68,7 @@ const (
 	CmdClearQueue          = "clear_queue"
 
 	CmdExtensionUIResponse = "extension_ui_response"
+	CmdExtensionUIProgress = "extension_ui_progress"
 
 	// CmdSetClientInfo is the session-less client handshake record.
 	CmdSetClientInfo = "set_client_info"
@@ -350,22 +351,58 @@ type ExtensionRequest struct {
 
 func (ExtensionRequest) commandName() string { return CmdExtensionRequest }
 
+// QuestionAnswer is the engine's answer shape. Even a text-only answer must
+// carry selected:[] so the engine can inspect and copy its selection.
+type QuestionAnswer struct {
+	Selected []string `json:"selected"`
+	Text     *string  `json:"text,omitempty"`
+}
+
+// NormalizeQuestionAnswers converts the browser contract to the engine wire
+// shape without changing the caller's answers. A nil map omits answers;
+// present answers always include selected (possibly empty).
+func NormalizeQuestionAnswers(answers *map[string]wscontract.QuestionAnswer) *map[string]QuestionAnswer {
+	if answers == nil {
+		return nil
+	}
+	normalized := make(map[string]QuestionAnswer, len(*answers))
+	for id, answer := range *answers {
+		normalized[id] = QuestionAnswer{
+			Selected: append([]string{}, answer.Selected...),
+			Text:     answer.Text,
+		}
+	}
+	return &normalized
+}
+
 // ExtensionUIResponse answers an inbound extension_ui_request. It is
 // one-way: the server never replies to it and ID is the native dialog id,
 // sent unchanged — never replaced with a client correlation id. Send it
 // with EncodeNotification.
 type ExtensionUIResponse struct {
-	SessionID string                                `json:"sessionId"`
-	ID        string                                `json:"id"`
-	Value     json.RawMessage                       `json:"value,omitempty"`
-	Answers   *map[string]wscontract.QuestionAnswer `json:"answers,omitempty"`
-	Comment   *string                               `json:"comment,omitempty"`
-	Confirmed *bool                                 `json:"confirmed,omitempty"`
-	Cancelled bool                                  `json:"cancelled,omitempty"`
+	SessionID string                     `json:"sessionId"`
+	ID        string                     `json:"id"`
+	Value     json.RawMessage            `json:"value,omitempty"`
+	Answers   *map[string]QuestionAnswer `json:"answers,omitempty"`
+	Comment   *string                    `json:"comment,omitempty"`
+	Confirmed *bool                      `json:"confirmed,omitempty"`
+	Cancelled bool                       `json:"cancelled,omitempty"`
 }
 
 func (ExtensionUIResponse) commandName() string { return CmdExtensionUIResponse }
 func (ExtensionUIResponse) notification()       {}
+
+// ExtensionUIProgress reports an in-progress question draft without waiting
+// for a response; it uses the native dialog id, not a correlation id.
+type ExtensionUIProgress struct {
+	SessionID string                     `json:"sessionId"`
+	ID        string                     `json:"id"`
+	Answers   *map[string]QuestionAnswer `json:"answers,omitempty"`
+	Comment   *string                    `json:"comment,omitempty"`
+}
+
+func (ExtensionUIProgress) commandName() string { return CmdExtensionUIProgress }
+func (ExtensionUIProgress) notification()       {}
 
 // GetFollowUpMessages snapshots the session's follow-up queue: the queued
 // texts in queue order.
@@ -406,12 +443,24 @@ type SessionState struct {
 	IsStreaming  *bool `json:"isStreaming,omitempty"`
 	IsCompacting *bool `json:"isCompacting,omitempty"`
 
+	PendingQuestions []PendingQuestion `json:"pendingQuestions,omitempty"`
+
 	// Pending queue, as observed engine behavior: the follow-up texts in
 	// queue order, every pending entry (steer and followUp) in enqueue
 	// order, and the total pending count. An idle queue omits all three.
 	FollowUp            []string        `json:"followUp,omitempty"`
 	Ordered             []QueuedMessage `json:"ordered,omitempty"`
 	PendingMessageCount int             `json:"pendingMessageCount,omitempty"`
+}
+
+// PendingQuestion is an engine-owned dialog snapshot. RequestID identifies
+// the stable tool call even if a resumed session receives a new dialog ID.
+type PendingQuestion struct {
+	ID           string                `json:"id"`
+	RequestID    string                `json:"requestId"`
+	Questions    []wscontract.Question `json:"questions"`
+	DeadlineAtMs int64                 `json:"deadlineAtMs"`
+	RemainingMs  int64                 `json:"remainingMs"`
 }
 
 // QueuedMessage is one pending queue entry: the message text, its delivery

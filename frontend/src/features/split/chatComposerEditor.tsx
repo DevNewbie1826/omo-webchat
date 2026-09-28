@@ -1,5 +1,5 @@
 import type { ClipboardEventHandler, KeyboardEventHandler, RefObject } from "react";
-import { IconArrowUp, IconX } from "../../components/icons";
+import { IconArrowUp, IconMessage, IconX } from "../../components/icons";
 
 interface ChatComposerEditorProps {
   readonly textareaRef: RefObject<HTMLTextAreaElement>;
@@ -11,6 +11,15 @@ interface ChatComposerEditorProps {
   readonly isCompacting: boolean;
   readonly disabled: boolean;
   readonly running: boolean;
+  /** A blocking question is waiting for its answer: the send slot keeps the
+   *  normal send button (never Stop) so the run cannot be aborted mid-answer. */
+  readonly stopSuppressed?: boolean;
+  /** Show the steer/send-as-message control even without a running turn. */
+  readonly steerVisible?: boolean;
+  /** "message" marks the send-as-message role beside a blocking question:
+   *  the control must never be mistaken for the primary send button, so it
+   *  gets a distinct icon and ghost treatment at every width. */
+  readonly steerVariant?: "steer" | "message";
   readonly sendLabel: string;
   readonly steerLabel: string;
   /** A run-time steer needs text; an empty draft leaves the action disabled. */
@@ -33,6 +42,9 @@ export function ChatComposerEditor({
   isCompacting,
   disabled,
   running,
+  stopSuppressed = false,
+  steerVisible = false,
+  steerVariant = "steer",
   sendLabel,
   steerLabel,
   canSteer,
@@ -43,6 +55,7 @@ export function ChatComposerEditor({
   onSteer,
   onStop,
 }: ChatComposerEditorProps) {
+  const stopMode = running && !stopSuppressed;
   return (
     <>
       <textarea
@@ -69,25 +82,25 @@ export function ChatComposerEditor({
           keyboard cannot produce. While a run is in flight the capsule gains
           this action beside — never inside — the fixed send/stop slot, so the
           stop control keeps its position. */}
-      {running && (
+      {(running || steerVisible) && (
         <button
           type="button"
-          className="th-btn th-chat-steer-btn"
+          className={`th-btn th-chat-steer-btn${steerVariant === "message" ? " th-chat-steer-btn--message" : ""}`}
           disabled={disabled || !canSteer}
           title={steerLabel}
           onClick={onSteer}
         >
-          <IconArrowUp size={18} />
+          {steerVariant === "message" ? <IconMessage size={18} /> : <IconArrowUp size={18} />}
           <span className="th-chat-send-label">{steerLabel}</span>
         </button>
       )}
       <button
-        type={running ? "button" : "submit"}
-        className={`th-btn th-chat-send-btn${running ? " th-btn--danger" : ""}`}
-        disabled={disabled || (!running && isCompacting)}
-        onClick={running ? onStop : undefined}
+        type={stopMode ? "button" : "submit"}
+        className={`th-btn th-chat-send-btn${stopMode ? " th-btn--danger" : ""}`}
+        disabled={disabled || (!stopMode && isCompacting)}
+        onClick={stopMode ? onStop : undefined}
       >
-        {running ? <IconX size={18} /> : <IconArrowUp size={18} />}
+        {stopMode ? <IconX size={18} /> : <IconArrowUp size={18} />}
         <span className="th-chat-send-label">{sendLabel}</span>
       </button>
     </>

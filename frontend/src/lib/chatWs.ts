@@ -180,6 +180,7 @@ export type ChatServerFrame =
   | ct.ChatTodoFrame
   | ct.ApprovalFrame
   | ct.ApprovalResolvedFrame
+  | ct.QuestionsSnapshotFrame
   | FallbackApprovalFrame
   | ct.CommandsFrame
   | ct.ModelsFrame
@@ -204,6 +205,7 @@ export type ChatClientFrame =
   | ct.ChatDisconnectFrame
   | ct.ChatSetFrame
   | ct.ApprovalRespondFrame
+  | ct.ApprovalProgressFrame
   | ct.ChatCommandsFrame
   | ct.ChatCompactFrame
   | ct.ChatModelsFrame

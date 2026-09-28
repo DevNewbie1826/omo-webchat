@@ -23,6 +23,8 @@ import { remarkBackslashMath } from "./mathDelimiters";
 import { ToolCard, type ToolCardProps } from "./ToolCard";
 import { ThinkingDisclosure } from "./ThinkingDisclosure";
 import { TranscriptNoticeRow } from "./TranscriptNoticeRow";
+import { AskUserAnswerChip } from "./AskUserAnswerChip";
+import { askUserHeadersFor, parseAskUserAnswerFrame, type AskUserHeaderSource } from "./askUserAnswer";
 import { SummaryNoticeBox } from "./SummaryNoticeBox";
 import { useChatScroll } from "./useChatScroll";
 import { ModalDialog } from "../../components/ModalDialog";
@@ -83,6 +85,14 @@ function rowText(message: UiMessage): string {
     .map((block) => block.text ?? block.thinking ?? "")
     .filter((text) => text.length > 0)
     .join("\n");
+}
+
+/** First text block of a message, where an omo answer frame would live. */
+function firstTextBlock(message: UiMessage): string | undefined {
+  const block = (message.blocks ?? []).find(
+    (candidate) => candidate.kind === "text" && typeof candidate.text === "string" && candidate.text.length > 0,
+  );
+  return block?.text;
 }
 
 const STOP_ERROR_REASONS = new Set(["max_tokens", "length", "content_filter", "refusal", "error"]);
@@ -862,6 +872,21 @@ export function ChatTranscript({
     return { rows, keys };
   }, [items, itemKeys, rowMetrics, estimateCache]);
 
+  // Header lookup sources for omo answer-frame chips (IS-2): the transcript's
+  // own messages plus the live toolCalls synthesized into the same shape, so
+  // a chip finds its ask_user_question / request_user_input headers whether
+  // the call came from history or is still in the live region.
+  const answerHeaderSources = useMemo<readonly AskUserHeaderSource[]>(() => {
+    const sources: AskUserHeaderSource[] = [];
+    for (const item of rows) {
+      if (item.kind === "message") sources.push(item.message);
+    }
+    for (const [id, entry] of Object.entries(toolCalls)) {
+      sources.push({ blocks: [{ kind: "toolCall", id, name: entry.toolName, arguments: entry.args }] });
+    }
+    return sources;
+  }, [rows, toolCalls]);
+
   // New-row entrance (chat-transcript.css .th-chat-enter): applied once per
   // new entry identity — appended live rows only, never history loads or
   // virtualizer remounts. The first keys snapshot marks the loaded history
@@ -997,7 +1022,7 @@ export function ChatTranscript({
   const [disclosureVersion, setDisclosureVersion] = useState(0);
   const onDisclosureClickCapture = (event: MouseEvent<HTMLDivElement>): void => {
     if (!(event.target instanceof Element) ||
-      !event.target.closest(".th-tool-head, .th-chat-thinking-head")) return;
+      !event.target.closest(".th-tool-head, .th-chat-thinking-head, .th-ask-answer-toggle")) return;
     holdDisclosurePosition();
     const row = event.target.closest<HTMLElement>(".th-chat-row[data-index]");
     if (row === null) return;
@@ -1449,6 +1474,12 @@ export function ChatTranscript({
                 previousItem !== undefined && previousItem.kind === "message"
                   ? RECORD_BLOCK_KINDS.has(lastRowBlock(previousItem.message)?.kind ?? "")
                   : false;
+              // An omo answer frame (IS-2) renders as an answer chip, never
+              // as the user's own bubble — checked BEFORE the steer branch
+              // because omo delivers answers as steer when the session is
+              // busy. Live and history rows share this path.
+              const answerFrame =
+                message.role === "user" ? parseAskUserAnswerFrame(firstTextBlock(message) ?? "") : undefined;
               return (
                 <div
                   key={virtualItem.key}
@@ -1458,6 +1489,12 @@ export function ChatTranscript({
                   className={`th-chat-row th-chat-row--${message.role}${userTurnStart(rows, virtualItem.index) ? " th-chat-row--turn-start" : ""}`}
                   style={{ position: "absolute", top: 0, transform: `translateY(${virtualItem.start}px)` }}
                 >
+                  {answerFrame !== undefined ? (
+                    <AskUserAnswerChip
+                      frame={answerFrame}
+                      headers={askUserHeadersFor(answerFrame.requestId, answerHeaderSources)}
+                    />
+                  ) : (
                   <div
                     className={`th-chat-msg th-chat-msg--${message.role}${enterClassFor(String(virtualItem.key))}`}
                     role={message.role === "user" ? "group" : undefined}
@@ -1503,6 +1540,7 @@ export function ChatTranscript({
                       </>
                     )}
                   </div>
+                  )}
                 </div>
               );
             })}

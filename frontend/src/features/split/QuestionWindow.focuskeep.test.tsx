@@ -179,6 +179,23 @@ describe("QuestionWindow option-button touch contract", () => {
 		expect(go.getAttribute("aria-pressed")).toBe("true");
 	});
 
+	it("does not change the submitted selection on touchend while sending", () => {
+		renderWindow(QUESTIONS);
+		act(() => option("Go")?.click());
+		expect(option("Go")?.getAttribute("aria-pressed")).toBe("true");
+		renderWindow({ ...QUESTIONS, delivery: "sending" });
+		const input = answerInput();
+		act(() => input?.focus());
+		const ts = option("TS");
+		expect(ts?.disabled).toBe(true);
+		act(() => {
+			ts?.dispatchEvent(new Event("touchstart", { bubbles: true, cancelable: true }));
+			ts?.dispatchEvent(new Event("touchend", { bubbles: true, cancelable: true }));
+		});
+		expect(option("Go")?.getAttribute("aria-pressed")).toBe("true");
+		expect(option("TS")?.getAttribute("aria-pressed")).toBe("false");
+	});
+
 	it("treats a drag over 10px as a scroll, not a tap: no toggle, the window body scrolls, the stray click is swallowed", () => {
 		renderWindow(QUESTIONS);
 

@@ -10,6 +10,7 @@ import { ApprovalQuestionPanel, useApprovalQuestionDraft } from "./ApprovalDockQ
  *  (chatSessionState.approvalRequestOf keeps defined fields only). */
 export interface ApprovalRequest {
 	readonly id: string;
+	readonly draftKey?: string;
 	readonly method: "select" | "confirm" | "input" | "editor" | "question" | "fallback";
 	readonly title?: string;
 	readonly message?: string;
@@ -19,6 +20,9 @@ export interface ApprovalRequest {
 	readonly deadlineAtMs?: number;
 	readonly remainingMs?: number;
 	readonly questions?: readonly Question[];
+	/** Delivery confirmation state republished by the server (IS-6). */
+	readonly delivery?: "sending" | "failed";
+	readonly deliveryError?: string;
 }
 
 export interface ApprovalResponse {
@@ -41,6 +45,11 @@ export interface QuestionWindowProps {
 	/** Focus handoff target for every exit: the owning
 	 *  pane's composer. Optional so headless unit mounts stay valid. */
 	readonly focusComposer?: () => void;
+	/** Total pending questions; >1 shows the count and a next control. */
+	readonly pendingCount?: number;
+	readonly onNextQuestion?: () => void;
+	/** Re-send the stored submitted answer after a failed delivery. */
+	readonly onResend?: () => void;
 }
 
 const COUNTDOWN_TICK_MS = 1_000;
@@ -123,12 +132,16 @@ export function QuestionWindow({
 	onCollapse,
 	onRespond,
 	focusComposer,
+	pendingCount,
+	onNextQuestion,
+	onResend,
 }: QuestionWindowProps) {
 	const { t } = useT();
 	const titleId = useId();
 	const contentRef = useRef<HTMLDivElement>(null);
 	const [text, setText] = useState(request.prefill ?? "");
-	const questionDraft = useApprovalQuestionDraft(request.id);
+	const draftKey = request.draftKey ?? request.id;
+	const questionDraft = useApprovalQuestionDraft(draftKey);
 	const countdownSeconds = useApprovalDeadlineCountdown(request);
 	// True from the moment a respond callback fires until the unmount cleanup
 	// consumes it: an exit the WINDOW initiated hands focus to the composer
@@ -176,10 +189,10 @@ export function QuestionWindow({
 		// A same-id mount after this instance's unmount is a remount, not an
 		// exit: cancel any handoff a previous unmount of this request deferred.
 		const cancelPending = (): void => {
-			const timer = pendingFocusHandoffs.get(request.id);
+			const timer = pendingFocusHandoffs.get(draftKey);
 			if (timer !== undefined) {
 				clearTimeout(timer);
-				pendingFocusHandoffs.delete(request.id);
+				pendingFocusHandoffs.delete(draftKey);
 			}
 		};
 		cancelPending();
@@ -207,7 +220,7 @@ export function QuestionWindow({
 			// No local exit — an external resolution would still deserve the
 			// composer, but a remount must not steal focus. Defer by one task:
 			// a same-id mount (same commit or later tick) cancels it.
-			const id = request.id;
+			const id = draftKey;
 			const stale = pendingFocusHandoffs.get(id);
 			if (stale !== undefined) clearTimeout(stale);
 			const timer = setTimeout(() => {
@@ -220,9 +233,8 @@ export function QuestionWindow({
 			}, 0);
 			pendingFocusHandoffs.set(id, timer);
 		};
-		// request.id is read through the closure; the effect runs once per
-		// mount and the latest id is what a remount cancels against.
-	}, [request.id]);
+		// A reissued dialog id for the same tool request is not a window exit.
+	}, [draftKey]);
 
 	const submitValue = (value: string): void => {
 		exitedRef.current = true;
@@ -250,6 +262,9 @@ export function QuestionWindow({
 				onRespondRef.current(response);
 			}}
 			onCancel={cancel}
+			{...(request.delivery ? { delivery: request.delivery } : {})}
+			{...(request.deliveryError ? { deliveryError: request.deliveryError } : {})}
+			{...(onResend ? { onResend } : {})}
 		/>
 	);
 
@@ -266,6 +281,22 @@ export function QuestionWindow({
 					<h3 id={titleId} className="th-question-window-title">
 						{request.title ?? t("approval.title")}
 					</h3>
+					{pendingCount !== undefined && pendingCount > 1 && (
+						<span className="th-question-pending">
+							<span className="th-question-pending-count">
+								{t("question.pending.count", { count: pendingCount })}
+							</span>
+							{onNextQuestion && (
+								<button
+									type="button"
+									className="th-btn th-btn--ghost th-question-pending-next"
+									onClick={onNextQuestion}
+								>
+									{t("question.pending.next")}
+								</button>
+							)}
+						</span>
+					)}
 					{countdownSeconds !== undefined && (
 						<span className="th-question-window-countdown">
 							{t("approval.remaining", { seconds: countdownSeconds })}

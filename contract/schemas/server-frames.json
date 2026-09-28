@@ -34,6 +34,9 @@
       "$ref": "#/$defs/ApprovalFrame"
     },
     {
+      "$ref": "#/$defs/QuestionsSnapshotFrame"
+    },
+    {
       "$ref": "#/$defs/ApprovalResolvedFrame"
     },
     {
@@ -89,6 +92,29 @@
     }
   ],
   "$defs": {
+    "SubmittedAnswer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["answers"],
+      "properties": {
+        "answers": { "type": "object", "additionalProperties": { "$ref": "shared-types.json#/$defs/QuestionAnswer" } },
+        "comment": { "type": "string" }
+      }
+    },
+    "QuestionsSnapshotFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "ids"],
+      "properties": {
+        "type": { "const": "questions.snapshot" },
+        "sessionId": { "type": "string" },
+        "ids": {
+          "type": "array",
+          "description": "Pending question keys in arrival order: requestId when available, otherwise dialog id.",
+          "items": { "type": "string" }
+        }
+      }
+    },
     "ApprovalResolvedFrame": {
       "type": "object",
       "additionalProperties": false,
@@ -591,6 +617,9 @@
         "id": {
           "type": "string"
         },
+        "requestId": {
+          "type": "string"
+        },
         "method": {
           "$ref": "shared-types.json#/$defs/ApprovalMethod"
         },
@@ -604,6 +633,16 @@
         },
         "nonBlocking": {
           "type": "boolean"
+        },
+        "delivery": {
+          "type": "string",
+          "enum": ["sending", "failed"]
+        },
+        "deliveryError": {
+          "type": "string"
+        },
+        "submittedAnswer": {
+          "$ref": "#/$defs/SubmittedAnswer"
         },
         "title": {
           "type": "string"

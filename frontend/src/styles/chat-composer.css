@@ -129,6 +129,24 @@
   cursor: not-allowed;
 }
 
+/* Send-as-message (blocking question reply mode): the same slot would
+   otherwise render a second identical solid arrow button next to send. The
+   message role gets a ghost outline and its own bubble glyph so the two
+   controls read as distinct actions at every width, icon-only included. */
+.th-chat-input .th-chat-steer-btn--message,
+.th-chat-input .th-chat-steer-btn--message:hover:not(:disabled) {
+  background: transparent;
+  color: var(--th-send);
+  box-shadow: inset 0 0 0 1px var(--th-send);
+}
+
+.th-chat-input .th-chat-steer-btn--message:disabled,
+.th-chat-input .th-chat-steer-btn--message:disabled:hover {
+  background: transparent;
+  color: var(--th-disabled-fg);
+  box-shadow: inset 0 0 0 1px var(--th-disabled-bg);
+}
+
 /* The visible control is the glyph alone; the name stays machine-readable. */
 .th-chat-send-label {
   position: absolute;
@@ -498,4 +516,46 @@ html[data-th-standalone]:not([data-th-keyboard-open]) .th-chat-input::after {
   html[data-th-standalone]:not([data-th-keyboard-open]) .th-chat-input::after {
     height: max(0px, calc(env(safe-area-inset-bottom) - max(0px, 100lvh - var(--th-vv-top, 0px) - var(--th-vh-unit, 1vh) * 100) - var(--th-space-4)));
   }
+}
+
+/* Reply mode (omo composerDestination = answer): while the composer targets
+   a shown question, a context strip above the input row names the question
+   and carries the send-as-message toggle. It is a full-width row in the
+   wrapping capsule, like the attachment preview strip. */
+.th-chat-reply-label {
+  flex: 1 1 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  padding: var(--th-space-1) var(--th-space-2) 0;
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-chat-reply-label-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--th-text-dim);
+  font-weight: var(--th-weight-emphasize);
+}
+
+.th-chat-reply-toggle {
+  flex: none;
+}
+
+/* The targeted question ended while the composer still held its draft: the
+   text stays, and this status line says why it no longer answers (IS-8). */
+.th-chat-reply-ended {
+  flex: 1 1 100%;
+  min-width: 0;
+  padding: var(--th-space-1) var(--th-space-2) 0;
+  color: var(--th-warning);
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
 }

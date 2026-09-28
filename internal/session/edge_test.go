@@ -667,7 +667,9 @@ func newParkingSub() *parkingSub {
 }
 
 func (p *parkingSub) Deliver(f Frame) {
-	if f.Kind == FrameReady {
+	// IS-10: the empty question snapshot is attach control data, not a
+	// message that should park a slow transcript subscriber.
+	if f.Kind == FrameReady || f.Kind == FrameQuestionsSnapshot {
 		return
 	}
 	p.mu.Lock()

@@ -18,7 +18,8 @@
         "queue_delivery_uncertain",
         "extension_notify",
         "engine_notify",
-        "continuation_error"
+        "continuation_error",
+        "question_closed_while_disconnected"
       ]
     }
   }

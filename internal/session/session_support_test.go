@@ -99,14 +99,26 @@ func (s *memCursorStore) saveCount() int {
 // recorder is a Subscriber that funnels frames into a channel so tests can
 // await specific frames and preserve arrival order.
 type recorder struct {
-	ch chan Frame
+	ch                chan Frame
+	questionSnapshots bool
 }
 
 func newRecorder(buf int) *recorder {
 	return &recorder{ch: make(chan Frame, buf)}
 }
 
+func newQuestionRecorder(buf int) *recorder {
+	r := newRecorder(buf)
+	r.questionSnapshots = true
+	return r
+}
+
 func (r *recorder) Deliver(f Frame) {
+	// IS-10: legacy tests observe their original domain frames. Tests of
+	// question reconciliation opt in to the additional attach snapshot.
+	if f.Kind == FrameQuestionsSnapshot && !r.questionSnapshots {
+		return
+	}
 	select {
 	case r.ch <- f:
 	default:

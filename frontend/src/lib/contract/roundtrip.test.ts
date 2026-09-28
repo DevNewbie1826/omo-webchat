@@ -142,7 +142,7 @@ describe("contract requirements pinned by fixtures", () => {
     }
   });
 
-  it("notice.at is RFC3339Nano and the fixture kind is one of the durable thirteen (invariant 14)", () => {
+  it("notice.at is RFC3339Nano and the fixture kind is one of the durable fourteen (invariant 14)", () => {
     const rfc3339Nano = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
     expect(DURABLE_NOTICE_KIND).toEqual([
       "retry_fallback_applied",
@@ -158,6 +158,7 @@ describe("contract requirements pinned by fixtures", () => {
       "extension_notify",
       "engine_notify",
       "continuation_error",
+      "question_closed_while_disconnected",
     ]);
     const notices = fixtures.filter((f) => typeOf(f) === "notice");
     expect(notices.length).toBeGreaterThanOrEqual(1);
@@ -177,9 +178,10 @@ describe("contract requirements pinned by fixtures", () => {
 });
 
 describe("wire-name mapping (bridge-owned, v1 continuity)", () => {
-  it("maps all 21 v2 FrameKinds onto known server wire types", () => {
-    expect(Object.keys(FrameKindToWireName).length).toBe(21);
+  it("maps all 22 v2 FrameKinds onto known server wire types", () => {
+    expect(Object.keys(FrameKindToWireName).length).toBe(22);
     expect(FrameKindToWireName["approval.resolved"]).toBe("approval.resolved");
+    expect(FrameKindToWireName["questions.snapshot"]).toBe("questions.snapshot");
     expect(FrameKindToWireName["message.delta"]).toBe("messageDelta");
     expect(FrameKindToWireName["name"]).toBe("chat.name");
     for (const wire of Object.values(FrameKindToWireName)) {
@@ -188,6 +190,7 @@ describe("wire-name mapping (bridge-owned, v1 continuity)", () => {
   });
 
   it("client wire names are identity and inside the closed client union", () => {
+    expect(ClientWireNames["approval.progress"]).toBe("approval.progress");
     for (const [kind, wire] of Object.entries(ClientWireNames)) {
       expect(wire).toBe(kind);
       expect(CLIENT_FRAME_TYPES).toContain(wire);

@@ -38,7 +38,7 @@ function mountPaneState() {
   const root = createRoot(container);
   function Probe() {
     state = useChatFrameState();
-    const pending = state.pendingQuestion;
+    const pending = state.shownQuestion;
     return pending && <QuestionWindow
       request={approvalRequestOf({ ...pending, method: "question" })}
       open
@@ -83,27 +83,30 @@ it("replays an intact structured request after reconnect and remains answerable"
   try {
     act(() => { pane.state.markOpen(); });
     pane.deliver(request);
-    expect(pane.state.pendingQuestion).toEqual(request);
+    expect(pane.state.shownQuestion).toEqual(request);
     expect(pane.respond).not.toHaveBeenCalled();
     act(() => pane.state.markClose());
     act(() => { pane.state.markOpen(); });
     pane.deliver(JSON.parse(JSON.stringify(request)));
-    expect(pane.state.pendingQuestion).toEqual(request);
+    expect(pane.state.shownQuestion).toEqual(request);
     expect(pane.state.pendingApproval).toBeNull();
     expect(document.querySelectorAll('[role="tab"]')).toHaveLength(2);
     pane.answer();
   } finally { pane.dispose(); }
 });
 
-it("ignores a mismatched acknowledgement and clears a structured request answered by another client", () => {
+it("keeps a structured request through ACK until omo confirms resolution (IS-6)", () => {
   const pane = mountPaneState();
   try {
     pane.deliver(request);
     pane.deliver({ type: "ack", sessionId: "s", command: "extension_ui_response", id: "different", requestId: "other-client-1" });
-    expect(pane.state.pendingQuestion).toEqual(request);
+    expect(pane.state.shownQuestion).toEqual(request);
     expect(document.querySelectorAll('[role="tab"]')).toHaveLength(2);
     pane.deliver({ type: "ack", sessionId: "s", command: "extension_ui_response", id: "ask", requestId: "other-client-2" });
-    expect(pane.state.pendingQuestion).toBeNull();
+    // IS-6: an ACK is only the server write receipt, not the engine's answer.
+    expect(pane.state.shownQuestion).toEqual(request);
+    pane.deliver({ type: "approval.resolved", sessionId: "s", id: "ask", outcome: "answered" });
+    expect(pane.state.shownQuestion).toBeNull();
     expect(document.querySelector(".th-modal")).toBeNull();
     expect(pane.respond).not.toHaveBeenCalled();
   } finally { pane.dispose(); }
@@ -117,7 +120,7 @@ it("replaces a structured deadline refresh in pane state and the rendered countd
     pane.deliver({ ...request, deadlineAtMs: 1_005_000, remainingMs: 5_000 });
     expect(document.querySelector(".th-question-window-countdown")?.textContent).toBe("5");
     pane.deliver({ ...request, deadlineAtMs: 1_020_000, remainingMs: 20_000 });
-    expect(pane.state.pendingQuestion).toEqual({ ...request, deadlineAtMs: 1_020_000, remainingMs: 20_000 });
+    expect(pane.state.shownQuestion).toEqual({ ...request, deadlineAtMs: 1_020_000, remainingMs: 20_000 });
     expect(document.querySelector(".th-question-window-countdown")?.textContent).toBe("20");
     expect(pane.respond).not.toHaveBeenCalled();
   } finally { pane.dispose(); }
@@ -128,9 +131,9 @@ it("retires an expired request through the wire parser and removes its rendered 
   try {
     pane.deliver(request);
     pane.deliver({ type: "approval.resolved", sessionId: "s", id: "other", outcome: "expired" });
-    expect(pane.state.pendingQuestion).toEqual(request);
+    expect(pane.state.shownQuestion).toEqual(request);
     pane.deliver({ type: "approval.resolved", sessionId: "s", id: "ask", outcome: "expired", message: "expired" });
-    expect(pane.state.pendingQuestion).toBeNull();
+    expect(pane.state.shownQuestion).toBeNull();
     expect(pane.state.error).toBe("expired");
     expect(pane.container.querySelector(".th-approval-dock")).toBeNull();
     expect(pane.respond).not.toHaveBeenCalled();
@@ -141,15 +144,19 @@ it.each([true, false])("does not restore an expired submitted request when resol
   const pane = mountPaneState();
   try {
     pane.deliver(request);
-    const retained = pane.state.pendingQuestion;
+    const retained = pane.state.shownQuestion;
+    if (!retained) throw new Error("missing retained question");
     act(() => {
-      pane.state.armControl("answer-1", "extension_ui_response:ask", () => pane.state.setPendingQuestion(retained), () => undefined);
-      pane.state.setPendingQuestion(null);
+      pane.state.armControl("answer-1", {
+        key: "extension_ui_response:ask",
+        ownsRestore: () => pane.state.getPendingQuestions().some(question => question.id === "ask"),
+      }, () => pane.state.restoreQuestion("ask", retained), () => undefined);
+      pane.state.markQuestionSending("ask");
     });
     const resolution = { type: "approval.resolved", sessionId: "s", id: "ask", outcome: "expired", requestId: "answer-1" };
     const failure = { type: "error", sessionId: "s", command: "approval.respond", requestId: "answer-1", message: "expired" };
     for (const frame of resolutionFirst ? [resolution, failure] : [failure, resolution]) pane.deliver(frame);
-    expect(pane.state.pendingQuestion).toBeNull();
+    expect(pane.state.shownQuestion).toBeNull();
     expect(pane.container.querySelector(".th-approval-dock")).toBeNull();
     expect(pane.state.error).toBe(failure.message);
   } finally { pane.dispose(); }
@@ -164,8 +171,8 @@ it("renders and answers a structured request without deadline fields", () => {
   const pane = mountPaneState();
   try {
     pane.deliver(request);
-    expect(pane.state.pendingQuestion).not.toHaveProperty("deadlineAtMs");
-    expect(pane.state.pendingQuestion).not.toHaveProperty("remainingMs");
+    expect(pane.state.shownQuestion).not.toHaveProperty("deadlineAtMs");
+    expect(pane.state.shownQuestion).not.toHaveProperty("remainingMs");
     expect(document.querySelector(".th-question-window-countdown")).toBeNull();
     expect(document.querySelectorAll('[role="tab"]')).toHaveLength(2);
     pane.answer();

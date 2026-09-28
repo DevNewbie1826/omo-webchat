@@ -9,6 +9,7 @@
     { "$ref": "#/$defs/ChatAbortFrame" },
     { "$ref": "#/$defs/ChatSetFrame" },
     { "$ref": "#/$defs/ApprovalRespondFrame" },
+    { "$ref": "#/$defs/ApprovalProgressFrame" },
     { "$ref": "#/$defs/ChatCommandsFrame" },
     { "$ref": "#/$defs/ChatCompactFrame" },
     { "$ref": "#/$defs/ChatModelsFrame" },
@@ -109,6 +110,18 @@
         "comment": { "type": "string" },
         "confirmed": { "type": "boolean" },
         "cancelled": { "type": "boolean" }
+      }
+    },
+    "ApprovalProgressFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "id"],
+      "properties": {
+        "type": { "const": "approval.progress" },
+        "sessionId": { "type": "string" },
+        "id": { "type": "string" },
+        "answers": { "type": "object", "additionalProperties": { "$ref": "shared-types.json#/$defs/QuestionAnswer" } },
+        "comment": { "type": "string" }
       }
     },
     "ChatCommandsFrame": {

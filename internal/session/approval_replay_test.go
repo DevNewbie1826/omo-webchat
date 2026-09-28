@@ -136,8 +136,8 @@ func TestQuestionResolvedClearsPendingApproval(t *testing.T) {
 	first.await(t, FrameApproval)
 
 	injectEvent(t, s, map[string]any{"type": "question_resolved", "id": "q-1", "outcome": "timed_out"})
-	if s.pendingApproval != nil {
-		t.Fatalf("question_resolved left pending approval %q", s.pendingApproval.ApprovalID)
+	if s.pendingByID("q-1") != nil {
+		t.Fatal("question_resolved left pending approval")
 	}
 
 	late := &synchronousApprovalRecorder{recorder: newRecorder(16)}
@@ -165,7 +165,7 @@ func TestProviderUnloadDropsPendingApproval(t *testing.T) {
 	s.lifecycleMu.Lock()
 	s.markProviderUnloadedLocked()
 	s.lifecycleMu.Unlock()
-	if s.pendingApproval != nil {
-		t.Fatalf("provider unload left pending approval %q", s.pendingApproval.ApprovalID)
+	if len(s.pendingApprovals) != 0 {
+		t.Fatalf("provider unload left pending approval %+v", s.pendingApprovals)
 	}
 }

@@ -86,7 +86,7 @@ interface ChatFrameHandlerBindings {
   readonly setCommands: StateSetter<readonly CommandEntry[]>;
   readonly setModels: StateSetter<ModelsFrame["models"]>;
   readonly setPendingApproval: StateSetter<ApprovalRequest | null>;
-  readonly setPendingQuestion: StateSetter<ApprovalFrame | null>;
+  readonly setPendingQuestions: (value: readonly ApprovalFrame[] | ((current: readonly ApprovalFrame[]) => readonly ApprovalFrame[]), outcome?: string) => void;
   readonly setRestoreVersion: StateSetter<number>;
   readonly setSendError: StateSetter<JsonObject | null>;
   readonly pushNotice: (kind: string, payload: JsonObject | null, at?: number, nid?: string) => void;
@@ -378,7 +378,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           bindings.controls.ledger.dropRestoreRequest(frame.requestId);
         }
         bindings.setPendingApproval(current => current?.id === frame.id ? null : current);
-        bindings.setPendingQuestion(current => current?.id === frame.id ? null : current);
+        bindings.setPendingQuestions(current => current.filter(question => question.id !== frame.id), frame.outcome);
         if (frame.message) bindings.setError(frame.message);
         return;
       case "ack":
@@ -386,12 +386,10 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           if (frame.phase === "completed") bindings.sends.complete(frame.requestId);
           else bindings.sends.admit(frame.requestId);
         } else {
-          // An approval answer on any client dismisses the dialog everywhere;
-          // the ack's id is the provider-native request id, not the
-          // responding client's control id.
+          // IS-6: the response ACK is only a write receipt; question_resolved
+          // confirms the answer reached omo. Ordinary approvals still close.
           if (frame.command === "extension_ui_response" && frame.id) {
             bindings.setPendingApproval((current) => current !== null && current.id === frame.id ? null : current);
-            bindings.setPendingQuestion((current) => current !== null && current.id === frame.id ? null : current);
           }
           if (frame.requestId) {
             bindings.controls.ledger.commit(frame.requestId);
@@ -480,7 +478,8 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           clearLiveSurfaces();
           bindings.setIsCompacting(false);
           bindings.setPendingApproval(null);
-          bindings.setPendingQuestion(null);
+          // Questions remain authoritative until resolved or pruned by the
+          // attach snapshot; provider loss can re-deliver them.
           bindings.setError("");
           return;
         }
@@ -543,7 +542,9 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // A new shape replaces the same identity across both surfaces. Distinct
         // identities remain independent; React batches these frame updates.
         bindings.setPendingApproval((current) => current?.id === frame.id ? null : current);
-        bindings.setPendingQuestion((current) => current?.id === frame.id ? null : current);
+        if (isFallbackApprovalFrame(frame) || frame.method !== "question") {
+          bindings.setPendingQuestions(current => current.filter(question => question.id !== frame.id));
+        }
         // Safety net: an unrecognised method or shape lands in the dock as a
         // minimal fallback entry (method "fallback") instead of vanishing.
         if (isFallbackApprovalFrame(frame)) {
@@ -561,7 +562,12 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         }
         switch (frame.method) {
           case "question":
-            bindings.setPendingQuestion(frame);
+            bindings.setPendingQuestions(current => {
+              const key = frame.requestId ?? frame.id;
+              const index = current.findIndex(question => (question.requestId ?? question.id) === key || question.id === frame.id);
+              if (index < 0) return [...current, frame];
+              return current.map((question, position) => position === index ? frame : question);
+            });
             return;
           case "select":
           case "confirm":
@@ -572,6 +578,9 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
             return frame satisfies never;
         }
         bindings.setPendingApproval(chatState.approvalRequestOf({ ...frame, method: frame.method }));
+        return;
+      case "questions.snapshot":
+        bindings.setPendingQuestions(current => current.filter(question => frame.ids.includes(question.requestId ?? question.id)));
         return;
       case "commands":
         bindings.setCommands(frame.commands);

@@ -102,6 +102,8 @@ export function parseChatServerFrame(msg: unknown): ChatServerFrame | null {
       // Safety net: a request whose shape the strict approval parser rejects
       // still lands in the dock as the minimal fallback, never dropped.
       return parseSessionFrame(type, validated, sessionId) ?? parseFallbackApprovalFrame(msg);
+    case "questions.snapshot":
+      return parseSessionFrame(type, validated, sessionId);
     case "approval.resolved":
     case "compaction.started":
     case "compaction.done":

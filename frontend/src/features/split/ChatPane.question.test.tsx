@@ -187,9 +187,56 @@ describe("ChatPane structured question dock panel", () => {
 			},
 			comment: "ship it",
 		});
-		// The answered request leaves the pane: window and band both go.
+		// IS-6: sending alone cannot remove the question; omo must resolve it.
+		expect(document.querySelector(".th-modal")).not.toBeNull();
+		expect(container.querySelector(".th-question-band")).not.toBeNull();
+		act(() => deliver({ type: "approval.resolved", sessionId: "chat-1", id: "ask-1", outcome: "answered" }));
 		expect(document.querySelector(".th-modal")).toBeNull();
 		expect(container.querySelector(".th-question-band")).toBeNull();
+	});
+
+	it("shows the closure notice when a failed question closes while disconnected", () => {
+		const { deliver } = renderWithFakeConnect();
+		act(() => deliver(QUESTION_FRAME));
+		const failedQuestion = { ...QUESTION_FRAME, delivery: "failed" } as const;
+		act(() => deliver(failedQuestion));
+		act(() => deliver({
+			type: "approval.resolved",
+			sessionId: "chat-1",
+			id: "ask-1",
+			outcome: "closed_while_disconnected",
+		}));
+
+		const notice = container.querySelector(".th-question-closed-notice");
+		expect(notice).not.toBeNull();
+		expect(notice?.textContent).toContain("question.delivery.closedWhileDisconnected");
+	});
+
+	it("shows already-resolved notice while own answer outcomes stay silent", () => {
+		const { deliver } = renderWithFakeConnect();
+		vi.useFakeTimers();
+		act(() => deliver(QUESTION_FRAME));
+		vi.advanceTimersByTime(8_001);
+		act(() => deliver({
+			type: "approval.resolved",
+			sessionId: "chat-1",
+			id: "ask-1",
+			outcome: "already_resolved",
+		}));
+		expect(container.querySelector(".th-question-closed-notice")?.textContent)
+			.toContain("question.delivery.alreadyResolved");
+		// Let that notice expire so the next assertion isolates the answered path.
+		act(() => { vi.advanceTimersByTime(8_001); });
+		expect(container.querySelector(".th-question-closed-notice")).toBeNull();
+
+		act(() => deliver(QUESTION_FRAME));
+		act(() => deliver({
+			type: "approval.resolved",
+			sessionId: "chat-1",
+			id: "ask-1",
+			outcome: "answered",
+		}));
+		expect(container.querySelector(".th-question-closed-notice")).toBeNull();
 	});
 
 	it("a single-question non-blocking request keeps the one-line band alone, not the window", () => {
@@ -232,7 +279,10 @@ describe("ChatPane structured question dock panel", () => {
 		expect(container.querySelector(".th-question-band")).not.toBeNull();
 	});
 
-	it("a normal composer send does not answer the pending question", () => {
+	// IS-4: a plain Enter on typed text now answers the shown question (reply
+	// mode), so the "normal send" case moves to the explicit message escape —
+	// Alt+Enter, which always sends a chat message even in reply mode.
+	it("Alt+Enter sends a normal message that does not answer the pending question", () => {
 		const { deliver, sent } = renderWithFakeConnect();
 		act(() => deliver(QUESTION_FRAME));
 		expect(document.querySelector(".th-modal")).not.toBeNull();
@@ -241,7 +291,7 @@ describe("ChatPane structured question dock panel", () => {
 		act(() => setTextareaValue(textarea, "just a normal message"));
 		act(() => {
 			textarea.dispatchEvent(
-				new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+				new KeyboardEvent("keydown", { key: "Enter", altKey: true, bubbles: true, cancelable: true }),
 			);
 		});
 

@@ -213,21 +213,25 @@ type ActivitySnapshot struct {
 
 type ApprovalFrame struct {
 	// True for a known method awaiting a client answer; false for a known fire-and-forget announcement. Omitted when the method is unknown or the sender provides no classification.
-	AwaitsAnswer *bool          `json:"awaitsAnswer,omitempty"`
-	DeadlineAtMs *int64         `json:"deadlineAtMs,omitempty"`
-	ID           string         `json:"id"`
-	Message      *string        `json:"message,omitempty"`
-	Method       ApprovalMethod `json:"method"`
-	NonBlocking  *bool          `json:"nonBlocking,omitempty"`
-	Options      []string       `json:"options,omitempty"`
-	Placeholder  *string        `json:"placeholder,omitempty"`
-	Prefill      *string        `json:"prefill,omitempty"`
-	Questions    []Question     `json:"questions,omitempty"`
-	RemainingMs  *int64         `json:"remainingMs,omitempty"`
-	SessionID    string         `json:"sessionId"`
-	Timeout      *int64         `json:"timeout,omitempty"`
-	Title        *string        `json:"title,omitempty"`
-	Type         string         `json:"type"`
+	AwaitsAnswer    *bool            `json:"awaitsAnswer,omitempty"`
+	DeadlineAtMs    *int64           `json:"deadlineAtMs,omitempty"`
+	Delivery        *string          `json:"delivery,omitempty"`
+	DeliveryError   *string          `json:"deliveryError,omitempty"`
+	ID              string           `json:"id"`
+	Message         *string          `json:"message,omitempty"`
+	Method          ApprovalMethod   `json:"method"`
+	NonBlocking     *bool            `json:"nonBlocking,omitempty"`
+	Options         []string         `json:"options,omitempty"`
+	Placeholder     *string          `json:"placeholder,omitempty"`
+	Prefill         *string          `json:"prefill,omitempty"`
+	Questions       []Question       `json:"questions,omitempty"`
+	RemainingMs     *int64           `json:"remainingMs,omitempty"`
+	RequestID       *string          `json:"requestId,omitempty"`
+	SessionID       string           `json:"sessionId"`
+	SubmittedAnswer *SubmittedAnswer `json:"submittedAnswer,omitempty"`
+	Timeout         *int64           `json:"timeout,omitempty"`
+	Title           *string          `json:"title,omitempty"`
+	Type            string           `json:"type"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -451,6 +455,15 @@ type PongFrame struct {
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
+type QuestionsSnapshotFrame struct {
+	// Pending question keys in arrival order: requestId when available, otherwise dialog id.
+	Ids       []string `json:"ids"`
+	SessionID string   `json:"sessionId"`
+	Type      string   `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
 type QueueEngine struct {
 	Ordered             []QueueEngineOrderedItem `json:"ordered"`
 	PendingMessageCount int64                    `json:"pendingMessageCount"`
@@ -579,6 +592,13 @@ type StatsFrame struct {
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
+type SubmittedAnswer struct {
+	Answers map[string]QuestionAnswer `json:"answers"`
+	Comment *string                   `json:"comment,omitempty"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
 type TaskDigest struct {
 	// Exact running agent work after full-membership task/DAG overlap removal; task status is authoritative for overlap.
 	AgentRunningCount int64 `json:"agent_running_count"`
@@ -646,6 +666,16 @@ type ToolFrame struct {
 type ActivityRefreshFrame struct {
 	SessionID string `json:"sessionId"`
 	Type      string `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+type ApprovalProgressFrame struct {
+	Answers   *map[string]QuestionAnswer `json:"answers,omitempty"`
+	Comment   *string                    `json:"comment,omitempty"`
+	ID        string                     `json:"id"`
+	SessionID string                     `json:"sessionId"`
+	Type      string                     `json:"type"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -1251,7 +1281,7 @@ func (v *ApprovalFrame) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"awaitsAnswer", "deadlineAtMs", "id", "message", "method", "nonBlocking", "options", "placeholder", "prefill", "questions", "remainingMs", "sessionId", "timeout", "title", "type"}, []string{}, []string{"options", "questions"})
+	extra, err := captureExtraFields(data, []string{"awaitsAnswer", "deadlineAtMs", "delivery", "deliveryError", "id", "message", "method", "nonBlocking", "options", "placeholder", "prefill", "questions", "remainingMs", "requestId", "sessionId", "submittedAnswer", "timeout", "title", "type"}, []string{}, []string{"options", "questions"})
 	if err != nil {
 		return err
 	}
@@ -1606,6 +1636,24 @@ func (v PongFrame) MarshalJSON() ([]byte, error) {
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
+func (v *QuestionsSnapshotFrame) UnmarshalJSON(data []byte) error {
+	type plain QuestionsSnapshotFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"ids", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v QuestionsSnapshotFrame) MarshalJSON() ([]byte, error) {
+	type plain QuestionsSnapshotFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
 func (v *QueueEngine) UnmarshalJSON(data []byte) error {
 	type plain QueueEngine
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
@@ -1840,6 +1888,24 @@ func (v StatsFrame) MarshalJSON() ([]byte, error) {
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
+func (v *SubmittedAnswer) UnmarshalJSON(data []byte) error {
+	type plain SubmittedAnswer
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"answers", "comment"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v SubmittedAnswer) MarshalJSON() ([]byte, error) {
+	type plain SubmittedAnswer
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
 func (v *TaskDigest) UnmarshalJSON(data []byte) error {
 	type plain TaskDigest
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
@@ -1963,6 +2029,24 @@ func (v *ActivityRefreshFrame) UnmarshalJSON(data []byte) error {
 
 func (v ActivityRefreshFrame) MarshalJSON() ([]byte, error) {
 	type plain ActivityRefreshFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ApprovalProgressFrame) UnmarshalJSON(data []byte) error {
+	type plain ApprovalProgressFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"answers", "comment", "id", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ApprovalProgressFrame) MarshalJSON() ([]byte, error) {
+	type plain ApprovalProgressFrame
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
@@ -2487,6 +2571,7 @@ func (StatsFrame) serverFrame()             {}
 func (ExtensionEventFrame) serverFrame()    {}
 func (SessionsActivityFrame) serverFrame()  {}
 func (ApprovalFrame) serverFrame()          {}
+func (QuestionsSnapshotFrame) serverFrame() {}
 func (ApprovalResolvedFrame) serverFrame()  {}
 func (CommandsFrame) serverFrame()          {}
 func (ModelsFrame) serverFrame()            {}
@@ -2513,6 +2598,7 @@ func (ChatSendFrame) clientFrame()          {}
 func (ChatAbortFrame) clientFrame()         {}
 func (ChatSetFrame) clientFrame()           {}
 func (ApprovalRespondFrame) clientFrame()   {}
+func (ApprovalProgressFrame) clientFrame()  {}
 func (ChatCommandsFrame) clientFrame()      {}
 func (ChatCompactFrame) clientFrame()       {}
 func (ChatModelsFrame) clientFrame()        {}
@@ -2576,19 +2662,20 @@ const (
 type DurableNoticeKind = string
 
 const (
-	DurableNoticeKindRetryFallbackApplied   DurableNoticeKind = "retry_fallback_applied"
-	DurableNoticeKindRetryFallbackReverted  DurableNoticeKind = "retry_fallback_reverted"
-	DurableNoticeKindRetryFallbackSucceeded DurableNoticeKind = "retry_fallback_succeeded"
-	DurableNoticeKindRetryFallbackExhausted DurableNoticeKind = "retry_fallback_exhausted"
-	DurableNoticeKindServerFallbackAborted  DurableNoticeKind = "server_fallback_aborted"
-	DurableNoticeKindHighReasoningWarning   DurableNoticeKind = "high_reasoning_warning"
-	DurableNoticeKindAutoRetryStart         DurableNoticeKind = "auto_retry_start"
-	DurableNoticeKindAutoRetryEnd           DurableNoticeKind = "auto_retry_end"
-	DurableNoticeKindCompactionError        DurableNoticeKind = "compaction_error"
-	DurableNoticeKindQueueDeliveryUncertain DurableNoticeKind = "queue_delivery_uncertain"
-	DurableNoticeKindExtensionNotify        DurableNoticeKind = "extension_notify"
-	DurableNoticeKindEngineNotify           DurableNoticeKind = "engine_notify"
-	DurableNoticeKindContinuationError      DurableNoticeKind = "continuation_error"
+	DurableNoticeKindRetryFallbackApplied            DurableNoticeKind = "retry_fallback_applied"
+	DurableNoticeKindRetryFallbackReverted           DurableNoticeKind = "retry_fallback_reverted"
+	DurableNoticeKindRetryFallbackSucceeded          DurableNoticeKind = "retry_fallback_succeeded"
+	DurableNoticeKindRetryFallbackExhausted          DurableNoticeKind = "retry_fallback_exhausted"
+	DurableNoticeKindServerFallbackAborted           DurableNoticeKind = "server_fallback_aborted"
+	DurableNoticeKindHighReasoningWarning            DurableNoticeKind = "high_reasoning_warning"
+	DurableNoticeKindAutoRetryStart                  DurableNoticeKind = "auto_retry_start"
+	DurableNoticeKindAutoRetryEnd                    DurableNoticeKind = "auto_retry_end"
+	DurableNoticeKindCompactionError                 DurableNoticeKind = "compaction_error"
+	DurableNoticeKindQueueDeliveryUncertain          DurableNoticeKind = "queue_delivery_uncertain"
+	DurableNoticeKindExtensionNotify                 DurableNoticeKind = "extension_notify"
+	DurableNoticeKindEngineNotify                    DurableNoticeKind = "engine_notify"
+	DurableNoticeKindContinuationError               DurableNoticeKind = "continuation_error"
+	DurableNoticeKindQuestionClosedWhileDisconnected DurableNoticeKind = "question_closed_while_disconnected"
 )
 
 // ApprovalMethod values, from shared-types.json.
@@ -2688,6 +2775,8 @@ func NewServerFrame(wireType string) ServerFrame {
 		return new(SessionsActivityFrame)
 	case "approval":
 		return new(ApprovalFrame)
+	case "questions.snapshot":
+		return new(QuestionsSnapshotFrame)
 	case "approval.resolved":
 		return new(ApprovalResolvedFrame)
 	case "commands":
@@ -2780,7 +2869,11 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "approval":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"awaitsAnswer": validationSchema{Type: "boolean"}, "deadlineAtMs": validationSchema{Type: "integer"}, "id": validationSchema{Type: "string"}, "message": validationSchema{Type: "string"}, "method": validationSchema{Type: "string", Enum: []string{"select", "confirm", "input", "editor", "question"}}, "nonBlocking": validationSchema{Type: "boolean"}, "options": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "placeholder": validationSchema{Type: "string"}, "prefill": validationSchema{Type: "string"}, "questions": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"header": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "multiSelect": validationSchema{Type: "boolean"}, "options": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"description": validationSchema{Type: "string"}, "label": validationSchema{Type: "string"}}}}, "question": validationSchema{Type: "string"}}}}, "remainingMs": validationSchema{Type: "integer"}, "sessionId": validationSchema{Type: "string"}, "timeout": validationSchema{Type: "integer"}, "title": validationSchema{Type: "string"}, "type": validationSchema{Const: "approval"}}, Required: []string{"type", "sessionId", "id", "method"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"awaitsAnswer": validationSchema{Type: "boolean"}, "deadlineAtMs": validationSchema{Type: "integer"}, "delivery": validationSchema{Type: "string", Enum: []string{"sending", "failed"}}, "deliveryError": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "message": validationSchema{Type: "string"}, "method": validationSchema{Type: "string", Enum: []string{"select", "confirm", "input", "editor", "question"}}, "nonBlocking": validationSchema{Type: "boolean"}, "options": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "placeholder": validationSchema{Type: "string"}, "prefill": validationSchema{Type: "string"}, "questions": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"header": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "multiSelect": validationSchema{Type: "boolean"}, "options": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"description": validationSchema{Type: "string"}, "label": validationSchema{Type: "string"}}}}, "question": validationSchema{Type: "string"}}}}, "remainingMs": validationSchema{Type: "integer"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "submittedAnswer": validationSchema{Type: "object", Properties: map[string]validationSchema{"answers": validationSchema{Type: "object", AdditionalProperties: &validationSchema{Type: "object", Properties: map[string]validationSchema{"selected": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "text": validationSchema{Type: "string"}}}}, "comment": validationSchema{Type: "string"}}, Required: []string{"answers"}}, "timeout": validationSchema{Type: "integer"}, "title": validationSchema{Type: "string"}, "type": validationSchema{Const: "approval"}}, Required: []string{"type", "sessionId", "id", "method"}}); err != nil {
+				return nil, err
+			}
+		case "questions.snapshot":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"ids": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "questions.snapshot"}}, Required: []string{"type", "sessionId", "ids"}}); err != nil {
 				return nil, err
 			}
 		case "approval.resolved":
@@ -2881,6 +2974,7 @@ func ServerFrameTypes() []string {
 		"extensionEvent",
 		"sessions.activity",
 		"approval",
+		"questions.snapshot",
 		"approval.resolved",
 		"commands",
 		"models",
@@ -2918,6 +3012,8 @@ func NewClientFrame(wireType string) ClientFrame {
 		return new(ChatSetFrame)
 	case "approval.respond":
 		return new(ApprovalRespondFrame)
+	case "approval.progress":
+		return new(ApprovalProgressFrame)
 	case "chat.commands":
 		return new(ChatCommandsFrame)
 	case "chat.compact":
@@ -2985,6 +3081,10 @@ func ParseClientFrame(data []byte) (ClientFrame, error) {
 			}
 		case "approval.respond":
 			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"answers": validationSchema{Type: "object", AdditionalProperties: &validationSchema{Type: "object", Properties: map[string]validationSchema{"selected": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "text": validationSchema{Type: "string"}}}}, "cancelled": validationSchema{Type: "boolean"}, "comment": validationSchema{Type: "string"}, "confirmed": validationSchema{Type: "boolean"}, "id": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "approval.respond"}, "value": validationSchema{Type: "string"}}, Required: []string{"type", "sessionId", "id"}}); err != nil {
+				return nil, err
+			}
+		case "approval.progress":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"answers": validationSchema{Type: "object", AdditionalProperties: &validationSchema{Type: "object", Properties: map[string]validationSchema{"selected": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "text": validationSchema{Type: "string"}}}}, "comment": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "approval.progress"}}, Required: []string{"type", "sessionId", "id"}}); err != nil {
 				return nil, err
 			}
 		case "chat.commands":
@@ -3061,6 +3161,7 @@ func ClientFrameTypes() []string {
 		"chat.abort",
 		"chat.set",
 		"approval.respond",
+		"approval.progress",
 		"chat.commands",
 		"chat.compact",
 		"chat.models",
@@ -3095,6 +3196,7 @@ var FrameKindToWireName = map[string]string{
 	"models":             "models",
 	"name":               "chat.name",
 	"notice":             "notice",
+	"questions.snapshot": "questions.snapshot",
 	"ready":              "ready",
 	"run.done":           "run.done",
 	"run.started":        "run.started",
@@ -3107,6 +3209,7 @@ var FrameKindToWireName = map[string]string{
 // ping and hello are connection-level and need no session.
 var ClientWireNames = map[string]string{
 	"activity.refresh":   "activity.refresh",
+	"approval.progress":  "approval.progress",
 	"approval.respond":   "approval.respond",
 	"chat.abort":         "chat.abort",
 	"chat.close":         "chat.close",

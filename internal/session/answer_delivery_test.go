@@ -8,7 +8,7 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
 
-func TestAnswerDeliveryFailedWriteRetiresWithoutSuccessAck(t *testing.T) {
+func TestAnswerDeliveryFailedWriteRetainsQuestionWithoutSuccessAck(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
 	manager := testManager(t, client, newMemStore(), 64)
@@ -24,19 +24,29 @@ func TestAnswerDeliveryFailedWriteRetiresWithoutSuccessAck(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("write error=%v", err)
 	}
-	preceding, terminal := first.await(t, FrameApprovalResolved)
-	for _, frame := range preceding {
-		if frame.Kind == FrameAck {
-			t.Fatalf("failed write acknowledged: %+v", frame)
-		}
-	}
-	if terminal.Data.(map[string]any)["id"] != "ask" {
-		t.Fatalf("resolution=%+v", terminal)
+	// IS-6: a local write failure is not evidence that the engine closed it.
+	if s.pendingByID("ask") == nil {
+		t.Fatal("failed write retired the unanswered question")
 	}
 	late := &synchronousApprovalRecorder{recorder: newRecorder(32)}
 	t.Cleanup(s.Attach(late))
-	if frames := drainSync(late.recorder); hasApproval(frames, "ask") {
-		t.Fatalf("failed answer replayed: %+v", frames)
+	if frames := drainSync(late.recorder); !hasApproval(frames, "ask") {
+		t.Fatalf("failed write lost the answerable request: %+v", frames)
+	}
+}
+
+func TestNonQuestionApprovalFailedWriteStillExpires(t *testing.T) {
+	s, sub := acquireDrained(t, "failed-legacy-approval")
+	injectEvent(t, s, approvalEvent("select-ask", "select"))
+	sub.await(t, FrameApproval)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.RespondApprovalFrame(ctx, wscontract.ApprovalRespondFrame{ID: "select-ask"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("write error=%v", err)
+	}
+	_, resolved := sub.await(t, FrameApprovalResolved)
+	if data := resolved.Data.(map[string]any); data["id"] != "select-ask" || data["outcome"] != "expired" {
+		t.Fatalf("non-question failed write changed semantics: %+v", resolved)
 	}
 }
 
@@ -57,7 +67,6 @@ func TestAnswerDeliveryResolvedOlderRequestKeepsLatestReplay(t *testing.T) {
 	if err := s.RespondApprovalFrame(context.Background(), wscontract.ApprovalRespondFrame{ID: "older"}); !errors.Is(err, errApprovalExpired) {
 		t.Fatalf("stale answer=%v", err)
 	}
-	first.await(t, FrameApprovalResolved)
 	late := &synchronousApprovalRecorder{recorder: newRecorder(32)}
 	t.Cleanup(s.Attach(late))
 	if frames := drainSync(late.recorder); !hasApproval(frames, "newer") || hasApproval(frames, "older") {

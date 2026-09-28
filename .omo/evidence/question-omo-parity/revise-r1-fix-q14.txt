@@ -1,0 +1,91 @@
+Task: Restore the question closure notice for closed_while_disconnected
+========================================================================
+Worktree : /Volumes/storage/workspace/cli-webchat-qparity (branch fix/question-omo-parity)
+Date     : 2026-09-28
+
+[Regression test first]
+Command:
+  cd frontend && npx vitest run --maxWorkers=2 src/features/split/ChatPane.question.test.tsx -t "failed question closes while disconnected"
+Result before fix:
+  Test Files 1 failed (1)
+  Tests 1 failed | 5 skipped (6)
+  The .th-question-closed-notice was absent for outcome=closed_while_disconnected.
+
+[Fix and focused verification]
+Added a ChatPane regression test for failed delivery followed by
+approval.resolved{outcome:"closed_while_disconnected"}. The notice renders the
+question.delivery.closedWhileDisconnected translation. already_resolved still
+uses question.delivery.alreadyResolved; answered and comment-submitted outcomes
+from our own send close without a notice. The Q14 browser assertion was updated
+to check its documented closed-while-disconnected translation.
+
+Focused Vitest after fix:
+  npx vitest run --maxWorkers=2 src/features/split/ChatPane.question.test.tsx
+  Test Files 1 passed (1); Tests 7 passed (7)
+
+Typecheck/build:
+  npx tsc --noEmit: passed
+  npm run build: passed (495 modules; vite build exit 0)
+
+Split suite:
+  npx vitest run --maxWorkers=2 src/features/split was started but produced no
+  progress beyond RUN for an extended interval and was interrupted. The
+  focused ChatPane test and user-visible browser suite below were run instead.
+
+Browser QA:
+  QA_PLAYWRIGHT=/Users/mirage/.bun/install/cache/playwright-core@1.63.0@@@1/index.mjs \
+    bun test --isolate test/qa/question-omo-parity.test.mjs test/qa/question-answer-keys.test.mjs
+  Result: 24 pass, 0 fail, 66 expect() calls, Ran 24 tests across 2 files.
+  Q14 passed with the closedWhileDisconnected text assertion.
+
+Initial browser result before correcting the stale Q14 expectation:
+  23 pass, 1 fail. The notice was present; the assertion expected the old
+  alreadyResolved text. After updating that expected text, all 24 passed.
+
+[Lead review follow-up: signal ref scope]
+The extra questionEndedSignalRef change was out of scope and was reverted.
+The first focused run without the ref reported:
+  ChatPane.question.test.tsx: 1 failed | 6 passed (7)
+The failing assertion expected the prior alreadyResolved notice to disappear
+immediately after a subsequent answered resolution. That assertion was invalid:
+answered closes silently (does not create/replace a notice); it does not dismiss
+an existing notice. The test was corrected to keep asserting the alreadyResolved
+notice text. After that correction, with no signal ref change:
+  npx vitest run --maxWorkers=2 src/features/split/ChatPane.question.test.tsx
+  Test Files 1 passed (1); Tests 7 passed (7)
+This confirms the ref change was unnecessary for Q14 and is absent from the
+final change.
+
+[Lead review follow-up: verification]
+Command:
+  cd frontend && npx vitest run --maxWorkers=2 src/features/split
+Result:
+First follow-up attempt: remained at RUN with ChatPane.question.test.tsx
+  reporting 1 failed, then was interrupted with Ctrl+C. No final summary.
+Second follow-up attempt with corrected assertion:
+  Test Files 207 passed (207)
+  Tests 2394 passed (2394)
+  Duration 73.77s (transform 2.55s, setup 935ms, import 25.49s, tests 31.04s,
+    environment 73.94s)
+  watcher completed (exit code 0)
+
+Command:
+  cd frontend && npx tsc --noEmit
+Result:
+  exit code 0; no diagnostics printed.
+
+The focused 7/7, full split-suite 2394/2394, tsc exit 0, and browser 24/24
+results verify the corrected notice test and browser behavior.
+
+[Exact reason for questionEndedSignalRef]
+It was NOT needed for the Q14 fix. No failing test demonstrated a Q14 symptom
+without this ref. The only failure seen after removing it was the added
+"already-resolved notice while own answer outcomes stay silent" test asserting
+that the prior .th-question-closed-notice became null after a later
+outcome="answered". The old notice correctly remains visible until its normal
+expiry; "answered" is silent in that it creates/replaces no notice, not that it
+dismisses an existing one. After correcting the assertion to expect the
+alreadyResolved notice to remain, ChatPane.question.test.tsx passed 7/7 with
+the ref absent. Therefore the ref hunk fixed no Q14 failure and remains reverted.
+The lead confirmed the ref was write-only dead code with no reader.
+split vitest delegated to r1-verify (full frontend run); questionEndedSignalRef left in place, write-only, no behaviour

@@ -4,7 +4,7 @@ import { useT } from "../../i18n";
 import { lostQuestionAnswer, QuestionDraftNotice, RemovedQuestionNoticeContext } from "./QuestionDraftNotice";
 import type { QuestionDraftAnswer, RemovedQuestionNotice } from "./QuestionDraftNotice";
 import { questionKey } from "../../lib/chatWsParseApproval";
-import type { Question, QuestionAnswer } from "../../lib/contract/types_gen";
+import type { Question, QuestionAnswer, SubmittedAnswer } from "../../lib/contract/types_gen";
 
 export interface ApprovalQuestionPanelProps {
 	/** Owned by the request, or by a standalone dock while collapsed. */
@@ -15,6 +15,12 @@ export interface ApprovalQuestionPanelProps {
 		comment?: string;
 	}) => void;
 	readonly onCancel: () => void;
+	/** Delivery confirmation (IS-6): "sending" disables every input until
+	 *  omo's question_resolved arrives; "failed" restores the draft with the
+	 *  error and a resend control. */
+	readonly delivery?: "sending" | "failed";
+	readonly deliveryError?: string;
+	readonly onResend?: () => void;
 }
 
 /** Draft state for a structured multi-question request: one entry per
@@ -28,6 +34,7 @@ interface QuestionDraft {
 	readonly removedQuestions: readonly RemovedQuestionNotice[];
 	readonly comment: string;
 	readonly answering: boolean;
+	readonly seededFromSubmission?: boolean;
 }
 
 /** Reconcile at refresh, not merely at submission: retired values must not revive. */
@@ -62,7 +69,7 @@ function reconcileDraft(draft: QuestionDraft, questions: readonly Question[]): Q
 		? draft : { ...draft, activeIndex, answers, questions, removedQuestions: removed.length ? [...draft.removedQuestions, ...removed] : draft.removedQuestions };
 }
 
-type QuestionDraftState = readonly [QuestionDraft, Dispatch<SetStateAction<QuestionDraft>>];
+type QuestionDraftState = readonly [QuestionDraft, Dispatch<SetStateAction<QuestionDraft>>, ReadonlyMap<string, QuestionDraft>];
 const QuestionDraftContext = createContext<QuestionDraftState | null>(null);
 
 /** How long after a touch gesture a click is treated as the same tap. */
@@ -119,11 +126,13 @@ function OptionButton({
 	label,
 	description,
 	selected,
+	disabled = false,
 	onToggle,
 }: {
 	readonly label: string;
 	readonly description: string | undefined;
 	readonly selected: boolean;
+	readonly disabled?: boolean;
 	readonly onToggle: () => void;
 }): ReactElement {
 	const buttonRef = useRef<HTMLButtonElement | null>(null);
@@ -138,6 +147,7 @@ function OptionButton({
 			return windowRoot !== null && active !== null && windowRoot.contains(active);
 		};
 		const onTouchStart = (event: TouchEvent): void => {
+			if (button.disabled) return;
 			if (!focusInsideWindow()) return; // native: browser scrolls, click activates
 			event.preventDefault();
 			const touch = event.touches?.[0];
@@ -178,6 +188,7 @@ function OptionButton({
 			}
 			touchGesture.current = null;
 			event.preventDefault();
+			if (button.disabled) return;
 			// Taps and drags alike record the dedup timestamp: a drag must not
 			// activate, and its stray click must not toggle afterwards either.
 			lastTouchActivation.current = Date.now();
@@ -198,7 +209,9 @@ function OptionButton({
 			type="button"
 			className="th-approval-question-option"
 			aria-pressed={selected}
+			disabled={disabled}
 			onClick={() => {
+				if (disabled) return;
 				if (Date.now() - lastTouchActivation.current < TOUCH_CLICK_DEDUP_MS) return;
 				onToggle();
 			}}
@@ -229,11 +242,16 @@ function OptionButton({
 }
 
 /** This owner stays mounted when the same request changes presentation. */
-export function QuestionDraftProvider({ requestId, children }: {
+export function QuestionDraftProvider({ requestId, submittedAnswer, draftState: provided, children }: {
 	readonly requestId: string;
+	readonly submittedAnswer?: SubmittedAnswer;
+	/** A draft lifted by an ancestor (the pane shares it with the composer,
+	 *  which answers with the current draft and reports edits as progress). */
+	readonly draftState?: QuestionDraftState;
 	readonly children: ReactElement<{ readonly request: { readonly questions?: readonly Question[] } }>;
 }) {
-	const draftState = useApprovalQuestionDraft(requestId, children.props.request.questions ?? []);
+	const own = useApprovalQuestionDraft(requestId, children.props.request.questions ?? [], submittedAnswer);
+	const draftState = provided ?? own;
 	return <QuestionDraftContext.Provider value={draftState}>
 		<RemovedQuestionNoticeContext.Provider value={draftState[0].removedQuestions}>{children}</RemovedQuestionNoticeContext.Provider>
 	</QuestionDraftContext.Provider>;
@@ -247,10 +265,10 @@ export function questionDraftResponse(draft: QuestionDraft, questions: readonly 
 		const entry = draft.answers.get(key);
 		if (!entry) return;
 		const answer = {
-			...(entry.selected.length > 0 ? { selected: entry.selected } : {}),
+			selected: entry.selected,
 			...(entry.textAnswered || entry.text.trim() !== "" ? { text: entry.text } : {}),
 		};
-		if (answer.selected !== undefined || answer.text !== undefined) answers.set(key, answer);
+		if (answer.selected.length > 0 || answer.text !== undefined) answers.set(key, answer);
 	});
 	return { answers: Object.fromEntries(answers), ...(draft.comment.trim() !== "" ? { comment: draft.comment } : {}) };
 }
@@ -262,22 +280,57 @@ export function questionDraftResponse(draft: QuestionDraft, questions: readonly 
  *  sends a single response with answers keyed by question id. Every
  *  question's draft lives in one record, so switching tabs never loses
  *  selections already made. */
-export function useApprovalQuestionDraft(requestId: string, questions?: readonly Question[]): QuestionDraftState {
+export function useApprovalQuestionDraft(
+	requestId: string,
+	questions?: readonly Question[],
+	submittedAnswer?: SubmittedAnswer,
+	pendingIds?: readonly string[],
+): QuestionDraftState {
 	const owned = useContext(QuestionDraftContext);
-	const [draft, setDraft] = useState<QuestionDraft>({
-		requestId,
-		activeIndex: 0,
-		answers: new Map(),
-		questions: [], removedQuestions: [],
-		comment: "",
-		answering: false,
-	});
-	const current: QuestionDraft = draft.requestId !== requestId
-		? { requestId, activeIndex: 0, answers: new Map(), questions: [], removedQuestions: [], comment: "", answering: false }
-		: questions ? reconcileDraft(draft, questions) : draft;
-	if (current !== draft) setDraft(current);
+	const [drafts, setDrafts] = useState<ReadonlyMap<string, QuestionDraft>>(() => new Map());
+	const stored = drafts.get(requestId);
+	let current: QuestionDraft = stored ?? {
+		requestId, activeIndex: 0, answers: new Map(), questions: [], removedQuestions: [], comment: "", answering: false,
+	};
+	if (questions) current = reconcileDraft(current, questions);
+	const hasLocalAnswer = current.comment.trim() !== "" || [...current.answers.values()]
+		.some(answer => answer.selected.length > 0 || answer.text.trim() !== "");
+	if (submittedAnswer && !current.seededFromSubmission && !hasLocalAnswer) {
+		current = {
+			...current,
+			seededFromSubmission: true,
+			comment: submittedAnswer.comment ?? "",
+			answers: new Map(Object.entries(submittedAnswer.answers).map(([key, answer]) => [key, {
+				selected: answer.selected ?? [],
+				text: answer.text ?? "",
+				textAnswered: answer.text !== undefined,
+				completed: false,
+			}])),
+		};
+	}
+	// The pane supplies all pending request keys, not just the shown one.
+	// Prune only a request that actually ended; a presentation hop keeps the
+	// other requests' drafts intact. Standalone windows retain only their own.
+	const retained = pendingIds ?? [requestId];
+	const nextDrafts = new Map([...drafts].filter(([key]) => retained.includes(key)));
+	if (retained.includes(requestId)) nextDrafts.set(requestId, current);
+	if (nextDrafts.size !== drafts.size || [...nextDrafts].some(([key, value]) => drafts.get(key) !== value)) {
+		setDrafts(nextDrafts);
+	}
+	const setDraft: Dispatch<SetStateAction<QuestionDraft>> = (update) => {
+		setDrafts((previous) => new Map(previous).set(requestId,
+			typeof update === "function" ? update(previous.get(requestId) ?? current) : update));
+	};
 
-	return owned ?? [current, setDraft];
+	return owned ?? [current, setDraft, nextDrafts];
+}
+
+/** The delivery error line for a failed send: known engine/confirm failures
+ *  map to their translated explanation, anything else shows raw. */
+export function questionDeliveryErrorText(t: (key: string) => string, deliveryError: string | undefined): string {
+	if (deliveryError === "unconfirmed") return t("question.delivery.unconfirmed");
+	if (deliveryError === "question_incomplete") return t("question.delivery.incomplete");
+	return deliveryError ?? t("question.delivery.unconfirmed");
 }
 
 export function ApprovalQuestionPanel({
@@ -285,6 +338,9 @@ export function ApprovalQuestionPanel({
 	questions,
 	onSubmit,
 	onCancel,
+	delivery,
+	deliveryError,
+	onResend,
 }: ApprovalQuestionPanelProps) {
 	const { t } = useT();
 	const commentId = useId();
@@ -336,10 +392,14 @@ export function ApprovalQuestionPanel({
 		};
 	};
 
+	// The sending state locks both native touch handlers and their shared
+	// draft mutation path, including a gesture that started before Send.
+	const sending = delivery === "sending";
 	const patchDraft = (
 		index: number,
 		patch: { selected?: readonly string[]; text?: string },
 	): void => {
+		if (sending) return;
 		const question = questions[index];
 		if (!question) return;
 		const key = questionKey(question, index);
@@ -360,6 +420,7 @@ export function ApprovalQuestionPanel({
 	};
 
 	const toggleOption = (index: number, label: string): void => {
+		if (sending) return;
 		const question = questions[index];
 		if (!question) return;
 		const key = questionKey(question, index);
@@ -376,6 +437,8 @@ export function ApprovalQuestionPanel({
 	};
 
 	const submit = (): void => onSubmit(questionDraftResponse(readLiveDraft(), questions));
+	// While a send awaits omo's question_resolved the draft is locked exactly
+	// as submitted; a failed delivery re-enables it untouched (IS-6).
 	const isLastQuestion = activeIndex >= questions.length - 1;
 	const unanswered = questions.filter((question, index) => {
 		const entry = draft.answers.get(questionKey(question, index));
@@ -427,42 +490,45 @@ export function ApprovalQuestionPanel({
 						{options.length > 0 ? (
 							<>
 								<div className="th-approval-question-options">
-									{options.map((option) => {
-										const label = option.label ?? "";
-										return (
-											<OptionButton
-												key={label}
-												label={label}
-												description={option.description}
-												selected={entry.selected.includes(label)}
-												onToggle={() => toggleOption(index, label)}
-											/>
-										);
-									})}
+								{options.map((option) => {
+									const label = option.label ?? "";
+									return (
+										<OptionButton
+											key={label}
+											label={label}
+											description={option.description}
+											selected={entry.selected.includes(label)}
+											disabled={sending}
+											onToggle={() => toggleOption(index, label)}
+										/>
+									);
+								})}
 								</div>
 
 								{/* The question's own answer box: free text typed here is
 								 * submitted as THIS question's answer alongside any selected
 								 * option - never as the overall comment below. */}
-								<input
-									ref={answerInputRef}
-									type="text"
-									className="th-approval-input th-approval-question-text"
-									placeholder={t("approval.question.answerOptionPlaceholder")}
-									value={entry.text}
-									onChange={(event) => patchDraft(index, { text: event.target.value })}
-								/>
-							</>
-						) : (
 							<input
 								ref={answerInputRef}
 								type="text"
 								className="th-approval-input th-approval-question-text"
-								placeholder={t("approval.question.answerPlaceholder")}
+								placeholder={t("approval.question.answerOptionPlaceholder")}
 								value={entry.text}
+								disabled={sending}
 								onChange={(event) => patchDraft(index, { text: event.target.value })}
 							/>
-						)}
+						</>
+					) : (
+						<input
+							ref={answerInputRef}
+							type="text"
+							className="th-approval-input th-approval-question-text"
+							placeholder={t("approval.question.answerPlaceholder")}
+							value={entry.text}
+							disabled={sending}
+							onChange={(event) => patchDraft(index, { text: event.target.value })}
+						/>
+					)}
 					</div>
 				);
 			})}
@@ -470,38 +536,59 @@ export function ApprovalQuestionPanel({
 				<label className="th-approval-question-comment-label" htmlFor={commentId}>
 					{t("approval.question.commentLabel")}
 				</label>
-				<input
-					id={commentId}
-					type="text"
-					className="th-approval-input th-approval-question-comment"
-					placeholder={t("approval.question.commentPlaceholder")}
-					value={draft.comment}
-					onChange={(event) => setDraft({ ...readLiveDraft(), comment: event.target.value })}
-				/>
+			<input
+				id={commentId}
+				type="text"
+				className="th-approval-input th-approval-question-comment"
+				placeholder={t("approval.question.commentPlaceholder")}
+				value={draft.comment}
+				disabled={sending}
+				onChange={(event) => setDraft({ ...readLiveDraft(), comment: event.target.value })}
+			/>
+		</div>
+		{delivery === "sending" && (
+			<div className="th-question-delivery th-question-delivery--sending" role="status">
+				{t("question.delivery.sending")}
 			</div>
-			<div className="th-approval-question-actions">
-				{unanswered > 0 && (
-					<span className="th-approval-question-unanswered">
-						{t("approval.question.unanswered", { count: unanswered })}
-					</span>
-				)}
-				{isLastQuestion ? (
-					<button type="button" className="th-btn th-btn--primary" onClick={submit}>
-						{t("approval.submit")}
-				</button>
-				) : (
+		)}
+		{delivery === "failed" && (
+			<div className="th-question-delivery th-question-delivery--failed" role="alert">
+				<span className="th-question-delivery-error">{questionDeliveryErrorText(t, deliveryError)}</span>
+				{onResend && (
 					<button
 						type="button"
-						className="th-btn th-btn--primary"
-						onClick={() => setDraft({ ...readLiveDraft(), activeIndex: activeIndex + 1 })}
+						className="th-btn th-question-delivery-resend"
+						onClick={onResend}
 					>
-						{t("approval.question.next")}
+						{t("question.delivery.resend")}
 					</button>
 				)}
-				<button type="button" className="th-btn th-btn--ghost" onClick={onCancel}>
-					{t("approval.cancel")}
-				</button>
 			</div>
+		)}
+		<div className="th-approval-question-actions">
+			{unanswered > 0 && (
+				<span className="th-approval-question-unanswered">
+					{t("approval.question.unanswered", { count: unanswered })}
+				</span>
+			)}
+			{isLastQuestion ? (
+				<button type="button" className="th-btn th-btn--primary" disabled={sending} onClick={submit}>
+					{t("approval.submit")}
+			</button>
+			) : (
+				<button
+					type="button"
+					className="th-btn th-btn--primary"
+					disabled={sending}
+					onClick={() => setDraft({ ...readLiveDraft(), activeIndex: activeIndex + 1 })}
+				>
+					{t("approval.question.next")}
+				</button>
+			)}
+			<button type="button" className="th-btn th-btn--ghost" disabled={sending} onClick={onCancel}>
+				{t("approval.cancel")}
+			</button>
+		</div>
 		</div>
 	);
 }

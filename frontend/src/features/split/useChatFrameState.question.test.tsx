@@ -20,7 +20,7 @@ it("retains structured questions in pane state when a question frame arrives", (
     if (frame === null) throw new Error("question frame rejected");
     act(() => captured.current?.handleFrame(frame));
     // Then
-    expect(captured.current).toMatchObject({ pendingQuestion: raw, pendingApproval: null });
+    expect(captured.current).toMatchObject({ pendingQuestions: [raw], pendingApproval: null });
   } finally {
     act(() => root.unmount());
   }

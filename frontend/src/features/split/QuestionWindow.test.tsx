@@ -645,7 +645,7 @@ describe("QuestionWindow separate modal window", () => {
 
 			submit();
 			expect(onRespond).toHaveBeenCalledWith({
-				answers: { q1: { text: "custom note" } },
+				answers: { q1: { selected: [], text: "custom note" } },
 			});
 		});
 

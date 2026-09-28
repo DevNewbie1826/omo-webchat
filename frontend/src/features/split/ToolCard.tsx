@@ -71,6 +71,41 @@ function skillReadName(args: unknown): string | undefined {
   return parent !== undefined && parent.length > 0 ? parent : "SKILL.md";
 }
 
+/** Tool names that ask the user structured questions (omo TOOL_NAMES). */
+const ASK_USER_TOOL_NAMES = new Set(["ask_user_question", "request_user_input"]);
+
+interface AskUserToolSummary {
+  readonly headers: readonly string[];
+  readonly wait: boolean;
+  readonly statusLine: string | undefined;
+}
+
+/**
+ * Question-tool header/summary (IS-9), mirroring omo's renderCall /
+ * renderResult: the call presents as `[H1] [H2]` plus whether it waits for
+ * the answer; a finished call summarizes as `status; N answered; N
+ * unanswered` from the result details. Undefined for any other tool.
+ */
+function askUserToolSummary(toolName: string, args: unknown, details: JsonValue | undefined): AskUserToolSummary | undefined {
+  if (!ASK_USER_TOOL_NAMES.has(toolName)) return undefined;
+  const argsObject = isObjectRecord(args) ? args : undefined;
+  const questions = Array.isArray(argsObject?.["questions"]) ? argsObject["questions"] : [];
+  const headers = questions.map((question) =>
+    isObjectRecord(question) && typeof question["header"] === "string" ? question["header"] : "Question",
+  );
+  const wait = argsObject?.["waitForAnswer"] === true || argsObject?.["wait_for_answer"] === true;
+  let statusLine: string | undefined;
+  if (isObjectRecord(details) && typeof details["status"] === "string") {
+    let line: string = details["status"];
+    const answers = details["answers"];
+    if (isObjectRecord(answers)) line += `; ${Object.keys(answers).length} answered`;
+    const unanswered = details["unanswered"];
+    if (Array.isArray(unanswered)) line += `; ${unanswered.length} unanswered`;
+    statusLine = line;
+  }
+  return { headers, wait, statusLine };
+}
+
 /** Latest non-empty line of an output stream, trimmed for the one-line preview. */
 function latestOutputLine(text: string): string {
   for (const line of text.split("\n").reverse()) {
@@ -145,15 +180,28 @@ export function ToolCard(props: ToolCardProps) {
 
   const record = argsRecord(props.args);
   const command = record ? nonEmptyString(record["command"]) : undefined;
-  const invocation = command ?? (record ? JSON.stringify(record) : undefined);
+  const askUser = askUserToolSummary(toolName, props.args, props.details);
+  // Question tools replace the raw-args invocation with the omo-style line:
+  // `답을 기다림` / `나중에 답` while running, `status; N answered; N
+  // unanswered` once done (IS-9). The full args stay in the expanded body.
+  const askUserLine = askUser === undefined
+    ? undefined
+    : status === "running"
+      ? t(askUser.wait ? "question.tool.wait" : "question.tool.later")
+      : askUser.statusLine;
+  const invocation = askUser === undefined
+    ? command ?? (record ? JSON.stringify(record) : undefined)
+    : undefined;
   const inputJson = record && command === undefined ? JSON.stringify(record, null, 2) : undefined;
   const preview = latestOutputLine(text);
   const hasBody = command !== undefined || inputJson !== undefined || text.length > 0;
 
   const skillName = toolName === "read" ? skillReadName(props.args) : undefined;
-  const name = skillName !== undefined
-    ? t("tool.skillRead", { name: skillName })
-    : subagent?.title ?? toolName;
+  const name = askUser !== undefined && askUser.headers.length > 0
+    ? askUser.headers.map((header) => `[${header}]`).join(" ")
+    : skillName !== undefined
+      ? t("tool.skillRead", { name: skillName })
+      : subagent?.title ?? toolName;
   const label = status === "running" ? t("tool.running") : status === "error" ? t("tool.error") : t("tool.done");
   return (
     <div
@@ -191,10 +239,11 @@ export function ToolCard(props: ToolCardProps) {
           <span className="th-tool-name">{name}</span>
           <span className={`th-tool-status th-tool-status--${status}`}>{label}</span>
         </span>
-        {(invocation !== undefined || preview.length > 0) && (
+        {(invocation !== undefined || askUserLine !== undefined || preview.length > 0) && (
           <span className="th-tool-summary">
             {invocation !== undefined && <span className="th-tool-cmd">{invocation}</span>}
-            {invocation !== undefined && preview.length > 0 && (
+            {askUserLine !== undefined && <span className="th-tool-cmd">{askUserLine}</span>}
+            {(invocation !== undefined || askUserLine !== undefined) && preview.length > 0 && (
               <span className="th-tool-sep" aria-hidden="true"> · </span>
             )}
             {preview.length > 0 && <span className="th-tool-preview">{preview}</span>}

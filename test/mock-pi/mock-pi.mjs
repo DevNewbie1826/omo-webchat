@@ -8,6 +8,8 @@
 //   MOCK_PI_CHUNK_MODE "signal" to require mock_chunk_next between chunks (abort also releases)
 //   MOCK_PI_UNICODE    "1" to include a U+2028 char inside a chunk (framing stress)
 //   MOCK_PI_APPROVE    "1" to emit an extension_ui_request select before streaming (approval path)
+//   MOCK_PI_QUESTION_WAIT "0" to make MOCK_PI_QUESTION non-blocking (default 1)
+//   MOCK_PI_DROP_RESPONSE "1" to drop the first question response
 //   MOCK_PI_TOOL       "1" to emit a tool_execution sequence (bash) during the turn
 //   MOCK_PI_HOOK       "1" to emit and persist Omo task hook messages
 //   MOCK_PI_EXT_EVENT  "1" to emit extension_events each turn (valid omo.task.updated + omo.dag.updated, plus a nameless malformed)
@@ -60,6 +62,8 @@ const USE_UNICODE = process.env.MOCK_PI_UNICODE === '1';
 const DO_APPROVE = process.env.MOCK_PI_APPROVE === '1';
 // Structured lifecycle mode: abort expires the asking operation over real frames.
 const DO_QUESTION = process.env.MOCK_PI_QUESTION === '1';
+const QUESTION_WAIT = process.env.MOCK_PI_QUESTION_WAIT !== '0';
+const DROP_QUESTION_RESPONSE = process.env.MOCK_PI_DROP_RESPONSE === '1';
 const DO_TOOL = process.env.MOCK_PI_TOOL === '1';
 const DO_HOOK = process.env.MOCK_PI_HOOK === '1';
 const DO_EXT_EVENT = process.env.MOCK_PI_EXT_EVENT === '1';
@@ -144,7 +148,9 @@ function createSessionState() {
     holdGeneration: 0,
     releaseChunk: undefined,
     approvalSequence: 0,
+    resolvedQuestionIds: new Set(),
     pendingApprovals: new Map(),
+    droppedQuestionResponse: false,
     compactGeneration: 0,   // provider compaction request ids ("compact-provider-N")
     commandsGeneration: 0,  // command-inventory generation reported by mock_commands_changed
     compactSequence: 0,
@@ -266,9 +272,9 @@ async function streamTurn(S, userMessage, injectedMessage = null) {
     if (DO_APPROVE) {
       const approveId = `approve-${++S.approvalSequence}`;
       emit(S, DO_QUESTION
-        ? { type: 'extension_ui_request', id: approveId, method: 'question', questions: [{ id: 'q1', header: 'Stack', question: 'Which?', options: [{ label: 'Go' }] }] }
+        ? { type: 'extension_ui_request', id: approveId, requestId: approveId, waitForAnswer: QUESTION_WAIT, method: 'question', questions: [{ id: 'q1', header: 'Stack', question: 'Which?', options: [{ label: 'Go' }] }] }
         : { type: 'extension_ui_request', id: approveId, method: 'select', title: 'Allow ' + (DO_TOOL ? 'bash' : 'action') + '?', options: ['Allow', 'Block'] });
-      const decision = await new Promise((resolve) => { S.pendingApprovals.set(approveId, { resolve }); });
+      const decision = await new Promise((resolve) => { S.pendingApprovals.set(approveId, { resolve, requestId: approveId, questions: [{ id: 'q1', header: 'Stack', question: 'Which?', options: [{ label: 'Go' }] }] }); });
       if (DO_QUESTION && decision.answers) userMessage = JSON.stringify(decision.answers);
       if (decision.cancelled || /block/i.test(String(decision.value || ''))) {
         // Extension declined: end the turn without streaming.
@@ -436,7 +442,8 @@ function onCommand(S, cmd) {
       if (DO_QUESTION) {
         for (const [id, pending] of S.pendingApprovals) {
           S.pendingApprovals.delete(id);
-          emit(S, { type: 'question_resolved', id, outcome: 'aborted' });
+          S.resolvedQuestionIds.add(id);
+          emit(S, { type: 'question_resolved', id, outcome: 'cancelled' });
           pending.resolve({ cancelled: true });
         }
       }
@@ -586,8 +593,53 @@ function onCommand(S, cmd) {
       return;
     }
     case 'extension_ui_response': {
+      if (DO_QUESTION) {
+        const pending = S.pendingApprovals.get(cmd.id);
+        if (!pending && S.resolvedQuestionIds.has(cmd.id)) {
+          emit(S, { type: 'response', command: 'extension_ui_response', success: false, error: 'question_already_resolved', id: cmd.id });
+          return;
+        }
+        if (cmd.cancelled) {
+          if (pending) {
+            S.pendingApprovals.delete(cmd.id);
+            S.resolvedQuestionIds.add(cmd.id);
+            emit(S, { type: 'question_resolved', id: cmd.id, outcome: 'cancelled' });
+            pending.resolve({ cancelled: true });
+          }
+          return;
+        }
+        if (DROP_QUESTION_RESPONSE && !S.droppedQuestionResponse) {
+          S.droppedQuestionResponse = true;
+          return;
+        }
+        const answers = cmd.answers && typeof cmd.answers === 'object' ? cmd.answers : {};
+        if (Object.values(answers).some((answer) => !Array.isArray(answer?.selected))) return;
+        if (!pending) return;
+        if (!cmd.comment?.trim() && Object.keys(answers).length === 0) {
+          emit(S, { type: 'response', command: 'extension_ui_response', success: false, error: 'question_incomplete', id: cmd.id });
+          return;
+        }
+        S.pendingApprovals.delete(cmd.id);
+        S.resolvedQuestionIds.add(cmd.id);
+        const outcome = cmd.comment?.trim() ? 'comment-submitted' : 'answered';
+        emit(S, { type: 'question_resolved', id: cmd.id, outcome });
+        if (!QUESTION_WAIT) {
+          const question = pending.questions.find((item) => Object.hasOwn(answers, item.id));
+          const answer = question && answers[question.id];
+          const label = answer?.text?.trim() || answer?.selected?.[0] || cmd.comment;
+          emit(S, { type: 'message', message: { role: 'user', content: [{ type: 'text', text: `[Answer to question ${pending.requestId}]\n${question?.header || 'Answer'}: ${label}` }] } });
+        }
+        pending.resolve({ answers });
+        return;
+      }
       const p = S.pendingApprovals.get(cmd.id);
       if (p) { S.pendingApprovals.delete(cmd.id); p.resolve({ value: cmd.value, confirmed: cmd.confirmed, cancelled: cmd.cancelled, answers: cmd.answers }); }
+      return;
+    }
+    case 'extension_ui_progress': {
+      if (!DO_QUESTION) return;
+      const pending = S.pendingApprovals.get(cmd.id);
+      if (pending) emit(S, { type: 'question_updated', id: cmd.id, deadlineAtMs: Date.now() + 60000, remainingMs: 60000 });
       return;
     }
     default:

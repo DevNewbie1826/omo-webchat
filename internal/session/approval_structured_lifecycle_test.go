@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
@@ -25,9 +26,9 @@ func structuredLifecycleRequest() map[string]any {
 }
 
 func TestStructuredQuestionReconnectReplayRemainsAnswerable(t *testing.T) {
-	s, first := acquireDrained(t, "structured-reconnect")
+	s, first, d := questionHarness(t, "structured-reconnect")
 	request := structuredLifecycleRequest()
-	injectEvent(t, s, request)
+	d.EmitSession(s.SessionFile(), request)
 	_, live := first.await(t, FrameApproval)
 	if !reflect.DeepEqual(live.Data.(map[string]any)["questions"], request["questions"]) {
 		t.Fatalf("live questions = %+v, want %+v", live.Data, request["questions"])
@@ -53,19 +54,24 @@ func TestStructuredQuestionReconnectReplayRemainsAnswerable(t *testing.T) {
 	if replay == nil || replay.ApprovalID != "structured-ask" || !reflect.DeepEqual(replay.Data, live.Data) {
 		t.Fatalf("replay = %+v, want intact live request %+v", replay, live)
 	}
-	if s.pendingApproval == nil || s.pendingApproval.ApprovalID != "structured-ask" {
+	if s.pendingByID("structured-ask") == nil {
 		t.Fatal("replayed structured request is no longer pending")
 	}
 	answers := map[string]wscontract.QuestionAnswer{
 		"stack":  {Selected: []string{"Go", "TS"}},
 		"region": {Selected: []string{"west"}},
 	}
+	d.DropNextQuestionResponse()
 	if err := s.RespondApprovalFrame(context.Background(), wscontract.ApprovalRespondFrame{ID: "structured-ask", Answers: &answers}); err != nil {
 		t.Fatal(err)
 	}
 	_, ack := reconnected.await(t, FrameAck)
-	if ack.ApprovalID != "structured-ask" || s.pendingApproval != nil {
-		t.Fatalf("answer did not settle replayed request: ack=%+v pending=%+v", ack, s.pendingApproval)
+	if !d.AwaitQuestionResponseDrop(5 * time.Second) {
+		t.Fatal("engine did not consume the dropped reply")
+	}
+	// IS-6: a write ack is not engine acceptance; question_resolved closes it.
+	if ack.ApprovalID != "structured-ask" || s.pendingByID("structured-ask") == nil {
+		t.Fatalf("answer was retired before engine confirmation: ack=%+v", ack)
 	}
 	_, siblingAck := first.await(t, FrameAck)
 	if siblingAck.ApprovalID != "structured-ask" {
@@ -73,8 +79,8 @@ func TestStructuredQuestionReconnectReplayRemainsAnswerable(t *testing.T) {
 	}
 	after := &synchronousApprovalRecorder{recorder: newRecorder(16)}
 	t.Cleanup(s.Attach(after))
-	if frames := drainSync(after.recorder); hasApproval(frames, "structured-ask") {
-		t.Fatalf("answered structured request replayed: %+v", frames)
+	if frames := drainSync(after.recorder); !hasApproval(frames, "structured-ask") {
+		t.Fatalf("unconfirmed structured request missing from replay: %+v", frames)
 	}
 }
 

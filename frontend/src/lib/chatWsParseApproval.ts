@@ -1,5 +1,5 @@
-import type { ApprovalFrame, Question, QuestionOption } from "./contract/types_gen";
-import { mapRecords, optBoolean, optNumber, optString, optStringArray, reqString } from "./chatWsParseFields";
+import type { ApprovalFrame, Question, QuestionAnswer, QuestionOption, SubmittedAnswer } from "./contract/types_gen";
+import { isRecord, mapRecords, optBoolean, optNumber, optString, optStringArray, reqString } from "./chatWsParseFields";
 
 /** Both question surfaces use one-based positional keys for omitted ids. */
 export function questionKey(question: Question | undefined, index: number): string {
@@ -35,6 +35,24 @@ function parseQuestion(record: Record<string, unknown>): Question | null {
   };
 }
 
+function parseSubmittedAnswer(value: unknown): SubmittedAnswer | null | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || !isRecord(value["answers"])) return null;
+  const answers: Record<string, QuestionAnswer> = {};
+  for (const [key, raw] of Object.entries(value["answers"])) {
+    if (!isRecord(raw)) return null;
+    const selected = optStringArray(raw, "selected");
+    const text = optString(raw, "text");
+    if (selected === null || text === null) return null;
+    answers[key] = {
+      ...(selected === undefined ? {} : { selected }),
+      ...(text === undefined ? {} : { text }),
+    };
+  }
+  const comment = optString(value, "comment");
+  return comment === null ? null : { answers, ...(comment === undefined ? {} : { comment }) };
+}
+
 export function parseApprovalFrame(msg: Record<string, unknown>, sessionId: string): ApprovalFrame | null {
   const id = reqString(msg, "id");
   const method = msg["method"];
@@ -53,7 +71,12 @@ export function parseApprovalFrame(msg: Record<string, unknown>, sessionId: stri
   // Ambiguous keys would overwrite a prior answer; retain the cancellable fallback.
   if (questions && new Set(questions.map(questionKey)).size !== questions.length) return null;
   const nonBlocking = optBoolean(msg, "nonBlocking");
-  if (title === null || message === null || options === null || prefill === null || placeholder === null || deadlineAtMs === null || remainingMs === null || questions === null || nonBlocking === null) return null;
+  const requestId = optString(msg, "requestId");
+  const deliveryError = optString(msg, "deliveryError");
+  const delivery = msg["delivery"];
+  const submittedAnswer = parseSubmittedAnswer(msg["submittedAnswer"]);
+  if (title === null || message === null || options === null || prefill === null || placeholder === null || deadlineAtMs === null || remainingMs === null || questions === null || nonBlocking === null || requestId === null || deliveryError === null || submittedAnswer === null
+    || (delivery !== undefined && delivery !== "sending" && delivery !== "failed")) return null;
   return {
     type: "approval", sessionId, id, method,
     ...(title !== undefined ? { title } : {}),
@@ -65,5 +88,9 @@ export function parseApprovalFrame(msg: Record<string, unknown>, sessionId: stri
     ...(remainingMs !== undefined ? { remainingMs } : {}),
     ...(questions !== undefined ? { questions } : {}),
     ...(nonBlocking !== undefined ? { nonBlocking } : {}),
+    ...(requestId !== undefined ? { requestId } : {}),
+    ...(delivery !== undefined ? { delivery } : {}),
+    ...(deliveryError !== undefined ? { deliveryError } : {}),
+    ...(submittedAnswer !== undefined ? { submittedAnswer } : {}),
   };
 }

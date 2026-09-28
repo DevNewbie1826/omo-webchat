@@ -6,6 +6,7 @@ import { newUuid } from "../../lib/uuid";
 import { isFallbackApprovalFrame } from "../../lib/chatWsParseFallback";
 import type { ChatDraft } from "./chatSessionTypes";
 import type { ApprovalResponse } from "./QuestionWindow";
+import type { ApprovalProgressFrame } from "../../lib/contract/types_gen";
 import { getChatActivity } from "./activityHistory";
 import { getChatGoal, type ChatGoal } from "./goalState";
 import { COMPACT_COMMAND, isCuratedCompact, isCuratedReload, RELOAD_COMMAND } from "./curatedCommands";
@@ -38,8 +39,13 @@ export function useChatSession(
   // A new receipt supersedes a surface even when it is optimistically empty.
   const requestOwners = useRef<{
     approval: { readonly id: string; readonly generation: number } | null;
-    question: { readonly id: string; readonly generation: number } | null;
-  }>({ approval: null, question: null });
+  }>({ approval: null });
+  const progressTimers = useRef(new Map<string, { readonly timer: number; latest: Pick<ApprovalProgressFrame, "answers" | "comment"> }>());
+  const cancelQuestionProgress = (key: string): void => {
+    const pending = progressTimers.current.get(key);
+    if (pending) window.clearTimeout(pending.timer);
+    progressTimers.current.delete(key);
+  };
   frameHandlerRef.current = frameState.handleFrame;
   onChatNameRef.current = onChatName;
   markOpenRef.current = frameState.markOpen;
@@ -131,10 +137,11 @@ export function useChatSession(
           }, frame.revision);
         }
         if (frame.type === "approval") {
-          const surface = !isFallbackApprovalFrame(frame) && frame.method === "question" ? "question" : "approval";
-          const other = surface === "question" ? "approval" : "question";
-          requestOwners.current[surface] = { id: frame.id, generation: ++requestSeqRef.current };
-          if (requestOwners.current[other]?.id === frame.id) requestOwners.current[other] = null;
+          if (isFallbackApprovalFrame(frame) || frame.method !== "question") {
+            requestOwners.current.approval = { id: frame.id, generation: ++requestSeqRef.current };
+          } else if (requestOwners.current.approval?.id === frame.id) {
+            requestOwners.current.approval = null;
+          }
         }
         if (frame.type === "ready") {
           setActivityBinding((current) => current.key === bindingKey
@@ -159,6 +166,12 @@ export function useChatSession(
         if (frameHandlerRef.current(frame, connectionGenerationRef.current) === "refresh_stats") {
           clientRef.current?.send({ type: "chat.stats", sessionId: session.id });
         }
+        if (frame.type === "approval.resolved" || frame.type === "questions.snapshot") {
+          const pendingKeys = new Set(frameState.getPendingQuestions().map(question => question.requestId ?? question.id));
+          for (const key of progressTimers.current.keys()) {
+            if (!pendingKeys.has(key)) cancelQuestionProgress(key);
+          }
+        }
       },
       onParseError: (raw) => {
         // WebKit delivers a truncated payload to JS as a message right before
@@ -168,6 +181,7 @@ export function useChatSession(
       },
       onClose: (_code, connection) => {
         if (connection !== undefined && connection !== socketConnection) return;
+        for (const key of progressTimers.current.keys()) cancelQuestionProgress(key);
         releaseBadgeSourceRef.current();
         socketConnection += 1;
         socketInstanceId = undefined;
@@ -183,6 +197,7 @@ export function useChatSession(
       socketInstanceId = undefined;
       socketDurableSessionId = undefined;
       markCloseRef.current();
+      for (const key of progressTimers.current.keys()) cancelQuestionProgress(key);
       client.close();
       clientRef.current = null;
     };
@@ -441,27 +456,30 @@ export function useChatSession(
 
   const respondRequest = (id: string | undefined, response: ApprovalResponse): boolean => {
     const approval = frameState.pendingApproval?.id === id ? frameState.pendingApproval : null;
-    const question = frameState.pendingQuestion?.id === id ? frameState.pendingQuestion : null;
+    const question = frameState.getPendingQuestions().find(candidate => candidate.id === id);
     if (!approval && !question) return false;
+    if (question?.delivery === "sending") return false;
     const approvalOwner = requestOwners.current.approval;
-    const questionOwner = requestOwners.current.question;
     const requestId = nextRequestId();
     if (!frameState.armControl(
       requestId,
       {
-        key: `extension_ui_response:${id}:${(approval ? approvalOwner : questionOwner)?.generation}`,
+        key: approval ? `extension_ui_response:${id}:${approvalOwner?.generation}` : `extension_ui_response:${id}`,
         ownsRestore: () => approval
           ? requestOwners.current.approval === approvalOwner
-          : requestOwners.current.question === questionOwner,
+          : frameState.getPendingQuestions().some(candidate => candidate.id === id),
       },
       () => {
         if (approval && requestOwners.current.approval === approvalOwner) frameState.setPendingApproval(approval);
-        if (question && requestOwners.current.question === questionOwner) frameState.setPendingQuestion(question);
+        if (question) frameState.restoreQuestion(question.id, question);
       },
       () => undefined,
     )) return false;
     if (approval) frameState.setPendingApproval(null);
-    if (question) frameState.setPendingQuestion(null);
+    if (question) {
+      cancelQuestionProgress(question.requestId ?? question.id);
+      frameState.markQuestionSending(question.id);
+    }
     if (!sendControl({
       type: "approval.respond",
       sessionId: session.id,
@@ -473,6 +491,33 @@ export function useChatSession(
       return false;
     }
     return true;
+  };
+
+  const reportQuestionProgress = (id: string, draft: Pick<ApprovalProgressFrame, "answers" | "comment">): void => {
+    const question = frameState.getPendingQuestions().find(candidate => candidate.id === id);
+    if (!question || question.delivery === "sending") return;
+    const key = question.requestId ?? question.id;
+    const pending = progressTimers.current.get(key);
+    if (pending) {
+      pending.latest = draft;
+      return;
+    }
+    const entry = { latest: draft, timer: window.setTimeout(() => {
+      progressTimers.current.delete(key);
+      const current = frameState.getPendingQuestions().find(candidate => (candidate.requestId ?? candidate.id) === key);
+      if (current && current.delivery !== "sending") {
+        clientRef.current?.send({ type: "approval.progress", sessionId: session.id, id: current.id, ...entry.latest });
+      }
+    }, 1_000) };
+    progressTimers.current.set(key, entry);
+  };
+  const questionIdForKey = (key: string): string | undefined =>
+    frameState.getPendingQuestions().find(question => (question.requestId ?? question.id) === key)?.id;
+
+  const resendQuestion = (id: string): boolean => {
+    const question = frameState.getPendingQuestions().find(candidate => candidate.id === id);
+    return question?.delivery === "failed" && question.submittedAnswer !== undefined
+      ? respondRequest(id, question.submittedAnswer) : false;
   };
 
   return {
@@ -506,7 +551,11 @@ export function useChatSession(
     models: frameState.models,
     currentModelKey: frameState.currentModelKey,
     pendingApproval: frameState.pendingApproval,
-    pendingQuestion: frameState.pendingQuestion,
+    pendingQuestions: frameState.pendingQuestions,
+    shownQuestion: frameState.shownQuestion,
+    cycleQuestion: frameState.cycleQuestion,
+    questionEndedSignal: frameState.questionEndedSignal,
+    blockingQuestionPending: frameState.blockingQuestionPending,
     restoreVersion: frameState.restoreVersion,
     retryDraft: frameState.retryDraft,
     failedDrafts: frameState.failedDrafts,
@@ -537,6 +586,17 @@ export function useChatSession(
     changeThinkingLevel,
     changeModel,
     respondApproval: (response: ApprovalResponse) => respondRequest(frameState.pendingApproval?.id, response),
-    respondQuestion: (response: ApprovalResponse) => respondRequest(frameState.pendingQuestion?.id, response),
+    respondQuestion: (id: string, response: ApprovalResponse) => respondRequest(id, response),
+    respondQuestionByKey: (key: string, response: ApprovalResponse) => {
+      const id = questionIdForKey(key);
+      return id !== undefined && respondRequest(id, response);
+    },
+    reportQuestionProgress,
+    reportQuestionProgressByKey: (key: string, draft: Pick<ApprovalProgressFrame, "answers" | "comment">) => {
+      const id = questionIdForKey(key);
+      if (id !== undefined) reportQuestionProgress(id, draft);
+    },
+    cancelQuestionProgressByKey: cancelQuestionProgress,
+    resendQuestion,
   };
 }
