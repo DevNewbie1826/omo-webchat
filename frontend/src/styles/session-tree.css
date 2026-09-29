@@ -276,10 +276,10 @@
 /* A workspace's single disclosure owns folder and name. The folder glyph
    itself carries the open/closed state (no separate caret), at a fixed
    leading column, and the whole run from the row edge is the toggle
-   target. The row box reaches back into the shell gutter so the folder
-   column starts at the row edge. */
+   target. The row box reaches into the shell gutter on both sides so the
+   folder glyph and the trailing count pill keep equal edge insets. */
 .th-tree-workspace > .th-tree-node {
-  margin-inline-start: calc(-1 * var(--th-space-3));
+  margin-inline: calc(-1 * var(--th-space-3));
   padding-inline-start: var(--th-space-2);
 }
 
@@ -297,7 +297,7 @@
 }
 
 .th-tree--touch .th-tree-workspace > .th-tree-node {
-  margin-inline-start: calc(-1 * var(--th-space-2));
+  margin-inline: calc(-1 * var(--th-space-2));
 }
 
 .th-tree-source {
