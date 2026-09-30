@@ -756,13 +756,49 @@ func TestLauncherBrandProfileValidationRejectsEmptyChangelogFields(t *testing.T)
 }
 
 func TestLauncherUpdateCommandMatchesInstallShape(t *testing.T) {
-	bunRoot := filepath.Join(t.TempDir(), ".bun", "install", "global", "node_modules", "omo-ai")
-	if got, want := launcherUpdateCommand(bunRoot), "bun add --cwd "+shellQuote(bunRoot)+" -g omo-ai@beta"; got != want {
-		t.Fatalf("bun update command = %q, want %q", got, want)
+	for _, tc := range []struct {
+		name, version, spec string
+	}{
+		{name: "stable", version: "1.0.0", spec: "omo-ai"},
+		{name: "prerelease", version: "1.1.0-0.beta.1", spec: "omo-ai@beta"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bunRoot := filepath.Join(t.TempDir(), ".bun", "install", "global", "node_modules", "omo-ai")
+			if got, want := launcherUpdateCommand(bunRoot, tc.version), "bun add --cwd "+shellQuote(bunRoot)+" -g "+tc.spec; got != want {
+				t.Fatalf("bun update command = %q, want %q", got, want)
+			}
+			npmRoot := filepath.Join(t.TempDir(), "lib", "node_modules", "omo-ai")
+			if got, want := launcherUpdateCommand(npmRoot, tc.version), "npm i -g "+tc.spec; got != want {
+				t.Fatalf("npm update command = %q, want %q", got, want)
+			}
+		})
 	}
-	npmRoot := filepath.Join(t.TempDir(), "lib", "node_modules", "omo-ai")
-	if got := launcherUpdateCommand(npmRoot); got != "npm i -g omo-ai@beta" {
-		t.Fatalf("npm update command = %q", got)
+}
+
+func TestLauncherBrandProfileDistTagFollowsReleaseChannel(t *testing.T) {
+	for _, tc := range []struct {
+		version, distTag, spec string
+	}{
+		{version: "5.1.4", distTag: "latest", spec: "omo-ai"},
+		{version: "5.2.0-0.beta.1", distTag: "beta", spec: "omo-ai@beta"},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			_, root, _ := writeRecognizedLauncherInstall(t, tc.version)
+			encoded, _, err := launcherNativeContextFromRoot(root)
+			if err != nil {
+				t.Fatalf("launcherNativeContextFromRoot: %v", err)
+			}
+			var profile launcherBrandProfile
+			if err := json.Unmarshal([]byte(encoded), &profile); err != nil {
+				t.Fatal(err)
+			}
+			if profile.Update.DistTag != tc.distTag {
+				t.Fatalf("distTag = %q, want %q", profile.Update.DistTag, tc.distTag)
+			}
+			if got, want := profile.Update.Command, "npm i -g "+tc.spec; got != want {
+				t.Fatalf("update command = %q, want %q", got, want)
+			}
+		})
 	}
 }
 
@@ -852,7 +888,7 @@ func TestLauncherNativeContextIgnoresAmbientBrand(t *testing.T) {
 			if err := json.Unmarshal([]byte(profile), &got); err != nil {
 				t.Fatalf("decode derived profile: %v", err)
 			}
-			if got.Name != "OmO" || got.DisplayVersion != "9.8.7" || got.Update.Command != launcherUpdateCommand(root) {
+			if got.Name != "OmO" || got.DisplayVersion != "9.8.7" || got.Update.Command != launcherUpdateCommand(root, "9.8.7") {
 				t.Fatalf("derived installation profile = %+v", got)
 			}
 		})

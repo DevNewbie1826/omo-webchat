@@ -15,7 +15,7 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/procexec"
 )
 
-var errWindowsInstallationUpdate = errors.New("in-place updates are unsupported on Windows: loaded native modules can leave a partial installation; stop all omo/senpi agents and webchat, then update omo-ai@beta with your installation's package manager in a terminal")
+var errWindowsInstallationUpdate = errors.New("in-place updates are unsupported on Windows: loaded native modules can leave a partial installation; stop all omo/senpi agents and webchat, then update omo-ai with your installation's package manager in a terminal")
 
 // UpdateInstallation updates the configured omo-ai package and its pinned engine.
 // It does not contact, stop, or restart the running daemon. The caller owns the
@@ -54,7 +54,8 @@ func UpdateInstallation(ctx context.Context, binary string) error {
 		return errors.New("unsupported omo installation: launcher entry is not bin/omo.js")
 	}
 	var manifest struct {
-		Name string `json:"name"`
+		Name    string `json:"name"`
+		Version any    `json:"version"`
 	}
 	data, err := os.ReadFile(filepath.Join(root, "package.json"))
 	if err != nil {
@@ -66,6 +67,9 @@ func UpdateInstallation(ctx context.Context, binary string) error {
 	if manifest.Name != "omo-ai" {
 		return errors.New("unsupported omo installation: package is not omo-ai")
 	}
+	// Missing and non-string versions are not prerelease strings, so they stay on latest.
+	version, _ := manifest.Version.(string)
+	spec := channelPackageSpec(version)
 
 	var executable, cwd, binDir string
 	var args []string
@@ -74,7 +78,7 @@ func UpdateInstallation(ctx context.Context, binary string) error {
 		global := filepath.Dir(filepath.Dir(root))
 		prefix := filepath.Dir(filepath.Dir(global))
 		binDir = filepath.Join(prefix, "bin")
-		args = []string{"add", "--cwd", root, "-g", "omo-ai@beta"}
+		args = []string{"add", "--cwd", root, "-g", spec}
 		cwd = root
 		env = setEnv(setEnv(setEnv(env, "BUN_INSTALL", prefix), "BUN_INSTALL_GLOBAL_DIR", global), "BUN_INSTALL_BIN", binDir)
 		// Observed installations keep the bun binary outside this prefix (for
@@ -104,7 +108,7 @@ func UpdateInstallation(ctx context.Context, binary string) error {
 		if !info.Mode().IsRegular() {
 			return errors.New("matching npm CLI is not a regular file")
 		}
-		args = []string{npm, "i", "-g", "--prefix", prefix, "omo-ai@beta"}
+		args = []string{npm, "i", "-g", "--prefix", prefix, spec}
 		cwd = prefix
 	default:
 		return errors.New("unsupported omo installation: expected an npm prefix or Bun global installation")
@@ -183,4 +187,21 @@ func (w *updateOutput) Write(p []byte) (int, error) {
 	}
 	w.tail = append(w.tail, p...)
 	return n, nil
+}
+
+// releaseChannel is omo-ai's release-channel rule: beta when version contains
+// "-", otherwise latest. An empty version is latest.
+func releaseChannel(version string) string {
+	if strings.Contains(version, "-") {
+		return "beta"
+	}
+	return "latest"
+}
+
+// channelPackageSpec is "omo-ai@beta" for the beta channel and bare "omo-ai" for latest.
+func channelPackageSpec(version string) string {
+	if releaseChannel(version) == "beta" {
+		return "omo-ai@beta"
+	}
+	return "omo-ai"
 }

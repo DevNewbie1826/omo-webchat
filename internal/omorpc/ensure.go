@@ -1037,8 +1037,8 @@ func launcherNativeContextFromRoot(root string) (string, string, error) {
 		ConfigDir: ".omo", FlatLayout: false, EnvPrefix: "OMO",
 		UserAgent: "omo", Originator: "omo",
 		Update: launcherBrandUpdate{
-			PackageName: "omo-ai", DistTag: "beta",
-			Command:      launcherUpdateCommand(root),
+			PackageName: "omo-ai", DistTag: releaseChannel(manifest.Version),
+			Command:      launcherUpdateCommand(root, manifest.Version),
 			ChangelogURL: "https://github.com/code-yeongyu/oh-my-openagent/releases",
 		},
 	}
@@ -1096,11 +1096,12 @@ func isBunLauncherInstallation(root string) bool {
 	return strings.HasSuffix(filepath.ToSlash(filepath.Clean(root)), "/install/global/node_modules/omo-ai")
 }
 
-func launcherUpdateCommand(root string) string {
+func launcherUpdateCommand(root, version string) string {
+	spec := channelPackageSpec(version)
 	if isBunLauncherInstallation(root) {
-		return fmt.Sprintf("bun add --cwd %s -g omo-ai@beta", shellQuote(root))
+		return fmt.Sprintf("bun add --cwd %s -g %s", shellQuote(root), spec)
 	}
-	return "npm i -g omo-ai@beta"
+	return "npm i -g " + spec
 }
 
 func launcherNativeCommandFromRoot(root string) (string, error) {
