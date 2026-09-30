@@ -11,9 +11,6 @@ import (
 	"sort"
 	"time"
 	"unicode/utf8"
-
-	"github.com/DevNewbie1826/omo-webchat/internal/fileid"
-	"github.com/DevNewbie1826/omo-webchat/internal/fileio"
 )
 
 const (
@@ -180,16 +177,16 @@ func sameFileState(left, right os.FileInfo) bool {
 
 // readStableJSON rejects symlinks and records that change identity, size, or
 // mtime while being read. A single retry tolerates an atomic checkpoint write.
-func readStableJSON(ctx context.Context, path string, expected os.FileInfo, target any) bool {
+func (fs activityHistoryFS) readStableJSON(ctx context.Context, path string, expected os.FileInfo, target any) bool {
 	for attempt := 0; attempt < activityHistoryReadRetries; attempt++ {
 		if ctx.Err() != nil {
 			return false
 		}
-		before, err := fileid.Lstat(path)
+		before, err := fs.lstat(path)
 		if err != nil || before.Mode()&os.ModeSymlink != 0 || !sameFileState(expected, before) {
 			return false
 		}
-		f, err := fileio.Open(path)
+		f, err := fs.open(path)
 		if err != nil {
 			return false
 		}
@@ -197,7 +194,7 @@ func readStableJSON(ctx context.Context, path string, expected os.FileInfo, targ
 		data, readErr := io.ReadAll(io.LimitReader(contextReader{ctx: ctx, r: f}, maxTaskStoreRecordBytes+1))
 		afterOpen, afterOpenErr := f.Stat()
 		closeErr := f.Close()
-		afterPath, pathErr := fileid.Lstat(path)
+		afterPath, pathErr := fs.lstat(path)
 		stable := statErr == nil && afterOpenErr == nil && pathErr == nil && afterPath.Mode()&os.ModeSymlink == 0 &&
 			sameFileState(before, opened) && sameFileState(opened, afterOpen) && sameFileState(afterOpen, afterPath)
 		if readErr == nil && closeErr == nil && stable && len(data) <= maxTaskStoreRecordBytes {
@@ -445,18 +442,18 @@ func (h *activityCandidateHeap) Pop() any {
 
 // readCountDirectory walks every eligible record for exact scalar authority.
 // Rich history remains independently bounded by readActivityDirectory.
-func readCountDirectory(ctx context.Context, dir string, visit func(string, os.FileInfo)) error {
+func (fs activityHistoryFS) readCountDirectory(ctx context.Context, dir string, visit func(string, os.FileInfo)) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	info, err := fileid.Lstat(dir)
+	info, err := fs.lstat(dir)
 	if isAbsentPathError(err) || (err == nil && !info.IsDir()) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	f, err := os.Open(dir)
+	f, err := fs.openDir(dir)
 	if isAbsentPathError(err) {
 		return nil
 	}
@@ -478,7 +475,7 @@ func readCountDirectory(ctx context.Context, dir string, visit func(string, os.F
 				continue
 			}
 			path := filepath.Join(dir, entry.Name())
-			current, statErr := fileid.Lstat(path)
+			current, statErr := fs.lstat(path)
 			if statErr != nil || current.Mode()&os.ModeSymlink != 0 || !sameFileState(candidate, current) {
 				continue
 			}
@@ -493,18 +490,18 @@ func readCountDirectory(ctx context.Context, dir string, visit func(string, os.F
 	}
 }
 
-func readActivityDirectory(ctx context.Context, dir string, budget *activityHistoryBudget, visit func(string, os.FileInfo)) (bool, error) {
+func (fs activityHistoryFS) readActivityDirectory(ctx context.Context, dir string, budget *activityHistoryBudget, visit func(string, os.FileInfo)) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	info, err := fileid.Lstat(dir)
+	info, err := fs.lstat(dir)
 	if isAbsentPathError(err) || (err == nil && !info.IsDir()) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	f, err := os.Open(dir)
+	f, err := fs.openDir(dir)
 	if isAbsentPathError(err) {
 		return false, nil
 	}
@@ -561,7 +558,7 @@ func readActivityDirectory(ctx context.Context, dir string, budget *activityHist
 			return false, err
 		}
 		path := filepath.Join(dir, candidate.name)
-		info, err := fileid.Lstat(path)
+		info, err := fs.lstat(path)
 		if err != nil || info.Mode()&os.ModeSymlink != 0 || !sameFileState(candidate.info, info) {
 			continue
 		}
@@ -746,13 +743,33 @@ func boundDagDigest(digest *DagDigest) {
 // Malformed or concurrently replaced records are skipped, while cancellation
 // and aggregate scan budgets bound work over hostile or damaged stores.
 func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (HistoricalActivity, error) {
-	base := filepath.Join(cwd, ".omo", "senpi-task")
+	if err := ctx.Err(); err != nil {
+		return HistoricalActivity{}, err
+	}
+	location, err := resolveActivityStore(cwd)
+	if err != nil {
+		return HistoricalActivity{}, err
+	}
+	fs := activityHistoryFS{}
+	base := filepath.Join(location.anchor, filepath.Join(location.components...))
+	if !location.legacy {
+		root, err := location.open()
+		if errors.Is(err, ErrActivityStoreAbsent) {
+			fs.absent = true
+		} else if err != nil {
+			return HistoricalActivity{}, err
+		} else {
+			defer root.Close()
+			fs.root = root
+		}
+		base = "."
+	}
 	_, parentFieldTruncated := truncateActivityField(durableSessionID)
 	countOwnedRuns := make(map[string]bool)
 	var countTasks taskSnapshotCache
-	if err := readCountDirectory(ctx, filepath.Join(base, "tasks"), func(path string, info os.FileInfo) {
+	if err := fs.readCountDirectory(ctx, filepath.Join(base, "tasks"), func(path string, info os.FileInfo) {
 		var task storedTask
-		if !readStableJSON(ctx, path, info, &task) || durableSessionID == "" || task.ParentSessionID != durableSessionID || task.TaskID == "" || task.Status == "" {
+		if !fs.readStableJSON(ctx, path, info, &task) || durableSessionID == "" || task.ParentSessionID != durableSessionID || task.TaskID == "" || task.Status == "" {
 			return
 		}
 		if task.Owner.Kind == "dag" && task.Owner.RunID != "" {
@@ -768,9 +785,9 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 	taskBudget := &activityHistoryBudget{}
 	tasks := make([]historicalTaskRow, 0)
 	taskFieldsTruncated := false
-	taskBudgetExhausted, err := readActivityDirectory(ctx, filepath.Join(base, "tasks"), taskBudget, func(path string, info os.FileInfo) {
+	taskBudgetExhausted, err := fs.readActivityDirectory(ctx, filepath.Join(base, "tasks"), taskBudget, func(path string, info os.FileInfo) {
 		var task storedTask
-		if !readStableJSON(ctx, path, info, &task) {
+		if !fs.readStableJSON(ctx, path, info, &task) {
 			taskFieldsTruncated = true
 			return
 		}
@@ -835,9 +852,9 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 	}
 
 	var countDags dagSnapshotCache
-	if err := readCountDirectory(ctx, filepath.Join(base, "dag", "runs"), func(path string, info os.FileInfo) {
+	if err := fs.readCountDirectory(ctx, filepath.Join(base, "dag", "runs"), func(path string, info os.FileInfo) {
 		var run storedDagRun
-		if !readStableJSON(ctx, path, info, &run) || durableSessionID == "" || run.RunID == "" || run.Status == "" {
+		if !fs.readStableJSON(ctx, path, info, &run) || durableSessionID == "" || run.RunID == "" || run.Status == "" {
 			return
 		}
 		if run.ParentSessionID != durableSessionID && !(run.ParentSessionID == "" && countOwnedRuns[run.RunID]) {
@@ -859,9 +876,9 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 	runBudget := &activityHistoryBudget{}
 	runFieldsTruncated := false
 	uncertainParentlessRuns := false
-	runBudgetExhausted, err := readActivityDirectory(ctx, filepath.Join(base, "dag", "runs"), runBudget, func(path string, info os.FileInfo) {
+	runBudgetExhausted, err := fs.readActivityDirectory(ctx, filepath.Join(base, "dag", "runs"), runBudget, func(path string, info os.FileInfo) {
 		var run storedDagRun
-		if !readStableJSON(ctx, path, info, &run) || durableSessionID == "" || run.RunID == "" || run.Status == "" {
+		if !fs.readStableJSON(ctx, path, info, &run) || durableSessionID == "" || run.RunID == "" || run.Status == "" {
 			return
 		}
 		if run.ParentSessionID != durableSessionID && !(run.ParentSessionID == "" && ownedRuns[run.RunID]) {

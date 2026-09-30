@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
+	"github.com/DevNewbie1826/omo-webchat/internal/session"
 )
 
 const maxChatTaskTextBytes = 512
@@ -93,31 +94,12 @@ func (s *Server) handleGetChatTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 func openTaskStore(cwd string) (*os.Root, error) {
-	root, err := os.OpenRoot(cwd)
+	root, err := session.OpenActivityDirectory(cwd, "tasks")
+	if errors.Is(err, session.ErrActivityStoreAbsent) {
+		return nil, errTaskStoreAbsent
+	}
 	if err != nil {
 		return nil, errTaskStoreInaccessible
-	}
-	for _, component := range []string{".omo", "senpi-task", "tasks"} {
-		before, err := root.Lstat(component)
-		if errors.Is(err, os.ErrNotExist) {
-			root.Close()
-			return nil, errTaskStoreAbsent
-		}
-		if err != nil || !before.IsDir() || before.Mode()&os.ModeSymlink != 0 {
-			root.Close()
-			return nil, errTaskStoreInaccessible
-		}
-		next, err := root.OpenRoot(component)
-		root.Close()
-		if err != nil {
-			return nil, errTaskStoreInaccessible
-		}
-		after, err := next.Stat(".")
-		if err != nil || !os.SameFile(before, after) {
-			next.Close()
-			return nil, errTaskStoreInaccessible
-		}
-		root = next
 	}
 	return root, nil
 }
