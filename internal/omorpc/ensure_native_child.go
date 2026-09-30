@@ -61,7 +61,12 @@ if (/\/(?:senpi|runtime\/[A-Za-z0-9._-]+)\/dist\/(?:bundle\/)?cli(?:-main)?\.js$
   if (supervisor >= 0) {
     // Only the actual product launcher supplies these authoritative values.
     // omo-ai 5.1+ exports OMO_BIN (<package>/bin/omo.js) instead of OMO_AGENT_TOOLKIT_BIN.
-    const launcher = process.env.OMO_AGENT_TOOLKIT_BIN || process.env.OMO_BIN;
+    // OMO_BIN is a generic name, so trust it only for the OmO brand and omo-ai's own entry.
+    let omoBrand = false;
+    try { omoBrand = JSON.parse(process.env.SENPI_BRAND || "null")?.name === "OmO"; } catch {}
+    const omoBin = omoBrand && /[\\/]omo-ai[\\/]bin[\\/]omo\.js$/.test(process.env.OMO_BIN || "")
+      ? process.env.OMO_BIN : undefined;
+    const launcher = process.env.OMO_AGENT_TOOLKIT_BIN || omoBin;
     if (process.env.SENPI_BRAND && launcher) {
       process.env[key] = JSON.stringify({brand: process.env.SENPI_BRAND,
         extension: path.join(path.dirname(path.dirname(launcher)), "plugin")});

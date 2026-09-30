@@ -25,10 +25,17 @@ func TestWindowsNativeChildContext(t *testing.T) {
 	// Its launcher exports OMO_BIN (bin/omo.js) and no longer OMO_AGENT_TOOLKIT_BIN, and a
 	// bundled install hands hosts to the runtime snapshot <agentDir>/runtime/<build>-<install>.
 	engineDist := filepath.Join("senpi", "dist")
-	layouts := []struct{ name, supervisor, host, launcherKey, launcherBin string }{
-		{"unbundled", filepath.Join(engineDist, "cli.js"), filepath.Join(engineDist, "cli-main.js"), "OMO_AGENT_TOOLKIT_BIN", "omo-agent-toolkit.js"},
-		{"bundled", filepath.Join(engineDist, "bundle", "cli.js"), filepath.Join(engineDist, "cli.js"), "OMO_BIN", "omo.js"},
-		{"snapshot", filepath.Join(engineDist, "bundle", "cli.js"), filepath.Join("agent", "runtime", "b1.0-0123456789ab", "dist", "cli-main.js"), "OMO_BIN", "omo.js"},
+	// OMO_BIN is a generic name, so a foreign brand with an ambient OMO_BIN must pass through untouched.
+	const omoBrand = `{"name":"OmO","envPrefix":"OMO"}`
+	const foreignBrand = `{"name":"Foreign","envPrefix":"FOREIGN","command":"foreign"}`
+	layouts := []struct {
+		name, supervisor, host, launcherKey, launcherBin, brand string
+		restored                                                bool
+	}{
+		{"unbundled", filepath.Join(engineDist, "cli.js"), filepath.Join(engineDist, "cli-main.js"), "OMO_AGENT_TOOLKIT_BIN", "omo-agent-toolkit.js", omoBrand, true},
+		{"bundled", filepath.Join(engineDist, "bundle", "cli.js"), filepath.Join(engineDist, "cli.js"), "OMO_BIN", "omo.js", omoBrand, true},
+		{"snapshot", filepath.Join(engineDist, "bundle", "cli.js"), filepath.Join("agent", "runtime", "b1.0-0123456789ab", "dist", "cli-main.js"), "OMO_BIN", "omo.js", omoBrand, true},
+		{"foreign", filepath.Join(engineDist, "cli.js"), filepath.Join(engineDist, "cli-main.js"), "OMO_BIN", "omo.js", foreignBrand, false},
 	}
 	for _, layout := range layouts {
 		for _, original := range []string{"", "--no-warnings"} {
@@ -55,7 +62,7 @@ func TestWindowsNativeChildContext(t *testing.T) {
 					cfg.Env = setEnv(cfg.Env, "NODE_OPTIONS", original)
 					cfg.Env = setEnv(cfg.Env, "BUN_OPTIONS", "--smol")
 				}
-				cfg.Env = setEnv(cfg.Env, "SENPI_BRAND", `{"name":"OmO","envPrefix":"OMO"}`)
+				cfg.Env = setEnv(cfg.Env, "SENPI_BRAND", layout.brand)
 				cfg.Env = setEnv(cfg.Env, layout.launcherKey, filepath.Join(dir, "omo-ai", "bin", layout.launcherBin))
 				env, preload, err := windowsNativeChildContext(cfg)
 				if err != nil {
@@ -115,12 +122,24 @@ stream.once("end", () => console.log(JSON.stringify({pid:process.pid, ppid:proce
 				if err := json.Unmarshal(output, &got); err != nil {
 					t.Fatal(err)
 				}
-				brand, _ := lookupEnv(cfg.Env, "SENPI_BRAND")
+				brand := ""
+				if layout.restored {
+					brand = layout.brand
+				}
+				wantOptions := original
 				bunOptions, _ := lookupEnv(cfg.Env, "BUN_OPTIONS")
-				if got.PPID != cmd.Process.Pid || got.Watch != cmd.Process.Pid || !got.FD || got.Brand != brand || got.Options != original || got.BunOptions != bunOptions || got.Marker != "" {
+				if !layout.restored {
+					// An untouched launch keeps the runtime options it was started with.
+					wantOptions, _ = lookupEnv(env, "NODE_OPTIONS")
+					bunOptions, _ = lookupEnv(env, "BUN_OPTIONS")
+				}
+				if got.PPID != cmd.Process.Pid || got.Watch != cmd.Process.Pid || !got.FD || got.Brand != brand || got.Options != wantOptions || got.BunOptions != bunOptions || got.Marker != "" {
 					t.Fatalf("native context = %+v", got)
 				}
-				want := []string{"--mode", "rpc", "--multi-session", "--listen", "unix://fixture", "--extension", filepath.Join(dir, "omo-ai", "plugin")}
+				want := []string{"--mode", "rpc", "--multi-session", "--listen", "unix://fixture"}
+				if layout.restored {
+					want = append(want, "--extension", filepath.Join(dir, "omo-ai", "plugin"))
+				}
 				if !reflect.DeepEqual(got.Args, want) {
 					t.Fatalf("native args = %v, want %v", got.Args, want)
 				}
