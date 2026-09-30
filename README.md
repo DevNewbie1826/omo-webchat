@@ -265,7 +265,7 @@ Windows에서는 모든 omo/senpi 프로세스와 웹챗을 종료한 뒤 터미
 #### 지원 환경과 세부 요구 사항
 
 - macOS·Linux (amd64/arm64), Windows (amd64/arm64, zip 릴리스).
-- Windows RPC는 인증된 named pipe를 사용합니다. CI 런타임은 `omo-ai@5.0.0-0.beta.43` (senpi `2026.9.5`), Bun `1.3.10`, Node `24.15.0`으로 고정되어 있습니다. Bun의 `omo.exe` 또는 npm이 생성한 `omo.cmd`를 PATH에 두세요. npm 설치는 Node로 실제 `omo.js`를 실행하며, `CHAT_PI_BINARY`에 해당 `.js`의 절대 경로를 직접 지정할 수도 있습니다. 서버는 필요한 데몬을 시작하거나 호환 데몬을 재사용하며, 자신이 시작한 프로세스 트리만 종료합니다. 잘못된 크기·소유권·권한의 `.secret` 파일이나 reparse 경로는 자동 덮어쓰기 없이 거부합니다.
+- Windows RPC는 인증된 named pipe를 사용합니다. omo-ai 5.0.0 이상을 지원하며 Bun은 1.4 이상을 권장합니다. CI는 `omo-ai@5.1.4` (senpi `2026.9.29-5`), Bun `1.4.2`, Node `24.15.0`으로 검증합니다. Bun의 `omo.exe` 또는 npm이 생성한 `omo.cmd`를 PATH에 두세요. npm 설치는 Node로 실제 `omo.js`를 실행하며, `CHAT_PI_BINARY`에 해당 `.js`의 절대 경로를 직접 지정할 수도 있습니다. 서버는 필요한 데몬을 시작하거나 호환 데몬을 재사용하며, 자신이 시작한 프로세스 트리만 종료합니다. 잘못된 크기·소유권·권한의 `.secret` 파일이나 reparse 경로는 자동 덮어쓰기 없이 거부합니다.
 - 테스트한 호스티드 Windows 환경(Bun 1.4.2)에서 `bunx --bun`은 설치 후 래퍼를 실행하지 않고 종료되는 것이 관찰됐습니다. 해당 환경에서는 `npx` 또는 일반 `bunx`를 쓰세요.
 
 #### npm 패키지 구성과 배포 태그
@@ -475,7 +475,7 @@ Running with `bunx`/`npx` above is recommended. To install the binary directly o
 #### Platforms and detailed requirements
 
 - macOS / Linux (amd64, arm64), Windows (amd64, arm64, zip release).
-- Windows RPC uses authenticated named pipes. CI pins `omo-ai@5.0.0-0.beta.43` (senpi `2026.9.5`), Bun `1.3.10`, and Node `24.15.0`. Put Bun's `omo.exe` or npm's `omo.cmd` on PATH. npm installs run the actual `omo.js` through Node; `CHAT_PI_BINARY` can also name the absolute `.js` entry path. The server starts a missing daemon or reuses a compatible one, and only terminates process trees it owns. Malformed, untrusted, or reparse-backed `.secret` files are rejected rather than overwritten; valid secrets are retained across shutdown and re-read on reconnect.
+- Windows RPC uses authenticated named pipes. omo-ai 5.0.0 or later is supported, and Bun 1.4 or later is recommended. CI verifies with `omo-ai@5.1.4` (senpi `2026.9.29-5`), Bun `1.4.2`, and Node `24.15.0`. Put Bun's `omo.exe` or npm's `omo.cmd` on PATH. npm installs run the actual `omo.js` through Node; `CHAT_PI_BINARY` can also name the absolute `.js` entry path. The server starts a missing daemon or reuses a compatible one, and only terminates process trees it owns. Malformed, untrusted, or reparse-backed `.secret` files are rejected rather than overwritten; valid secrets are retained across shutdown and re-read on reconnect.
 - On the tested hosted Windows setup with Bun 1.4.2, `bunx --bun` was observed to exit after installation without running the wrapper; use `npx` or plain `bunx` there.
 
 #### npm packages and release tags
