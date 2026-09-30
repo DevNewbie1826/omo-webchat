@@ -214,7 +214,7 @@ func writeUpdateInvocationObserver(t *testing.T, path, receipt string) {
 	writeUpdateFile(t, path, "#!/bin/sh\nprintf '%s\\n' \"$0\" >> "+shellQuote(receipt)+"\nexit 98\n")
 }
 
-func updateInstallFixture(t *testing.T, manager string) (launcher, root, prefix string) {
+func updateInstallFixture(t *testing.T, manager, version string) (launcher, root, prefix string) {
 	t.Helper()
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -228,7 +228,7 @@ func updateInstallFixture(t *testing.T, manager string) (launcher, root, prefix 
 	}
 	entry := filepath.Join(root, "bin", "omo.js")
 	writeUpdateFile(t, entry, "#!/bin/sh\nexit 99\n")
-	writeUpdateFile(t, filepath.Join(root, "package.json"), `{"name":"omo-ai","version":"1.0.0"}`)
+	writeUpdateFile(t, filepath.Join(root, "package.json"), fmt.Sprintf(`{"name":"omo-ai","version":%q}`, version))
 	launcher = filepath.Join(prefix, "bin", "omo")
 	if err := os.MkdirAll(filepath.Dir(launcher), 0700); err != nil {
 		t.Fatal(err)
@@ -264,44 +264,52 @@ func updateInstallFixture(t *testing.T, manager string) (launcher, root, prefix 
 
 func TestUpdateInstallationPackageManagerArgv(t *testing.T) {
 	for _, manager := range []string{"npm", "bun"} {
-		t.Run(manager, func(t *testing.T) {
-			launcher, root, prefix := updateInstallFixture(t, manager)
-			events := updateProcessListener(t)
-			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-			defer cancel()
-			done := make(chan error, 1)
-			go func() { done <- UpdateInstallation(ctx, launcher) }()
-			event := awaitUpdateEvent(t, events)
-			if len(event.report.Markers) != 0 {
-				t.Errorf("installer inherited launch markers/preloads: %v", event.report.Markers)
-			}
-			var want []string
-			if manager == "npm" {
-				want = []string{filepath.Join(prefix, "lib", "node_modules", "npm", "bin", "npm-cli.js"), "i", "-g", "--prefix", prefix, "omo-ai@beta"}
-			} else {
-				want = []string{"add", "--cwd", root, "-g", "omo-ai@beta"}
-				if event.report.BunInstall != prefix || event.report.BunGlobal != filepath.Join(prefix, "install", "global") || event.report.BunBin != filepath.Join(prefix, "bin") {
-					t.Errorf("wrong Bun target: %+v", event.report)
+		for _, tc := range []struct {
+			version string
+			spec    string
+		}{
+			{version: "1.0.0", spec: "omo-ai"},
+			{version: "1.1.0-0.beta.1", spec: "omo-ai@beta"},
+		} {
+			t.Run(manager+"/"+tc.version, func(t *testing.T) {
+				launcher, root, prefix := updateInstallFixture(t, manager, tc.version)
+				events := updateProcessListener(t)
+				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+				defer cancel()
+				done := make(chan error, 1)
+				go func() { done <- UpdateInstallation(ctx, launcher) }()
+				event := awaitUpdateEvent(t, events)
+				if len(event.report.Markers) != 0 {
+					t.Errorf("installer inherited launch markers/preloads: %v", event.report.Markers)
 				}
-			}
-			if !reflect.DeepEqual(event.report.Args, want) {
-				t.Errorf("argv = %q, want %q", event.report.Args, want)
-			}
-			if !strings.HasPrefix(event.report.Path, filepath.Join(prefix, "bin")+string(os.PathListSeparator)) {
-				t.Errorf("runtime PATH = %q", event.report.Path)
-			}
-			if err := json.NewEncoder(event.conn).Encode("ok"); err != nil {
-				t.Fatal(err)
-			}
-			if err := awaitUpdateResult(t, done); err != nil {
-				t.Fatal(err)
-			}
-		})
+				var want []string
+				if manager == "npm" {
+					want = []string{filepath.Join(prefix, "lib", "node_modules", "npm", "bin", "npm-cli.js"), "i", "-g", "--prefix", prefix, tc.spec}
+				} else {
+					want = []string{"add", "--cwd", root, "-g", tc.spec}
+					if event.report.BunInstall != prefix || event.report.BunGlobal != filepath.Join(prefix, "install", "global") || event.report.BunBin != filepath.Join(prefix, "bin") {
+						t.Errorf("wrong Bun target: %+v", event.report)
+					}
+				}
+				if !reflect.DeepEqual(event.report.Args, want) {
+					t.Errorf("argv = %q, want %q", event.report.Args, want)
+				}
+				if !strings.HasPrefix(event.report.Path, filepath.Join(prefix, "bin")+string(os.PathListSeparator)) {
+					t.Errorf("runtime PATH = %q", event.report.Path)
+				}
+				if err := json.NewEncoder(event.conn).Encode("ok"); err != nil {
+					t.Fatal(err)
+				}
+				if err := awaitUpdateResult(t, done); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
 	}
 }
 
 func TestUpdateInstallationFailureOutput(t *testing.T) {
-	launcher, _, _ := updateInstallFixture(t, "npm")
+	launcher, _, _ := updateInstallFixture(t, "npm", "1.0.0")
 	events := updateProcessListener(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -323,7 +331,7 @@ func TestUpdateInstallationFailureOutput(t *testing.T) {
 func TestUpdateInstallationCancellation(t *testing.T) {
 	for _, mode := range []string{"cancel-live-tree", "leader-exits-first"} {
 		t.Run(mode, func(t *testing.T) {
-			launcher, _, _ := updateInstallFixture(t, "npm")
+			launcher, _, _ := updateInstallFixture(t, "npm", "1.0.0")
 			events := updateProcessListener(t)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
@@ -366,7 +374,7 @@ func TestUpdateInstallationCancellation(t *testing.T) {
 func TestUpdateInstallationRejectsUnsupported(t *testing.T) {
 	for _, kind := range []string{"custom-command", "custom-omo", "local-package", "missing-node", "wrong-package", "expired"} {
 		t.Run(kind, func(t *testing.T) {
-			launcher, root, prefix := updateInstallFixture(t, "npm")
+			launcher, root, prefix := updateInstallFixture(t, "npm", "1.0.0")
 			switch kind {
 			case "custom-command", "custom-omo":
 				launcher = filepath.Join(t.TempDir(), kind)
@@ -407,7 +415,7 @@ func TestUpdateInstallationRejectsUnsupported(t *testing.T) {
 // directory). With no bun in the prefix, the only bun is first on PATH; the
 // install target must stay pinned to the prefix.
 func TestUpdateInstallationBunFromPATH(t *testing.T) {
-	launcher, root, prefix := updateInstallFixture(t, "bun")
+	launcher, root, prefix := updateInstallFixture(t, "bun", "1.0.0")
 	if err := os.Remove(filepath.Join(prefix, "bin", "bun")); err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +428,7 @@ func TestUpdateInstallationBunFromPATH(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- UpdateInstallation(ctx, launcher) }()
 	event := awaitUpdateEvent(t, events)
-	want := []string{"add", "--cwd", root, "-g", "omo-ai@beta"}
+	want := []string{"add", "--cwd", root, "-g", "omo-ai"}
 	if !reflect.DeepEqual(event.report.Args, want) {
 		t.Errorf("argv = %q, want %q", event.report.Args, want)
 	}
@@ -446,7 +454,7 @@ func TestUpdateInstallationBunFromPATH(t *testing.T) {
 
 // The prefix's own bun wins over a different bun that appears earlier on PATH.
 func TestUpdateInstallationPrefersPrefixBun(t *testing.T) {
-	launcher, _, prefix := updateInstallFixture(t, "bun")
+	launcher, _, prefix := updateInstallFixture(t, "bun", "1.0.0")
 	runtime := t.TempDir()
 	writeUpdatePackageManagerRecorder(t, filepath.Join(runtime, "bun"), "path-bun")
 	t.Setenv("PATH", runtime+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -492,7 +500,7 @@ func TestUpdateInvocationObserverRecordsExecution(t *testing.T) {
 // With no bun in the prefix and none on PATH, the update must fail without
 // starting any package-manager process, naming both searched locations.
 func TestUpdateInstallationBunMissingEverywhere(t *testing.T) {
-	launcher, _, prefix := updateInstallFixture(t, "bun")
+	launcher, _, prefix := updateInstallFixture(t, "bun", "1.0.0")
 	if err := os.Remove(filepath.Join(prefix, "bin", "bun")); err != nil {
 		t.Fatal(err)
 	}
