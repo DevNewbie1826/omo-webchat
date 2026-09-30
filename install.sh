@@ -95,7 +95,7 @@ esac
 
 if ! command -v omo >/dev/null 2>&1; then
   warn "'omo' is required at runtime to create chats but was not found on your PATH."
-  warn "install it with:  npm install -g omo-ai@beta"
+  warn "install it with:  npm install -g omo-ai"
 fi
 
 printf '\nDone. Run it with:\n\n  %s --password <secret>\n\nthen open http://localhost:8080 in your browser.\n' "$BINARY"

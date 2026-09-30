@@ -217,7 +217,8 @@ Tailscale을 설치할 수 없는 기기에서 접속해야 할 때 씁니다. *
 ### omo와 senpi 함께 업데이트하기
 
 채팅에서 `/update`를 선택하거나 입력한 뒤 전송하고 **함께 업데이트**를 누르세요.
-서버가 현재 사용하는 omo 설치의 패키지 매니저로 `omo-ai@beta`와 그 버전에
+서버가 현재 사용하는 omo 설치의 패키지 매니저로, 지금 설치와 같은 채널의
+omo-ai 릴리스(안정판은 `latest`의 `omo-ai`, 프리릴리스 빌드는 `omo-ai@beta`)와 그 버전에
 고정된 senpi 엔진을 함께 설치합니다. 별도로 설치된 전역 senpi나 omo-webchat
 자체를 업데이트하는 기능은 아닙니다. 제공자가 자체 `/update` 명령을 등록했다면
 그 명령이 우선합니다.
@@ -425,9 +426,10 @@ Use this when the device you connect from cannot run Tailscale. **Anyone who kno
 ### Update omo and senpi together
 
 Select or type `/update`, submit it, then choose **Update both**. The server
-updates its configured omo installation to `omo-ai@beta` using that installation's
-package manager, including the matching pinned senpi engine. It does not update
-a separately installed global senpi or omo-webchat itself. A provider-advertised
+updates its configured omo installation to the latest omo-ai release on the same
+channel as the current install (stable -> `omo-ai` from `latest`, prerelease
+build -> `omo-ai@beta`) using that installation's package manager, including
+the matching pinned senpi engine. It does not update a separately installed global senpi or omo-webchat itself. A provider-advertised
 `/update` command retains precedence.
 
 The action requires login and rejects concurrent update requests. Installation

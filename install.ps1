@@ -180,7 +180,7 @@ else {
 
 if (-not (Get-Command omo -ErrorAction SilentlyContinue)) {
     Write-Warn "'omo' is required at runtime to create chats but was not found on your PATH."
-    Write-Warn 'install it with:  npm install -g omo-ai@beta'
+    Write-Warn 'install it with:  npm install -g omo-ai'
 }
 
 Write-Host ''
