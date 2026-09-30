@@ -280,3 +280,17 @@
   flex: none;
   animation: th-empty-rise calc(var(--th-dur-emph) / 2) var(--th-ease-out) calc(var(--th-dur-emph) * 0.4) backwards;
 }
+
+/* Root error boundary fallback (AppRoot.tsx): replaces an empty page when
+   the app itself fails to render. Title/detail typography is shared with the
+   pane fallback in chat-pane.css. */
+.th-app-error {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--th-space-2);
+  padding: var(--th-space-6);
+  text-align: center;
+}
