@@ -167,6 +167,16 @@ it("keeps client row identity when idless rows are prepended", () => {
   expect(transcriptItemKeys([earlier, live])[1]).toBe(transcriptItemKeys([live])[0]);
 });
 
+it("renders a prepended idless row where crypto.randomUUID is unavailable (plain-HTTP origin)", async () => {
+  vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) });
+  const tail = rows("tail", 3);
+  await render(tail);
+  const earlier: TranscriptItem = { kind: "message", message: { role: "user", blocks: [{ kind: "text", text: "earlier" }] } };
+  await render([earlier, ...tail]);
+  expect(container.textContent).toContain("earlier");
+  expect(container.textContent).toContain("tail-2");
+});
+
 it("measures a prepend at three times its estimate without moving or remounting retained rows", async () => {
   const tail = rows("tail", 60);
   await render(tail);

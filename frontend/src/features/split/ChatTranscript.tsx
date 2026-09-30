@@ -13,6 +13,7 @@ import {
   formatByteLength,
   type ChatMediaSource,
 } from "../../lib/chatMedia";
+import { newUuid } from "../../lib/uuid";
 import type { Paragraph, Root } from "mdast";
 import type {} from "mdast-util-math";
 import type { UiMessage } from "./chatEntries";
@@ -183,7 +184,7 @@ export function transcriptItemKeys(items: readonly TranscriptItem[]): readonly s
     // entries. Their identity must not depend on where history inserts them.
     let key = clientMessageKeys.get(message);
     if (key === undefined) {
-      key = `client:${crypto.randomUUID()}`;
+      key = `client:${newUuid()}`;
       clientMessageKeys.set(message, key);
     }
     return key;
