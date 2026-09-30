@@ -33,6 +33,8 @@ func TestCodingAgentDirPrecedence(t *testing.T) {
 		{name: "only SENPI_", senpi: senpiDir, want: senpiDir},
 		{name: "OMO_+SENPI_", omo: omoDir, senpi: senpiDir, want: omoDir},
 		{name: "OMO_+SENPI_+PI_", omo: omoDir, senpi: senpiDir, pi: piDir, want: omoDir},
+		{name: "trim OMO_", omo: " \t" + omoDir + " \n", senpi: senpiDir, want: omoDir},
+		{name: "blank OMO_", omo: " \t\n", senpi: senpiDir, want: senpiDir},
 		{name: "none", want: def},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -43,6 +45,20 @@ func TestCodingAgentDirPrecedence(t *testing.T) {
 				t.Fatalf("CodingAgentDir() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestCodingAgentDirResolvesRelativeOverride(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OMO_CODING_AGENT_DIR", " ./relative-agent ")
+	t.Setenv("SENPI_CODING_AGENT_DIR", "")
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	if got, want := CodingAgentDir(), filepath.Join(cwd, "relative-agent"); got != want {
+		t.Fatalf("CodingAgentDir()=%q want %q", got, want)
 	}
 }
 

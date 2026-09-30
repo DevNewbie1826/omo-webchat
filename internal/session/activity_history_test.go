@@ -402,7 +402,7 @@ func TestActivityHistoryDirectoryBudgetAndCancellation(t *testing.T) {
 	writeActivityStoreJSON(t, filepath.Join(dir, "b.json"), map[string]any{"ok": true})
 	budget := &activityHistoryBudget{files: maxActivityHistoryFiles - 1}
 	visited := 0
-	exhausted, err := readActivityDirectory(t.Context(), dir, budget, func(string, os.FileInfo) { visited++ })
+	exhausted, err := (activityHistoryFS{}).readActivityDirectory(t.Context(), dir, budget, func(string, os.FileInfo) { visited++ })
 	if err != nil || !exhausted || visited != 1 {
 		t.Fatalf("budget result: exhausted=%v visited=%d err=%v", exhausted, visited, err)
 	}

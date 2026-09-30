@@ -110,6 +110,10 @@ func (s *Server) handleGetChatActivity(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, r.Context().Err()) {
 			return
 		}
+		if errors.Is(err, session.ErrActivityStoreInaccessible) {
+			s.writeStoreError(w, cursorstore.ErrNotFound)
+			return
+		}
 		s.logger.Error("reading chat activity history failed", "chat_id", chat.ID, "err", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return

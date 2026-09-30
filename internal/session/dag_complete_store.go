@@ -15,35 +15,14 @@ import (
 
 var errDagStoreAbsent = errors.New("DAG store does not exist")
 
-// openDagDirectory pins every directory beneath the validated cwd. Root's
-// traversal confinement also protects the lstat/open race; identity checks
-// reject replacement and no component is allowed to be a symlink.
-func openDagDirectory(cwd string, components ...string) (*os.Root, error) {
-	root, err := os.OpenRoot(cwd)
+// openDagDirectory preserves DAG error semantics over the shared store walker.
+func openDagDirectory(store *os.Root, components ...string) (*os.Root, error) {
+	root, err := openActivityChildren(store, components...)
+	if errors.Is(err, ErrActivityStoreAbsent) {
+		return nil, errDagStoreAbsent
+	}
 	if err != nil {
 		return nil, ErrDagNotFound
-	}
-	for _, component := range components {
-		before, err := root.Lstat(component)
-		if errors.Is(err, os.ErrNotExist) {
-			root.Close()
-			return nil, errDagStoreAbsent
-		}
-		if err != nil || !before.IsDir() || before.Mode()&os.ModeSymlink != 0 {
-			root.Close()
-			return nil, ErrDagNotFound
-		}
-		next, err := root.OpenRoot(component)
-		root.Close()
-		if err != nil {
-			return nil, ErrDagNotFound
-		}
-		after, err := next.Stat(".")
-		if err != nil || !os.SameFile(before, after) {
-			next.Close()
-			return nil, ErrDagNotFound
-		}
-		root = next
 	}
 	return root, nil
 }
@@ -125,6 +104,7 @@ type dagSourceOwner struct {
 
 type dagOwnership struct {
 	cwd    string
+	store  *os.Root
 	parent string
 	tasks  []storedTask
 	loaded bool
@@ -138,7 +118,7 @@ func (o *dagOwnership) owns(ctx context.Context, header dagSourceOwner, data []b
 		return header.ParentSessionID == o.parent, nil
 	}
 	if !o.loaded {
-		root, err := openDagDirectory(o.cwd, ".omo", "senpi-task", "tasks")
+		root, err := openDagDirectory(o.store, "tasks")
 		if errors.Is(err, errDagStoreAbsent) {
 			o.loaded = true
 			return false, nil
@@ -187,7 +167,16 @@ func (o *dagOwnership) owns(ctx context.Context, header dagSourceOwner, data []b
 // scanCompleteDags discovers embedded identities without treating a filename,
 // replay-cache membership, or a bounded overview as an ownership index.
 func scanCompleteDags(ctx context.Context, owner dagOwnership, selected string, visit func(CompleteDagDocument) error) error {
-	root, err := openDagDirectory(owner.cwd, ".omo", "senpi-task", "dag", "runs")
+	store, err := OpenActivityDirectory(owner.cwd)
+	if errors.Is(err, ErrActivityStoreAbsent) {
+		return errDagStoreAbsent
+	}
+	if err != nil {
+		return ErrDagNotFound
+	}
+	defer store.Close()
+	owner.store = store
+	root, err := openDagDirectory(store, "dag", "runs")
 	if err != nil {
 		return err
 	}
