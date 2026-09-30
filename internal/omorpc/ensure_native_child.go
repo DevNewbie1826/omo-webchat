@@ -53,14 +53,23 @@ func windowsNativeChildContext(cfg EnsureConfig) ([]string, string, error) {
 const windowsNativeChildPreload = `
 const path = require("node:path");
 const entry = (process.argv[1] || "").replaceAll("\\", "/");
-if (/\/senpi\/dist\/cli(?:-main)?\.js$/.test(entry)) {
+// omo-ai 5.1+ starts the supervisor from senpi's pre-linked dist/bundle/cli.js, and its
+// hosts run from the engine's runtime snapshot at <agentDir>/runtime/<build>-<install>/dist.
+if (/\/(?:senpi|runtime\/[A-Za-z0-9._-]+)\/dist\/(?:bundle\/)?cli(?:-main)?\.js$/.test(entry)) {
   const key = "OMO_WEBCHAT_RPC_LAUNCH_CONTEXT";
   const supervisor = process.argv.indexOf("--internal-rpc-host-supervisor");
   if (supervisor >= 0) {
     // Only the actual product launcher supplies these authoritative values.
-    if (process.env.SENPI_BRAND && process.env.OMO_AGENT_TOOLKIT_BIN) {
+    // omo-ai 5.1+ exports OMO_BIN (<package>/bin/omo.js) instead of OMO_AGENT_TOOLKIT_BIN.
+    // OMO_BIN is a generic name, so trust it only for the OmO brand and omo-ai's own entry.
+    let omoBrand = false;
+    try { omoBrand = JSON.parse(process.env.SENPI_BRAND || "null")?.name === "OmO"; } catch {}
+    const omoBin = omoBrand && /[\\/]omo-ai[\\/]bin[\\/]omo\.js$/.test(process.env.OMO_BIN || "")
+      ? process.env.OMO_BIN : undefined;
+    const launcher = process.env.OMO_AGENT_TOOLKIT_BIN || omoBin;
+    if (process.env.SENPI_BRAND && launcher) {
       process.env[key] = JSON.stringify({brand: process.env.SENPI_BRAND,
-        extension: path.join(path.dirname(path.dirname(process.env.OMO_AGENT_TOOLKIT_BIN)), "plugin")});
+        extension: path.join(path.dirname(path.dirname(launcher)), "plugin")});
     }
     if (process.env[key]) {
       const context = JSON.parse(process.env[key]);

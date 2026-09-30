@@ -64,8 +64,8 @@ func runProbe(binary string) (resultErr error) {
 	if !daemon.Owned {
 		return errors.New("fresh isolated daemon was not owned")
 	}
-	if daemon.ProtocolInfo.ServerVersion != "2026.9.5" {
-		return fmt.Errorf("unexpected runtime version %q, want 2026.9.5", daemon.ProtocolInfo.ServerVersion)
+	if daemon.ProtocolInfo.ServerVersion != "2026.9.29-5" {
+		return fmt.Errorf("unexpected runtime version %q, want 2026.9.29-5", daemon.ProtocolInfo.ServerVersion)
 	}
 	fmt.Printf("production: fresh owned=%t protocol=%d serverVersion=%s\n", daemon.Owned, daemon.ProtocolInfo.ProtocolVersion, daemon.ProtocolInfo.ServerVersion)
 	resp, err := daemon.Client.Call(ctx, omorpc.OpenSession{CWD: dir})
