@@ -237,6 +237,37 @@ test('one six-native matrix uses pinned real drivers, fixture and collision-free
 
 const binding = stepsWith(native.jobs.native, 'actions/github-script')[0];
 const runBinding = new (Object.getPrototypeOf(async function () {}).constructor)('require', 'process', 'context', 'github', binding.with.script);
+test('successful six-native gate emits a receipt bound to run, exact build artifact and gate attempt', () => {
+  const gate = packages.jobs.gate;
+  const [upload] = stepsWith(gate, 'actions/upload-artifact');
+  expect(upload).toBeDefined();
+  const cwd = mkdtempSync(path.join(tmpdir(), 'omo-workflow-receipt-'));
+  try {
+    const names = new Set();
+    for (const runId of [100, 101]) for (const artifactId of [321, 322]) for (const attempt of [1, 2]) {
+      const context = {
+        github: { run_id: runId, run_attempt: attempt },
+        needs: { build: { outputs: { 'artifact-id': String(artifactId), 'source-commit': 'a'.repeat(40) } } },
+      };
+      const name = render(upload.with.name, context);
+      expect(name).toBe(`release-validation-${runId}-${artifactId}-${attempt}`);
+      expect(names.has(name)).toBe(false);
+      names.add(name);
+      const step = gate.steps.find((s) => s.run && s.env?.ARTIFACT_ID);
+      const env = Object.fromEntries(Object.entries(step.env).map(([key, value]) => [key, render(value, context)]));
+      const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', render(step.run, context)], {
+        cwd, encoding: 'utf8', timeout: 10_000, env: { ...process.env, ...env },
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      const receipt = Object.fromEntries(readFileSync(path.join(cwd, upload.with.path), 'utf8').trim().split('\n').map((line) => line.split('=')));
+      expect(receipt).toEqual({ 'artifact-id': String(artifactId), 'source-commit': 'a'.repeat(40) });
+    }
+    expect(upload.with['if-no-files-found']).toBe('error');
+    expect(upload.if).toBeUndefined(); // A failed gate must not leave an authorizing receipt.
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
+});
+
 function bindingFixture() {
   const sha = 'a'.repeat(40);
   const context = { sha, ref: 'refs/tags/v0.1.0-rc.1', repo: { owner: 'owner', repo: 'repo' }, runId: 100 };
@@ -244,30 +275,64 @@ function bindingFixture() {
   const env = Object.fromEntries(Object.entries(binding.env).map(([key, value]) => [key, String(evaluate(value, { github: { event_name: 'push' }, inputs }))]));
   const run = { head_sha: sha, path: '.github/workflows/release.yaml', event: 'push' };
   const artifact = { id: 321, expired: false, workflow_run: { id: 100 }, name: 'release-packages-100-1' };
+  const receipt = { id: 654, expired: false, workflow_run: { id: 100 }, name: 'release-validation-100-321-1' };
+  const receipts = [receipt];
   const jobs = [{ name: 'validate / gate', conclusion: 'success' }];
-  const calls = [];
+  const jobsByAttempt = { 1: jobs };
   const github = { rest: { actions: {
-    async getWorkflowRun(params) { calls.push(['run', params]); return { data: run }; },
-    async getArtifact(params) { calls.push(['artifact', params]); return { data: artifact }; },
-    async listJobsForWorkflowRunAttempt(params) { calls.push(['jobs', params]); return jobs; },
+    async getWorkflowRun({ run_id }) { return { data: run_id === 100 ? run : undefined }; },
+    async getArtifact({ artifact_id }) { return { data: artifact_id === 321 ? artifact : undefined }; },
+    async listWorkflowRunArtifacts({ run_id }) { return run_id === 100 ? receipts : []; },
+    async listJobsForWorkflowRunAttempt({ run_id, attempt_number }) { return run_id === 100 ? jobsByAttempt[attempt_number] ?? [] : []; },
   } }, paginate: (method, params) => method(params) };
-  return { context, env, run, artifact, jobs, calls, invoke: () => runBinding(createRequire(import.meta.url), { env }, context, github) };
+  return { context, env, run, artifact, receipt, receipts, jobs, jobsByAttempt, invoke: () => runBinding(createRequire(import.meta.url), { env }, context, github) };
 }
 
 test('actual artifact-binding script accepts original public/RC reuse and same-run PR inputs', async () => {
   const fixture = bindingFixture();
   fixture.context.runId = 200; // New dispatch run, old artifact run remains 100.
   await fixture.invoke();
-  expect(fixture.calls).toEqual([
-    ['run', { owner: 'owner', repo: 'repo', run_id: 100 }],
-    ['artifact', { owner: 'owner', repo: 'repo', artifact_id: 321 }],
-    ['jobs', { owner: 'owner', repo: 'repo', run_id: 100, attempt_number: 1, per_page: 100 }],
-  ]);
   const local = bindingFixture();
   local.env.PUBLIC_REGISTRY = 'false';
   local.context.ref = local.env.SOURCE_REF = 'refs/pull/123/merge';
+  local.receipts.length = local.jobs.length = 0; // Local prevalidation cannot require its future gate.
   await local.invoke();
-  expect(local.calls).toEqual([['artifact', { owner: 'owner', repo: 'repo', artifact_id: 321 }]]);
+});
+
+test('actual binding accepts attempt1 bytes validated by a successful exact-artifact gate in attempt2', async () => {
+  const fixture = bindingFixture();
+  fixture.jobs[0].conclusion = 'failure';
+  fixture.receipt.name = 'release-validation-100-321-2';
+  fixture.jobsByAttempt[2] = [{ name: 'validate / gate', conclusion: 'success' }];
+  await fixture.invoke();
+});
+
+test('actual binding selects successful exact-artifact evidence rather than the latest gate', async () => {
+  const fixture = bindingFixture();
+  fixture.receipt.name = 'release-validation-100-321-2';
+  fixture.jobsByAttempt[2] = [{ name: 'validate / gate', conclusion: 'failure' }];
+  fixture.receipts.push({ ...fixture.receipt, id: 655, name: 'release-validation-100-321-1' });
+  await fixture.invoke();
+});
+
+test.each([
+  ['no receipt', (f) => { f.receipts.length = 0; }],
+  ['different artifact receipt after rebuild', (f) => { f.receipt.name = 'release-validation-100-322-1'; }],
+  ['different run in receipt name', (f) => { f.receipt.name = 'release-validation-101-321-1'; }],
+  ['different receipt workflow run', (f) => { f.receipt.workflow_run.id = 101; }],
+  ['expired receipt', (f) => { f.receipt.expired = true; }],
+  ['unrelated old successful gate', (f) => {
+    f.receipt.name = 'release-validation-100-321-2';
+    f.jobsByAttempt[2] = [{ name: 'validate / gate', conclusion: 'failure' }];
+  }],
+  ['receipt attempt without a gate', (f) => { f.receipt.name = 'release-validation-100-321-2'; }],
+  ['zero receipt attempt', (f) => { f.receipt.name = 'release-validation-100-321-0'; }],
+  ['unsafe receipt attempt', (f) => { f.receipt.name = 'release-validation-100-321-9007199254740992'; }],
+  ['receipt name suffix', (f) => { f.receipt.name += '-extra'; }],
+])('actual binding rejects %s despite an original successful gate', async (_name, mutate) => {
+  const fixture = bindingFixture();
+  mutate(fixture);
+  await expect(fixture.invoke()).rejects.toThrow();
 });
 
 test('actual binding rejects unrelated refs/commits/runs, expired or substituted artifacts and invalid identities', async () => {

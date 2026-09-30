@@ -114,3 +114,16 @@ jobs:
       source-commit: ${{ needs.build.outputs.source-commit }}
     steps:
       - run: echo 'All six native artifact consumers succeeded.'
+      - name: Record the exact artifact validated by this gate attempt
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ needs.build.outputs.artifact-id }}
+          SOURCE_COMMIT: ${{ needs.build.outputs.source-commit }}
+        run: |
+          printf 'source-commit=%s\nartifact-id=%s\n' "$SOURCE_COMMIT" "$ARTIFACT_ID" > validation-receipt.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-validation-${{ github.run_id }}-${{ needs.build.outputs.artifact-id }}-${{ github.run_attempt }}
+          path: validation-receipt.txt
+          if-no-files-found: error
+          retention-days: 30
