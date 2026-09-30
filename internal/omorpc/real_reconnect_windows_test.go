@@ -163,8 +163,8 @@ export default function(pi) {
 	if !owner.Owned || owner.supervisor == nil {
 		t.Fatal("fresh sandbox daemon is not tracked/owned")
 	}
-	if owner.ProtocolInfo.ServerVersion != "2026.9.5" {
-		t.Fatalf("real runtime version=%q, want 2026.9.5", owner.ProtocolInfo.ServerVersion)
+	if owner.ProtocolInfo.ServerVersion != "2026.9.29-5" {
+		t.Fatalf("real runtime version=%q, want 2026.9.29-5", owner.ProtocolInfo.ServerVersion)
 	}
 	ownerEpoch, _ := owner.Client.CurrentEpoch()
 	pipes = append(pipes, ownerEpoch.epoch.conn.(*identifiedPipe))
@@ -227,7 +227,7 @@ export default function(pi) {
 		t.Fatal(err)
 	}
 	if !resp.Success || resp.ID == "" || resp.Command != "get_protocol_info" ||
-		info.ProtocolVersion != 1 || info.ServerVersion != "2026.9.5" {
+		info.ProtocolVersion != 1 || info.ServerVersion != "2026.9.29-5" {
 		t.Fatal("reconnect lacked a correlated compatible protocol response")
 	}
 	t.Logf("real reconnect: old=%d new=%d peer=%d get_protocol_info id=%s success=true protocol=%d runtime=%s",
