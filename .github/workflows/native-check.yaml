@@ -104,12 +104,25 @@ jobs:
             assert.equal(artifact.workflow_run.id, Number(ORIGINAL_RUN_ID), 'artifact/run mismatch');
             assert.match(artifact.name, new RegExp(`^release-packages-${ORIGINAL_RUN_ID}-[1-9][0-9]*$`));
             if (PUBLIC_REGISTRY === 'true') {
-              const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt, {
-                ...context.repo, run_id: Number(ORIGINAL_RUN_ID),
-                attempt_number: Number(artifact.name.split('-').at(-1)), per_page: 100,
+              const receipts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+                ...context.repo, run_id: Number(ORIGINAL_RUN_ID), per_page: 100,
               });
-              assert.ok(jobs.some((job) => job.name === 'validate / gate' && job.conclusion === 'success'),
-                'original artifact attempt must have passed the six-native validation gate');
+              const receiptName = new RegExp(`^release-validation-${ORIGINAL_RUN_ID}-${ARTIFACT_ID}-([1-9][0-9]*)$`);
+              let validated = false;
+              for (const receipt of receipts) {
+                const match = receipt.name.match(receiptName);
+                if (!match || receipt.expired !== false || receipt.workflow_run.id !== Number(ORIGINAL_RUN_ID)) continue;
+                const attempt = Number(match[1]);
+                if (!Number.isSafeInteger(attempt)) continue;
+                const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt, {
+                  ...context.repo, run_id: Number(ORIGINAL_RUN_ID), attempt_number: attempt, per_page: 100,
+                });
+                if (jobs.some((job) => job.name === 'validate / gate' && job.conclusion === 'success')) {
+                  validated = true;
+                  break;
+                }
+              }
+              assert.ok(validated, 'exact artifact must have a receipt from a successful six-native validation gate');
             }
       - uses: actions/checkout@v4
         with:
