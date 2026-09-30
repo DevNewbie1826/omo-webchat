@@ -22,20 +22,22 @@ func TestWindowsNativeChildContext(t *testing.T) {
 	}
 	// omo-ai 5.1 launches the supervisor from senpi's pre-linked dist/bundle/cli.js,
 	// which then spawns the dist/cli.js host (observed live on senpi 2026.9.29-5).
-	// Its launcher exports OMO_BIN (bin/omo.js) and no longer OMO_AGENT_TOOLKIT_BIN.
+	// Its launcher exports OMO_BIN (bin/omo.js) and no longer OMO_AGENT_TOOLKIT_BIN, and a
+	// bundled install hands hosts to the runtime snapshot <agentDir>/runtime/<build>-<install>.
+	engineDist := filepath.Join("senpi", "dist")
 	layouts := []struct{ name, supervisor, host, launcherKey, launcherBin string }{
-		{"unbundled", "cli.js", "cli-main.js", "OMO_AGENT_TOOLKIT_BIN", "omo-agent-toolkit.js"},
-		{"bundled", filepath.Join("bundle", "cli.js"), "cli.js", "OMO_BIN", "omo.js"},
+		{"unbundled", filepath.Join(engineDist, "cli.js"), filepath.Join(engineDist, "cli-main.js"), "OMO_AGENT_TOOLKIT_BIN", "omo-agent-toolkit.js"},
+		{"bundled", filepath.Join(engineDist, "bundle", "cli.js"), filepath.Join(engineDist, "cli.js"), "OMO_BIN", "omo.js"},
+		{"snapshot", filepath.Join(engineDist, "bundle", "cli.js"), filepath.Join("agent", "runtime", "b1.0-0123456789ab", "dist", "cli-main.js"), "OMO_BIN", "omo.js"},
 	}
 	for _, layout := range layouts {
 		for _, original := range []string{"", "--no-warnings"} {
 			t.Run(layout.name+"/"+original, func(t *testing.T) {
 				dir := filepath.Join(t.TempDir(), "space & directory")
-				native := filepath.Join(dir, "senpi", "dist")
-				if err := os.MkdirAll(filepath.Join(native, "bundle"), 0700); err != nil {
+				if err := os.MkdirAll(dir, 0700); err != nil {
 					t.Fatal(err)
 				}
-				hostPath, err := json.Marshal(filepath.Join(native, layout.host))
+				hostPath, err := json.Marshal(filepath.Join(dir, layout.host))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -88,13 +90,16 @@ stream.once("end", () => console.log(JSON.stringify({pid:process.pid, ppid:proce
  marker:process.env.OMO_WEBCHAT_RPC_LAUNCH_CONTEXT || "", args:process.argv.slice(2)})));
 `
 				for name, source := range map[string]string{layout.supervisor: supervisor, layout.host: host} {
-					if err := os.WriteFile(filepath.Join(native, name), []byte(source), 0600); err != nil {
+					if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(dir, name), []byte(source), 0600); err != nil {
 						t.Fatal(err)
 					}
 				}
 				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 				defer cancel()
-				cmd := exec.CommandContext(ctx, engine, filepath.Join(native, layout.supervisor), "--internal-rpc-host-supervisor")
+				cmd := exec.CommandContext(ctx, engine, filepath.Join(dir, layout.supervisor), "--internal-rpc-host-supervisor")
 				cmd.Env = env
 				cmd.WaitDelay = time.Second
 				output, err := cmd.CombinedOutput()

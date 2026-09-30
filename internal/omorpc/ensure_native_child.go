@@ -53,8 +53,9 @@ func windowsNativeChildContext(cfg EnsureConfig) ([]string, string, error) {
 const windowsNativeChildPreload = `
 const path = require("node:path");
 const entry = (process.argv[1] || "").replaceAll("\\", "/");
-// omo-ai 5.1+ starts the supervisor from senpi's pre-linked dist/bundle/cli.js.
-if (/\/senpi\/dist\/(?:bundle\/)?cli(?:-main)?\.js$/.test(entry)) {
+// omo-ai 5.1+ starts the supervisor from senpi's pre-linked dist/bundle/cli.js, and its
+// hosts run from the engine's runtime snapshot at <agentDir>/runtime/<build>-<install>/dist.
+if (/\/(?:senpi|runtime\/[A-Za-z0-9._-]+)\/dist\/(?:bundle\/)?cli(?:-main)?\.js$/.test(entry)) {
   const key = "OMO_WEBCHAT_RPC_LAUNCH_CONTEXT";
   const supervisor = process.argv.indexOf("--internal-rpc-host-supervisor");
   if (supervisor >= 0) {
