@@ -62,7 +62,7 @@ export default function(pi) {
     description: JSON.stringify({pid:process.pid, ppid:process.ppid,
       watchPpid:Number(process.env.SENPI_RPC_HOST_WATCH_PPID), fd3,
       brand:process.title, runtime:process.versions.bun ? "bun" : "node",
-      native:/[\\/]senpi[\\/]dist[\\/]cli(?:-main)?\.js$/.test(process.argv[1])}),
+      native:/[\\/]senpi[\\/]dist[\\/](?:bundle[\\/])?cli(?:-main)?\.js$/.test(process.argv[1])}),
     handler:async () => {}
   });
 }
