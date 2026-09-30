@@ -71,8 +71,11 @@
   letter-spacing: var(--th-type-input-tracking);
 }
 
+/* The capsule's :focus-within ring is the only focus indicator; drop the
+   global :focus-visible ring so the textarea never draws a second box. */
 .th-chat-input textarea:focus {
   outline: none;
+  box-shadow: none;
 }
 
 .th-chat-input textarea::placeholder {
