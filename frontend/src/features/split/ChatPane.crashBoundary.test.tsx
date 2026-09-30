@@ -22,6 +22,7 @@ vi.mock("./ChatTranscript", async (importOriginal) => {
 let container: HTMLDivElement;
 let root: Root;
 let closed: string[];
+let focusedPanes: string[];
 let deliver: Map<string, (frame: ChatServerFrame) => void>;
 let connects: Map<string, number>;
 
@@ -59,7 +60,7 @@ function renderPanes(ids: readonly string[]): void {
               chatSession={{ ...chatSession, id, name: `Chat ${id}` }}
               focused
               splitEnabled
-              onFocus={() => undefined}
+              onFocus={() => focusedPanes.push(id)}
               onSplit={() => undefined}
               onClose={() => closed.push(id)}
               onOpenSidebar={() => undefined}
@@ -79,6 +80,7 @@ beforeEach(() => {
   vi.spyOn(console, "error").mockImplementation(() => undefined);
   crash.enabled = true;
   closed = [];
+  focusedPanes = [];
   deliver = new Map();
   connects = new Map();
   container = document.createElement("div");
@@ -120,6 +122,14 @@ it("remounts the failed pane with a fresh connection on retry", () => {
   hydrate("b", "recovered text");
   expect(pane("b").querySelector(".th-pane-error")).toBeNull();
   expect(pane("b").querySelector(".th-chat-body")).not.toBeNull();
+});
+
+it("selects the failed pane when keyboard focus moves into its fallback", () => {
+  renderPanes(["b"]);
+  hydrate("b", "CRASH");
+  focusedPanes = [];
+  act(() => pane("b").querySelector<HTMLButtonElement>(".th-pane-error-retry")?.focus());
+  expect(focusedPanes).toEqual(["b"]);
 });
 
 it("closes the failed pane from the fallback", () => {

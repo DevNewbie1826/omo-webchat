@@ -130,7 +130,8 @@ function ChatPaneFallback({ error, retry, props }: {
   const { t } = useT();
   return (
     <section className={`th-stage th-pane th-chat-pane th-pane-error${props.focused ? " th-pane--focused" : ""}`}
-      onPointerDown={props.onFocus}>
+      onPointerDown={event => { if (event.target instanceof Node && event.currentTarget.contains(event.target)) props.onFocus(); }}
+      onFocus={event => { if (event.currentTarget.contains(event.target)) props.onFocus(); }}>
       <header className="th-termhead">
         {props.resizeControl}
         <button type="button" className="th-btn-icon th-mobile-menu" title={t("sidebar.expand")}
