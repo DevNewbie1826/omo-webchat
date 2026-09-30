@@ -22,9 +22,10 @@ func TestWindowsNativeChildContext(t *testing.T) {
 	}
 	// omo-ai 5.1 launches the supervisor from senpi's pre-linked dist/bundle/cli.js,
 	// which then spawns the dist/cli.js host (observed live on senpi 2026.9.29-5).
-	layouts := []struct{ name, supervisor, host string }{
-		{"unbundled", "cli.js", "cli-main.js"},
-		{"bundled", filepath.Join("bundle", "cli.js"), "cli.js"},
+	// Its launcher exports OMO_BIN (bin/omo.js) and no longer OMO_AGENT_TOOLKIT_BIN.
+	layouts := []struct{ name, supervisor, host, launcherKey, launcherBin string }{
+		{"unbundled", "cli.js", "cli-main.js", "OMO_AGENT_TOOLKIT_BIN", "omo-agent-toolkit.js"},
+		{"bundled", filepath.Join("bundle", "cli.js"), "cli.js", "OMO_BIN", "omo.js"},
 	}
 	for _, layout := range layouts {
 		for _, original := range []string{"", "--no-warnings"} {
@@ -42,7 +43,8 @@ func TestWindowsNativeChildContext(t *testing.T) {
 				// Do not inherit an unrelated test runner's preload/Inspector configuration.
 				var env []string
 				for _, value := range cfg.Env {
-					if !strings.HasPrefix(value, "NODE_OPTIONS=") && !strings.HasPrefix(value, "BUN_OPTIONS=") {
+					if !strings.HasPrefix(value, "NODE_OPTIONS=") && !strings.HasPrefix(value, "BUN_OPTIONS=") &&
+						!strings.HasPrefix(value, "OMO_BIN=") && !strings.HasPrefix(value, "OMO_AGENT_TOOLKIT_BIN=") {
 						env = append(env, value)
 					}
 				}
@@ -52,7 +54,7 @@ func TestWindowsNativeChildContext(t *testing.T) {
 					cfg.Env = setEnv(cfg.Env, "BUN_OPTIONS", "--smol")
 				}
 				cfg.Env = setEnv(cfg.Env, "SENPI_BRAND", `{"name":"OmO","envPrefix":"OMO"}`)
-				cfg.Env = setEnv(cfg.Env, "OMO_AGENT_TOOLKIT_BIN", filepath.Join(dir, "omo-ai", "bin", "omo-agent-toolkit.js"))
+				cfg.Env = setEnv(cfg.Env, layout.launcherKey, filepath.Join(dir, "omo-ai", "bin", layout.launcherBin))
 				env, preload, err := windowsNativeChildContext(cfg)
 				if err != nil {
 					t.Fatal(err)

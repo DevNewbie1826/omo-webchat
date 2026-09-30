@@ -62,7 +62,8 @@ export default function(pi) {
     description: JSON.stringify({pid:process.pid, ppid:process.ppid,
       watchPpid:Number(process.env.SENPI_RPC_HOST_WATCH_PPID), fd3,
       brand:process.title, runtime:process.versions.bun ? "bun" : "node",
-      native:/[\\/]senpi[\\/]dist[\\/](?:bundle[\\/])?cli(?:-main)?\.js$/.test(process.argv[1])}),
+      native:/[\\/]senpi[\\/]dist[\\/](?:bundle[\\/])?cli(?:-main)?\.js$/.test(process.argv[1]),
+      entry:String(process.argv[1]).split(/[\\/]node_modules[\\/]/).pop()}),
     handler:async () => {}
   });
 }
@@ -309,6 +310,7 @@ func assertReconnectHostContext(t *testing.T, ctx context.Context, client *Clien
 			Brand     string
 			Runtime   string
 			Native    bool
+			Entry     string
 		}
 		if err := json.Unmarshal([]byte(command.Description), &host); err != nil {
 			t.Fatal(err)
@@ -331,7 +333,7 @@ func assertReconnectHostContext(t *testing.T, ctx context.Context, client *Clien
 			t.Errorf("native host identity/parent mismatch: host=%d native-parent=%d supervisor=%d owned=%t", host.PID, basic.InheritedFromUniqueProcessId, supervisor, owned)
 		}
 		t.Logf("native command role: host=%d parent=%d public-supervisor=%d direct=%t owned=%t handle-closed=true", host.PID, basic.InheritedFromUniqueProcessId, supervisor, basic.InheritedFromUniqueProcessId == uintptr(supervisor), owned)
-		t.Logf("native host contract: pid=%d parent=%d supervisor=%d watch-ppid=%d fd3=%v brand=%s runtime=%s native=%t", host.PID, host.PPID, supervisor, host.WatchPPID, host.FD3, host.Brand, host.Runtime, host.Native)
+		t.Logf("native host contract: pid=%d parent=%d supervisor=%d watch-ppid=%d fd3=%v brand=%s runtime=%s native=%t entry=%s", host.PID, host.PPID, supervisor, host.WatchPPID, host.FD3, host.Brand, host.Runtime, host.Native, host.Entry)
 		if host.PPID != supervisor || host.WatchPPID != supervisor || host.FD3 != true || host.Brand != "OmO" || !host.Native {
 			t.Errorf("native host lost direct parent, FD3, or brand context")
 		}

@@ -59,9 +59,11 @@ if (/\/senpi\/dist\/(?:bundle\/)?cli(?:-main)?\.js$/.test(entry)) {
   const supervisor = process.argv.indexOf("--internal-rpc-host-supervisor");
   if (supervisor >= 0) {
     // Only the actual product launcher supplies these authoritative values.
-    if (process.env.SENPI_BRAND && process.env.OMO_AGENT_TOOLKIT_BIN) {
+    // omo-ai 5.1+ exports OMO_BIN (<package>/bin/omo.js) instead of OMO_AGENT_TOOLKIT_BIN.
+    const launcher = process.env.OMO_AGENT_TOOLKIT_BIN || process.env.OMO_BIN;
+    if (process.env.SENPI_BRAND && launcher) {
       process.env[key] = JSON.stringify({brand: process.env.SENPI_BRAND,
-        extension: path.join(path.dirname(path.dirname(process.env.OMO_AGENT_TOOLKIT_BIN)), "plugin")});
+        extension: path.join(path.dirname(path.dirname(launcher)), "plugin")});
     }
     if (process.env[key]) {
       const context = JSON.parse(process.env[key]);
