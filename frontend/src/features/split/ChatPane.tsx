@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { IconFolder, IconFolderOpen, IconMenu, IconPower, IconSplitH, IconSplitV, IconX } from "../../components/icons";
+import { ErrorBoundary } from "../../components/ErrorBoundary";
 import { ModalDialog } from "../../components/ModalDialog";
 import type { ToastKind } from "../../components/SessionTree";
 import { useT } from "../../i18n";
@@ -119,7 +120,50 @@ export interface ChatPaneProps {
   readonly onChatName?: (name: string, origin: "auto" | "user" | "provider") => void;
 }
 
-export function ChatPane({
+/** A render failure inside one pane shows this in place of the pane, so the
+ *  sidebar and every other pane stay usable. */
+function ChatPaneFallback({ error, retry, props }: {
+  readonly error: Error;
+  readonly retry: () => void;
+  readonly props: ChatPaneProps;
+}) {
+  const { t } = useT();
+  return (
+    <section className={`th-stage th-pane th-chat-pane th-pane-error${props.focused ? " th-pane--focused" : ""}`}
+      onPointerDown={props.onFocus}>
+      <header className="th-termhead">
+        {props.resizeControl}
+        <button type="button" className="th-btn-icon th-mobile-menu" title={t("sidebar.expand")}
+          aria-label={t("sidebar.expand")} onClick={props.onOpenSidebar}>
+          <IconMenu size={16} />
+        </button>
+        <span className="th-termhead-name" title={props.chatSession.cwd}>{props.chatSession.name}</span>
+      </header>
+      <div className="th-pane-error-body" role="alert">
+        <p className="th-pane-error-title">{t("chat.paneCrashed")}</p>
+        <p className="th-pane-error-detail">{error.message}</p>
+        <div className="th-pane-error-actions">
+          <button type="button" className="th-btn th-btn--ghost th-pane-error-retry" onClick={retry}>
+            {t("common.retry")}
+          </button>
+          <button type="button" className="th-btn th-btn--ghost th-pane-error-close" onClick={props.onClose}>
+            {t("common.close")}
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export function ChatPane(props: ChatPaneProps) {
+  return (
+    <ErrorBoundary fallback={(error, reset) => <ChatPaneFallback error={error} retry={reset} props={props} />}>
+      <ChatPaneContent {...props} />
+    </ErrorBoundary>
+  );
+}
+
+function ChatPaneContent({
   chatSession,
   focused,
   resizeControl,

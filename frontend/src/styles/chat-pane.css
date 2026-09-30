@@ -1153,3 +1153,45 @@
 .th-model-picker-popover--dense .th-model-picker-list {
   padding-block: 0;
 }
+
+/* Pane-level error boundary fallback (ChatPane.tsx ChatPaneFallback): the
+   pane keeps its frame and header; the body states the failure, the caught
+   error message (for bug reports) and the retry/close actions. */
+.th-pane-error-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: safe center;
+  gap: var(--th-space-2);
+  padding: var(--th-space-6);
+  text-align: center;
+  overflow-y: auto;
+}
+
+.th-pane-error-title,
+.th-app-error-title {
+  margin: 0;
+  color: var(--th-error);
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
+}
+
+.th-pane-error-detail,
+.th-app-error-detail {
+  margin: 0;
+  max-width: 100%;
+  color: var(--th-text-dim);
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+  overflow-wrap: anywhere;
+}
+
+.th-pane-error-actions {
+  display: flex;
+  gap: var(--th-space-2);
+  margin-top: var(--th-space-2);
+}

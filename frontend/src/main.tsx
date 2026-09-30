@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { App } from "./App";
+import { AppRoot } from "./AppRoot";
 /* Pretendard Variable (SIL OFL 1.1, vendored under src/fonts/pretendard):
    the dynamic-subset @font-face blocks, fingerprinted into dist/assets. */
 import "./fonts/pretendard/pretendardvariable-dynamic-subset.css";
@@ -37,5 +37,5 @@ import "./styles/activity-shelf.css";
 
 const rootEl = document.getElementById("root");
 if (rootEl) {
-  createRoot(rootEl).render(<App />);
+  createRoot(rootEl).render(<AppRoot />);
 }
