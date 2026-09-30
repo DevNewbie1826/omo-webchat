@@ -34,3 +34,14 @@ func (fs activityHistoryFS) open(path string) (*os.File, error) {
 	}
 	return fileio.Open(path)
 }
+
+// Directory enumeration does not need record delete-sharing on Windows.
+func (fs activityHistoryFS) openDir(path string) (*os.File, error) {
+	if fs.absent {
+		return nil, os.ErrNotExist
+	}
+	if fs.root != nil {
+		return fs.root.Open(path)
+	}
+	return os.Open(path)
+}

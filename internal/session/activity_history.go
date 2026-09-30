@@ -453,7 +453,7 @@ func (fs activityHistoryFS) readCountDirectory(ctx context.Context, dir string, 
 	if err != nil {
 		return err
 	}
-	f, err := fs.open(dir)
+	f, err := fs.openDir(dir)
 	if isAbsentPathError(err) {
 		return nil
 	}
@@ -501,7 +501,7 @@ func (fs activityHistoryFS) readActivityDirectory(ctx context.Context, dir strin
 	if err != nil {
 		return false, err
 	}
-	f, err := fs.open(dir)
+	f, err := fs.openDir(dir)
 	if isAbsentPathError(err) {
 		return false, nil
 	}
