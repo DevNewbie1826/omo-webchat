@@ -193,24 +193,35 @@ func (f callerFunc) CallInEpoch(ctx context.Context, c omorpc.Command) (*omorpc.
 	return f(ctx, c)
 }
 
-func TestWatcherUnknownSessionSkipped(t *testing.T) {
+func TestWatcherUnknownSessionRetention(t *testing.T) {
 	for _, observed := range []bool{false, true} {
 		f := newFake(t)
 		unknown := false
+		now := time.Unix(1_800_000_000, 0)
 		c := callerFunc(func(ctx context.Context, cmd omorpc.Command) (*omorpc.Response, omorpc.EpochToken, error) {
 			if _, ok := cmd.(omorpc.GetState); ok && unknown {
 				return &omorpc.Response{Error: omorpc.ErrCodeUnknownSession}, omorpc.EpochToken{}, nil
 			}
 			return f.CallInEpoch(ctx, cmd)
 		})
-		w := rpcwatch.New(c)
+		w := rpcwatch.New(c, rpcwatch.WithClock(func() time.Time { return now }))
 		if observed {
 			w.Tick(t.Context())
 		}
 		unknown = true
 		w.Tick(t.Context())
-		if _, ok := w.Lookup("rpc-5"); ok {
-			t.Fatalf("unknown session retained (observed=%v)", observed)
+		got, ok := w.Lookup("rpc-5")
+		if observed {
+			if !ok || got.Status != "closed" || got.ClosedAt != now.UnixMilli() {
+				t.Fatalf("previously observed unknown session = %+v, found=%v", got, ok)
+			}
+			now = now.Add(10 * time.Minute)
+			w.Tick(t.Context())
+			if _, ok := w.Lookup("rpc-5"); ok {
+				t.Fatal("closed session retained after 10-minute retention")
+			}
+		} else if ok {
+			t.Fatalf("never-observed unknown session retained: %+v", got)
 		}
 	}
 }

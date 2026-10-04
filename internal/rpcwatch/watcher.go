@@ -128,7 +128,6 @@ func (w *Watcher) Tick(ctx context.Context) {
 			return
 		}
 		id := info.SessionID
-		present[id] = true
 		old, observed := prev[id]
 		var s state
 		if err := w.call(ctx, omorpc.GetState{SessionID: id}, &s); err != nil {
@@ -136,12 +135,14 @@ func (w *Watcher) Tick(ctx context.Context) {
 			if errors.As(err, &stable) && stable.Code == omorpc.ErrCodeUnknownSession {
 				continue
 			}
+			present[id] = true
 			w.noteError(ctx, id, err)
 			if observed {
 				next[id] = old
 			}
 			continue
 		}
+		present[id] = true
 		raw := "idle"
 		switch {
 		case len(s.Pending) > 0:
