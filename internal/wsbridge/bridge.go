@@ -2351,6 +2351,14 @@ func (s *CursorStore) CursorForOpen(ctx context.Context, id string) (session.Cur
 			}
 		}
 		inPlaceAuthMu.Unlock()
+		if forced {
+			if _, err := os.Lstat(c.SessionFile); errors.Is(err, os.ErrNotExist) {
+				cur.MissingInPlaceFile = true
+				return cur, nil
+			} else if err != nil {
+				return session.Cursor{}, inPlaceSourceError(err)
+			}
+		}
 		if !forced {
 			activity, err := check(ctx, c.SessionFile, takeoverActivityWindow)
 			if err != nil {

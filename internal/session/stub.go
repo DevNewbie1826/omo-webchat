@@ -83,6 +83,9 @@ type Cursor struct {
 	// WritePrepared reports that CursorForOpen completed the one-time work
 	// required before provider initialization can mutate this session.
 	WritePrepared bool
+	// MissingInPlaceFile permits an explicitly forced attachment before the
+	// live daemon has persisted its session. It is never stored as provenance.
+	MissingInPlaceFile bool
 }
 
 // WritePreparer is an optional cursor-store capability used for durable work
