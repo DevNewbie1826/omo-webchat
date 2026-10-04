@@ -2368,6 +2368,9 @@ func (s *CursorStore) CursorForOpen(ctx context.Context, id string) (session.Cur
 				return session.Cursor{}, &SessionActiveError{SizeDelta: activity.SizeDelta, MtimeDeltaNano: activity.MtimeDeltaNano}
 			}
 		}
+		if _, err := os.Lstat(c.SessionFile); err != nil {
+			return session.Cursor{}, inPlaceSourceError(err)
+		}
 		if err := s.PrepareWrite(ctx, id); err != nil {
 			return session.Cursor{}, inPlaceSourceError(err)
 		}
@@ -2416,6 +2419,11 @@ func (s *CursorStore) PrepareWrite(ctx context.Context, id string) error {
 	chat, err := store.GetChat(id)
 	if err != nil || !cursorstore.IsInPlaceSession(chat) {
 		return err
+	}
+	// A forced live route may not have persisted its first session file yet.
+	// There is no pre-existing content to protect before its first mutation.
+	if _, err := os.Lstat(chat.SessionFile); errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
 	_, err = adoptcopy.TakeoverSnapshot(ctx, chat.SessionFile, filepath.Join(store.StateDir(), "takeover-backups"), chat.DurableSessionID)
 	return err

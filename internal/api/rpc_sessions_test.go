@@ -373,6 +373,24 @@ func TestRPCOpenForcedSameRoute(t *testing.T) {
 				writeActivityE2EFrame(t, conn, map[string]any{"type": "chat.create", "wsId": ws.ID, "chatId": chat.ID})
 				collector.next(t, "ready")
 				collector.next(t, "entries")
+				if missing && attempt == 0 {
+					prompts := d.RequestCount(omorpc.CmdPrompt)
+					writeActivityE2EFrame(t, conn, map[string]any{
+						"type": "chat.send", "sessionId": chat.ID,
+						"run": map[string]any{"kind": "prompt", "message": "first unpersisted prompt"},
+					})
+					if !d.AwaitRequestCount(omorpc.CmdPrompt, prompts+1, 5*time.Second) {
+						collector.mu.Lock()
+						frames := append([]map[string]any(nil), collector.frames...)
+						collector.mu.Unlock()
+						t.Fatalf("first prompt did not reach daemon: %v", frames)
+					}
+					prompt := d.LastRequest(omorpc.CmdPrompt)
+					if prompt["sessionId"] != "rpc-1" || prompt["sessionId"] != live.SessionID || prompt["message"] != "first unpersisted prompt" {
+						t.Fatalf("first prompt route = %v, want rpc-1 with original message", prompt)
+					}
+					t.Logf("chat.send => daemon prompt route=%s message=%s", prompt["sessionId"], prompt["message"])
+				}
 				writeActivityE2EFrame(t, conn, map[string]any{"type": "ping"})
 				collector.next(t, "pong")
 				collector.mu.Lock()
