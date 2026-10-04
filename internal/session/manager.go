@@ -1196,7 +1196,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	var sessionFileIdentity os.FileInfo
 	if resumed && cur.InPlace {
 		sessionFileIdentity, err = fileid.Lstat(cur.SessionFile)
-		if err != nil {
+		if err != nil && !(cur.MissingInPlaceFile && errors.Is(err, os.ErrNotExist)) {
 			return nil, false, nil, externalIdentityReadError(err)
 		}
 	}
@@ -1276,6 +1276,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		}
 	}()
 	s.inPlace = cur.InPlace
+	s.missingInPlaceFile = cur.MissingInPlaceFile
 	s.writePrepared = cur.WritePrepared
 	s.sessionFileIdentity = sessionFileIdentity
 	identityChanged := cur.SessionFile != data.State.SessionFile || cur.DurableSessionID != data.State.SessionID

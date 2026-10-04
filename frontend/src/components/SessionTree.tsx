@@ -12,6 +12,8 @@ import {
 import type { Terminal, Workspace, WorkspaceSession } from "../features/workspace/workspace";
 import type { WorkspaceSessionPaging } from "../features/workspace/useWorkspaces";
 import { sessionOpenAttemptKey, type SessionOpenAttemptResult, type SessionOpenAttemptStatus } from "../features/workspace/useSessionOpenAttempts";
+import { rpcSessionAttemptKey, type RpcOpenAttemptResult, type RpcOpenAttemptStatus } from "../features/workspace/useRpcSessions";
+import type { RpcSessionInfo } from "../features/workspace/rpcSessions";
 
 export type ToastKind = "info" | "success" | "error";
 
@@ -33,6 +35,9 @@ export interface SessionTreeProps {
   readonly onSelect: (ws: Workspace, tm: Terminal) => void;
   readonly onOpen: (ws: Workspace, session: WorkspaceSession, force?: boolean) => Promise<SessionOpenAttemptResult>;
   readonly openAttempts?: ReadonlyMap<string, SessionOpenAttemptStatus>;
+  readonly rpcSessions?: readonly RpcSessionInfo[];
+  readonly onOpenRpc?: (ws: Workspace, rpc: RpcSessionInfo) => Promise<RpcOpenAttemptResult>;
+  readonly rpcOpenAttempts?: ReadonlyMap<string, RpcOpenAttemptStatus>;
   readonly onViewLive?: (sessionId: string) => void;
   readonly onAddTerminal: (ws: Workspace) => void;
   readonly onDeleteWorkspace: (ws: Workspace) => void;
@@ -118,6 +123,9 @@ export function SessionTree({
   onSelect,
   onOpen,
   openAttempts = new Map(),
+  rpcSessions = [],
+  onOpenRpc,
+  rpcOpenAttempts = new Map(),
   onViewLive,
   onAddTerminal,
   onDeleteWorkspace,
@@ -197,6 +205,14 @@ export function SessionTree({
     void onOpen(ws, session, force).finally(() => openingRef.current.delete(key));
   };
 
+  const openRpc = (ws: Workspace, rpc: RpcSessionInfo): void => {
+    if (onOpenRpc === undefined) return;
+    const key = rpcSessionAttemptKey(ws.id, rpc.sessionId);
+    if (openingRef.current.has(key)) return;
+    openingRef.current.add(key);
+    void onOpenRpc(ws, rpc).finally(() => openingRef.current.delete(key));
+  };
+
   const commitRename = (target: RenameTarget, value: string): void => {
     const name = value.trim();
     const trigger = renameTriggerRef.current;
@@ -255,6 +271,10 @@ export function SessionTree({
       {workspaces.map((ws) => {
         const isOpen = expanded.has(ws.id);
         const paging = sessionPages.get(ws.id);
+        const wsRpcSessions = rpcSessions.filter((rpc) => rpc.workspaceId === ws.id);
+        const rpcDurableIds = new Set(
+          wsRpcSessions.map((rpc) => rpc.durableSessionId).filter((id) => id !== ""),
+        );
         const mergedSessionIds = new Set(ws.chats.map((chat) => chat.id));
         for (const session of sessionLists.get(ws.id) ?? []) mergedSessionIds.add(session.id);
         for (const id of aggregateSessionIds?.get(ws.id) ?? []) mergedSessionIds.add(id);
@@ -407,7 +427,56 @@ export function SessionTree({
             </div>
 
             <fieldset className={`th-tree-children${isOpen ? "" : " th-tree-children--closed"}`}>
-              {(sessionLists.get(ws.id) ?? []).map((item) => {
+              {wsRpcSessions.length > 0 ? (
+                <div className="th-tree-rpc" role="group" aria-label={t("sidebar.rpc.group")}>
+                  {wsRpcSessions.map((rpc) => {
+                    const statusLabel = t(`sidebar.rpc.status.${rpc.status}`);
+                    const displayName = rpc.name.trim() !== "" ? rpc.name : rpc.sessionId;
+                    const attempt = rpcOpenAttempts.get(rpcSessionAttemptKey(ws.id, rpc.sessionId));
+                    const openInFlight = attempt === "opening";
+                    const openFailed = attempt === "failed";
+                    const closed = rpc.status === "closed";
+                    const title = rpc.status === "blocked" && rpc.questions.length > 0
+                      ? rpc.questions.join(" · ")
+                      : openFailed
+                        ? t("sidebar.tm.openFailed")
+                        : undefined;
+                    return (
+                      <div
+                        key={rpc.sessionId}
+                        className={`th-tree-node th-tree-rpc-row${closed ? " th-tree-rpc-row--closed" : ""}`}
+                      >
+                        <span className="th-tree-icon">
+                          <IconTerminal size={13} />
+                        </span>
+                        <button
+                          type="button"
+                          className="th-tree-activation"
+                          aria-label={t("sidebar.rpc.aria", { name: displayName, status: statusLabel })}
+                          title={title}
+                          aria-busy={openInFlight || undefined}
+                          disabled={closed}
+                          onClick={() => openRpc(ws, rpc)}
+                        >
+                          <span className="th-tree-label">{displayName}</span>
+                          {openInFlight ? (
+                            <span className="th-tree-source" aria-hidden="true">{t("sidebar.tm.opening")}</span>
+                          ) : null}
+                          {openFailed ? (
+                            <span className="th-tree-session-active" role="status">
+                              {t("sidebar.tm.openFailed")}
+                            </span>
+                          ) : null}
+                          <span className={`th-rpc-status th-rpc-status--${rpc.status}`}>{statusLabel}</span>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+              {(sessionLists.get(ws.id) ?? [])
+                .filter((item) => !(item.source === "discovered" && rpcDurableIds.has(item.id)))
+                .map((item) => {
                 const stored = item.source === "stored";
                 const listed = stored ? ws.chats.find((chat) => chat.id === item.id) : undefined;
                 // v2 union: the sessions REST also lists cursorstore-only chats

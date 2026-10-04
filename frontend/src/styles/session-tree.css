@@ -554,3 +554,79 @@
   height: auto;
   padding: var(--th-space-0-5) var(--th-space-2);
 }
+
+/* RPC daemon sessions: the group rides inside the workspace disclosure
+   directly above its history rows, sharing the tree's 2px row rhythm. */
+.th-tree-rpc {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-0-5);
+}
+
+/* Status pill: the .th-tree-running idiom — status ink on the matching 12%
+   tint, micro tier, pill radius, neutral borders in every state. */
+.th-rpc-status {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--th-space-0-5);
+  min-height: calc(var(--th-type-micro-size) * var(--th-type-micro-line) + 2 * var(--th-space-0-5));
+  padding: 0 var(--th-space-1);
+  border-radius: var(--th-radius-pill);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  font-variant-numeric: tabular-nums;
+}
+
+.th-rpc-status--working {
+  color: var(--th-accent-ink);
+  background: var(--th-accent-bg);
+}
+
+.th-rpc-status--blocked {
+  color: var(--th-warning);
+  background: var(--th-warning-bg);
+}
+
+.th-rpc-status--done {
+  color: var(--th-success);
+  background: var(--th-success-bg);
+}
+
+.th-rpc-status--idle {
+  color: var(--th-muted);
+  background: var(--th-active);
+}
+
+.th-rpc-status--closed {
+  color: var(--th-disabled-fg);
+  background: var(--th-disabled-bg);
+}
+
+/* Working spins the shared conic wedge on the same beat as the running
+   chip; reduced motion collapses it to the static disc globally. */
+.th-rpc-status--working::before {
+  content: "";
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--th-accent);
+  -webkit-mask-image: repeating-conic-gradient(var(--th-accent) 0deg 60deg, transparent 60deg 90deg);
+  mask-image: repeating-conic-gradient(var(--th-accent) 0deg 60deg, transparent 60deg 90deg);
+  animation: th-tree-running-spin var(--th-dur-run) var(--th-ease-linear) infinite;
+}
+
+/* A closed route stays listed for its retention window as a muted,
+   non-interactive row: the name drops a text tier and the pill carries
+   the disabled wash. */
+.th-tree-rpc-row--closed,
+.th-tree-rpc-row--closed .th-tree-activation:disabled {
+  cursor: default;
+}
+
+.th-tree-rpc-row--closed .th-tree-label {
+  color: var(--th-muted);
+}
