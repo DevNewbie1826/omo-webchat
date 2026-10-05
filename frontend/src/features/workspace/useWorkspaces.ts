@@ -356,7 +356,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
         // via the scheduled path.
         if (!sessionPagesRef.current.get(wsId)?.ready) continue;
         if (recencyTargetsRef.current.has(wsId)) void fetchSessionPage(wsId, "", false, true);
-        else refreshRpcLive(wsId);
+        if (expandedRef.current.has(wsId)) refreshRpcLive(wsId);
       }
     }, RECENCY_REFRESH_INTERVAL_MS);
   }, [disarmRecencyRefresh, fetchSessionPage, refreshRpcLive]);

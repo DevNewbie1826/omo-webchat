@@ -259,8 +259,11 @@ describe("App + Sidebar both-surfaces live ordering", () => {
     }
 
     // 60 simulated seconds: the armed interval fired at 15/30/45/60s for the
-    // continuously live ws-1, regardless of ws-2's churn.
-    expect(scheduledFirstPageCalls("ws-1")).toBe(baseline + 4);
+    // continuously live ws-1, regardless of ws-2's churn. Since the paginated
+    // refresh loop runs for every expanded workspace (owned or not), each ws-1
+    // cadence issues two scheduled first-page fetches: the recency fetch plus
+    // the cursor loop's first page. Churn on ws-2 must add nothing to ws-1.
+    expect(scheduledFirstPageCalls("ws-1")).toBe(baseline + 8);
   });
 
   it("refreshes expanded bound statuses even when the feed's rows are excluded from the live list", async () => {
