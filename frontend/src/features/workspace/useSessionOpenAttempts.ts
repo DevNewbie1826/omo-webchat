@@ -8,18 +8,20 @@ export function sessionOpenAttemptKey(wsId: string, sessionId: string): string {
   return `${wsId}:${sessionId}`;
 }
 
-export function useSessionOpenAttempts(
-  onOpen: (ws: Workspace, session: WorkspaceSession, force?: boolean) => Promise<"opened" | "session-active" | void>,
+/** Open-attempt state shared by the catalog and watcher live row families. */
+export function useSessionOpenAttempts<S = WorkspaceSession>(
+  onOpen: (ws: Workspace, session: S, force?: boolean) => Promise<"opened" | "session-active" | void>,
+  sessionKey: (session: S) => string = (session) => (session as WorkspaceSession).id,
 ) {
   const [attempts, setAttempts] = useState<ReadonlyMap<string, SessionOpenAttemptStatus>>(new Map());
   const openingRef = useRef(new Set<string>());
 
   const open = useCallback(async (
     ws: Workspace,
-    session: WorkspaceSession,
+    session: S,
     force = false,
   ): Promise<SessionOpenAttemptResult> => {
-    const key = sessionOpenAttemptKey(ws.id, session.id);
+    const key = sessionOpenAttemptKey(ws.id, sessionKey(session));
     if (openingRef.current.has(key)) return;
     openingRef.current.add(key);
     setAttempts((current) => new Map(current).set(key, "opening"));
@@ -38,7 +40,7 @@ export function useSessionOpenAttempts(
     } finally {
       openingRef.current.delete(key);
     }
-  }, [onOpen]);
+  }, [onOpen, sessionKey]);
 
   return { attempts, open };
 }

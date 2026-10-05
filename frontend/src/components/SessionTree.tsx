@@ -12,6 +12,7 @@ import {
 import type { Terminal, Workspace, WorkspaceSession } from "../features/workspace/workspace";
 import type { WorkspaceSessionPaging } from "../features/workspace/useWorkspaces";
 import { sessionOpenAttemptKey, type SessionOpenAttemptResult, type SessionOpenAttemptStatus } from "../features/workspace/useSessionOpenAttempts";
+import { formatRpcLiveRecency, type RpcLiveSession } from "../features/workspace/rpcSessions";
 
 export type ToastKind = "info" | "success" | "error";
 
@@ -33,6 +34,13 @@ export interface SessionTreeProps {
   readonly onSelect: (ws: Workspace, tm: Terminal) => void;
   readonly onOpen: (ws: Workspace, session: WorkspaceSession, force?: boolean) => Promise<SessionOpenAttemptResult>;
   readonly openAttempts?: ReadonlyMap<string, SessionOpenAttemptStatus>;
+  /** Unbound watcher rows pinned above the paged history. */
+  readonly rpcLiveRows?: ReadonlyMap<string, readonly RpcLiveSession[]> | undefined;
+  /** Watcher status for bound chats the manager does not route, by chat id. */
+  readonly rpcLiveChats?: ReadonlyMap<string, RpcLiveSession> | undefined;
+  /** Activates a watcher row through the rpc open endpoint. */
+  readonly onOpenRpc?: (ws: Workspace, live: RpcLiveSession) => Promise<SessionOpenAttemptResult>;
+  readonly rpcOpenAttempts?: ReadonlyMap<string, SessionOpenAttemptStatus>;
   readonly onViewLive?: (sessionId: string) => void;
   readonly onAddTerminal: (ws: Workspace) => void;
   readonly onDeleteWorkspace: (ws: Workspace) => void;
@@ -118,6 +126,10 @@ export function SessionTree({
   onSelect,
   onOpen,
   openAttempts = new Map(),
+  rpcLiveRows,
+  rpcLiveChats,
+  onOpenRpc,
+  rpcOpenAttempts = new Map(),
   onViewLive,
   onAddTerminal,
   onDeleteWorkspace,
@@ -197,6 +209,14 @@ export function SessionTree({
     void onOpen(ws, session, force).finally(() => openingRef.current.delete(key));
   };
 
+  const openRpcLive = (ws: Workspace, live: RpcLiveSession): void => {
+    if (onOpenRpc === undefined) return;
+    const key = sessionOpenAttemptKey(ws.id, live.sessionId);
+    if (openingRef.current.has(key)) return;
+    openingRef.current.add(key);
+    void onOpenRpc(ws, live).finally(() => openingRef.current.delete(key));
+  };
+
   const commitRename = (target: RenameTarget, value: string): void => {
     const name = value.trim();
     const trigger = renameTriggerRef.current;
@@ -260,6 +280,12 @@ export function SessionTree({
         for (const id of aggregateSessionIds?.get(ws.id) ?? []) mergedSessionIds.add(id);
         const workspaceRunning = Array.from(mergedSessionIds).reduce((total, id) => total + (runningCounts?.get(id) ?? 0), 0);
         const workspaceMainRunning = Array.from(mergedSessionIds).some((id) => activeSessions?.has(id));
+        const rpcRows = rpcLiveRows?.get(ws.id) ?? [];
+        // A live watcher row is the single representation of its session:
+        // it suppresses the disk-discovered history row at the same path.
+        const rpcSuppressedPaths = new Set(rpcRows.map((row) => row.sessionPath));
+        const historyRows = (sessionLists.get(ws.id) ?? []).filter((item) =>
+          !(item.source === "discovered" && item.resumeIdentity !== undefined && rpcSuppressedPaths.has(item.resumeIdentity)));
         const renamingWs =
           rename && rename.kind === "workspace" && rename.wsId === ws.id ? rename : null;
         const nameTail = ws.name.match(/\s\S{1,4}$/u)?.[0] ?? Array.from(ws.name).slice(-5).join("");
@@ -407,7 +433,56 @@ export function SessionTree({
             </div>
 
             <fieldset className={`th-tree-children${isOpen ? "" : " th-tree-children--closed"}`}>
-              {(sessionLists.get(ws.id) ?? []).map((item) => {
+              {rpcRows.map((live) => {
+                const attempt = rpcOpenAttempts.get(sessionOpenAttemptKey(ws.id, live.sessionId));
+                const openInFlight = attempt === "opening";
+                const openFailed = attempt === "failed";
+                const displayName = live.name.trim() !== "" ? live.name : live.sessionId.slice(0, 8);
+                const recency = formatRpcLiveRecency(live.updatedAt, Date.now(), t);
+                return (
+                  <div
+                    key={`rpc:${live.sessionId}`}
+                    className={`th-tree-node${openInFlight ? " th-tree-node--disabled" : ""}`}
+                    data-th-rpc-session={live.sessionId}
+                  >
+                    <span className="th-tree-placed" aria-hidden="true" />
+                    <span className="th-tree-icon">
+                      <IconTerminal size={13} />
+                    </span>
+                    <button
+                      type="button"
+                      className="th-tree-activation"
+                      title={openFailed ? t("sidebar.tm.openFailed") : recency}
+                      aria-label={t("sidebar.tm.discoveredHint", { name: displayName })}
+                      aria-busy={openInFlight || undefined}
+                      disabled={openInFlight}
+                      onClick={() => openRpcLive(ws, live)}
+                    >
+                      <span className="th-tree-label">{displayName}</span>
+                      <span className="th-tree-live-recency" aria-hidden="true">{recency}</span>
+                      {openInFlight || openFailed ? (
+                        <span className="th-tree-source" aria-hidden="true">
+                          {openInFlight ? t("sidebar.tm.opening") : t("sidebar.tm.openFailed")}
+                        </span>
+                      ) : null}
+                    </button>
+                    {live.status === "blocked" ? (
+                      <span className="th-tree-questions" title={live.questions.join("\n")}>
+                        {t("sidebar.live.blocked")}
+                      </span>
+                    ) : null}
+                    {live.status === "working" ? (
+                      <RunningChip
+                        className="th-tree-running"
+                        count={0}
+                        countLabelKey="sidebar.tm.runningAgents"
+                        mainRunning
+                      />
+                    ) : null}
+                  </div>
+                );
+              })}
+              {historyRows.map((item) => {
                 const stored = item.source === "stored";
                 const listed = stored ? ws.chats.find((chat) => chat.id === item.id) : undefined;
                 // v2 union: the sessions REST also lists cursorstore-only chats
@@ -432,7 +507,12 @@ export function SessionTree({
                   : null;
                 const runningInfo = runningCounts?.get(item.id);
                 const running = runningInfo ?? 0;
-                const mainRunning = activeSessions?.has(item.id) === true;
+                // A bound chat whose route the manager does not own still
+                // carries the watcher status: working rows keep the running
+                // chip, blocked rows grow the question pill.
+                const rpcBound = rpcLiveChats?.get(item.id);
+                const mainRunning = activeSessions?.has(item.id) === true || rpcBound?.status === "working";
+                const boundBlocked = rpcBound?.status === "blocked";
                 const displayName = item.name.trim() !== "" ? item.name : t("sidebar.tm.untitled", { id: item.id.slice(0, 8) });
                 const discoveredLabel = discovered
                   ? t("sidebar.tm.discoveredHint", { name: displayName })
@@ -521,6 +601,11 @@ export function SessionTree({
                         >
                           <IconTrash size={12} />
                         </button>
+                      </span>
+                    ) : null}
+                    {boundBlocked && rpcBound ? (
+                      <span className="th-tree-questions" title={rpcBound.questions.join("\n")}>
+                        {t("sidebar.live.blocked")}
                       </span>
                     ) : null}
                     {/* Same trailing-edge rule as the workspace row: actions
