@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
+	"github.com/DevNewbie1826/omo-webchat/internal/rpcwatch"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 )
 
@@ -84,12 +85,14 @@ type sessionHistoryItem struct {
 	// live chat's file is written on the next persist, so absence under a
 	// live session is pending persistence; "missing original" is reserved
 	// for a chat with no file and no live session.
-	Preparing bool `json:"preparing,omitempty"`
+	Preparing bool                      `json:"preparing,omitempty"`
+	Live      *sessionHistoryLiveStatus `json:"live,omitempty"`
 }
 
 type sessionHistoryPage struct {
 	Items      []sessionHistoryItem `json:"items"`
 	NextCursor string               `json:"nextCursor"`
+	Live       []rpcwatch.Session   `json:"live"`
 }
 
 type diskSession struct {
@@ -620,11 +623,13 @@ func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	items := mergeSessionHistoryLive(chats, disk, live, scannedCWD...)
+	items, pinned := s.mergeWorkspaceWatcher(ws.Path, chats, items)
 	page, err := paginateSessionHistory(items, limit, strings.TrimSpace(r.URL.Query().Get("cursor")))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid cursor")
 		return
 	}
 	populateSessionHistoryNames(page.Items)
+	page.Live = pinned
 	writeJSON(w, http.StatusOK, page)
 }

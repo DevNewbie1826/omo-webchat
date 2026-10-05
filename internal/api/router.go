@@ -19,6 +19,7 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/config"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
+	"github.com/DevNewbie1826/omo-webchat/internal/rpcwatch"
 	"github.com/DevNewbie1826/omo-webchat/internal/sendqueue"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 )
@@ -32,14 +33,15 @@ type chatLifecycleGenerationRecord struct {
 
 // Server holds the single v2 stack shared by all HTTP handlers.
 type Server struct {
-	cfg      *config.Config
-	cursors  *cursorstore.Store
-	sessions *auth.SessionStore
-	manager  *session.Manager
-	queue    *sendqueue.Store
-	bridge   http.Handler
-	logger   *slog.Logger
-	ctx      context.Context
+	cfg        *config.Config
+	cursors    *cursorstore.Store
+	sessions   *auth.SessionStore
+	manager    *session.Manager
+	rpcWatcher *rpcwatch.Watcher
+	queue      *sendqueue.Store
+	bridge     http.Handler
+	logger     *slog.Logger
+	ctx        context.Context
 
 	// Installation updates and engine restarts replace the same binary, so
 	// both endpoints single-flight on one mutex and never overlap.
