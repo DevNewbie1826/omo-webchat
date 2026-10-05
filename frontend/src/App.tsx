@@ -24,9 +24,6 @@ import type {
   WorkspaceSession,
 } from "./features/workspace/workspace";
 import { useLiveSessions } from "./features/workspace/useLiveSessions";
-import { rpcSessionAttemptKey, useRpcSessions } from "./features/workspace/useRpcSessions";
-import { openRpcSession } from "./features/workspace/rpcSessions";
-import type { RpcSessionInfo } from "./features/workspace/rpcSessions";
 import { useWorkspaces } from "./features/workspace/useWorkspaces";
 import { sessionOpenAttemptKey, useSessionOpenAttempts } from "./features/workspace/useSessionOpenAttempts";
 import { useProviderDiscovery } from "./features/workspace/useProviderDiscovery";
@@ -130,7 +127,6 @@ export function App() {
   }, [load]);
 
   const liveSessions = useLiveSessions(authed === true);
-  const rpcSessions = useRpcSessions(authed === true);
 
   const handleLogin = (): void => {
     setAuthed(true);
@@ -199,39 +195,6 @@ export function App() {
       // Source intent protects concurrent opens before the canonical chat id
       // is known. Canonical intent also protects newer stored/alias placement
       // in another pane; per-pane generations alone cannot prevent that move.
-      const latestSessionIntent = Math.max(sessionIntents.current.get(sourceKey) ?? 0, sessionIntents.current.get(chatKey) ?? 0);
-      if (targetCurrent(target) && latestSessionIntent <= target.generation) {
-        sessionIntents.current.set(chatKey, target.generation);
-        setExpanded((prev) => new Set(prev).add(ws.id));
-        markSessionUsed(ws.id, tm.id);
-        layout.assignSession(target.paneId, tm.id, false);
-        if (window.matchMedia(MOBILE_QUERY).matches) setSidebarCollapsed(true);
-      }
-      return "opened";
-    } catch (error) {
-      notify(t("toast.error"), "error");
-      throw error;
-    }
-  };
-
-  // The same guarded activation the discovered-open path performs after a
-  // successful bind: register the chat, expand its workspace, mark it used
-  // and assign it to the captured pane unless a newer intent claimed either.
-  const handleOpenRpcSession = async (
-    ws: Workspace,
-    rpc: RpcSessionInfo,
-  ): Promise<"opened" | "failed"> => {
-    const target = captureTarget();
-    const sourceKey = rpcSessionAttemptKey(ws.id, rpc.sessionId);
-    sessionIntents.current.set(sourceKey, target.generation);
-    layout.focusPane(target.paneId);
-    try {
-      const tm = await openRpcSession(ws.id, rpc.sessionId);
-      setWorkspaces((prev) => prev.map((workspace) => workspace.id === ws.id
-        ? { ...workspace, chats: workspace.chats.some((chat) => chat.id === tm.id) ? workspace.chats : [...workspace.chats, tm] }
-        : workspace));
-      addCreatedSession(ws.id, tm);
-      const chatKey = sessionOpenAttemptKey(ws.id, tm.id);
       const latestSessionIntent = Math.max(sessionIntents.current.get(sourceKey) ?? 0, sessionIntents.current.get(chatKey) ?? 0);
       if (targetCurrent(target) && latestSessionIntent <= target.generation) {
         sessionIntents.current.set(chatKey, target.generation);
@@ -435,8 +398,6 @@ export function App() {
             onLoadMoreSessions={loadMoreSessions}
             onSelectTerminal={selectTerminal}
             onOpenSession={openSession}
-            rpcSessions={rpcSessions}
-            onOpenRpcSession={handleOpenRpcSession}
             onAddWorkspace={() => setWizardOpen(true)}
             onAddTerminal={(ws) => requestNewChat({ wsId: ws.id })}
             onDeleteWorkspace={(ws) => void handleDeleteWorkspace(ws)}

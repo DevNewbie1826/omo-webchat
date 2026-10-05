@@ -18,7 +18,6 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/config"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
-	"github.com/DevNewbie1826/omo-webchat/internal/rpcwatch"
 	"github.com/DevNewbie1826/omo-webchat/internal/sendqueue"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 	"github.com/DevNewbie1826/omo-webchat/internal/wsbridge"
@@ -265,16 +264,6 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 		ChatVersion: func(id string) uint64 { return apiServer.chatLifecycleVersion(id) }})
 	sessions := auth.NewSessionStore(ctx, cfg.Password, logger)
 	apiServer = New(ctx, cfg, cursors, sessions, manager, bridge, logger)
-	apiServer.rpcWatcher = rpcwatch.New(ensured.Client)
-	watcherDone := make(chan struct{})
-	go func() {
-		defer close(watcherDone)
-		apiServer.rpcWatcher.Run(ctx)
-	}()
-	defer func() {
-		cancelRun()
-		<-watcherDone
-	}()
 	apiServer.queue = queue
 	// The restart sequence never calls Stop: closing the shared client is
 	// terminal for every chat. StopSupervisor only terminates the owned
@@ -289,7 +278,6 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 	cleanupAll := func() {
 		cleanup.Do(func() {
 			cancelRun()
-			<-watcherDone
 			bridge.CloseConnections()
 			managerCtx, cancelManager := context.WithTimeout(context.Background(), 5*time.Second)
 			if e := manager.CloseAll(managerCtx); e != nil {

@@ -77,18 +77,17 @@ type queuedItem struct {
 
 // daemonSession is one provider-side session known to the daemon.
 type daemonSession struct {
-	path        string // durable sessionFile path (registry key)
-	durableID   string // durable UUID stored in the session file
-	rpcID       string // CURRENT epoch-local routing handle ("rpc-N")
-	live        bool   // false after UnloadSession or daemon Stop/Restart
-	used        bool   // at least one command reached the current routing handle
-	history     []any  // durable transcript returned by get_entries
-	leafID      string
-	name        string
-	cwd         string
-	opens       int
-	attachments int
-	prompts     []string
+	path      string // durable sessionFile path (registry key)
+	durableID string // durable UUID stored in the session file
+	rpcID     string // CURRENT epoch-local routing handle ("rpc-N")
+	live      bool   // false after UnloadSession or daemon Stop/Restart
+	used      bool   // at least one command reached the current routing handle
+	history   []any  // durable transcript returned by get_entries
+	leafID    string
+	name      string
+	cwd       string
+	opens     int
+	prompts   []string
 
 	// clientCaps is the capability list the opener connection advertised
 	// through set_client_info before opening the session — the daemon-side
@@ -206,7 +205,6 @@ type Daemon struct {
 
 	legacyEmptyUnknownHistory bool
 	omitActivityFields        bool
-	sharedAttachments         bool
 
 	// Daemon-side client capability view: per-connection sets start empty
 	// and are populated only by the session-less set_client_info record.
@@ -447,13 +445,8 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 		for _, rec := range d.registry {
 			if rec.live {
 				sessions = append(sessions, map[string]any{
-					"sessionId":        rec.rpcID,
-					"sessionFile":      rec.path,
-					"sessionPath":      rec.path,
-					"durableSessionId": rec.durableID,
-					"cwd":              rec.cwd,
-					"name":             rec.name,
-					"attachments":      rec.attachments,
+					"sessionId":   rec.rpcID,
+					"sessionFile": rec.path,
 				})
 			}
 		}
@@ -523,10 +516,6 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 	case omorpc.CmdCloseSession:
 		d.mu.Lock()
 		rec.live = false
-		if d.sharedAttachments {
-			rec.attachments--
-			rec.live = rec.attachments > 0
-		}
 		d.closes++
 		d.notify(d.closeFeed)
 		d.mu.Unlock()
@@ -787,12 +776,8 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 		d.registry[path] = rec
 		_ = writeSessionHeader(rec)
 	}
-	if !d.sharedAttachments || !rec.live {
-		d.rpcCounter++
-		rec.rpcID = fmt.Sprintf("rpc-%d", d.rpcCounter)
-		rec.attachments = 0
-	}
-	rec.attachments++
+	d.rpcCounter++
+	rec.rpcID = fmt.Sprintf("rpc-%d", d.rpcCounter)
 	d.rpcPaths[rec.rpcID] = rec.path
 	rec.live = true
 	rec.used = false
@@ -1181,14 +1166,6 @@ func (d *Daemon) LoadSessionFile(path string) error {
 	d.registry[path] = rec
 	d.mu.Unlock()
 	return nil
-}
-
-// SetSharedAttachments enables the live daemon's same-path attach semantics.
-// The default retains the independent-route model used by existing tests.
-func (d *Daemon) SetSharedAttachments(enabled bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.sharedAttachments = enabled
 }
 
 // BlockHandler holds future requests of cmd at an explicit gate. The

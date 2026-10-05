@@ -148,7 +148,6 @@ type Session struct {
 	title, nameSource                                                       string
 	inPlace, sessionFileObserved                                            bool
 	sessionFileIdentity                                                     os.FileInfo
-	missingInPlaceFile                                                      bool
 	queueFileIdentity                                                       os.FileInfo
 	queueFileErr                                                            error
 	queueHistoryEstablished                                                 bool
@@ -2465,13 +2464,12 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 		if !errors.Is(err, os.ErrNotExist) {
 			return publishErr(err)
 		}
-		s.lifecycleMu.Lock()
-		missingForced := s.missingInPlaceFile && !s.sessionFileObserved
-		rootHydrationAllowed := (!s.resumed || missingForced) && !s.sessionFileObserved
-		s.lifecycleMu.Unlock()
-		if s.inPlace && !missingForced || s.sessionFileIdentity != nil {
+		if s.inPlace || s.sessionFileIdentity != nil {
 			return publishErr(externalIdentityReadError(err))
 		}
+		s.lifecycleMu.Lock()
+		rootHydrationAllowed := !s.resumed && !s.sessionFileObserved
+		s.lifecycleMu.Unlock()
 		if !rootHydrationAllowed {
 			return publishErr(err)
 		}

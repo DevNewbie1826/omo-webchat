@@ -7,9 +7,6 @@ import { SettingsMenu } from "./SettingsMenu";
 import { LiveSessionList } from "../features/workspace/LiveSessionList";
 import { useMergedLiveSummaries } from "../features/workspace/liveBadgeStore";
 import { useSessionOpenAttempts } from "../features/workspace/useSessionOpenAttempts";
-import { useRpcSessionOpenAttempts } from "../features/workspace/useRpcSessions";
-import type { RpcOpenAttemptResult } from "../features/workspace/useRpcSessions";
-import type { RpcSessionInfo } from "../features/workspace/rpcSessions";
 import "../styles/sidebar-live.css";
 
 /** Bounded retry cadence for union-membership crawls whose workspaces failed. */
@@ -39,8 +36,6 @@ export interface SidebarProps {
   readonly onLoadMoreSessions: (wsId: string) => void;
   readonly onSelectTerminal: (ws: Workspace, tm: Terminal) => void;
   readonly onOpenSession: (ws: Workspace, session: WorkspaceSession, force?: boolean) => Promise<"opened" | "session-active" | void>;
-  readonly rpcSessions?: readonly RpcSessionInfo[];
-  readonly onOpenRpcSession?: (ws: Workspace, rpc: RpcSessionInfo) => Promise<RpcOpenAttemptResult>;
   readonly onAddWorkspace: () => void;
   readonly onAddTerminal: (ws: Workspace) => void;
   readonly onDeleteWorkspace: (ws: Workspace) => void;
@@ -81,8 +76,6 @@ export function Sidebar({
   onLoadMoreSessions,
   onSelectTerminal,
   onOpenSession,
-  rpcSessions,
-  onOpenRpcSession,
   onAddWorkspace,
   onAddTerminal,
   onDeleteWorkspace,
@@ -112,7 +105,6 @@ export function Sidebar({
   const [highlightedSessionId, setHighlightedSessionId] = useState<string | null>(null);
   const [engineRestartOpen, setEngineRestartOpen] = useState(false);
   const sessionOpen = useSessionOpenAttempts(onOpenSession);
-  const rpcOpen = useRpcSessionOpenAttempts(onOpenRpcSession ?? (async () => undefined));
   // The overview poller is shared with App's live-session poll; the sidebar
   // derives running-agent counts for the tree badges and the pinned
   // running-sessions section.
@@ -425,9 +417,6 @@ export function Sidebar({
                 onSelect={onSelectTerminal}
                 onOpen={sessionOpen.open}
                 openAttempts={sessionOpen.attempts}
-                rpcSessions={rpcSessions ?? []}
-                onOpenRpc={rpcOpen.open}
-                rpcOpenAttempts={rpcOpen.attempts}
                 onViewLive={(sessionId) => setHighlightedSessionId(sessionId)}
                 onAddTerminal={onAddTerminal}
                 onDeleteWorkspace={onDeleteWorkspace}
