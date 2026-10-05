@@ -13,14 +13,6 @@ const workspace: Workspace = {
 };
 
 /** Post-auto-enrollment wire contract: daemon sessions arrive as stored chat rows. */
-const discoveredRow: WorkspaceSession = {
-  id: "disk-session-key",
-  name: "Disk session",
-  source: "discovered",
-  recencyMs: 1,
-  resumeIdentity: "/sessions/disk-session.jsonl",
-};
-
 const storedRow: WorkspaceSession = {
   id: "chat-stored",
   name: "Stored chat",
@@ -101,19 +93,8 @@ describe("SessionTree single chat-row list after rpc auto-enrollment", () => {
       .toBe("sidebar.tm.liveProcess");
   });
 
-  it("renders a discovered row inert, with no click-to-open affordance", () => {
-    renderTree([discoveredRow, storedRow]);
-    const discovered = rowOf("Disk session");
-    const activation = discovered.querySelector<HTMLButtonElement>(".th-tree-activation");
-    expect(activation?.disabled).toBe(true);
-    expect(activation?.getAttribute("aria-label")).toBeNull();
-    act(() => activation?.click());
-    expect(onSelect).not.toHaveBeenCalled();
-    expect(discovered.querySelector(".th-tree-actions")).toBeNull();
-  });
-
   it("offers no takeover, retry or view-live controls anywhere in the tree", () => {
-    renderTree([discoveredRow, storedRow, { ...storedRow, id: "chat-dangling", dangling: true }]);
+    renderTree([storedRow, { ...storedRow, id: "chat-dangling", dangling: true }]);
     for (const selector of [
       ".th-tree-session-active",
       ".th-tree-view-live",

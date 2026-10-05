@@ -44,8 +44,7 @@ vi.mock("./lib/chatWs", () => ({ connectChat: vi.fn((handlers: ChatHandlers) => 
 
 const stored = { id: "stored-a", name: "Stored A", provider: "omo" };
 const newer = { id: "stored-new", name: "Newer", provider: "omo" };
-const discovered = { id: "discovered-b", name: "Discovered B", source: "discovered", recencyMs: 30 };
-const paged = { id: "discovered-c", name: "Discovered C", source: "discovered", recencyMs: 10 };
+const paged = { id: "paged-d", name: "Paged D", source: "stored" as const, recencyMs: 10 };
 const unresolved = { id: "union-row", name: "Union row", source: "stored", recencyMs: 20 };
 
 describe("App pane routing with real layout, sidebar, picker and chat", () => {
@@ -56,7 +55,6 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
   let opening: ReturnType<typeof deferred<Terminal>>;
   let failPage: boolean;
   let failMore: boolean;
-  let activeConflict: boolean;
   let requests: { path: string; method: string; body: string }[];
   let touch: ReturnType<typeof deferred<{ readonly recencyMs: number }>> | undefined;
   let outstandingTouches: number;
@@ -64,12 +62,12 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
 
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    narrow = false; empty = false; failPage = false; failMore = false; activeConflict = false;
+    narrow = false; empty = false; failPage = false; failMore = false;
     requests = []; transport.frames.length = 0; transport.running.clear(); transport.subscribers.clear();
     opening = deferred<Terminal>();
     touch = undefined;
     outstandingTouches = 0;
-    continuation = { items: [{ ...paged, source: "discovered" }], nextCursor: "" };
+    continuation = { items: [paged], nextCursor: "" };
     localStorage.setItem("th-lang", "en");
     localStorage.setItem("th-ws-expanded", '["ws"]');
     vi.stubGlobal("matchMedia", (query: string) => ({
@@ -100,15 +98,11 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
           outstandingTouches -= 1;
         }
       }
-      if (path.endsWith("/sessions/open")) {
-        if (activeConflict && !String(init?.body).includes('"force":true')) return Response.json({ state: "session-active" }, { status: 409 });
-        return Response.json(await opening.promise);
-      }
       if (path === "/api/workspaces/ws/chats" && init?.method === "POST") return Response.json(await opening.promise);
       if (path === "/api/workspaces/ws/sessions") {
         if (failPage || (failMore && url.searchParams.has("cursor"))) return new Response("failed", { status: 500 });
         return Response.json(url.searchParams.has("cursor") ? continuation : {
-          items: [discovered, unresolved, { ...stored, source: "stored", recencyMs: 15 }, { ...newer, source: "stored", recencyMs: 5 }], nextCursor: "page-2",
+          items: [unresolved, { ...stored, source: "stored", recencyMs: 15 }, { ...newer, source: "stored", recencyMs: 5 }], nextCursor: "page-2",
         });
       }
       if (path.endsWith("/goal")) return Response.json({ goal: null });
@@ -196,7 +190,7 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
       await pendingTouch.promise;
     });
     expect([...container.querySelectorAll(".th-tree-children .th-tree-activation")]
-      .slice(0, 2).map(element => element.textContent)).toEqual(["Discovered B", "Stored A"]);
+      .slice(0, 2).map(element => element.textContent)).toEqual(["Stored A", "Union row"]);
     expect([title(0), title(1)]).toEqual([null, "Stored A"]);
   });
 
@@ -290,61 +284,16 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
     await click(button(container, '.th-login button[type="submit"]'));
     expect(draft(0)).toEqual({ text: "", image: null });
   });
-  it("forgets a deleted session's draft before the same identity is opened again", async () => {
+  it("forgets a deleted session's draft before another row opens", async () => {
     await mount(); await draftWithImage(0, "Deleted draft");
     const storedRow = requireElement(sidebar("Stored A").parentElement, "Missing session row");
     await click(button(storedRow, '.th-tree-actions .th-btn-icon--danger'));
     await click(button(document, '.th-confirm-actions .th-btn--danger'));
     expect(title(0)).toBeNull();
-    await click(row(pane(0), "Discovered B"));
-    await act(async () => opening.resolve({ ...stored, provider: "omo" }));
-    expect(title(0)).toBe("Stored A");
+    await click(row(pane(0), "Union row"));
+    expect(title(0)).toBe("Union row");
     expect(draft(0)).toEqual({ text: "", image: null });
     expect(requests.filter(r => r.method === "DELETE")).toHaveLength(1);
-  });
-  it.each(["older-first", "newer-first"])("keeps the newest same-source pane intent when responses arrive %s", async order => {
-    empty = true; await mount();
-    const oldRequest = opening;
-    await click(row(pane(1), "Discovered B"));
-    opening = deferred<Terminal>();
-    await click(row(pane(0), "Discovered B"));
-    const shared: Terminal = { id: "shared", name: "Shared", provider: "omo" };
-    const first = order === "older-first" ? oldRequest : opening;
-    const last = order === "older-first" ? opening : oldRequest;
-    await act(async () => first.resolve(shared));
-    const intermediate = [title(0), title(1)];
-    await act(async () => last.resolve(shared));
-    expect(intermediate).toEqual(order === "older-first" ? [null, null] : ["Shared", null]);
-    expect([title(0), title(1)]).toEqual(["Shared", null]);
-    assertNoDestructiveCalls();
-  });
-  it("does not steal a canonical chat selected elsewhere while its discovered alias was opening", async () => {
-    await mount(); await click(row(pane(1), "Discovered B"));
-    await focusPane(0); await click(sidebar("Stored A"));
-    await act(async () => opening.resolve({ ...stored, provider: "omo" }));
-    expect([title(0), title(1)]).toEqual(["Stored A", null]);
-    expect(sidebar("Stored A").getAttribute("aria-current")).toBe("true");
-    assertNoDestructiveCalls();
-  });
-  it("compares canonical placement intents even when two discovered aliases differ", async () => {
-    empty = true; await mount();
-    const oldRequest = opening;
-    await click(row(pane(1), "Discovered B"));
-    await click(button(pane(0), ".th-picker-load-more"));
-    opening = deferred<Terminal>(); await click(row(pane(0), "Discovered C"));
-    const shared: Terminal = { id: "shared", name: "Shared", provider: "omo" };
-    await act(async () => opening.resolve(shared));
-    expect([title(0), title(1)]).toEqual(["Shared", null]);
-    await act(async () => oldRequest.resolve(shared));
-    expect([title(0), title(1)]).toEqual(["Shared", null]);
-    assertNoDestructiveCalls();
-  });
-  it("allows independent session choices in other panes while a discovered open completes", async () => {
-    await mount(); await click(row(pane(1), "Discovered B"));
-    await focusPane(0); await click(sidebar("Newer"));
-    await act(async () => opening.resolve({ id: "opened-b", name: "Opened B", provider: "omo" }));
-    expect([title(0), title(1)]).toEqual(["Newer", "Opened B"]);
-    assertNoDestructiveCalls();
   });
   it("activates occupied and empty panes by keyboard while portal focus preserves the active destination", async () => {
     await mount(); await focusPane(1);
@@ -355,32 +304,14 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
     await focusPane(0);
     expect(pane(0).querySelector(".th-pane--focused")).not.toBeNull();
   });
-  it("opens discovered rows through the empty picker and preserves the captured target across focus changes", async () => {
-    await mount(); await click(row(pane(1), "Discovered B")); await focusPane(0);
-    await act(async () => opening.resolve({ id: "opened-b", name: "Opened B", provider: "omo" }));
-    expect([title(0), title(1)]).toEqual(["Stored A", "Opened B"]);
-    expect(pane(0).querySelector(".th-pane--focused")).not.toBeNull();
-    expect(requests.filter(r => r.path.endsWith("/sessions/open"))).toHaveLength(1);
-  });
-  it.each(["newer", "closed"])("drops a deferred sidebar open when its destination is %s", async (mode) => {
-    await mount(); await focusPane(1); await click(sidebar("Discovered B"));
-    if (mode === "newer") await click(sidebar("Newer"));
-    else await click(button(pane(1), '[aria-label="Close pane"]'));
-    await act(async () => opening.resolve({ id: "opened-b", name: "Opened B", provider: "omo" }));
-    expect(container.querySelectorAll(".th-termhead-name")).toHaveLength(mode === "newer" ? 2 : 1);
-    expect([...container.querySelectorAll(".th-termhead-name")].map(e => e.textContent)).toEqual(mode === "newer" ? ["Stored A", "Newer"] : ["Stored A"]);
-    expect(container.querySelectorAll(".th-pane--focused")).toHaveLength(1);
-    assertNoDestructiveCalls();
-  });
-  it.each([false, true])("pages and opens discovered sessions in the shared empty surface (narrow=%s)", async (mobile) => {
+  it.each([false, true])("pages and opens stored sessions in the shared empty surface (narrow=%s)", async (mobile) => {
     narrow = mobile; empty = true; await mount();
     const surface = narrow ? button(container, ".th-empty").parentElement ?? container : pane(1);
     expect(row(surface, "Stored A")).toBeDefined(); expect(row(surface, "Union row")).toBeDefined();
     await click(button(surface, ".th-picker-load-more"));
-    await click(row(surface, "Discovered C"));
-    await act(async () => opening.resolve({ id: "opened-c", name: "Opened C", provider: "omo" }));
+    await click(row(surface, "Paged D"));
     expect(container.querySelectorAll(".th-termhead-name")).toHaveLength(1);
-    expect(container.querySelector(".th-termhead-name")?.textContent).toBe("Opened C");
+    expect(container.querySelector(".th-termhead-name")?.textContent).toBe("Paged D");
   });
   it.each(["newer", "closed"])("keeps new-chat completion from replacing a %s target", async (mode) => {
     // Given: creation is pending while its captured destination becomes ineligible.
@@ -395,7 +326,7 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
     expect([...container.querySelectorAll(".th-termhead-name")].map(e => e.textContent)).toEqual(mode === "newer" ? ["Stored A", "Newer"] : ["Stored A"]);
     expect(container.querySelector(".th-tree-children .th-tree-activation")?.textContent).toBe("Created");
     continuation = { items: [
-      { id: "activity", name: "Recent activity", source: "discovered", recencyMs: 950 },
+      { id: "activity", name: "Recent activity", source: "stored", recencyMs: 950 },
       { id: "created", name: "Created", source: "stored", recencyMs: 900 },
     ], nextCursor: "" };
     // When: the actual sidebar requests and reconciles the canonical continuation.
@@ -445,21 +376,13 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
     failPage = true; await mount();
     expect(pane(1).querySelector('[role="alert"]')).not.toBeNull();
     failPage = false; await click(button(pane(1), ".th-picker-page-retry"));
-    expect(row(pane(1), "Discovered B")).toBeDefined();
+    expect(row(pane(1), "Union row")).toBeDefined();
   });
   it("retains loaded rows and exposes retry after a continuation failure", async () => {
     await mount(); failMore = true; await click(button(pane(1), ".th-picker-load-more"));
     expect(pane(1).querySelector('[role="alert"]')).not.toBeNull();
     expect(row(pane(1), "Stored A")).toBeDefined();
     failMore = false; await click(button(pane(1), ".th-picker-page-retry"));
-    expect(row(pane(1), "Discovered C")).toBeDefined();
-  });
-  it("keeps session-active recovery explicit and opens exactly once on force", async () => {
-    activeConflict = true; await mount(); await click(row(pane(1), "Discovered B"));
-    expect(pane(1).querySelector('[role="status"]')).not.toBeNull();
-    await click(button(pane(1), ".th-picker-force-open"));
-    await act(async () => opening.resolve({ id: "opened-b", name: "Opened B", provider: "omo" }));
-    expect(title(1)).toBe("Opened B");
-    expect(requests.filter(r => r.path.endsWith("/sessions/open")).map(r => JSON.parse(r.body).force ?? false)).toEqual([false, true]);
+    expect(row(pane(1), "Paged D")).toBeDefined();
   });
 });

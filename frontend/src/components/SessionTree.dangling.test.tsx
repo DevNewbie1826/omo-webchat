@@ -37,13 +37,6 @@ const sessions: readonly WorkspaceSession[] = [
     dangling: true,
   } as WorkspaceSession,
   { id: "tm-2", name: "Stored session", source: "stored", recencyMs: 2 },
-  {
-    id: "disk-1",
-    name: "Discovered session",
-    source: "discovered",
-    recencyMs: 1,
-    resumeIdentity: "/sessions/disk-1.jsonl",
-  },
 ];
 
 describe("SessionTree dangling stored-row badge", () => {
@@ -122,13 +115,5 @@ describe("SessionTree dangling stored-row badge", () => {
     expect(activation?.disabled).toBe(false);
     act(() => activation?.click());
     expect(onSelect).toHaveBeenCalledWith(workspace, workspace.chats[1]);
-  });
-
-  it("renders a discovered session as an inert row without an import badge", () => {
-    render();
-    const discovered = row("Discovered session");
-    expect(discovered.querySelector(".th-tree-source")).toBeNull();
-    expect(discovered.querySelector<HTMLButtonElement>(".th-tree-activation")?.disabled).toBe(true);
-    expect(discovered.textContent).not.toContain("sidebar.tm.missingOriginal");
   });
 });

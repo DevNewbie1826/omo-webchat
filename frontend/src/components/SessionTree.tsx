@@ -219,7 +219,7 @@ export function SessionTree({
       onRenameWorkspace(ws, name).catch(() => notify(t("toast.error"), "error"));
     } else {
       const item = (sessionLists.get(ws.id) ?? []).find(
-        (session) => session.id === target.tmId && session.source === "stored" && session.dangling !== true,
+        (session) => session.id === target.tmId && session.dangling !== true,
       );
       const tm = ws.chats.find((x) => x.id === target.tmId) ?? (item
         ? { id: item.id, name: item.name, provider: "omo" as const }
@@ -393,13 +393,12 @@ export function SessionTree({
 
             <fieldset className={`th-tree-children${isOpen ? "" : " th-tree-children--closed"}`}>
               {(sessionLists.get(ws.id) ?? []).map((item) => {
-                const stored = item.source === "stored";
-                const listed = stored ? ws.chats.find((chat) => chat.id === item.id) : undefined;
+                const listed = ws.chats.find((chat) => chat.id === item.id);
                 // v2 union: the sessions REST also lists cursorstore-only chats
                 // the legacy workspace chat list does not carry. They are real
                 // chats — activate them through the same select flow instead of
                 // rendering a dead row. Dangling identities stay inert.
-                const tm = listed ?? (stored && item.dangling !== true
+                const tm = listed ?? (item.dangling !== true
                   ? { id: item.id, name: item.name, provider: "omo" as const }
                   : undefined);
                 const rowDisabled = tm === undefined;
@@ -416,7 +415,7 @@ export function SessionTree({
                 const running = runningInfo ?? 0;
                 const mainRunning = activeSessions?.has(item.id) === true;
                 const displayName = item.name.trim() !== "" ? item.name : t("sidebar.tm.untitled", { id: item.id.slice(0, 8) });
-                const dangling = item.source === "stored" && item.dangling === true;
+                const dangling = item.dangling === true;
                 const danglingHint = dangling
                   ? t("sidebar.tm.missingOriginalHint", { name: displayName })
                   : undefined;

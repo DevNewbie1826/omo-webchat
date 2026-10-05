@@ -14,7 +14,7 @@ import type { WorkspaceSessionPaging } from "../workspace/useWorkspaces";
 
 export interface SplitActions {
   readonly onFocusPane: (paneId: string) => void;
-  readonly onOpenSession: (paneId: string, ws: Workspace, session: WorkspaceSession, force?: boolean) => Promise<"opened" | "session-active">;
+  readonly onOpenSession: (paneId: string, ws: Workspace, session: WorkspaceSession) => Promise<"opened" | "session-active">;
   readonly onLoadMoreSessions: (wsId: string) => Promise<void>;
   readonly onCreateTerminal: (paneId: string, wsId: string) => void;
   readonly onSplit: (paneId: string, dir: SplitDir) => void;
@@ -86,7 +86,7 @@ function LeafView({ node, workspaces, sessions, sessionLists, sessionPages, onEn
         )}
         <SessionPicker workspaces={workspaces} sessionLists={sessionLists} sessionPages={sessionPages}
           onEnsureSessions={onEnsureSessions} onLoadMoreSessions={actions.onLoadMoreSessions}
-          onOpenSession={(ws, entry, force) => actions.onOpenSession(node.id, ws, entry, force)}
+          onOpenSession={(ws, entry) => actions.onOpenSession(node.id, ws, entry)}
           onNewChat={wsId => actions.onCreateTerminal(node.id, wsId)} />
       </div>
     );

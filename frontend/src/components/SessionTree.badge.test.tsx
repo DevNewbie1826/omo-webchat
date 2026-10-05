@@ -34,13 +34,6 @@ const workspace: Workspace = {
 
 const sessions: readonly WorkspaceSession[] = [
   { id: "tm-1", name: "Stored session", source: "stored", recencyMs: 2 },
-  {
-    id: "disk-1",
-    name: "Discovered session",
-    source: "discovered",
-    recencyMs: 1,
-    resumeIdentity: "/sessions/disk-1.jsonl",
-  },
 ];
 
 describe("SessionTree session-row hierarchy", () => {
@@ -96,19 +89,6 @@ describe("SessionTree session-row hierarchy", () => {
     expect(match).toBeDefined();
     return match!;
   }
-
-  it("renders a discovered row's name with no badge and no click-to-open affordance", () => {
-    render();
-    const discovered = row("Discovered session");
-
-    const activation = discovered.querySelector<HTMLButtonElement>(".th-tree-activation");
-    expect(activation?.getAttribute("aria-label")).toBeNull();
-    expect(activation?.disabled).toBe(true);
-    expect(discovered.querySelector(".th-tree-source")).toBeNull();
-    const label = discovered.querySelector(".th-tree-label");
-    expect(label?.textContent).toBe("Discovered session");
-    expect(label?.getAttribute("aria-hidden")).toBeNull();
-  });
 
   it("gives a stored session row its name with no badge at all", () => {
     render();

@@ -31,7 +31,7 @@ describe("listWorkspaceSessions", () => {
   it("passes the continuation cursor and returns the typed page", async () => {
     const fetchMock = vi.fn(async () =>
       okResponse({
-        items: [{ id: "s6", name: "Older", source: "discovered", recencyMs: 1000 }],
+        items: [{ id: "s6", name: "Older", source: "stored", recencyMs: 1000 }],
         nextCursor: "",
       }),
     );
@@ -43,15 +43,16 @@ describe("listWorkspaceSessions", () => {
       "/api/workspaces/ws-1/sessions?limit=5&cursor=cursor-token",
       expect.anything(),
     );
-    expect(page.items).toEqual([{ id: "s6", name: "Older", source: "discovered", recencyMs: 1000 }]);
+    expect(page.items).toEqual([{ id: "s6", name: "Older", source: "stored", recencyMs: 1000 }]);
     expect(page.nextCursor).toBe("");
   });
 
-  it("removes legacy already-adopted provenance rows from UI state", async () => {
+  it("removes legacy provenance and disk-scan rows from UI state", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => okResponse({
       items: [
         { id: "chat-1", name: "Stored", source: "stored", recencyMs: 2 },
         { id: "durable-1", name: "Source", source: "alreadyAdopted", recencyMs: 1 },
+        { id: "disk-1", name: "Disk session", source: "discovered", recencyMs: 1 },
       ],
       nextCursor: "",
     })));

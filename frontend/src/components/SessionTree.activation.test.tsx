@@ -37,14 +37,6 @@ const workspace: Workspace = {
   ],
 };
 
-const discoveredSession: WorkspaceSession = {
-  id: "disk-1",
-  name: "Discovered session",
-  source: "discovered",
-  recencyMs: 1,
-  resumeIdentity: "/sessions/disk-1.jsonl",
-};
-
 const sessions: readonly WorkspaceSession[] = [
   unnamedSession,
   {
@@ -55,7 +47,6 @@ const sessions: readonly WorkspaceSession[] = [
     dangling: true,
   } as WorkspaceSession,
   { id: "tm-2", name: "Stored session", source: "stored", recencyMs: 2 },
-  discoveredSession,
 ];
 
 describe("SessionTree session-row activation target", () => {
@@ -122,12 +113,8 @@ describe("SessionTree session-row activation target", () => {
     expect(label?.textContent).toContain(unnamedId.slice(0, 8));
   });
 
-  it("keeps missing-original metadata and renders a discovered row inert without a source badge", () => {
+  it("keeps missing-original metadata on the dangling row's source badge", () => {
     render();
-    const discovered = row("Discovered session");
-    expect(discovered.querySelector(".th-tree-source")).toBeNull();
-    expect(discovered.querySelector<HTMLButtonElement>(".th-tree-activation")?.disabled).toBe(true);
-
     const dangling = row("Stored dangling");
     expect(dangling.querySelector(".th-tree-source")).not.toBeNull();
   });

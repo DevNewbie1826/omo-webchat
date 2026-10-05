@@ -16,7 +16,6 @@ import type { SplitActions } from "./features/split/SplitView";
 import { useLayout } from "./features/split/useLayout";
 import { findLeaf } from "./features/split/paneTree";
 import { createTerminal } from "./features/terminal/terminal";
-import { openWorkspaceSession } from "./features/workspace/workspace";
 import type {
   ProviderDiscoveryState,
   Terminal,
@@ -165,43 +164,33 @@ export function App() {
   const openSession = async (
     ws: Workspace,
     session: WorkspaceSession,
-    force = false,
     paneId = layout.focusedPaneId,
   ): Promise<"opened" | "session-active"> => {
     const target = captureTarget(paneId);
     const sourceKey = sessionOpenAttemptKey(ws.id, session.id);
     sessionIntents.current.set(sourceKey, target.generation);
     layout.focusPane(target.paneId);
-    try {
-      // Stored union rows are already chat identities, even before ws.chats
-      // contains them. Only discovered entries need the existing open request.
-      const result = session.source === "stored"
-        ? { state: "opened" as const, chat: ws.chats.find(chat => chat.id === session.id)
-          ?? { id: session.id, name: session.name, provider: "omo" as const } }
-        : await openWorkspaceSession(ws.id, session, force);
-      if (result.state === "session-active") return result.state;
-      const tm = result.chat;
-      setWorkspaces((prev) => prev.map(workspace => workspace.id === ws.id
-        ? { ...workspace, chats: workspace.chats.some(chat => chat.id === tm.id) ? workspace.chats : [...workspace.chats, tm] }
-        : workspace));
-      if (session.source === "discovered") addCreatedSession(ws.id, tm, session);
-      const chatKey = sessionOpenAttemptKey(ws.id, tm.id);
-      // Source intent protects concurrent opens before the canonical chat id
-      // is known. Canonical intent also protects newer stored/alias placement
-      // in another pane; per-pane generations alone cannot prevent that move.
-      const latestSessionIntent = Math.max(sessionIntents.current.get(sourceKey) ?? 0, sessionIntents.current.get(chatKey) ?? 0);
-      if (targetCurrent(target) && latestSessionIntent <= target.generation) {
-        sessionIntents.current.set(chatKey, target.generation);
-        setExpanded((prev) => new Set(prev).add(ws.id));
-        markSessionUsed(ws.id, tm.id);
-        layout.assignSession(target.paneId, tm.id, false);
-        if (window.matchMedia(MOBILE_QUERY).matches) setSidebarCollapsed(true);
-      }
-      return "opened";
-    } catch (error) {
-      notify(t("toast.error"), "error");
-      throw error;
+    // Every catalog row is already a stored chat identity after
+    // auto-enrollment, even before ws.chats contains it: opening is a local
+    // placement, never an adopt-and-register request.
+    const tm = ws.chats.find((chat) => chat.id === session.id)
+      ?? { id: session.id, name: session.name, provider: "omo" as const };
+    setWorkspaces((prev) => prev.map((workspace) => workspace.id === ws.id
+      ? { ...workspace, chats: workspace.chats.some((chat) => chat.id === tm.id) ? workspace.chats : [...workspace.chats, tm] }
+      : workspace));
+    const chatKey = sessionOpenAttemptKey(ws.id, tm.id);
+    // Source intent protects concurrent opens before the canonical chat id
+    // is known. Canonical intent also protects newer stored placement in
+    // another pane; per-pane generations alone cannot prevent that move.
+    const latestSessionIntent = Math.max(sessionIntents.current.get(sourceKey) ?? 0, sessionIntents.current.get(chatKey) ?? 0);
+    if (targetCurrent(target) && latestSessionIntent <= target.generation) {
+      sessionIntents.current.set(chatKey, target.generation);
+      setExpanded((prev) => new Set(prev).add(ws.id));
+      markSessionUsed(ws.id, tm.id);
+      layout.assignSession(target.paneId, tm.id, false);
+      if (window.matchMedia(MOBILE_QUERY).matches) setSidebarCollapsed(true);
     }
+    return "opened";
   };
 
   // The sidebar's membership crawl publishes what it learned beyond the
@@ -301,7 +290,7 @@ export function App() {
 
   const splitActions: SplitActions = {
     onFocusPane: layout.focusPane,
-    onOpenSession: (paneId, ws, session, force) => openSession(ws, session, force, paneId),
+    onOpenSession: (paneId, ws, session) => openSession(ws, session, paneId),
     onLoadMoreSessions: loadMoreSessions,
     onCreateTerminal: createTerminalInPane,
     onSplit: layout.split,

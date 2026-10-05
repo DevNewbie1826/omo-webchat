@@ -6,17 +6,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionTree } from "../../components/SessionTree";
 import type { LayoutApi } from "../split/useLayout";
 import { DISCOVERY_MERGE_INTERVAL_MS, useWorkspaces } from "./useWorkspaces";
-import { listWorkspaceSessions, listWorkspaces } from "./workspace";
+import { deleteWorkspace, listWorkspaceSessions, listWorkspaces } from "./workspace";
 import type { Workspace } from "./workspace";
 
 vi.mock("./workspace", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./workspace")>();
   return {
     ...actual,
+    deleteWorkspace: vi.fn(),
     listWorkspaceSessions: vi.fn(),
     listWorkspaces: vi.fn(),
   };
 });
+
+function deferred<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => { resolve = settle; });
+  return { promise, resolve };
+}
 
 const layout: LayoutApi = {
   root: { kind: "leaf", id: "pane-1", sessionId: null },
@@ -98,6 +105,7 @@ describe("useWorkspaces rpc auto-enrollment discovery", () => {
     vi.useFakeTimers();
     vi.mocked(listWorkspaces).mockReset().mockResolvedValue([]);
     vi.mocked(listWorkspaceSessions).mockReset().mockResolvedValue(enrolledPage);
+    vi.mocked(deleteWorkspace).mockReset().mockResolvedValue(undefined);
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -145,6 +153,54 @@ describe("useWorkspaces rpc auto-enrollment discovery", () => {
       live: true,
       durableSessionID: "dur-1",
     });
+  });
+
+  it("discards a discovery response that started before a workspace delete completed", async () => {
+    // Given: one enrolled workspace with its chat row loaded and expanded.
+    vi.mocked(listWorkspaces).mockResolvedValue([enrolledWorkspace]);
+    act(() => {
+      root.render(<DiscoveryProbe />);
+    });
+    await act(async () => {
+      await latest?.load();
+    });
+    await act(async () => {
+      await latest?.setExpanded(new Set(["ws-enrolled"]));
+    });
+    expect(chatRows()).toHaveLength(1);
+
+    // When: a discovery cycle's catalog fetch is still in flight when the
+    // user deletes the workspace, and the stale response - still listing the
+    // deleted workspace and its enrolled chat - only lands afterwards.
+    const staleCatalog = deferred<readonly Workspace[]>();
+    vi.mocked(listWorkspaces).mockReturnValueOnce(staleCatalog.promise);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DISCOVERY_MERGE_INTERVAL_MS);
+    });
+    await act(async () => {
+      await latest?.handleDeleteWorkspace(enrolledWorkspace);
+    });
+    expect(latest?.workspaces).toHaveLength(0);
+    expect(chatRows()).toHaveLength(0);
+    // The delete also removed the workspace server-side: later catalog
+    // fetches no longer list it. Only the in-flight response is stale.
+    vi.mocked(listWorkspaces).mockResolvedValue([]);
+
+    await act(async () => {
+      staleCatalog.resolve([enrolledWorkspace]);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // Then: the stale response is discarded - neither the deleted workspace
+    // nor its auto-enrolled chat reappears, and later cycles keep them gone.
+    expect(latest?.workspaces).toHaveLength(0);
+    expect(chatRows()).toHaveLength(0);
+    expect(latest?.sessionLists.has("ws-enrolled")).toBe(false);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DISCOVERY_MERGE_INTERVAL_MS);
+    });
+    expect(latest?.workspaces).toHaveLength(0);
+    expect(container.querySelector('[data-testid="empty"]')).not.toBeNull();
   });
 
   it("keeps rows and page fetches deduplicated across repeat cycles with the same catalog", async () => {

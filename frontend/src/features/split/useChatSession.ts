@@ -352,8 +352,7 @@ export function useChatSession(
   };
 
   // Explicit retry for an in-place session rejected as session-active: the
-  // user authorizes the activity gate bypass for this one attach, the same
-  // choice the sidebar's discovered-row force-open makes through REST.
+  // user authorizes the activity gate bypass for this one attach.
   const forceOpen = (): boolean => {
     releaseBadgeSourceRef.current();
     frameState.beginExternalWriteRecovery();
