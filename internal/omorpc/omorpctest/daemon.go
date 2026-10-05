@@ -77,17 +77,18 @@ type queuedItem struct {
 
 // daemonSession is one provider-side session known to the daemon.
 type daemonSession struct {
-	path      string // durable sessionFile path (registry key)
-	durableID string // durable UUID stored in the session file
-	rpcID     string // CURRENT epoch-local routing handle ("rpc-N")
-	live      bool   // false after UnloadSession or daemon Stop/Restart
-	used      bool   // at least one command reached the current routing handle
-	history   []any  // durable transcript returned by get_entries
-	leafID    string
-	name      string
-	cwd       string
-	opens     int
-	prompts   []string
+	path        string // durable sessionFile path (registry key)
+	durableID   string // durable UUID stored in the session file
+	rpcID       string // CURRENT epoch-local routing handle ("rpc-N")
+	live        bool   // false after UnloadSession or daemon Stop/Restart
+	used        bool   // at least one command reached the current routing handle
+	history     []any  // durable transcript returned by get_entries
+	leafID      string
+	name        string
+	cwd         string
+	opens       int
+	prompts     []string
+	attachments map[net.Conn]int // populated only by opt-in same-route opens
 
 	// clientCaps is the capability list the opener connection advertised
 	// through set_client_info before opening the session — the daemon-side
@@ -205,6 +206,7 @@ type Daemon struct {
 
 	legacyEmptyUnknownHistory bool
 	omitActivityFields        bool
+	sameRouteOpen             bool
 
 	// Daemon-side client capability view: per-connection sets start empty
 	// and are populated only by the session-less set_client_info record.
@@ -350,6 +352,14 @@ func (d *Daemon) readLoop(conn net.Conn) {
 			d.mu.Lock()
 			delete(d.conns, conn)
 			delete(d.clientCaps, conn)
+			for _, rec := range d.registry {
+				if _, attached := rec.attachments[conn]; attached {
+					delete(rec.attachments, conn)
+					if len(rec.attachments) == 0 {
+						rec.live = false
+					}
+				}
+			}
 			d.mu.Unlock()
 			_ = conn.Close()
 			return
@@ -445,8 +455,12 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 		for _, rec := range d.registry {
 			if rec.live {
 				sessions = append(sessions, map[string]any{
-					"sessionId":   rec.rpcID,
-					"sessionFile": rec.path,
+					"sessionId":        rec.rpcID,
+					"sessionFile":      rec.path,
+					"cwd":              rec.cwd,
+					"name":             rec.name,
+					"durableSessionId": rec.durableID,
+					"attachments":      attachmentCount(rec),
 				})
 			}
 		}
@@ -515,7 +529,16 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 
 	case omorpc.CmdCloseSession:
 		d.mu.Lock()
-		rec.live = false
+		if rec.attachments != nil {
+			if rec.attachments[conn] > 1 {
+				rec.attachments[conn]--
+			} else {
+				delete(rec.attachments, conn)
+			}
+			rec.live = len(rec.attachments) > 0
+		} else {
+			rec.live = false
+		}
 		d.closes++
 		d.notify(d.closeFeed)
 		d.mu.Unlock()
@@ -776,13 +799,25 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 		d.registry[path] = rec
 		_ = writeSessionHeader(rec)
 	}
-	d.rpcCounter++
-	rec.rpcID = fmt.Sprintf("rpc-%d", d.rpcCounter)
-	d.rpcPaths[rec.rpcID] = rec.path
-	rec.live = true
-	rec.used = false
+	reusing := d.sameRouteOpen && rec.live
+	if !reusing {
+		d.rpcCounter++
+		rec.rpcID = fmt.Sprintf("rpc-%d", d.rpcCounter)
+		d.rpcPaths[rec.rpcID] = rec.path
+		rec.live = true
+		rec.used = false
+		rec.attachments = nil
+	}
+	if d.sameRouteOpen {
+		if rec.attachments == nil {
+			rec.attachments = make(map[net.Conn]int)
+		}
+		rec.attachments[conn]++
+	}
 	rec.opens++
-	rec.clientCaps = append([]string(nil), d.clientCaps[conn]...)
+	if !reusing {
+		rec.clientCaps = append([]string(nil), d.clientCaps[conn]...)
+	}
 	reasks := d.reaskQuestionsLocked(rec)
 	if cwd != "" {
 		rec.cwd = cwd
@@ -822,6 +857,24 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 	for _, event := range reasks {
 		d.write(conn, event)
 	}
+}
+
+// SetSameRouteOpen enables attaching an existing live path without minting
+// another route. The default remains fresh routing IDs on every open.
+// Enable before opening sessions; closing/disconnecting releases attachments.
+func (d *Daemon) SetSameRouteOpen(enabled bool) {
+	d.mu.Lock()
+	d.sameRouteOpen = enabled
+	d.mu.Unlock()
+}
+
+// attachmentCount requires d.mu.
+func attachmentCount(rec *daemonSession) int {
+	count := 0
+	for _, n := range rec.attachments {
+		count += n
+	}
+	return count
 }
 
 // SetOmitActivityFields models engines that omit optional activity snapshots
@@ -1430,15 +1483,16 @@ func (d *Daemon) LiveSessions() []string {
 // SessionSnapshot is the deterministic control-plane view used by isolated
 // integration fixtures. It exposes only observed protocol identities/counts.
 type SessionSnapshot struct {
-	Path       string   `json:"path"`
-	DurableID  string   `json:"durableId"`
-	RoutingID  string   `json:"routingId"`
-	CWD        string   `json:"cwd"`
-	LeafID     string   `json:"leafId"`
-	Live       bool     `json:"live"`
-	OpenCount  int      `json:"openCount"`
-	Prompts    []string `json:"prompts"`
-	EntryCount int      `json:"entryCount"`
+	Path        string   `json:"path"`
+	DurableID   string   `json:"durableId"`
+	RoutingID   string   `json:"routingId"`
+	CWD         string   `json:"cwd"`
+	LeafID      string   `json:"leafId"`
+	Live        bool     `json:"live"`
+	OpenCount   int      `json:"openCount"`
+	Prompts     []string `json:"prompts"`
+	EntryCount  int      `json:"entryCount"`
+	Attachments int      `json:"attachments"`
 }
 
 // SessionSnapshots returns every known durable session ordered by path.
@@ -1451,6 +1505,7 @@ func (d *Daemon) SessionSnapshots() []SessionSnapshot {
 			Path: rec.path, DurableID: rec.durableID, RoutingID: rec.rpcID, CWD: rec.cwd,
 			LeafID: rec.leafID, Live: rec.live, OpenCount: rec.opens,
 			Prompts: append([]string(nil), rec.prompts...), EntryCount: len(rec.history),
+			Attachments: attachmentCount(rec),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })

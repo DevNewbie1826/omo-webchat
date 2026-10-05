@@ -80,6 +80,9 @@ type Cursor struct {
 	// the first successful plain prompt may replace with a derived title.
 	TitleIsPlaceholder bool
 	InPlace            bool
+	// ForceInPlaceOpen is the consumed per-chat authorization for this
+	// acquisition only; it permits an as-yet unpersisted live source.
+	ForceInPlaceOpen bool
 	// WritePrepared reports that CursorForOpen completed the one-time work
 	// required before provider initialization can mutate this session.
 	WritePrepared bool

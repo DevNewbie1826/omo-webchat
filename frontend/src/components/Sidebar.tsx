@@ -21,6 +21,11 @@ import type { WorkspaceSessionPaging } from "../features/workspace/useWorkspaces
 import { useMediaQuery } from "../lib/useMediaQuery";
 import { SystemStatsModal } from "../features/system/SystemStatsModal";
 import { EngineRestartDialog } from "../features/system/EngineRestartDialog";
+import type { RpcLiveSession, RpcLiveState } from "../features/workspace/rpcSessions";
+
+const rpcLiveSessionKey = (live: RpcLiveSession): string => live.sessionId;
+
+const ignoreRpcOpen = async (): Promise<"opened" | "session-active" | void> => undefined;
 
 export interface SidebarProps {
   readonly collapsed: boolean;
@@ -36,6 +41,10 @@ export interface SidebarProps {
   readonly onLoadMoreSessions: (wsId: string) => void;
   readonly onSelectTerminal: (ws: Workspace, tm: Terminal) => void;
   readonly onOpenSession: (ws: Workspace, session: WorkspaceSession, force?: boolean) => Promise<"opened" | "session-active" | void>;
+  /** Activates a watcher live row through the rpc open endpoint. */
+  readonly onOpenRpcSession?: (ws: Workspace, live: RpcLiveSession) => Promise<"opened" | "session-active" | void>;
+  readonly rpcLiveRows?: ReadonlyMap<string, readonly RpcLiveSession[]>;
+  readonly rpcLiveChats?: ReadonlyMap<string, RpcLiveState>;
   readonly onAddWorkspace: () => void;
   readonly onAddTerminal: (ws: Workspace) => void;
   readonly onDeleteWorkspace: (ws: Workspace) => void;
@@ -76,6 +85,9 @@ export function Sidebar({
   onLoadMoreSessions,
   onSelectTerminal,
   onOpenSession,
+  onOpenRpcSession,
+  rpcLiveRows,
+  rpcLiveChats,
   onAddWorkspace,
   onAddTerminal,
   onDeleteWorkspace,
@@ -105,6 +117,10 @@ export function Sidebar({
   const [highlightedSessionId, setHighlightedSessionId] = useState<string | null>(null);
   const [engineRestartOpen, setEngineRestartOpen] = useState(false);
   const sessionOpen = useSessionOpenAttempts(onOpenSession);
+  const rpcSessionOpen = useSessionOpenAttempts(
+    onOpenRpcSession ?? ignoreRpcOpen,
+    rpcLiveSessionKey,
+  );
   // The overview poller is shared with App's live-session poll; the sidebar
   // derives running-agent counts for the tree badges and the pinned
   // running-sessions section.
@@ -417,6 +433,10 @@ export function Sidebar({
                 onSelect={onSelectTerminal}
                 onOpen={sessionOpen.open}
                 openAttempts={sessionOpen.attempts}
+                rpcLiveRows={rpcLiveRows}
+                rpcLiveChats={rpcLiveChats}
+                onOpenRpc={rpcSessionOpen.open}
+                rpcOpenAttempts={rpcSessionOpen.attempts}
                 onViewLive={(sessionId) => setHighlightedSessionId(sessionId)}
                 onAddTerminal={onAddTerminal}
                 onDeleteWorkspace={onDeleteWorkspace}

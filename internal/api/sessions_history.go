@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
+	"github.com/DevNewbie1826/omo-webchat/internal/rpcwatch"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 )
 
@@ -84,12 +85,19 @@ type sessionHistoryItem struct {
 	// live chat's file is written on the next persist, so absence under a
 	// live session is pending persistence; "missing original" is reserved
 	// for a chat with no file and no live session.
-	Preparing bool `json:"preparing,omitempty"`
+	Preparing bool                      `json:"preparing,omitempty"`
+	Live      *sessionHistoryLiveStatus `json:"live,omitempty"`
 }
 
 type sessionHistoryPage struct {
-	Items      []sessionHistoryItem `json:"items"`
-	NextCursor string               `json:"nextCursor"`
+	Items      []sessionHistoryItem       `json:"items"`
+	NextCursor string                     `json:"nextCursor"`
+	Live       []sessionHistoryRpcSession `json:"live"`
+}
+
+type sessionHistoryRpcSession struct {
+	rpcwatch.Session
+	ComparisonPath string `json:"comparisonPath"`
 }
 
 type diskSession struct {
@@ -620,11 +628,26 @@ func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	items := mergeSessionHistoryLive(chats, disk, live, scannedCWD...)
+	items, pinned := s.mergeWorkspaceWatcher(ws.Path, chats, items)
 	page, err := paginateSessionHistory(items, limit, strings.TrimSpace(r.URL.Query().Get("cursor")))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid cursor")
 		return
 	}
 	populateSessionHistoryNames(page.Items)
+	// Resume identities and watcher comparison paths share the same server
+	// realpath normalization, including files not yet persisted.
+	for i := range page.Items {
+		if page.Items[i].ResumeIdentity != "" {
+			page.Items[i].ResumeIdentity = canonicalWatcherPath(page.Items[i].ResumeIdentity)
+		}
+	}
+	page.Live = make([]sessionHistoryRpcSession, 0, len(pinned))
+	for _, observed := range pinned {
+		page.Live = append(page.Live, sessionHistoryRpcSession{
+			Session:        observed,
+			ComparisonPath: canonicalWatcherPath(observed.SessionPath),
+		})
+	}
 	writeJSON(w, http.StatusOK, page)
 }

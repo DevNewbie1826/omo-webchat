@@ -259,11 +259,14 @@ describe("App + Sidebar both-surfaces live ordering", () => {
     }
 
     // 60 simulated seconds: the armed interval fired at 15/30/45/60s for the
-    // continuously live ws-1, regardless of ws-2's churn.
-    expect(scheduledFirstPageCalls("ws-1")).toBe(baseline + 4);
+    // continuously live ws-1, regardless of ws-2's churn. Since the paginated
+    // refresh loop runs for every expanded workspace (owned or not), each ws-1
+    // cadence issues two scheduled first-page fetches: the recency fetch plus
+    // the cursor loop's first page. Churn on ws-2 must add nothing to ws-1.
+    expect(scheduledFirstPageCalls("ws-1")).toBe(baseline + 8);
   });
 
-  it("schedules zero periodic requests when the feed's only rows are excluded from the live list", async () => {
+  it("refreshes expanded bound statuses even when the feed's rows are excluded from the live list", async () => {
     // A legacy row: no active flag, no running work. isLiveSessionListed
     // rejects it, so neither surface lists it and no workspace may be
     // registered as a live owner - even though chat-a is attributable to
@@ -280,12 +283,15 @@ describe("App + Sidebar both-surfaces live ordering", () => {
     expect(container.querySelector(".th-sidebar-live")).toBeNull();
     expect(container.querySelector(".th-home-live")).toBeNull();
 
-    // Three full cadences: not a single further catalog request.
-    const baseline = catalogCalls().length;
+    // Three full cadences: manager ownership stays absent, but the expanded
+    // workspace refreshes the first page's bound statuses as well as the
+    // complete unbound live section on every cadence.
+    const pageBaseline = scheduledFirstPageCalls("ws-1");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(45_000);
     });
-    expect(catalogCalls().length).toBe(baseline);
+    expect(scheduledFirstPageCalls("ws-1")).toBe(pageBaseline + 3);
+    expect(catalogCalls().some((path) => path.includes("limit=1"))).toBe(false);
   });
 
   it("clears the registered periodic targets when logging out through the real control", async () => {
