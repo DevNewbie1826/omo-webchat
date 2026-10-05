@@ -81,7 +81,6 @@ describe("SessionTree dangling stored-row badge", () => {
             onToggle={onToggle}
             onLoadMoreSessions={() => undefined}
             onSelect={onSelect}
-            onOpen={async () => undefined}
             onAddTerminal={() => undefined}
             onDeleteWorkspace={() => undefined}
             onDeleteTerminal={() => undefined}
@@ -125,11 +124,11 @@ describe("SessionTree dangling stored-row badge", () => {
     expect(onSelect).toHaveBeenCalledWith(workspace, workspace.chats[1]);
   });
 
-  it("renders a discovered session as a direct primary action without an import badge", () => {
+  it("renders a discovered session as an inert row without an import badge", () => {
     render();
     const discovered = row("Discovered session");
     expect(discovered.querySelector(".th-tree-source")).toBeNull();
-    expect(discovered.querySelector<HTMLButtonElement>(".th-tree-activation")?.disabled).toBe(false);
+    expect(discovered.querySelector<HTMLButtonElement>(".th-tree-activation")?.disabled).toBe(true);
     expect(discovered.textContent).not.toContain("sidebar.tm.missingOriginal");
   });
 });

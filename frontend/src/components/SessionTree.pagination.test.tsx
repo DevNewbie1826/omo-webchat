@@ -90,7 +90,6 @@ function Harness({ activeTerminalId = null, liveSessions = EMPTY_SET }: HarnessP
       onToggle={state.toggleExpanded}
       onLoadMoreSessions={state.loadMoreSessions}
       onSelect={() => undefined}
-      onOpen={async () => undefined}
       onAddTerminal={() => undefined}
       onDeleteWorkspace={() => undefined}
       onDeleteTerminal={() => undefined}

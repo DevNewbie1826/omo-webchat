@@ -6,13 +6,13 @@ import { App } from "./App";
 import { apiJson } from "./lib/api";
 
 /**
- * Both-surfaces integration: the REAL Sidebar and the REAL home live-session
- * block mount together on the REAL useWorkspaces hook. A live session that
- * has no open target - absent from the chat list and every loaded catalog
- * page, resolvable only through the membership crawl - must not render a card
- * on either surface, while the crawl still learns its recency, attributes its
- * owner, and keeps the single 15s catalog cadence armed. Only the transport
- * and pane layout are mocked.
+ * Catalog-cadence integration: the REAL Sidebar and the REAL useWorkspaces
+ * hook mount together. A live session that has no open target - absent from
+ * the chat list and every loaded catalog page, resolvable only through the
+ * membership crawl - must not render any separate live-session region, while
+ * the crawl still learns its recency, attributes its owner, and keeps the
+ * single 15s catalog cadence armed. Only the transport and pane layout are
+ * mocked.
  */
 
 const workspace = {
@@ -106,7 +106,7 @@ function installMatchMedia(): void {
   }));
 }
 
-describe("App + Sidebar both-surfaces live ordering", () => {
+describe("App + Sidebar catalog cadence without separate live regions", () => {
   let container: HTMLDivElement;
   let root: Root;
   let livePayload: unknown;
@@ -118,6 +118,11 @@ describe("App + Sidebar both-surfaces live ordering", () => {
       .map(([path]) => path)
       .filter((path) => path.startsWith(`/api/workspaces/${wsId}/sessions`));
 
+  const workspaceListCalls = (): number =>
+    vi.mocked(apiJson).mock.calls
+      .filter(([path]) => path === "/api/workspaces")
+      .length;
+
   /** First-page requests issued without an abort signal: the catalog
    * scheduler's cadence and the expand-effect load. The membership crawl
    * always carries a signal, so it never pollutes this count. */
@@ -128,9 +133,9 @@ describe("App + Sidebar both-surfaces live ordering", () => {
         && !(options as { readonly signal?: unknown } | undefined)?.signal)
       .length;
 
-  const cardNames = (selector: string): string[] =>
-    [...container.querySelectorAll<HTMLElement>(`${selector} .th-overview-card`)]
-      .map((card) => card.querySelector(".th-overview-card-name")?.textContent ?? "");
+  const treeRowNames = (): string[] =>
+    [...container.querySelectorAll<HTMLElement>(".th-tree-children .th-tree-label")]
+      .map((label) => label.textContent ?? "");
 
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -169,23 +174,20 @@ describe("App + Sidebar both-surfaces live ordering", () => {
     window.localStorage.clear();
   });
 
-  it("excludes a crawl-only session from both surfaces while the crawl still learns its recency and arms the cadence", async () => {
+  it("keeps the crawl learning an unopenable session's recency while no separate region renders", async () => {
     await act(async () => {
       root.render(<App />);
     });
     await act(async () => {});
 
-    // Both surfaces mounted. z-hidden is live but has no open target - it is
-    // absent from the chat list and the loaded first catalog page - so the
-    // pinned surfaces exclude it; the membership crawl still pages to learn
-    // its timestamp and attribute ws-1 as its owner.
-    expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
-    expect(container.querySelector(".th-home-live")).not.toBeNull();
+    // The tree mounted and lists the openable chat. z-hidden is live but has
+    // no open target - absent from the chat list and the loaded first catalog
+    // page - so it must not render anywhere; the membership crawl still pages
+    // to learn its timestamp and attribute ws-1 as its owner.
+    expect(container.querySelector(".th-sidebar-body .th-tree")).not.toBeNull();
+    expect(treeRowNames()).toEqual(["A visible"]);
+    expect(container.querySelector(".th-sidebar-live")).toBeNull();
     expect(catalogCalls()).toContain("/api/workspaces/ws-1/sessions?limit=5&cursor=p2");
-
-    // Only the openable session renders a card on either surface.
-    expect(cardNames(".th-sidebar-live")).toEqual(["A visible"]);
-    expect(cardNames(".th-home-live")).toEqual(["A visible"]);
 
     // Production scheduling path: the catalog scheduler owns the single 15s
     // recency cadence. Nothing catalog-related fires before the cadence...
@@ -210,16 +212,15 @@ describe("App + Sidebar both-surfaces live ordering", () => {
     ]);
 
     // z-hidden settles to idle; the next poll (4s cadence) delivers it. It
-    // still has no open target, so both surfaces keep listing only the
-    // openable session, and the owner attribution keeps the cadence armed.
+    // still has no open target, so the tree keeps listing only the openable
+    // chat, and the owner attribution keeps the cadence armed.
     livePayload = PHASE_IDLE;
     await act(async () => {
       await vi.advanceTimersByTimeAsync(4_000);
     });
     await act(async () => {});
 
-    expect(cardNames(".th-sidebar-live")).toEqual(["A visible"]);
-    expect(cardNames(".th-home-live")).toEqual(["A visible"]);
+    expect(treeRowNames()).toEqual(["A visible"]);
   });
 
   it("keeps exactly the 15s cadence for a stable owner while a second owner joins and leaves", async () => {
@@ -246,7 +247,7 @@ describe("App + Sidebar both-surfaces live ordering", () => {
     await act(async () => {});
 
     // Both owners' first pages are ready; ws-1 is the sole initial owner.
-    expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
+    expect(container.querySelector(".th-sidebar-body .th-tree")).not.toBeNull();
     const baseline = scheduledFirstPageCalls("ws-1");
     expect(baseline).toBe(1);
 
@@ -265,9 +266,8 @@ describe("App + Sidebar both-surfaces live ordering", () => {
 
   it("schedules zero periodic requests when the feed's only rows are excluded from the live list", async () => {
     // A legacy row: no active flag, no running work. isLiveSessionListed
-    // rejects it, so neither surface lists it and no workspace may be
-    // registered as a live owner - even though chat-a is attributable to
-    // ws-1 through the chat list.
+    // rejects it, so no workspace may be registered as a live owner - even
+    // though chat-a is attributable to ws-1 through the chat list.
     livePayload = { sessions: [{ id: "chat-a", title: "Legacy row", task: null, dag: null }] };
     window.localStorage.setItem("th-ws-expanded", JSON.stringify(["ws-1"]));
 
@@ -276,26 +276,26 @@ describe("App + Sidebar both-surfaces live ordering", () => {
     });
     await act(async () => {});
 
-    // Excluded from both live surfaces.
+    // No live-session region renders for the excluded row.
     expect(container.querySelector(".th-sidebar-live")).toBeNull();
-    expect(container.querySelector(".th-home-live")).toBeNull();
 
-    // Three full cadences: not a single further catalog request.
+    // Three full cadences: not a single further catalog request (the
+    // discovery cycle only refetches the workspace list, never pages).
     const baseline = catalogCalls().length;
     await act(async () => {
       await vi.advanceTimersByTimeAsync(45_000);
     });
     expect(catalogCalls().length).toBe(baseline);
+    expect(workspaceListCalls()).toBeGreaterThan(1);
   });
 
-  it("clears the registered periodic targets when logging out through the real control", async () => {
+  it("clears the registered periodic targets and the discovery cycle when logging out", async () => {
     await act(async () => {
       root.render(<App />);
     });
     await act(async () => {});
 
-    // ws-1 is a live owner; the cadence is armed.
-    expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
+    // ws-1 is a live owner; the cadence is armed and discovery ticks.
     const logoutButton = container.querySelector<HTMLButtonElement>('.th-sidebar-footer button[title="Log out"]');
     expect(logoutButton).not.toBeNull();
 
@@ -304,11 +304,14 @@ describe("App + Sidebar both-surfaces live ordering", () => {
     });
     await act(async () => {});
 
-    // Three full cadences after logout: zero further catalog requests.
+    // Three full cadences after logout: zero further catalog requests and a
+    // fully disarmed discovery cycle.
     const baseline = catalogCalls().length;
+    const discoveryBaseline = workspaceListCalls();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(45_000);
     });
     expect(catalogCalls().length).toBe(baseline);
+    expect(workspaceListCalls()).toBe(discoveryBaseline);
   });
 });

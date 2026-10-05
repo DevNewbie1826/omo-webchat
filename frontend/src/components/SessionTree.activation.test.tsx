@@ -18,6 +18,14 @@ const i18n: I18nValue = {
   t: (key, vars) => (vars ? `${key} ${Object.values(vars).join(" ")}` : key),
 };
 
+const unnamedId = "chat-abcd-efghijkl";
+const unnamedSession: WorkspaceSession = {
+  id: unnamedId,
+  name: "",
+  source: "stored",
+  recencyMs: 4,
+};
+
 const workspace: Workspace = {
   id: "ws-1",
   name: "Workspace",
@@ -25,6 +33,7 @@ const workspace: Workspace = {
   chats: [
     { id: "tm-1", name: "Stored dangling", provider: "omo" },
     { id: "tm-2", name: "Stored session", provider: "omo" },
+    { id: unnamedId, name: "", provider: "omo" },
   ],
 };
 
@@ -34,15 +43,6 @@ const discoveredSession: WorkspaceSession = {
   source: "discovered",
   recencyMs: 1,
   resumeIdentity: "/sessions/disk-1.jsonl",
-};
-
-const unnamedId = "ses-abcd-efghijkl";
-const unnamedSession: WorkspaceSession = {
-  id: unnamedId,
-  name: "",
-  source: "discovered",
-  recencyMs: 4,
-  resumeIdentity: "/sessions/unnamed.jsonl",
 };
 
 const sessions: readonly WorkspaceSession[] = [
@@ -76,7 +76,6 @@ describe("SessionTree session-row activation target", () => {
   });
 
   function render(
-    onOpen: SessionTreeProps["onOpen"] = async () => undefined,
     onToggle: SessionTreeProps["onToggle"] = () => undefined,
     workspaces: readonly Workspace[] = [workspace],
   ): void {
@@ -94,7 +93,6 @@ describe("SessionTree session-row activation target", () => {
             onToggle={onToggle}
             onLoadMoreSessions={() => undefined}
             onSelect={() => undefined}
-            onOpen={onOpen}
             onAddTerminal={() => undefined}
             onDeleteWorkspace={() => undefined}
             onDeleteTerminal={() => undefined}
@@ -114,41 +112,62 @@ describe("SessionTree session-row activation target", () => {
     return match!;
   }
 
-  it("renders a non-empty placeholder label carrying the short id when a discovered session has no name", () => {
+  it("renders a non-empty placeholder label carrying the short id when a chat has no name", () => {
     render();
     const unnamed = Array.from(container.querySelectorAll<HTMLElement>(".th-tree-children > .th-tree-node"))
-      .find((item) => item.querySelector(".th-tree-activation")?.getAttribute("aria-label")?.includes(unnamedId.slice(0, 8))
-        || item.querySelector(".th-tree-label")?.textContent?.includes(unnamedId.slice(0, 8)));
+      .find((item) => item.querySelector(".th-tree-label")?.textContent?.includes(unnamedId.slice(0, 8)));
     expect(unnamed).toBeDefined();
     const label = unnamed!.querySelector(".th-tree-label");
     expect(label?.textContent ?? "").not.toBe("");
     expect(label?.textContent).toContain(unnamedId.slice(0, 8));
-    const activation = unnamed!.querySelector<HTMLButtonElement>(".th-tree-activation");
-    expect(activation?.getAttribute("aria-label") ?? "").not.toBe("");
   });
 
-  it("keeps missing-original metadata but removes discovered-session source badges", () => {
+  it("keeps missing-original metadata and renders a discovered row inert without a source badge", () => {
     render();
     const discovered = row("Discovered session");
     expect(discovered.querySelector(".th-tree-source")).toBeNull();
+    expect(discovered.querySelector<HTMLButtonElement>(".th-tree-activation")?.disabled).toBe(true);
 
     const dangling = row("Stored dangling");
     expect(dangling.querySelector(".th-tree-source")).not.toBeNull();
   });
 
-  it("opens a discovered session when its primary row action is clicked", () => {
-    const onOpen = vi.fn(async () => undefined);
-    render(onOpen);
-    const activation = row("Discovered session").querySelector<HTMLButtonElement>(".th-tree-activation");
+  it("activates a stored session through the primary row action", () => {
+    const onSelect = vi.fn((_ws: Workspace, _tm: Workspace["chats"][number]) => undefined);
+    act(() => {
+      root.render(
+        <I18nContext.Provider value={i18n}>
+          <SessionTree
+            workspaces={[workspace]}
+            liveSessions={new Set<string>()}
+            activeTerminalId={null}
+            placedSessions={new Set<string>()}
+            expanded={new Set([workspace.id])}
+            sessionLists={new Map([[workspace.id, sessions]])}
+            sessionPages={new Map()}
+            onToggle={() => undefined}
+            onLoadMoreSessions={() => undefined}
+            onSelect={onSelect}
+            onAddTerminal={() => undefined}
+            onDeleteWorkspace={() => undefined}
+            onDeleteTerminal={() => undefined}
+            onRenameWorkspace={async () => undefined}
+            onRenameTerminal={async () => undefined}
+            notify={() => undefined}
+          />
+        </I18nContext.Provider>,
+      );
+    });
+    const activation = row("Stored session").querySelector<HTMLButtonElement>(".th-tree-activation");
     expect(activation).not.toBeNull();
     act(() => activation?.click());
-    expect(onOpen).toHaveBeenCalledTimes(1);
-    expect(onOpen).toHaveBeenCalledWith(workspace, discoveredSession, false);
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith(workspace, workspace.chats[1]);
   });
 
   it("toggles the workspace through one folder-and-name disclosure", () => {
     const onToggle = vi.fn();
-    render(async () => undefined, onToggle);
+    render(onToggle);
     const parent = container.querySelector(".th-tree-workspace > .th-tree-node");
     const disclosure = parent?.querySelector<HTMLButtonElement>(".th-tree-workspace-activation");
 
@@ -168,7 +187,7 @@ describe("SessionTree session-row activation target", () => {
       id: `ws-${index + 1}`,
       name: `Earlier workspace ${index + 1}`,
     }));
-    render(undefined, undefined, numbered);
+    render(undefined, numbered);
 
     const disclosures = container.querySelectorAll<HTMLButtonElement>(".th-tree-workspace-activation");
     expect(disclosures).toHaveLength(12);
@@ -189,7 +208,7 @@ describe("SessionTree session-row activation target", () => {
 
   it("reserves the final characters when a workspace name has no separate word", () => {
     const longName = "very-long-unbrokenname";
-    render(undefined, undefined, [{ ...workspace, name: longName }]);
+    render(undefined, [{ ...workspace, name: longName }]);
 
     const disclosure = container.querySelector<HTMLButtonElement>(".th-tree-workspace-activation");
     expect(disclosure?.querySelector(".th-tree-label-head")?.textContent).toBe("very-long-unbroke");

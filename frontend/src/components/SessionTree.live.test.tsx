@@ -52,7 +52,6 @@ describe("SessionTree live-process indicator", () => {
           onToggle={() => undefined}
           onLoadMoreSessions={() => undefined}
           onSelect={() => undefined}
-          onOpen={async () => undefined}
           onAddTerminal={() => undefined}
           onDeleteWorkspace={() => undefined}
           onDeleteTerminal={() => undefined}
@@ -120,7 +119,6 @@ describe("SessionTree live-process indicator", () => {
           onToggle={() => undefined}
           onLoadMoreSessions={() => undefined}
           onSelect={() => undefined}
-          onOpen={async () => undefined}
           onAddTerminal={() => undefined}
           onDeleteWorkspace={() => undefined}
           onDeleteTerminal={() => undefined}
@@ -154,9 +152,8 @@ describe("SessionTree live-process indicator", () => {
     );
   });
 
-  it("renders discovered sessions as adoptable rows with no store actions", () => {
-    const onSelect = vi.fn();
-    const onOpen = vi.fn(async () => undefined);
+  it("renders discovered sessions as inert rows with no store actions", () => {
+    const onSelect = vi.fn((_ws: Workspace, _tm: Workspace["chats"][number]) => undefined);
     const onDeleteTerminal = vi.fn();
     const onRenameTerminal = vi.fn(async () => undefined);
     const workspace: Workspace = {
@@ -176,13 +173,12 @@ describe("SessionTree live-process indicator", () => {
           expanded={new Set(["ws-1"])}
           sessionLists={new Map([["ws-1", [
             { id: "omo-session-uuid", name: "Disk session", source: "discovered", recencyMs: 2 },
-            { id: "stored-1", name: "Stored chat", source: "stored", recencyMs: 1 },
+            { id: "stored-1", name: "Stored chat", source: "stored", recencyMs: 1, live: true },
           ]]])}
           sessionPages={new Map()}
           onToggle={() => undefined}
           onLoadMoreSessions={() => undefined}
           onSelect={onSelect}
-          onOpen={onOpen}
           onAddTerminal={() => undefined}
           onDeleteWorkspace={() => undefined}
           onDeleteTerminal={onDeleteTerminal}
@@ -201,8 +197,8 @@ describe("SessionTree live-process indicator", () => {
     expect(discovered?.getAttribute("aria-expanded")).toBeNull();
     expect(discovered?.getAttribute("aria-selected")).toBeNull();
     expect(activation?.tagName).toBe("BUTTON");
-    expect(activation?.getAttribute("aria-label")).toBe("sidebar.tm.discoveredHint");
-    expect(activation?.getAttribute("title")).toBe("sidebar.tm.discoveredHint");
+    expect(activation?.disabled).toBe(true);
+    expect(activation?.getAttribute("aria-label")).toBeNull();
     expect(discovered?.querySelectorAll("button")).toHaveLength(1);
 
     act(() => {
@@ -210,9 +206,16 @@ describe("SessionTree live-process indicator", () => {
       activation?.click();
     });
 
-    expect(onOpen).toHaveBeenCalledTimes(1);
     expect(onSelect).not.toHaveBeenCalled();
     expect(onDeleteTerminal).not.toHaveBeenCalled();
     expect(onRenameTerminal).not.toHaveBeenCalled();
+
+    // The stored row's live flag can come from the row itself (rpc watch)
+    // even when the webchat live-sessions feed is empty.
+    const stored = Array.from(container.querySelectorAll<HTMLElement>(".th-tree-node"))
+      .find((node) => node.textContent?.includes("Stored chat"));
+    expect(stored?.querySelector(".th-tree-live")).not.toBeNull();
+    expect(stored?.querySelector<HTMLButtonElement>(".th-tree-activation")?.getAttribute("title"))
+      .toBe("sidebar.tm.liveProcess");
   });
 });

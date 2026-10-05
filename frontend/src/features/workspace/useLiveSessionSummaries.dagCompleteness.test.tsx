@@ -245,7 +245,7 @@ describe("Sidebar and overview consume real DAG summary qualification", () => {
         activeTerminalId={null} placedSessions={new Set()} liveSessions={new Set(["s1"])} expanded={new Set(["ws"])}
         sessionLists={new Map([["ws", [{ id: "s1", name: "Session", source: "stored", recencyMs: 1 }]]])}
         sessionPages={new Map()} onToggleExpanded={() => undefined} onLoadMoreSessions={() => undefined}
-        onSelectTerminal={() => undefined} onOpenSession={async () => undefined} onAddWorkspace={() => undefined}
+        onSelectTerminal={() => undefined} onAddWorkspace={() => undefined}
         onAddTerminal={() => undefined} onDeleteWorkspace={() => undefined} onDeleteTerminal={() => undefined}
         onRenameWorkspace={async () => undefined} onRenameTerminal={async () => undefined} onLogout={() => undefined} notify={() => undefined}
       />,
@@ -257,31 +257,29 @@ describe("Sidebar and overview consume real DAG summary qualification", () => {
     const badges = () => [
       container.querySelector(".th-tree-children .th-tree-running"),
       container.querySelector(".th-tree-running--workspace"),
-      container.querySelector(".th-sidebar-live .th-overview-card-running"),
     ];
-    expect(badges()).toEqual([null, null, null]);
+    expect(badges()).toEqual([null, null]);
 
     render({ runs: [{ ...fullRun, updated_at: "2026-09-08T10:00:00Z" }], truncated_runs: false });
-    expect(badges().map((badge) => badge?.textContent)).toEqual(["2", "2", "2"]);
+    expect(badges().map((badge) => badge?.textContent)).toEqual(["2", "2"]);
     expect(badges().map((badge) => badge?.getAttribute("aria-label"))).toEqual([
-      "sidebar.tm.runningAgents", "sidebar.ws.runningAgents", "overview.runningAria",
+      "sidebar.tm.runningAgents", "sidebar.ws.runningAgents",
     ]);
   });
 
-  it("recovers compact zero to rich full empty-ID exact2 on session, workspace and overview", () => {
+  it("recovers compact zero to rich full empty-ID exact2 on session and workspace rows", () => {
     const dagDigest = parseDagDigest({ runs: [{ run_id: "r1", status: "running", running_task_ids: [] }], truncated: true });
     if (dagDigest === null) throw new Error("Invalid compact DAG fixture");
     render(emptyTaskIds, { dagOversized: true, dagDigest });
     const badges = () => [
       container.querySelector(".th-tree-children .th-tree-running"),
       container.querySelector(".th-tree-running--workspace"),
-      container.querySelector(".th-sidebar-live .th-overview-card-running"),
     ];
-    expect(badges()).toEqual([null, null, null]);
+    expect(badges()).toEqual([null, null]);
     render(emptyTaskIds, { dagOversized: false, dagDigest });
-    expect(badges().map((badge) => badge?.textContent)).toEqual(["2", "2", "2"]);
+    expect(badges().map((badge) => badge?.textContent)).toEqual(["2", "2"]);
     expect(badges().map((badge) => badge?.getAttribute("aria-label"))).toEqual([
-      "sidebar.tm.runningAgents", "sidebar.ws.runningAgents", "overview.runningAria",
+      "sidebar.tm.runningAgents", "sidebar.ws.runningAgents",
     ]);
   });
 
@@ -293,24 +291,22 @@ describe("Sidebar and overview consume real DAG summary qualification", () => {
     const badges = () => [
       container.querySelector(".th-tree-children .th-tree-running"),
       container.querySelector(".th-tree-running--workspace"),
-      container.querySelector(".th-sidebar-live .th-overview-card-running"),
     ];
-    expect(badges()).toEqual([null, null, null]);
+    expect(badges()).toEqual([null, null]);
   });
 
   it("renders lean running agents 50 exactly, without question or plus markers", () => {
     // Given no retained identities; when exact pre-truncation scalars arrive.
     render(null, { lean: { running: { agents: 50, tasks: 40, dag: 20 }, done: 9,
       dag_done: 2, dag_total: 8, truncated: { task: true, dag: true } } });
-    // Then all three real UI surfaces display the server's deduplicated count.
+    // Then both real UI surfaces display the server's deduplicated count.
     const badges = () => [
       container.querySelector(".th-tree-children .th-tree-running"),
       container.querySelector(".th-tree-running--workspace"),
-      container.querySelector(".th-sidebar-live .th-overview-card-running"),
     ];
-    expect(badges().map((badge) => badge?.textContent)).toEqual(["50", "50", "50"]);
+    expect(badges().map((badge) => badge?.textContent)).toEqual(["50", "50"]);
     expect(badges().map((badge) => badge?.getAttribute("aria-label"))).toEqual([
-      "sidebar.tm.runningAgents", "sidebar.ws.runningAgents", "overview.runningAria",
+      "sidebar.tm.runningAgents", "sidebar.ws.runningAgents",
     ]);
   });
 
@@ -319,20 +315,16 @@ describe("Sidebar and overview consume real DAG summary qualification", () => {
     { name: "malformed retained1", dag: malformedNode, expected: "1" },
     { name: "incomplete0", dag: incompleteZero, expected: null },
     { name: "malformed0", dag: { runs: [{}] }, expected: null },
-  ])("shows exact retained $name on session, workspace and overview then exact2 after full data", ({ dag, expected }) => {
+  ])("shows exact retained $name on session and workspace rows then exact2 after full data", ({ dag, expected }) => {
     render(dag);
     const row = () => container.querySelector(".th-tree-children .th-tree-running");
     const aggregate = () => container.querySelector(".th-tree-running--workspace");
-    const overview = () => container.querySelector(".th-sidebar-live .th-overview-card-running");
     expect.soft(row()?.textContent ?? null).toBe(expected);
     expect.soft(aggregate()?.textContent ?? null).toBe(expected);
-    expect.soft(overview()?.textContent ?? null).toBe(expected);
     expect.soft(row()?.getAttribute("aria-label") ?? null).toBe(expected === null ? null : "sidebar.tm.runningAgents");
 
     render(full);
     expect(row()?.textContent).toBe("2");
     expect(aggregate()?.textContent).toBe("2");
-    expect(overview()?.textContent).toBe("2");
-    expect(overview()?.getAttribute("aria-label")).toBe("overview.runningAria");
   });
 });

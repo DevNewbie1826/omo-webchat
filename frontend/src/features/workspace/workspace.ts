@@ -99,6 +99,13 @@ export interface WorkspaceSession {
   readonly dangling?: boolean;
   /** Live rows only: the row's stored session file has not been written yet. */
   readonly preparing?: boolean;
+  /** Server-side rpc-watch flag: the daemon session this chat is bound to is
+   * running right now, independent of the webchat live-sessions feed (which
+   * only covers sessions webchat itself subscribed to). Absent on older
+   * backends; treated as not live. */
+  readonly live?: boolean;
+  /** Durable id of the daemon session this row is bound to, when known. */
+  readonly durableSessionID?: string;
 }
 
 export interface WorkspaceSessionPage {

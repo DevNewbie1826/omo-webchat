@@ -22,6 +22,10 @@ export interface UseWorkspacesOptions {
   readonly t: Translate;
   readonly layout: LayoutApi;
   readonly confirm: (opts: ConfirmOptions) => Promise<boolean>;
+  /** Arms the always-on discovery merge cycle. The hook itself cannot know
+   * authentication state; App passes `authed === true` so an unauthenticated
+   * mount never polls. */
+  readonly discoveryEnabled?: boolean;
 }
 
 /** Per-workspace session-history pagination state for the sidebar tree. */
@@ -94,6 +98,12 @@ export const CATALOG_REFRESH_DELAY_MS = 120_000;
 // render churn can never clear, postpone, or duplicate the timer.
 export const RECENCY_REFRESH_INTERVAL_MS = 15_000;
 
+// Cadence of the always-on discovery merge. Independent of the recency
+// cadence above, which disarms when no workspace owns a live session:
+// auto-enrolled workspaces and chats must still appear in an open tab
+// without a reload, starting from the zero-workspaces initial state.
+export const DISCOVERY_MERGE_INTERVAL_MS = 20_000;
+
 const WORKSPACE_EXPANDED_STORAGE_KEY = "th-ws-expanded";
 
 function readExpandedWorkspaces(): ReadonlySet<string> {
@@ -113,8 +123,12 @@ function persistExpandedWorkspaces(expanded: ReadonlySet<string>): void {
   }
 }
 
-export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptions): UseWorkspacesResult {
+export function useWorkspaces({ notify, t, layout, confirm, discoveryEnabled = false }: UseWorkspacesOptions): UseWorkspacesResult {
   const [workspaces, setWorkspaces] = useState<readonly Workspace[]>([]);
+  // Ref mirror for the discovery cycle's merge: interval callbacks must read
+  // the latest committed list without waiting for a render.
+  const workspacesRef = useRef<readonly Workspace[]>([]);
+  workspacesRef.current = workspaces;
   const [expanded, setExpandedState] = useState<ReadonlySet<string>>(readExpandedWorkspaces);
   const setExpanded: Dispatch<SetStateAction<ReadonlySet<string>>> = useCallback((update) => {
     setExpandedState((previous) => {
@@ -355,6 +369,69 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     recenciesRef.current.clear();
     loadGenerationRef.current++;
   }, [disarmAllCatalogRefreshes, disarmRecencyRefresh]);
+
+  // Always-on discovery merge: re-fetches the workspace catalog on a fixed
+  // cadence and merges newly auto-enrolled workspaces — and new chats of
+  // already-known workspaces — into state. Strictly additive and identity-
+  // preserving: a catalog that reports nothing new leaves every array
+  // untouched, optimistic local edits (renames, pending creations) are never
+  // overwritten, and removals still flow only through the explicit delete
+  // flows and load().
+  const runDiscoveryMerge = useCallback(async (): Promise<void> => {
+    let discovered: readonly Workspace[];
+    try {
+      discovered = await listWorkspaces();
+    } catch {
+      // Transient failure: the next tick retries.
+      return;
+    }
+    const current = workspacesRef.current;
+    const currentById = new Map(current.map((workspace) => [workspace.id, workspace]));
+    const next = [...current];
+    const newlyExpanded: string[] = [];
+    const chatGrew: string[] = [];
+    for (const incoming of discovered) {
+      const existing = currentById.get(incoming.id);
+      if (existing === undefined) {
+        next.push(incoming);
+        // First sighting: expand so the enrolled chat rows are visible
+        // without a click. Later ticks never fight the user's collapse.
+        newlyExpanded.push(incoming.id);
+        continue;
+      }
+      const knownChatIds = new Set(existing.chats.map((chat) => chat.id));
+      const missingChats = incoming.chats.filter((chat) => !knownChatIds.has(chat.id));
+      if (missingChats.length === 0) continue;
+      next[next.findIndex((workspace) => workspace.id === existing.id)] = {
+        ...existing,
+        chats: [...existing.chats, ...missingChats],
+      };
+      chatGrew.push(existing.id);
+    }
+    if (newlyExpanded.length > 0) {
+      setExpanded((previous) => {
+        const merged = new Set(previous);
+        for (const id of newlyExpanded) merged.add(id);
+        return merged;
+      });
+    }
+    if (next.length !== current.length || chatGrew.length > 0) setWorkspaces(next);
+    // A known workspace whose server chats grew (an enrolled session bound to
+    // an already-loaded workspace) refreshes its ready first page through the
+    // scheduled path so the new row renders on this same cadence. New
+    // workspaces need no help: the expand-effect fetches their first page.
+    for (const wsId of chatGrew) {
+      if (sessionPagesRef.current.get(wsId)?.ready) void fetchSessionPage(wsId, "", false, true);
+    }
+  }, [fetchSessionPage, setExpanded]);
+
+  useEffect(() => {
+    if (!discoveryEnabled) return;
+    const timer = window.setInterval(() => {
+      void runDiscoveryMerge();
+    }, DISCOVERY_MERGE_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [discoveryEnabled, runDiscoveryMerge]);
 
   const load = useCallback(async (): Promise<void> => {
     const generation = ++loadGenerationRef.current;
