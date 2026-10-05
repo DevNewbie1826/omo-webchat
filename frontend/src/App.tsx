@@ -17,7 +17,6 @@ import { useLayout } from "./features/split/useLayout";
 import { findLeaf } from "./features/split/paneTree";
 import { createTerminal } from "./features/terminal/terminal";
 import { openWorkspaceSession } from "./features/workspace/workspace";
-import { openRpcLiveSession, type RpcLiveSession } from "./features/workspace/rpcSessions";
 import type {
   ProviderDiscoveryState,
   Terminal,
@@ -100,7 +99,7 @@ export function App() {
   const { confirm, dialog: confirmDialog } = useConfirm(t);
   const {
     workspaces, setWorkspaces, expanded, setExpanded, sessions,
-    sessionLists, sessionPages, rpcLiveRows, rpcLiveChats, load, addCreatedSession, loadMoreSessions,
+    sessionLists, sessionPages, load, addCreatedSession, loadMoreSessions,
     ensureSessionsLoaded, setRecencyTargets, markSessionUsed, toggleExpanded, handleDeleteWorkspace,
     handleDeleteTerminal, handleRenameWorkspace, handleRenameTerminal,
     handleChatName,
@@ -196,44 +195,6 @@ export function App() {
       // Source intent protects concurrent opens before the canonical chat id
       // is known. Canonical intent also protects newer stored/alias placement
       // in another pane; per-pane generations alone cannot prevent that move.
-      const latestSessionIntent = Math.max(sessionIntents.current.get(sourceKey) ?? 0, sessionIntents.current.get(chatKey) ?? 0);
-      if (targetCurrent(target) && latestSessionIntent <= target.generation) {
-        sessionIntents.current.set(chatKey, target.generation);
-        setExpanded((prev) => new Set(prev).add(ws.id));
-        markSessionUsed(ws.id, tm.id);
-        layout.assignSession(target.paneId, tm.id, false);
-        if (window.matchMedia(MOBILE_QUERY).matches) setSidebarCollapsed(true);
-      }
-      return "opened";
-    } catch (error) {
-      notify(t("toast.error"), "error");
-      throw error;
-    }
-  };
-
-  const openRpcLive = async (
-    ws: Workspace,
-    live: RpcLiveSession,
-  ): Promise<"opened" | "session-active"> => {
-    const target = captureTarget();
-    const sourceKey = sessionOpenAttemptKey(ws.id, live.sessionId);
-    sessionIntents.current.set(sourceKey, target.generation);
-    layout.focusPane(target.paneId);
-    try {
-      const tm = await openRpcLiveSession(ws.id, live.sessionId);
-      setWorkspaces((prev) => prev.map((workspace) => workspace.id === ws.id
-        ? { ...workspace, chats: workspace.chats.some((chat) => chat.id === tm.id) ? workspace.chats : [...workspace.chats, tm] }
-        : workspace));
-      // Record the binding under the durable id so the live row folds into
-      // the chat row; the watcher row already carries the source identity.
-      addCreatedSession(ws.id, tm, {
-        id: live.durableSessionId,
-        name: live.name,
-        source: "discovered",
-        recencyMs: live.updatedAt,
-        resumeIdentity: live.sessionPath,
-      });
-      const chatKey = sessionOpenAttemptKey(ws.id, tm.id);
       const latestSessionIntent = Math.max(sessionIntents.current.get(sourceKey) ?? 0, sessionIntents.current.get(chatKey) ?? 0);
       if (targetCurrent(target) && latestSessionIntent <= target.generation) {
         sessionIntents.current.set(chatKey, target.generation);
@@ -437,9 +398,6 @@ export function App() {
             onLoadMoreSessions={loadMoreSessions}
             onSelectTerminal={selectTerminal}
             onOpenSession={openSession}
-            onOpenRpcSession={openRpcLive}
-            rpcLiveRows={rpcLiveRows}
-            rpcLiveChats={rpcLiveChats}
             onAddWorkspace={() => setWizardOpen(true)}
             onAddTerminal={(ws) => requestNewChat({ wsId: ws.id })}
             onDeleteWorkspace={(ws) => void handleDeleteWorkspace(ws)}

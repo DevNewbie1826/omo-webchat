@@ -9,10 +9,7 @@ import { CATALOG_REFRESH_DELAY_MS, RECENCY_REFRESH_INTERVAL_MS, useWorkspaces } 
 const workspace: Workspace = { id: "ws", name: "Workspace", path: "/work", chats: [
   { id: "web", name: "Web", provider: "omo" },
 ] };
-const disk = {
-  id: "disk", name: "Disk", source: "discovered", recencyMs: 100,
-  resumeIdentity: "/sessions/disk.jsonl",
-} as const;
+const disk = { id: "disk", name: "Disk", source: "discovered", recencyMs: 100 } as const;
 const web = { id: "web", name: "Web", source: "stored", recencyMs: 80 } as const;
 const layout: LayoutApi = {
   root: { kind: "leaf", id: "pane", sessionId: null }, focusedPaneId: "pane", placed: new Set(),

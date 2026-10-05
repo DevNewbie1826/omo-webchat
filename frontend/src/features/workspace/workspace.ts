@@ -1,6 +1,5 @@
 import { ApiError, apiJson, apiVoid, qs } from "../../lib/api";
 import { isRecord } from "../../lib/chatWsParseFields";
-import { parseRpcLiveSection, type RpcLiveSession, type RpcLiveState } from "./rpcSessions";
 import { parseDagDigest, parseTaskDigest, type DagDigest, type TaskDigest } from "./activityDigest";
 
 export type ChatProvider = "omo";
@@ -100,16 +99,11 @@ export interface WorkspaceSession {
   readonly dangling?: boolean;
   /** Live rows only: the row's stored session file has not been written yet. */
   readonly preparing?: boolean;
-  /** Watcher status for a bound chat without a manager-owned route. */
-  readonly live?: RpcLiveState;
 }
 
 export interface WorkspaceSessionPage {
   readonly items: readonly WorkspaceSession[];
   readonly nextCursor: string;
-  /** Always-complete watcher live section for this workspace; absent on
-   * backends without the watcher union. */
-  readonly live?: readonly RpcLiveSession[];
 }
 
 const WORKSPACE_SESSION_PAGE_SIZE = 5;
@@ -148,7 +142,7 @@ export async function listWorkspaceSessions(
   signal?: AbortSignal,
 ): Promise<WorkspaceSessionPage> {
   const query = qs({ limit: String(WORKSPACE_SESSION_PAGE_SIZE), cursor: cursor || undefined });
-  const page = await apiJson<{ readonly items: readonly (Omit<WorkspaceSession, "source"> & { readonly source: string })[]; readonly nextCursor: string; readonly live?: unknown }>(
+  const page = await apiJson<{ readonly items: readonly (Omit<WorkspaceSession, "source"> & { readonly source: string })[]; readonly nextCursor: string }>(
     `/api/workspaces/${encodeURIComponent(wsId)}/sessions${query}`,
     signal ? { signal } : {},
   );
@@ -156,7 +150,6 @@ export async function listWorkspaceSessions(
     ...page,
     // Legacy fork-adoption provenance is backend metadata, not a UI row.
     items: page.items.filter((item): item is WorkspaceSession => item.source === "stored" || item.source === "discovered"),
-    live: parseRpcLiveSection(page.live),
   };
 }
 

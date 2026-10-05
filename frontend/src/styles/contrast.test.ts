@@ -605,7 +605,6 @@ describe("token contrast contracts (WCAG 2.1)", () => {
     ".th-activity-resize::after": "activity panel resize grip pill (non-text affordance, >=3:1 at rest)",
     ".th-tree-chevron": "session-tree disclosure chevron icon",
     ".th-tree-source": "session-tree source badge",
-    ".th-tree-live-recency": "session-tree watcher row recency stamp (metadata)",
     ".th-files-chevron": "file-tree disclosure chevron icon",
     ".th-files-childstatus": "file-tree child status metadata",
     ".th-files-meta--dim": "file-row dim metadata",

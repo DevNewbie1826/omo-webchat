@@ -25,7 +25,7 @@ describe("listWorkspaceSessions", () => {
       "/api/workspaces/ws%201/sessions?limit=5",
       expect.objectContaining({ method: "GET" }),
     );
-    expect(page).toEqual({ items: [], nextCursor: "", live: [] });
+    expect(page).toEqual({ items: [], nextCursor: "" });
   });
 
   it("passes the continuation cursor and returns the typed page", async () => {

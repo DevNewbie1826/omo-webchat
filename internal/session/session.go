@@ -147,7 +147,6 @@ type Session struct {
 	activityOversized                                                       map[string]bool
 	title, nameSource                                                       string
 	inPlace, sessionFileObserved                                            bool
-	forcedInPlaceOpen                                                       bool
 	sessionFileIdentity                                                     os.FileInfo
 	queueFileIdentity                                                       os.FileInfo
 	queueFileErr                                                            error
@@ -2465,11 +2464,11 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 		if !errors.Is(err, os.ErrNotExist) {
 			return publishErr(err)
 		}
-		if (s.inPlace && !s.forcedInPlaceOpen) || s.sessionFileIdentity != nil {
+		if s.inPlace || s.sessionFileIdentity != nil {
 			return publishErr(externalIdentityReadError(err))
 		}
 		s.lifecycleMu.Lock()
-		rootHydrationAllowed := (!s.resumed || s.forcedInPlaceOpen) && !s.sessionFileObserved
+		rootHydrationAllowed := !s.resumed && !s.sessionFileObserved
 		s.lifecycleMu.Unlock()
 		if !rootHydrationAllowed {
 			return publishErr(err)

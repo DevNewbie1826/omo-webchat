@@ -312,28 +312,6 @@ describe("useWorkspaces paginated session history", () => {
     });
   });
 
-  it("does not suppress a same-durable adopted copy at a different path", async () => {
-    const source = {
-      id: "disk-session", name: "Original", source: "discovered" as const,
-      recencyMs: 5, resumeIdentity: "/sessions/original.jsonl",
-    };
-    vi.mocked(listWorkspaceSessions).mockResolvedValueOnce({
-      items: [source], nextCursor: "next-page",
-    }).mockResolvedValueOnce({
-      items: [{ ...source, name: "Adopted copy", resumeIdentity: "/sessions/copy.jsonl" }],
-      nextCursor: "",
-    });
-    act(() => root.render(<PendingSessionsProbe />));
-    await act(async () => pendingLatest?.load());
-    act(() => pendingLatest?.setExpanded(new Set(["ws-1"])));
-    await act(async () => undefined);
-    act(() => pendingLatest?.addCreatedSession("ws-1",
-      { id: "chat-new", name: "Original", provider: "omo" }, source));
-    await act(async () => pendingLatest?.loadMoreSessions("ws-1"));
-    expect(pendingLatest?.sessionLists.get("ws-1")?.map(row => row.id))
-      .toEqual(["chat-new", "disk-session"]);
-  });
-
   it("merges a chat created during the pending first page and keeps load-more deduplicated", async () => {
     let latest: ReturnType<typeof useWorkspaces> | undefined;
     let resolveFirstPage!: (page: Awaited<ReturnType<typeof listWorkspaceSessions>>) => void;

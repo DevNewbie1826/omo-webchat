@@ -554,31 +554,3 @@
   height: auto;
   padding: var(--th-space-0-5) var(--th-space-2);
 }
-
-/* Watcher live rows ride the chat-row geometry; only the recency stamp and
-   the question pill are new elements, both at micro type. */
-.th-tree-live-recency {
-  flex: none;
-  font-size: var(--th-type-micro-size);
-  line-height: var(--th-type-micro-line);
-  letter-spacing: var(--th-type-micro-tracking);
-  color: var(--th-faint);
-  font-variant-numeric: tabular-nums;
-}
-
-/* Blocked sessions: amber ink on the matching 12% tint, the same state
-   encoding as the running chip (state never paints a coloured border). */
-.th-tree-questions {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  min-height: calc(var(--th-type-micro-size) * var(--th-type-micro-line) + 2 * var(--th-space-0-5));
-  padding: 0 var(--th-space-1);
-  border-radius: var(--th-radius-pill);
-  font-size: var(--th-type-micro-size);
-  font-weight: var(--th-weight-emphasize);
-  line-height: var(--th-type-micro-line);
-  letter-spacing: var(--th-type-micro-tracking);
-  color: var(--th-warning);
-  background: var(--th-warning-bg);
-}

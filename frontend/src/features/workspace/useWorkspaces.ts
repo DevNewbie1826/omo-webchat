@@ -6,8 +6,6 @@ import type { LayoutApi } from "../split/useLayout";
 import { deleteTerminal, renameTerminal } from "../terminal/terminal";
 import { deleteWorkspace, listWorkspaceSessions, listWorkspaces, mergeWorkspaceSessions, renameWorkspace, touchWorkspaceSession } from "./workspace";
 import type { ChatSessionRef, Terminal, Workspace, WorkspaceSession } from "./workspace";
-import { partitionRpcLiveSessions, rpcSessionIdentityMatches, type RpcLiveSession, type RpcLiveState } from "./rpcSessions";
-import { useRpcSessions } from "./useRpcSessions";
 import type { ConfirmOptions } from "../../components/ConfirmDialog";
 
 type Notify = (msg: string, kind?: ToastKind) => void;
@@ -48,10 +46,6 @@ export interface UseWorkspacesResult {
   readonly sessions: ReadonlyMap<string, ChatSessionRef>;
   readonly sessionLists: ReadonlyMap<string, readonly WorkspaceSession[]>;
   readonly sessionPages: ReadonlyMap<string, WorkspaceSessionPaging>;
-  /** Unbound watcher rows per workspace, pinned above the paged history. */
-  readonly rpcLiveRows: ReadonlyMap<string, readonly RpcLiveSession[]>;
-  /** Watcher status carried by bound chats the manager does not route, by chat id. */
-  readonly rpcLiveChats: ReadonlyMap<string, RpcLiveState>;
   readonly load: () => Promise<void>;
   readonly addCreatedSession: (wsId: string, tm: Terminal, inPlaceSource?: WorkspaceSession) => void;
   readonly loadMoreSessions: (wsId: string) => Promise<void>;
@@ -141,21 +135,6 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
   // paging without waiting for a render commit.
   const sessionPagesRef = useRef<ReadonlyMap<string, WorkspaceSessionPaging>>(new Map());
   const [sessionPages, setSessionPages] = useState<ReadonlyMap<string, WorkspaceSessionPaging>>(sessionPagesRef.current);
-  // Watcher live sections: transport, per-workspace in-flight dedupe and
-  // vanish removal live in the shared store; this hook owns when refreshes
-  // fire and how rows fold into bound chats.
-  const {
-    liveByWs,
-    boundByWs,
-    applyRows: applyRpcRows,
-    refresh: refreshRpcLive,
-    removeWorkspace: removeRpcWorkspace,
-    prune: pruneRpc,
-  } = useRpcSessions();
-  const expandedRef = useRef<ReadonlySet<string>>(expanded);
-  // The in-place bindings live in a ref; this version counter mirrors their
-  // changes so the alias fold re-runs when a chat is created or deleted.
-  const [rpcBindingsVersion, setRpcBindingsVersion] = useState(0);
   // Creations can race an older first-page snapshot. Keep them separate until
   // that snapshot is applied so they remain ahead of its continuation cursor.
   const pendingCreatedSessionsRef = useRef<Map<string, readonly WorkspaceSession[]>>(new Map());
@@ -164,15 +143,18 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
   // so a stale server page cannot briefly project both rows.
   const inPlaceBindingsRef = useRef<Map<string, Map<string, { readonly chatId: string; readonly path: string }>>>(new Map());
 
-  // Paths must match as well as compatible durable ids: an adopted copy at a
-  // different path remains a separate session even when it retains the id.
+  // Observed engine behavior: a recorded durable id is authoritative — the
+  // same resume path under a different id is a distinct replacement session
+  // that must stay visible. The fold therefore matches the exact source
+  // identity and falls back to the path only when the adopted source recorded
+  // no durable id at all.
   const suppressBoundSources = (wsId: string, items: readonly WorkspaceSession[]): readonly WorkspaceSession[] => {
     const bindings = inPlaceBindingsRef.current.get(wsId);
     if (!bindings) return items;
     return items.flatMap((item) => {
       if (item.source !== "discovered") return [item];
-      const match = [...bindings.entries()].find(([durableId, binding]) =>
-        rpcSessionIdentityMatches(binding.path, durableId, item.resumeIdentity ?? "", item.id));
+      const match = [...bindings.entries()].find(([durableId, binding]) => durableId !== ""
+        ? item.id === durableId : binding.path !== "" && item.resumeIdentity === binding.path);
       if (!match) return [item];
       const representative = items.find(row => row.id === match[1].chatId)
         ?? sessionListsRef.current.get(wsId)?.find(row => row.id === match[1].chatId);
@@ -267,7 +249,6 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       try {
         const page = await listWorkspaceSessions(wsId, cursor);
         if (pageRequestsRef.current.get(wsId) !== request) return;
-        applyRpcRows(wsId, page.live ?? [], page.items);
         const canonicalItems = suppressBoundSources(wsId, page.items);
         for (const item of canonicalItems) {
           const recency = recenciesRef.current.get(wsId)?.get(item.id);
@@ -327,7 +308,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
         }
       }
     },
-    [disarmCatalogRefresh, patchSessionPaging, replaceSessionLists, applyRpcRows],
+    [disarmCatalogRefresh, patchSessionPaging, replaceSessionLists],
   );
 
   const disarmRecencyRefresh = useCallback((): void => {
@@ -337,44 +318,33 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     }
   }, []);
 
-  // Sole owner of the periodic recency cadence. The single interval serves
-  // the manager-live recency targets (a page refresh also carries the live
-  // section) and the watcher live section of every expanded workspace with a
-  // ready page list: manager ownership never gates the live refresh.
-  const syncRecencyScheduler = useCallback((): void => {
-    const wants = recencyTargetsRef.current.size > 0 || expandedRef.current.size > 0;
-    if (!wants) {
-      disarmRecencyRefresh();
-      return;
-    }
-    // Arm once per nonempty run: membership changes only update the sets the
-    // armed interval reads - they never reset its deadline.
-    if (recencyTimerRef.current !== undefined) return;
-    recencyTimerRef.current = window.setInterval(() => {
-      for (const wsId of new Set([...expandedRef.current, ...recencyTargetsRef.current])) {
-        // Unready workspaces have nothing to refresh; in-flight pages queue
-        // via the scheduled path.
-        if (!sessionPagesRef.current.get(wsId)?.ready) continue;
-        if (recencyTargetsRef.current.has(wsId)) void fetchSessionPage(wsId, "", false, true);
-        if (expandedRef.current.has(wsId)) refreshRpcLive(wsId);
-      }
-    }, RECENCY_REFRESH_INTERVAL_MS);
-  }, [disarmRecencyRefresh, fetchSessionPage, refreshRpcLive]);
-
+  // Sole owner of the periodic recency cadence. The timer's identity depends
+  // only on target membership changes, never on live-tick data: re-publishing
+  // equal targets leaves the armed interval running on its original cadence.
   const setRecencyTargets = useCallback(
     (wsIds: readonly string[]): void => {
-      recencyTargetsRef.current = new Set(wsIds);
-      syncRecencyScheduler();
+      const next: ReadonlySet<string> = new Set(wsIds);
+      recencyTargetsRef.current = next;
+      if (next.size === 0) {
+        disarmRecencyRefresh();
+        return;
+      }
+      // Arm once per nonempty run: membership changes (including another
+      // owner joining or leaving) only update the set the armed interval
+      // reads - they never reset its deadline, so a continuously live
+      // workspace is refreshed on every cadence.
+      if (recencyTimerRef.current !== undefined) return;
+      recencyTimerRef.current = window.setInterval(() => {
+        for (const wsId of recencyTargetsRef.current) {
+          // Unready workspaces have no recency to refresh; in-flight pages
+          // queue via the scheduled path.
+          if (!sessionPagesRef.current.get(wsId)?.ready) continue;
+          void fetchSessionPage(wsId, "", false, true);
+        }
+      }, RECENCY_REFRESH_INTERVAL_MS);
     },
-    [syncRecencyScheduler],
+    [disarmRecencyRefresh, fetchSessionPage],
   );
-
-  // Expanded membership drives the live-section cadence; the ref mirror lets
-  // the armed interval read the latest set without being re-armed.
-  useEffect(() => {
-    expandedRef.current = expanded;
-    syncRecencyScheduler();
-  }, [expanded, syncRecencyScheduler]);
 
   // Pending eventual refreshes die with the hook.
   useEffect(() => () => {
@@ -399,26 +369,21 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       pageRequestsRef.current.clear();
       replaceSessionLists(new Map([...sessionListsRef.current].filter(([id]) => loadedIds.has(id))));
       replaceSessionPages(new Map());
-      pruneRpc(loadedIds);
       for (const id of recenciesRef.current.keys()) if (!loadedIds.has(id)) recenciesRef.current.delete(id);
     } catch {
       /* transient failure — tree stays empty until next mutation */
     }
-  }, [disarmAllCatalogRefreshes, pruneRpc, replaceSessionLists, replaceSessionPages, setExpanded]);
+  }, [disarmAllCatalogRefreshes, replaceSessionLists, replaceSessionPages, setExpanded]);
 
   // The first page loads whenever a loaded workspace becomes expanded,
-  // whichever action (chevron toggle, session select, chat creation) expanded
-  // it. A ready page list is left alone, but expand/re-expand still refreshes
-  // the live section immediately; while a page is in flight the live section
-  // rides along, so only the ready state needs an explicit refresh.
+  // whichever action (chevron toggle, session select, chat creation) expanded it.
   useEffect(() => {
     for (const workspace of workspaces) {
       if (!expanded.has(workspace.id)) continue;
       const paging = sessionPagesRef.current.get(workspace.id);
       if (!paging?.ready && !paging?.loading) void fetchSessionPage(workspace.id, "", false);
-      else if (paging?.ready) refreshRpcLive(workspace.id);
     }
-  }, [expanded, fetchSessionPage, refreshRpcLive, workspaces]);
+  }, [expanded, fetchSessionPage, workspaces]);
 
   const addCreatedSession = useCallback((wsId: string, tm: Terminal, inPlaceSource?: WorkspaceSession): void => {
     deletedSessionsRef.current.get(wsId)?.delete(tm.id);
@@ -426,7 +391,6 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       const bindings = new Map(inPlaceBindingsRef.current.get(wsId));
       bindings.set(inPlaceSource.id, { chatId: tm.id, path: inPlaceSource.resumeIdentity ?? "" });
       inPlaceBindingsRef.current.set(wsId, bindings);
-      setRpcBindingsVersion((version) => version + 1);
     }
     const recencies = recenciesRef.current.get(wsId) ?? new Map<string, SessionRecency>();
     const confirmedMs = Math.max(
@@ -545,34 +509,6 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     return map;
   }, [workspaces, sessionLists]);
 
-  // One row per session identity: fold watcher rows into the chats that bind
-  // them (canonical path equal, durable ids compatible); unbound rows stay
-  // pinned and visible. The fold re-runs when the live section or a binding
-  // changes.
-  const rpcPartitioned = useMemo(() => {
-    const byWs = new Map<string, { readonly visible: readonly RpcLiveSession[]; readonly byChatId: ReadonlyMap<string, RpcLiveSession> }>();
-    for (const [wsId, rows] of liveByWs) {
-      byWs.set(wsId, partitionRpcLiveSessions(rows, inPlaceBindingsRef.current.get(wsId)));
-    }
-    return byWs;
-  }, [liveByWs, rpcBindingsVersion]);
-
-  const rpcLiveRows = useMemo(
-    () => new Map([...rpcPartitioned].map(([wsId, partition]) => [wsId, partition.visible] as const)),
-    [rpcPartitioned],
-  );
-
-  const rpcLiveChats = useMemo(() => {
-    const merged = new Map<string, RpcLiveState>();
-    for (const partition of rpcPartitioned.values()) {
-      for (const [chatId, live] of partition.byChatId) merged.set(chatId, live);
-    }
-    for (const statuses of boundByWs.values()) {
-      for (const [chatId, live] of statuses) merged.set(chatId, live);
-    }
-    return merged;
-  }, [rpcPartitioned, boundByWs]);
-
   const toggleExpanded = (wsId: string): void => {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -616,7 +552,6 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       pendingCreatedSessionsRef.current.delete(ws.id);
       disarmCatalogRefresh(ws.id);
       inPlaceBindingsRef.current.delete(ws.id);
-      removeRpcWorkspace(ws.id);
       notify(t("toast.workspaceDeleted"), "success");
     } catch {
       notify(t("toast.error"), "error");
@@ -652,15 +587,10 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       removePendingCreatedSession(ws.id, tm.id);
       const bindings = inPlaceBindingsRef.current.get(ws.id);
       if (bindings) {
-        let removed = false;
         for (const [durableId, binding] of bindings) {
-          if (binding.chatId === tm.id) {
-            bindings.delete(durableId);
-            removed = true;
-          }
+          if (binding.chatId === tm.id) bindings.delete(durableId);
         }
         if (bindings.size === 0) inPlaceBindingsRef.current.delete(ws.id);
-        if (removed) setRpcBindingsVersion((version) => version + 1);
       }
       layout.unplaceSession(tm.id);
       notify(t("toast.terminalDeleted"), "success");
@@ -715,8 +645,6 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     sessions,
     sessionLists,
     sessionPages,
-    rpcLiveRows,
-    rpcLiveChats,
     load,
     addCreatedSession,
     loadMoreSessions,

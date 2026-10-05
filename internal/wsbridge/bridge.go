@@ -2360,10 +2360,9 @@ func (s *CursorStore) CursorForOpen(ctx context.Context, id string) (session.Cur
 				return session.Cursor{}, &SessionActiveError{SizeDelta: activity.SizeDelta, MtimeDeltaNano: activity.MtimeDeltaNano}
 			}
 		}
-		if err := s.prepareWrite(ctx, id, forced); err != nil {
+		if err := s.PrepareWrite(ctx, id); err != nil {
 			return session.Cursor{}, inPlaceSourceError(err)
 		}
-		cur.ForceInPlaceOpen = forced
 		cur.WritePrepared = true
 	}
 	return cur, nil
@@ -2405,21 +2404,10 @@ func (s *CursorStore) UpdateIdentity(_ context.Context, id, sessionFile, durable
 }
 
 func (s *CursorStore) PrepareWrite(ctx context.Context, id string) error {
-	return s.prepareWrite(ctx, id, false)
-}
-
-func (s *CursorStore) prepareWrite(ctx context.Context, id string, forced bool) error {
 	store := (*cursorstore.Store)(s)
 	chat, err := store.GetChat(id)
 	if err != nil || !cursorstore.IsInPlaceSession(chat) {
 		return err
-	}
-	// A forced live attachment can precede the daemon's first persistence.
-	// Only that acquisition may proceed without existing content to snapshot.
-	if forced {
-		if _, err := os.Lstat(chat.SessionFile); errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
 	}
 	_, err = adoptcopy.TakeoverSnapshot(ctx, chat.SessionFile, filepath.Join(store.StateDir(), "takeover-backups"), chat.DurableSessionID)
 	return err
