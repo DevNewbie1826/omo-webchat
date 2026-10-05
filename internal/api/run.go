@@ -264,6 +264,8 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 		ChatVersion: func(id string) uint64 { return apiServer.chatLifecycleVersion(id) }})
 	sessions := auth.NewSessionStore(ctx, cfg.Password, logger)
 	apiServer = New(ctx, cfg, cursors, sessions, manager, bridge, logger)
+	stopWatcher := apiServer.startRPCWatcher(ensured.Client)
+	defer stopWatcher()
 	apiServer.queue = queue
 	// The restart sequence never calls Stop: closing the shared client is
 	// terminal for every chat. StopSupervisor only terminates the owned
@@ -278,6 +280,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 	cleanupAll := func() {
 		cleanup.Do(func() {
 			cancelRun()
+			stopWatcher()
 			bridge.CloseConnections()
 			managerCtx, cancelManager := context.WithTimeout(context.Background(), 5*time.Second)
 			if e := manager.CloseAll(managerCtx); e != nil {

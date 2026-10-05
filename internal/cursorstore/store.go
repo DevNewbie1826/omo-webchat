@@ -77,6 +77,7 @@ type Chat struct {
 	// SessionProvenance is empty for pre-provenance rows. Such rows may point
 	// at externally owned files and must be adopted before they are opened.
 	SessionProvenance string `json:"sessionProvenance,omitempty"`
+	AutoEnrolled      bool   `json:"autoEnrolled,omitempty"`
 	// Provider preserves the v1 runtime identity. Empty, "senpi", and "omo"
 	// are launchable by omo; other values remain persisted but are hidden from
 	// listings so they cannot be mistaken for omo sessions.
@@ -98,8 +99,9 @@ type State struct {
 	Workspaces []Workspace `json:"workspaces"`
 	// Chats are stored top-level, keyed by chat ID, and reference
 	// Workspace.ID. Any chat whose workspace is deleted is deleted with it.
-	Chats  map[string]Chat `json:"chats,omitempty"`
-	Layout json.RawMessage `json:"layout,omitempty"`
+	Chats                map[string]Chat `json:"chats,omitempty"`
+	Layout               json.RawMessage `json:"layout,omitempty"`
+	EnrollmentTombstones map[string]bool `json:"enrollmentTombstones,omitempty"`
 }
 
 // Store is a mutex-guarded in-memory cursor store flushed to disk with an
@@ -323,6 +325,7 @@ func (s *Store) DeleteWorkspace(id string) error {
 	candidate.Workspaces = append(candidate.Workspaces[:idx], candidate.Workspaces[idx+1:]...)
 	for chatID, c := range candidate.Chats {
 		if c.WorkspaceID == id {
+			recordEnrollmentTombstone(&candidate, c)
 			delete(candidate.Chats, chatID)
 		}
 	}
@@ -588,6 +591,7 @@ func (s *Store) DeleteChat(id string) error {
 		return ErrNotFound
 	}
 	candidate := cloneState(s.data)
+	recordEnrollmentTombstone(&candidate, candidate.Chats[id])
 	delete(candidate.Chats, id)
 	return s.flushLocked(candidate)
 }
@@ -668,6 +672,12 @@ func cloneState(src State) State {
 		Workspaces: make([]Workspace, len(src.Workspaces)),
 	}
 	copy(out.Workspaces, src.Workspaces)
+	if src.EnrollmentTombstones != nil {
+		out.EnrollmentTombstones = make(map[string]bool, len(src.EnrollmentTombstones))
+		for id, deleted := range src.EnrollmentTombstones {
+			out.EnrollmentTombstones[id] = deleted
+		}
+	}
 	if src.Chats != nil {
 		out.Chats = make(map[string]Chat, len(src.Chats))
 		for id, c := range src.Chats {

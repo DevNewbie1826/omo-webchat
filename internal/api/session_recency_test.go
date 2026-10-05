@@ -17,7 +17,7 @@ import (
 
 func TestUnifiedSessionRecency(t *testing.T) {
 	for _, represented := range []bool{false, true} {
-		name := "discovered"
+		name := "unrepresented"
 		if represented {
 			name = "represented"
 		}
@@ -45,7 +45,7 @@ func TestUnifiedSessionRecency(t *testing.T) {
 				{ID: "absent", SessionFile: filepath.Join(t.TempDir(), "missing.jsonl"), CreatedAt: created.AddDate(-1, 0, 0).UnixMilli()},
 				{ID: "unknown"},
 			}
-			firstID := "disk-a"
+			firstID := "web-b"
 			if represented {
 				firstID = "web-a"
 				fixtures = append(fixtures, cursorstore.Chat{ID: firstID, DurableSessionID: "disk-a", SessionFile: filepath.Join(t.TempDir(), "missing-owned.jsonl"), CreatedAt: created.UnixMilli()})
@@ -97,16 +97,23 @@ func TestUnifiedSessionRecency(t *testing.T) {
 				}
 				cursor = page.NextCursor
 			}
-			// Then: source-neutral exact recency, ordinal ties, complete unique pages.
+			// Then: only stored rows, exact recency, ordinal ties, complete unique pages.
 			ids := make([]string, len(got))
 			for i, item := range got {
 				ids[i] = item.ID
 			}
-			want := []string{firstID, "web-b", "disk-c", "equal-A", "equal-a", "absent", "unknown"}
+			want := []string{"web-b", "equal-A", "equal-a", "absent", "unknown"}
+			if represented {
+				want = append([]string{firstID}, want...)
+			}
 			if !reflect.DeepEqual(ids, want) {
 				t.Errorf("order=%v, want %v", ids, want)
 			}
-			if len(got) == 0 || got[0].RecencyMs != activity.UnixMilli() {
+			wantRecency := activity.Add(-24 * time.Hour).UnixMilli()
+			if represented {
+				wantRecency = activity.UnixMilli()
+			}
+			if len(got) == 0 || got[0].RecencyMs != wantRecency {
 				t.Errorf("activity recency lost: %+v", got)
 			}
 		})

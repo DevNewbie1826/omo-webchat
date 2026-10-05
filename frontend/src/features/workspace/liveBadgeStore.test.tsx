@@ -808,7 +808,6 @@ describe("Sidebar badge over WS overrides", () => {
           onToggleExpanded={() => undefined}
           onLoadMoreSessions={() => undefined}
           onSelectTerminal={() => undefined}
-          onOpenSession={async () => undefined}
           onAddWorkspace={() => undefined}
           onAddTerminal={() => undefined}
           onDeleteWorkspace={() => undefined}

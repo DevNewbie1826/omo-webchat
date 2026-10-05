@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { I18nContext } from "./i18n";
 import { useAppConfig } from "./app-config";
 import { useMediaQuery } from "./lib/useMediaQuery";
@@ -16,7 +16,6 @@ import type { SplitActions } from "./features/split/SplitView";
 import { useLayout } from "./features/split/useLayout";
 import { findLeaf } from "./features/split/paneTree";
 import { createTerminal } from "./features/terminal/terminal";
-import { openWorkspaceSession } from "./features/workspace/workspace";
 import type {
   ProviderDiscoveryState,
   Terminal,
@@ -25,19 +24,13 @@ import type {
 } from "./features/workspace/workspace";
 import { useLiveSessions } from "./features/workspace/useLiveSessions";
 import { useWorkspaces } from "./features/workspace/useWorkspaces";
-import { sessionOpenAttemptKey, useSessionOpenAttempts } from "./features/workspace/useSessionOpenAttempts";
+import { sessionOpenAttemptKey } from "./features/workspace/useSessionOpenAttempts";
 import { useProviderDiscovery } from "./features/workspace/useProviderDiscovery";
 import { useConfirm } from "./components/ConfirmDialog";
 import { NewChatDialog } from "./components/NewChatDialog";
 import { SessionPicker } from "./features/split/SessionPicker";
 import { ChatEmptyState } from "./components/ChatEmptyState";
 import { SessionDraftProvider } from "./features/split/sessionDraft";
-import { LiveSessionList } from "./features/workspace/LiveSessionList";
-import { useLiveSessionSummaries } from "./features/workspace/useLiveSessionSummaries";
-import { useMergedLiveSummaries } from "./features/workspace/liveBadgeStore";
-import { compareLiveSessions, isLiveSessionListed } from "./features/workspace/liveSessionOrder";
-import { resolveLiveSummaryTarget } from "./features/workspace/liveSummaryTarget";
-import "./styles/home-live.css";
 
 const SPLIT_QUERY = "(min-width: 1024px)";
 
@@ -103,7 +96,7 @@ export function App() {
     ensureSessionsLoaded, setRecencyTargets, markSessionUsed, toggleExpanded, handleDeleteWorkspace,
     handleDeleteTerminal, handleRenameWorkspace, handleRenameTerminal,
     handleChatName,
-  } = useWorkspaces({ notify, t, layout, confirm });
+  } = useWorkspaces({ notify, t, layout, confirm, discoveryEnabled: authed === true });
 
   useEffect(() => {
     if (!toast) return;
@@ -171,54 +164,39 @@ export function App() {
   const openSession = async (
     ws: Workspace,
     session: WorkspaceSession,
-    force = false,
     paneId = layout.focusedPaneId,
   ): Promise<"opened" | "session-active"> => {
     const target = captureTarget(paneId);
     const sourceKey = sessionOpenAttemptKey(ws.id, session.id);
     sessionIntents.current.set(sourceKey, target.generation);
     layout.focusPane(target.paneId);
-    try {
-      // Stored union rows are already chat identities, even before ws.chats
-      // contains them. Only discovered entries need the existing open request.
-      const result = session.source === "stored"
-        ? { state: "opened" as const, chat: ws.chats.find(chat => chat.id === session.id)
-          ?? { id: session.id, name: session.name, provider: "omo" as const } }
-        : await openWorkspaceSession(ws.id, session, force);
-      if (result.state === "session-active") return result.state;
-      const tm = result.chat;
-      setWorkspaces((prev) => prev.map(workspace => workspace.id === ws.id
-        ? { ...workspace, chats: workspace.chats.some(chat => chat.id === tm.id) ? workspace.chats : [...workspace.chats, tm] }
-        : workspace));
-      if (session.source === "discovered") addCreatedSession(ws.id, tm, session);
-      const chatKey = sessionOpenAttemptKey(ws.id, tm.id);
-      // Source intent protects concurrent opens before the canonical chat id
-      // is known. Canonical intent also protects newer stored/alias placement
-      // in another pane; per-pane generations alone cannot prevent that move.
-      const latestSessionIntent = Math.max(sessionIntents.current.get(sourceKey) ?? 0, sessionIntents.current.get(chatKey) ?? 0);
-      if (targetCurrent(target) && latestSessionIntent <= target.generation) {
-        sessionIntents.current.set(chatKey, target.generation);
-        setExpanded((prev) => new Set(prev).add(ws.id));
-        markSessionUsed(ws.id, tm.id);
-        layout.assignSession(target.paneId, tm.id, false);
-        if (window.matchMedia(MOBILE_QUERY).matches) setSidebarCollapsed(true);
-      }
-      return "opened";
-    } catch (error) {
-      notify(t("toast.error"), "error");
-      throw error;
+    // Every catalog row is already a stored chat identity after
+    // auto-enrollment, even before ws.chats contains it: opening is a local
+    // placement, never an adopt-and-register request.
+    const tm = ws.chats.find((chat) => chat.id === session.id)
+      ?? { id: session.id, name: session.name, provider: "omo" as const };
+    setWorkspaces((prev) => prev.map((workspace) => workspace.id === ws.id
+      ? { ...workspace, chats: workspace.chats.some((chat) => chat.id === tm.id) ? workspace.chats : [...workspace.chats, tm] }
+      : workspace));
+    const chatKey = sessionOpenAttemptKey(ws.id, tm.id);
+    // Source intent protects concurrent opens before the canonical chat id
+    // is known. Canonical intent also protects newer stored placement in
+    // another pane; per-pane generations alone cannot prevent that move.
+    const latestSessionIntent = Math.max(sessionIntents.current.get(sourceKey) ?? 0, sessionIntents.current.get(chatKey) ?? 0);
+    if (targetCurrent(target) && latestSessionIntent <= target.generation) {
+      sessionIntents.current.set(chatKey, target.generation);
+      setExpanded((prev) => new Set(prev).add(ws.id));
+      markSessionUsed(ws.id, tm.id);
+      layout.assignSession(target.paneId, tm.id, false);
+      if (window.matchMedia(MOBILE_QUERY).matches) setSidebarCollapsed(true);
     }
+    return "opened";
   };
 
-  // The home empty state lists every live session - idle ones included, so
-  // main-only work (active flag) appears here exactly as in the sidebar -
-  // derived from the same shared poller and WS-override store, so this
-  // consumer adds no network traffic. Cards activate through the same
-  // select/open path the picker uses.
-  const homePollSummaries = useLiveSessionSummaries(authed === true);
-  const homeLiveSummaries = useMergedLiveSummaries(homePollSummaries);
-  // Recency comes from the already-loaded catalog rows, raised by whatever
-  // the sidebar's membership crawl learned and published; no extra fetch.
+  // The sidebar's membership crawl publishes what it learned beyond the
+  // loaded pages (recency, live-owner workspaces) through this callback; the
+  // recency-target effect below feeds it to the catalog scheduler in
+  // useWorkspaces, which owns the single periodic cadence.
   const [liveShare, setLiveShare] = useState<LiveRecencyShare | null>(null);
   const liveShareRef = useRef<LiveRecencyShare | null>(null);
   const handleLiveRecencyChange = useCallback((share: LiveRecencyShare): void => {
@@ -229,35 +207,6 @@ export function App() {
     liveShareRef.current = share;
     setLiveShare(share);
   }, []);
-  const homeRecencyMs = useMemo(() => {
-    const recency = new Map<string, number>();
-    for (const listed of sessionLists.values()) {
-      for (const session of listed) {
-        recency.set(session.id, Math.max(recency.get(session.id) ?? 0, session.recencyMs));
-      }
-    }
-    for (const [id, recencyMs] of liveShare?.recencyMs ?? []) {
-      recency.set(id, Math.max(recency.get(id) ?? 0, recencyMs));
-    }
-    return recency;
-  }, [sessionLists, liveShare]);
-  // Cards render only for summaries with an open target: a stored chat, or a
-  // loaded session row. UUID-keyed rows no stored chat or loaded row owns
-  // would render a button that cannot open anything, so they are dropped.
-  const homeListedSummaries = useMemo(
-    () => homeLiveSummaries.filter((summary) => isLiveSessionListed(summary)
-      && resolveLiveSummaryTarget(summary, workspaces, sessionLists) !== null),
-    [homeLiveSummaries, workspaces, sessionLists],
-  );
-  const homeOrderedSummaries = useMemo(
-    () => [...homeListedSummaries].sort((a, b) => compareLiveSessions(a, b, homeRecencyMs)),
-    [homeListedSummaries, homeRecencyMs],
-  );
-  const homeRunningCount = useMemo(
-    () => homeOrderedSummaries.reduce((total, summary) => total + summary.runningCount, 0),
-    [homeOrderedSummaries],
-  );
-  const homeSessionOpen = useSessionOpenAttempts(openSession);
 
   // Recency freshness: neither surface owns a timer. The sidebar publishes
   // the workspaces that own live sessions (resolved through its membership
@@ -282,31 +231,6 @@ export function App() {
     recencyRegisteredRef.current = true;
     setRecencyTargets([...liveShare.ownerWsIds]);
   }, [authed, liveShare, setRecencyTargets]);
-
-  // The same live-session block the mobile empty state shows, offered to
-  // SplitView so wide-layout empty panes render it above their session
-  // picker instead of dropping the cards. Nothing renders when no session
-  // is live.
-  const homeRunningSessions = homeOrderedSummaries.length > 0 ? (
-    <div className="th-home-live">
-      <div className="th-home-live-label">
-        {t("sidebar.sessions")}
-        {homeRunningCount > 0 && (
-          <span className="th-home-live-count" aria-label={t("overview.runningAria", { n: homeRunningCount })}>{homeRunningCount}</span>
-        )}
-      </div>
-      <LiveSessionList
-        summaries={homeOrderedSummaries}
-        workspaces={workspaces}
-        sessionLists={sessionLists}
-        onSelect={selectTerminal}
-        onOpen={homeSessionOpen.open}
-        openAttempts={homeSessionOpen.attempts}
-        showLastLine
-        listClassName="th-home-live-list"
-      />
-    </div>
-  ) : undefined;
 
   const createOmoChat = useCallback(async (target: NewChatTarget): Promise<void> => {
     if (createChatInFlightRef.current) return;
@@ -366,7 +290,7 @@ export function App() {
 
   const splitActions: SplitActions = {
     onFocusPane: layout.focusPane,
-    onOpenSession: (paneId, ws, session, force) => openSession(ws, session, force, paneId),
+    onOpenSession: (paneId, ws, session) => openSession(ws, session, paneId),
     onLoadMoreSessions: loadMoreSessions,
     onCreateTerminal: createTerminalInPane,
     onSplit: layout.split,
@@ -397,7 +321,6 @@ export function App() {
             onToggleExpanded={toggleExpanded}
             onLoadMoreSessions={loadMoreSessions}
             onSelectTerminal={selectTerminal}
-            onOpenSession={openSession}
             onAddWorkspace={() => setWizardOpen(true)}
             onAddTerminal={(ws) => requestNewChat({ wsId: ws.id })}
             onDeleteWorkspace={(ws) => void handleDeleteWorkspace(ws)}
@@ -427,7 +350,6 @@ export function App() {
                 splitEnabled={splitEnabled}
                 actions={splitActions}
                 onChatName={handleChatName}
-                runningSessions={homeRunningSessions}
               />
             ) : activeSession ? (
               <ChatPane
@@ -451,7 +373,6 @@ export function App() {
                 onOpenSidebar={() => setSidebarCollapsed(false)}
                 onNewWorkspace={() => setWizardOpen(true)}
                 onNewChat={openNewChat}
-                runningSessions={homeRunningSessions}
                 sessionPicker={workspaces.length > 0 ? (
                   <SessionPicker workspaces={workspaces} sessionLists={sessionLists} sessionPages={sessionPages}
                     onEnsureSessions={ensureSessionsLoaded} onLoadMoreSessions={loadMoreSessions}

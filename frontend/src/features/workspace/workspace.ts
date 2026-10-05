@@ -84,21 +84,25 @@ function parseLiveSession(value: unknown): LiveSessionInfo | null {
   };
 }
 
-/** Where a session-history entry came from: a stored chat row or an omo
- * session file discovered on disk. */
-export type WorkspaceSessionSource = "stored" | "discovered";
-
-/** One entry of GET /api/workspaces/{wsId}/sessions (newest first). */
+/** One entry of GET /api/workspaces/{wsId}/sessions (newest first): a
+ * stored chat row. Disk-scan provenance is backend metadata, never a UI row. */
 export interface WorkspaceSession {
   readonly id: string;
   readonly name: string;
-  readonly source: WorkspaceSessionSource;
+  readonly source: "stored";
   readonly recencyMs: number;
   readonly resumeIdentity?: string;
   /** Stored rows only: the session's stored identity file no longer exists. */
   readonly dangling?: boolean;
   /** Live rows only: the row's stored session file has not been written yet. */
   readonly preparing?: boolean;
+  /** Server-side rpc-watch flag: the daemon session this chat is bound to is
+   * running right now, independent of the webchat live-sessions feed (which
+   * only covers sessions webchat itself subscribed to). Absent on older
+   * backends; treated as not live. */
+  readonly live?: boolean;
+  /** Durable id of the daemon session this row is bound to, when known. */
+  readonly durableSessionID?: string;
 }
 
 export interface WorkspaceSessionPage {
@@ -133,8 +137,8 @@ export async function touchWorkspaceSession(wsId: string, chatId: string): Promi
 
 /**
  * Fetch one recency-sorted page of a workspace's session history (stored
- * chats merged with discovered omo sessions). Pass the previous page's
- * nextCursor to continue; an empty nextCursor means no further pages.
+ * chats). Pass the previous page's nextCursor to continue; an empty
+ * nextCursor means no further pages.
  */
 export async function listWorkspaceSessions(
   wsId: string,
@@ -148,47 +152,10 @@ export async function listWorkspaceSessions(
   );
   return {
     ...page,
-    // Legacy fork-adoption provenance is backend metadata, not a UI row.
-    items: page.items.filter((item): item is WorkspaceSession => item.source === "stored" || item.source === "discovered"),
+    // Only stored chat rows are UI rows; any other source value (legacy
+    // fork-adoption provenance, disk-scan rows) is dropped at the boundary.
+    items: page.items.filter((item): item is WorkspaceSession => item.source === "stored"),
   };
-}
-
-export type OpenWorkspaceSessionResult =
-  | { readonly state: "opened"; readonly chat: Terminal }
-  | { readonly state: "session-active" };
-
-function isSessionActiveBody(value: unknown): boolean {
-  return typeof value === "object"
-    && value !== null
-    && "state" in value
-    && value.state === "session-active";
-}
-
-/** Validate and bind a catalog-discovered session to its original file. */
-export async function openWorkspaceSession(
-  wsId: string,
-  session: WorkspaceSession,
-  force = false,
-): Promise<OpenWorkspaceSessionResult> {
-  try {
-    const chat = await apiJson<Terminal>(
-      `/api/workspaces/${encodeURIComponent(wsId)}/sessions/open`,
-      {
-        method: "POST",
-        body: {
-          id: session.id,
-          resumeIdentity: session.resumeIdentity,
-          ...(force ? { force: true } : {}),
-        },
-      },
-    );
-    return { state: "opened", chat };
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 409 && isSessionActiveBody(error.body)) {
-      return { state: "session-active" };
-    }
-    throw error;
-  }
 }
 
 /** Resolve otherwise-unknown live IDs through the complete union independently
@@ -214,7 +181,7 @@ export async function resolveWorkspaceSessionMembership(
     do {
       const page = await listWorkspaceSessions(workspace.id, cursor, signal);
       for (const item of page.items) {
-        if (item.source === "stored" && sessionIds.has(item.id)) {
+        if (sessionIds.has(item.id)) {
           matches.add(item.id);
           recency.set(item.id, Math.max(recency.get(item.id) ?? 0, item.recencyMs));
         }

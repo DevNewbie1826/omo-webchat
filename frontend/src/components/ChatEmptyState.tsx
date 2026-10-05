@@ -7,7 +7,6 @@ import type { Workspace } from "../features/workspace/workspace";
 export interface ChatEmptyStateProps {
   readonly mobile: boolean;
   readonly sessionPicker?: ReactNode;
-  readonly runningSessions?: ReactNode;
   readonly workspaces: readonly Workspace[];
   readonly onOpenSidebar: () => void;
   readonly onNewWorkspace: () => void;
@@ -45,7 +44,6 @@ export function ChatEmptyHero({ hasWorkspaces, onNewWorkspace, onNewChat }: Chat
 export function ChatEmptyState({
   mobile,
   sessionPicker,
-  runningSessions,
   workspaces,
   onOpenSidebar,
   onNewWorkspace,
@@ -67,7 +65,6 @@ export function ChatEmptyState({
         </button>
       )}
       <ChatEmptyHero hasWorkspaces={workspaces.length > 0} onNewWorkspace={onNewWorkspace} onNewChat={onNewChat} />
-      {runningSessions}
       {sessionPicker}
     </div>
   );

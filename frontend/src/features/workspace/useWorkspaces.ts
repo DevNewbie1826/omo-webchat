@@ -22,6 +22,10 @@ export interface UseWorkspacesOptions {
   readonly t: Translate;
   readonly layout: LayoutApi;
   readonly confirm: (opts: ConfirmOptions) => Promise<boolean>;
+  /** Arms the always-on discovery merge cycle. The hook itself cannot know
+   * authentication state; App passes `authed === true` so an unauthenticated
+   * mount never polls. */
+  readonly discoveryEnabled?: boolean;
 }
 
 /** Per-workspace session-history pagination state for the sidebar tree. */
@@ -47,7 +51,7 @@ export interface UseWorkspacesResult {
   readonly sessionLists: ReadonlyMap<string, readonly WorkspaceSession[]>;
   readonly sessionPages: ReadonlyMap<string, WorkspaceSessionPaging>;
   readonly load: () => Promise<void>;
-  readonly addCreatedSession: (wsId: string, tm: Terminal, inPlaceSource?: WorkspaceSession) => void;
+  readonly addCreatedSession: (wsId: string, tm: Terminal) => void;
   readonly loadMoreSessions: (wsId: string) => Promise<void>;
   /** Kicks off the first session page for a workspace unless it is ready or already in flight. */
   readonly ensureSessionsLoaded: (wsId: string) => void;
@@ -94,6 +98,12 @@ export const CATALOG_REFRESH_DELAY_MS = 120_000;
 // render churn can never clear, postpone, or duplicate the timer.
 export const RECENCY_REFRESH_INTERVAL_MS = 15_000;
 
+// Cadence of the always-on discovery merge. Independent of the recency
+// cadence above, which disarms when no workspace owns a live session:
+// auto-enrolled workspaces and chats must still appear in an open tab
+// without a reload, starting from the zero-workspaces initial state.
+export const DISCOVERY_MERGE_INTERVAL_MS = 20_000;
+
 const WORKSPACE_EXPANDED_STORAGE_KEY = "th-ws-expanded";
 
 function readExpandedWorkspaces(): ReadonlySet<string> {
@@ -113,8 +123,12 @@ function persistExpandedWorkspaces(expanded: ReadonlySet<string>): void {
   }
 }
 
-export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptions): UseWorkspacesResult {
+export function useWorkspaces({ notify, t, layout, confirm, discoveryEnabled = false }: UseWorkspacesOptions): UseWorkspacesResult {
   const [workspaces, setWorkspaces] = useState<readonly Workspace[]>([]);
+  // Ref mirror for the discovery cycle's merge: interval callbacks must read
+  // the latest committed list without waiting for a render.
+  const workspacesRef = useRef<readonly Workspace[]>([]);
+  workspacesRef.current = workspaces;
   const [expanded, setExpandedState] = useState<ReadonlySet<string>>(readExpandedWorkspaces);
   const setExpanded: Dispatch<SetStateAction<ReadonlySet<string>>> = useCallback((update) => {
     setExpandedState((previous) => {
@@ -138,29 +152,6 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
   // Creations can race an older first-page snapshot. Keep them separate until
   // that snapshot is applied so they remain ahead of its continuation cursor.
   const pendingCreatedSessionsRef = useRef<Map<string, readonly WorkspaceSession[]>>(new Map());
-  // The catalog's stored row has a web chat id while its discovered source has
-  // the durable id/path. Retain that binding across canonical page refreshes
-  // so a stale server page cannot briefly project both rows.
-  const inPlaceBindingsRef = useRef<Map<string, Map<string, { readonly chatId: string; readonly path: string }>>>(new Map());
-
-  // Observed engine behavior: a recorded durable id is authoritative — the
-  // same resume path under a different id is a distinct replacement session
-  // that must stay visible. The fold therefore matches the exact source
-  // identity and falls back to the path only when the adopted source recorded
-  // no durable id at all.
-  const suppressBoundSources = (wsId: string, items: readonly WorkspaceSession[]): readonly WorkspaceSession[] => {
-    const bindings = inPlaceBindingsRef.current.get(wsId);
-    if (!bindings) return items;
-    return items.flatMap((item) => {
-      if (item.source !== "discovered") return [item];
-      const match = [...bindings.entries()].find(([durableId, binding]) => durableId !== ""
-        ? item.id === durableId : binding.path !== "" && item.resumeIdentity === binding.path);
-      if (!match) return [item];
-      const representative = items.find(row => row.id === match[1].chatId)
-        ?? sessionListsRef.current.get(wsId)?.find(row => row.id === match[1].chatId);
-      return representative ? [{ ...representative, recencyMs: item.recencyMs }] : [];
-    });
-  };
 
   // One armed eventual refresh per workspace: a bound timer means the ready
   // first page still owes its single post-stabilization refetch.
@@ -249,7 +240,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       try {
         const page = await listWorkspaceSessions(wsId, cursor);
         if (pageRequestsRef.current.get(wsId) !== request) return;
-        const canonicalItems = suppressBoundSources(wsId, page.items);
+        const canonicalItems = page.items;
         for (const item of canonicalItems) {
           const recency = recenciesRef.current.get(wsId)?.get(item.id);
           if (recency) {
@@ -258,11 +249,11 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
           }
         }
         // Retain loaded continuation rows, update overlaps, then sort the union.
-        const items = mergeWorkspaceSessions(suppressBoundSources(wsId, [
+        const items = mergeWorkspaceSessions([
           ...(sessionListsRef.current.get(wsId) ?? []),
           ...canonicalItems,
           ...(pendingCreatedSessionsRef.current.get(wsId) ?? []),
-        ]).filter(item => !deletedSessionsRef.current.get(wsId)?.has(item.id)).map(item => {
+        ].filter(item => !deletedSessionsRef.current.get(wsId)?.has(item.id)).map(item => {
           const recency = recenciesRef.current.get(wsId)?.get(item.id);
           // Retire provisional row values before max-merging loaded snapshots.
           return recency ? {
@@ -356,6 +347,75 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     loadGenerationRef.current++;
   }, [disarmAllCatalogRefreshes, disarmRecencyRefresh]);
 
+  // Always-on discovery merge: re-fetches the workspace catalog on a fixed
+  // cadence and merges newly auto-enrolled workspaces — and new chats of
+  // already-known workspaces — into state. Strictly additive and identity-
+  // preserving: a catalog that reports nothing new leaves every array
+  // untouched, optimistic local edits (renames, pending creations) are never
+  // overwritten, and removals still flow only through the explicit delete
+  // flows and load().
+  const runDiscoveryMerge = useCallback(async (): Promise<void> => {
+    // Snapshot the load generation before the request: a delete or reload that
+    // lands while the catalog fetch is in flight bumps it, and the stale
+    // response must be discarded instead of resurrecting what the user
+    // removed.
+    const generation = loadGenerationRef.current;
+    let discovered: readonly Workspace[];
+    try {
+      discovered = await listWorkspaces();
+    } catch {
+      // Transient failure: the next tick retries.
+      return;
+    }
+    if (loadGenerationRef.current !== generation) return;
+    const current = workspacesRef.current;
+    const currentById = new Map(current.map((workspace) => [workspace.id, workspace]));
+    const next = [...current];
+    const newlyExpanded: string[] = [];
+    const chatGrew: string[] = [];
+    for (const incoming of discovered) {
+      const existing = currentById.get(incoming.id);
+      if (existing === undefined) {
+        next.push(incoming);
+        // First sighting: expand so the enrolled chat rows are visible
+        // without a click. Later ticks never fight the user's collapse.
+        newlyExpanded.push(incoming.id);
+        continue;
+      }
+      const knownChatIds = new Set(existing.chats.map((chat) => chat.id));
+      const missingChats = incoming.chats.filter((chat) => !knownChatIds.has(chat.id));
+      if (missingChats.length === 0) continue;
+      next[next.findIndex((workspace) => workspace.id === existing.id)] = {
+        ...existing,
+        chats: [...existing.chats, ...missingChats],
+      };
+      chatGrew.push(existing.id);
+    }
+    if (newlyExpanded.length > 0) {
+      setExpanded((previous) => {
+        const merged = new Set(previous);
+        for (const id of newlyExpanded) merged.add(id);
+        return merged;
+      });
+    }
+    if (next.length !== current.length || chatGrew.length > 0) setWorkspaces(next);
+    // A known workspace whose server chats grew (an enrolled session bound to
+    // an already-loaded workspace) refreshes its ready first page through the
+    // scheduled path so the new row renders on this same cadence. New
+    // workspaces need no help: the expand-effect fetches their first page.
+    for (const wsId of chatGrew) {
+      if (sessionPagesRef.current.get(wsId)?.ready) void fetchSessionPage(wsId, "", false, true);
+    }
+  }, [fetchSessionPage, setExpanded]);
+
+  useEffect(() => {
+    if (!discoveryEnabled) return;
+    const timer = window.setInterval(() => {
+      void runDiscoveryMerge();
+    }, DISCOVERY_MERGE_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [discoveryEnabled, runDiscoveryMerge]);
+
   const load = useCallback(async (): Promise<void> => {
     const generation = ++loadGenerationRef.current;
     try {
@@ -385,24 +445,15 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     }
   }, [expanded, fetchSessionPage, workspaces]);
 
-  const addCreatedSession = useCallback((wsId: string, tm: Terminal, inPlaceSource?: WorkspaceSession): void => {
+  const addCreatedSession = useCallback((wsId: string, tm: Terminal): void => {
     deletedSessionsRef.current.get(wsId)?.delete(tm.id);
-    if (inPlaceSource !== undefined) {
-      const bindings = new Map(inPlaceBindingsRef.current.get(wsId));
-      bindings.set(inPlaceSource.id, { chatId: tm.id, path: inPlaceSource.resumeIdentity ?? "" });
-      inPlaceBindingsRef.current.set(wsId, bindings);
-    }
     const recencies = recenciesRef.current.get(wsId) ?? new Map<string, SessionRecency>();
-    const confirmedMs = Math.max(
-      inPlaceSource?.recencyMs ?? 0,
-      recencies.get(tm.id)?.confirmedMs
-        ?? sessionListsRef.current.get(wsId)?.find(item => item.id === tm.id)?.recencyMs ?? 0,
-    );
+    const confirmedMs = recencies.get(tm.id)?.confirmedMs
+      ?? sessionListsRef.current.get(wsId)?.find(item => item.id === tm.id)?.recencyMs ?? 0;
     const recency: SessionRecency = recencies.get(tm.id) ?? {
       confirmedMs, pendingUse: undefined, creationFallbackMs: confirmedMs > 0 ? 0 : Date.now(),
     };
     recency.confirmedMs = confirmedMs;
-    if (inPlaceSource && inPlaceSource.recencyMs > 0) recency.creationFallbackMs = 0;
     recencies.set(tm.id, recency);
     recenciesRef.current.set(wsId, recencies);
     const created = {
@@ -410,7 +461,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       recencyMs: Math.max(recency.confirmedMs, recency.pendingUse?.recencyMs ?? 0, recency.creationFallbackMs),
     };
     const mergeCreated = (items: readonly WorkspaceSession[]): readonly WorkspaceSession[] =>
-      mergeWorkspaceSessions(suppressBoundSources(wsId, [...items, created]));
+      mergeWorkspaceSessions([...items, created]);
     if (!sessionPagesRef.current.get(wsId)?.ready) {
       const pending = pendingCreatedSessionsRef.current.get(wsId) ?? [];
       pendingCreatedSessionsRef.current.set(wsId, mergeCreated(pending));
@@ -447,7 +498,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     const entry = listed.find(item => item.id === id)
       ?? pendingCreatedSessionsRef.current.get(wsId)?.find(item => item.id === id)
       ?? (chat ? { id, name: chat.name, source: "stored" as const, recencyMs: 0 } : undefined);
-    if (!entry || entry.source !== "stored" || deletedSessionsRef.current.get(wsId)?.has(id)) return;
+    if (!entry || deletedSessionsRef.current.get(wsId)?.has(id)) return;
     const recencies = recenciesRef.current.get(wsId) ?? new Map<string, SessionRecency>();
     const recency: SessionRecency = recencies.get(id) ?? {
       confirmedMs: entry.recencyMs, pendingUse: undefined, creationFallbackMs: 0,
@@ -496,7 +547,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       // v2 union rows: chats the sessions REST lists but the legacy chat list
       // does not carry. Register them so activation opens the same pane flow.
       for (const item of sessionLists.get(ws.id) ?? []) {
-        if (item.source !== "stored" || item.dangling === true || map.has(item.id)) continue;
+        if (item.dangling === true || map.has(item.id)) continue;
         map.set(item.id, {
           id: item.id,
           name: item.name,
@@ -551,7 +602,6 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       }
       pendingCreatedSessionsRef.current.delete(ws.id);
       disarmCatalogRefresh(ws.id);
-      inPlaceBindingsRef.current.delete(ws.id);
       notify(t("toast.workspaceDeleted"), "success");
     } catch {
       notify(t("toast.error"), "error");
@@ -585,13 +635,6 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
         replaceSessionLists(next);
       }
       removePendingCreatedSession(ws.id, tm.id);
-      const bindings = inPlaceBindingsRef.current.get(ws.id);
-      if (bindings) {
-        for (const [durableId, binding] of bindings) {
-          if (binding.chatId === tm.id) bindings.delete(durableId);
-        }
-        if (bindings.size === 0) inPlaceBindingsRef.current.delete(ws.id);
-      }
       layout.unplaceSession(tm.id);
       notify(t("toast.terminalDeleted"), "success");
     } catch {

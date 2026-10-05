@@ -78,36 +78,27 @@ describe("ChatEmptyState", () => {
     expect(onNewChat).not.toHaveBeenCalled();
   });
 
-  it("renders running sessions above the session picker inside .th-empty", () => {
+  it("renders the session picker directly under the hero inside .th-empty", () => {
     renderState({
-      runningSessions: <div data-testid="running-sessions">running</div>,
       sessionPicker: <div data-testid="session-picker">picker</div>,
     });
 
     const empty = container.querySelector(".th-empty");
-    const running = container.querySelector('[data-testid="running-sessions"]');
     const picker = container.querySelector('[data-testid="session-picker"]');
 
     expect(empty).not.toBeNull();
-    expect(running).not.toBeNull();
     expect(picker).not.toBeNull();
-    expect(empty?.contains(running as Node)).toBe(true);
     expect(empty?.contains(picker as Node)).toBe(true);
-    expect(
-      (running as Node).compareDocumentPosition(picker as Node) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
   });
 
-  it("renders nothing extra when runningSessions is undefined", () => {
+  it("renders only the hero and picker slots when no picker is provided", () => {
     renderState({
       mobile: false,
-      sessionPicker: <div data-testid="session-picker">picker</div>,
     });
 
     const children = Array.from(container.querySelector(".th-empty")?.children ?? []);
-    expect(children).toHaveLength(2);
+    expect(children).toHaveLength(1);
     expect(children[0]?.className).toBe("th-empty-hero");
-    expect(children[1]?.getAttribute("data-testid")).toBe("session-picker");
   });
 
   it("leads with the presence hero and keeps its nodes mounted across re-renders", () => {
@@ -126,7 +117,6 @@ describe("ChatEmptyState", () => {
     renderState({
       mobile: false,
       workspaces: [workspace("ws-1")],
-      runningSessions: <div data-testid="running-sessions">running</div>,
       sessionPicker: <div data-testid="session-picker">picker</div>,
     });
 
@@ -140,11 +130,6 @@ describe("ChatEmptyState", () => {
     expect(rerendered?.querySelector("button.th-empty-cta")).toBe(cta);
     expect(hint?.textContent).toBe("empty.hintResume");
     expect(cta?.textContent).toBe("empty.newChat");
-
-    const running = container.querySelector('[data-testid="running-sessions"]');
-    expect(
-      (hero as Node).compareDocumentPosition(running as Node) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
   });
 
   it("switches the primary action to New chat when workspaces exist", () => {

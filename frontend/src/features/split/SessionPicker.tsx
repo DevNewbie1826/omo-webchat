@@ -11,7 +11,7 @@ export interface SessionPickerProps {
   readonly sessionPages: ReadonlyMap<string, WorkspaceSessionPaging>;
   readonly onEnsureSessions: (wsId: string) => void;
   readonly onLoadMoreSessions: (wsId: string) => Promise<void>;
-  readonly onOpenSession: (ws: Workspace, session: WorkspaceSession, force?: boolean) => Promise<"opened" | "session-active">;
+  readonly onOpenSession: (ws: Workspace, session: WorkspaceSession) => Promise<"opened" | "session-active">;
   readonly onNewChat: (wsId: string) => void;
 }
 
@@ -57,7 +57,7 @@ export function SessionPicker({ workspaces, sessionLists, sessionPages, onEnsure
                   <div role="status">
                     {t(status === "failed" ? "sidebar.tm.openFailed" : "sidebar.tm.sessionActive")}
                     <button type="button" className={`th-btn th-btn--ghost ${status === "failed" ? "th-picker-retry-open" : "th-picker-force-open"}`}
-                      onClick={() => void open(workspace, entry, status === "session-active")}>
+                      onClick={() => void open(workspace, entry)}>
                       {t(status === "failed" ? "common.retry" : "sidebar.tm.forceOpen")}
                     </button>
                   </div>

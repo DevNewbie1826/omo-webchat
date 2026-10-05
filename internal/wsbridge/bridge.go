@@ -2313,7 +2313,7 @@ func (c chatRef) CWD() string    { return c.cwd }
 type CursorStore cursorstore.Store
 
 func sessionCursor(c cursorstore.Chat) session.Cursor {
-	return session.Cursor{SessionFile: c.SessionFile, DurableSessionID: c.DurableSessionID, Name: c.Name, NameSource: c.NameSource, TitleIsPlaceholder: c.TitleIsPlaceholder, InPlace: cursorstore.IsInPlaceSession(c)}
+	return session.Cursor{SessionFile: c.SessionFile, DurableSessionID: c.DurableSessionID, Name: c.Name, NameSource: c.NameSource, TitleIsPlaceholder: c.TitleIsPlaceholder, InPlace: cursorstore.IsInPlaceSession(c), AutoEnrolled: c.AutoEnrolled}
 }
 
 func (s *CursorStore) CursorForOpen(ctx context.Context, id string) (session.Cursor, error) {
@@ -2325,6 +2325,11 @@ func (s *CursorStore) CursorForOpen(ctx context.Context, id string) (session.Cur
 	// an existing session. Gate and preserve the source inside the per-chat
 	// flight, immediately before open_session can mutate it.
 	cur := sessionCursor(c)
+	if c.AutoEnrolled {
+		// The manager first checks the shared daemon, before any disk gate or
+		// initialization. A live route can precede its first file persistence.
+		return cur, nil
+	}
 	if cursorstore.IsInPlaceSession(c) {
 		store := (*cursorstore.Store)(s)
 		forced := false
@@ -2408,6 +2413,11 @@ func (s *CursorStore) PrepareWrite(ctx context.Context, id string) error {
 	chat, err := store.GetChat(id)
 	if err != nil || !cursorstore.IsInPlaceSession(chat) {
 		return err
+	}
+	if chat.AutoEnrolled {
+		if _, err := os.Lstat(chat.SessionFile); errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
 	}
 	_, err = adoptcopy.TakeoverSnapshot(ctx, chat.SessionFile, filepath.Join(store.StateDir(), "takeover-backups"), chat.DurableSessionID)
 	return err

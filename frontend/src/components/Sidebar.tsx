@@ -4,17 +4,13 @@ import { SessionTree } from "./SessionTree";
 import type { ToastKind } from "./SessionTree";
 import { IconChevron, IconLogOut, IconPlus, IconX } from "./icons";
 import { SettingsMenu } from "./SettingsMenu";
-import { LiveSessionList } from "../features/workspace/LiveSessionList";
 import { useMergedLiveSummaries } from "../features/workspace/liveBadgeStore";
-import { useSessionOpenAttempts } from "../features/workspace/useSessionOpenAttempts";
-import "../styles/sidebar-live.css";
 
 /** Bounded retry cadence for union-membership crawls whose workspaces failed. */
 export const MEMBERSHIP_MAX_RETRIES = 5;
 export const MEMBERSHIP_RETRY_DELAY_MS = 2000;
 import { useLiveSessionSummaries } from "../features/workspace/useLiveSessionSummaries";
-import { compareLiveSessions, isLiveSessionListed } from "../features/workspace/liveSessionOrder";
-import { resolveLiveSummaryTarget } from "../features/workspace/liveSummaryTarget";
+import { isLiveSessionListed } from "../features/workspace/liveSessionOrder";
 import { resolveWorkspaceSessionMembership } from "../features/workspace/workspace";
 import type { Terminal, Workspace, WorkspaceSession } from "../features/workspace/workspace";
 import type { WorkspaceSessionPaging } from "../features/workspace/useWorkspaces";
@@ -35,7 +31,6 @@ export interface SidebarProps {
   readonly onToggleExpanded: (wsId: string) => void;
   readonly onLoadMoreSessions: (wsId: string) => void;
   readonly onSelectTerminal: (ws: Workspace, tm: Terminal) => void;
-  readonly onOpenSession: (ws: Workspace, session: WorkspaceSession, force?: boolean) => Promise<"opened" | "session-active" | void>;
   readonly onAddWorkspace: () => void;
   readonly onAddTerminal: (ws: Workspace) => void;
   readonly onDeleteWorkspace: (ws: Workspace) => void;
@@ -75,7 +70,6 @@ export function Sidebar({
   onToggleExpanded,
   onLoadMoreSessions,
   onSelectTerminal,
-  onOpenSession,
   onAddWorkspace,
   onAddTerminal,
   onDeleteWorkspace,
@@ -102,14 +96,12 @@ export function Sidebar({
     transferToggleFocus.current = false;
   }, [collapsed]);
   const [statsOpen, setStatsOpen] = useState(false);
-  const [highlightedSessionId, setHighlightedSessionId] = useState<string | null>(null);
   const [engineRestartOpen, setEngineRestartOpen] = useState(false);
-  const sessionOpen = useSessionOpenAttempts(onOpenSession);
   // The overview poller is shared with App's live-session poll; the sidebar
-  // derives running-agent counts for the tree badges and the pinned
-  // running-sessions section.
-  // WS frames from the attached chat pane override the poll snapshot when they
-  // are fresher (see liveBadgeStore); background sessions stay poll-fed.
+  // derives running-agent counts for the tree badges and the membership
+  // crawl. WS frames from the attached chat pane override the poll snapshot
+  // when they are fresher (see liveBadgeStore); background sessions stay
+  // poll-fed.
   const pollSummaries = useLiveSessionSummaries(true);
   const summaries = useMergedLiveSummaries(pollSummaries);
   // Main work is independent of the exact child-agent counts.
@@ -131,37 +123,8 @@ export function Sidebar({
   // Last-activity ms per session id: catalog rows from the loaded session
   // pages, raised by whatever the membership crawl observed.
   const [crawlRecency, setCrawlRecency] = useState<ReadonlyMap<string, number>>(new Map());
-  const lastActivityMs = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const rows of sessionLists.values()) {
-      for (const row of rows) map.set(row.id, Math.max(map.get(row.id) ?? 0, row.recencyMs));
-    }
-    for (const [id, recencyMs] of crawlRecency) {
-      map.set(id, Math.max(map.get(id) ?? 0, recencyMs));
-    }
-    return map;
-  }, [sessionLists, crawlRecency]);
-  // The pinned section lists every live session with a resolvable open
-  // target, idle included: working sessions first, then most recent activity.
-  // A live row keyed by an engine UUID that no stored chat or loaded session
-  // row owns would render a card that cannot be opened, so it is dropped here.
-  const liveSummaries = useMemo(
-    () => summaries
-      .filter((summary) => isLiveSessionListed(summary)
-        && resolveLiveSummaryTarget(summary, workspaces, sessionLists) !== null)
-      .sort((a, b) => compareLiveSessions(a, b, lastActivityMs)),
-    [summaries, workspaces, sessionLists, lastActivityMs],
-  );
-  // The count next to the label means "how many are working": the exact
-  // running-agent total across the pinned cards, idle rows excluded.
-  const totalRunningCount = useMemo(
-    () => liveSummaries.reduce((total, summary) => total + summary.runningCount, 0),
-    [liveSummaries],
-  );
-  // View live only names the row to focus and sort first. The tree offers it
-  // strictly for running sessions, so a highlight never fabricates a row; an
-  // idle pinned row stays listed (every live session is listed) but loses its
-  // running badge and highlight when both main and child work settle.
+  // Workspaces' resolved membership for live rows no stored chat or loaded
+  // catalog row owns, learned by the membership crawl below.
   const [resolvedRunningMembership, setResolvedRunningMembership] =
     useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
   const [membershipGeneration, setMembershipGeneration] = useState(0);
@@ -298,15 +261,6 @@ export function Sidebar({
     onLiveRecencyChange?.({ recencyMs: crawlRecency, ownerWsIds: liveOwnerWsIds });
   }, [onLiveRecencyChange, crawlRecency, liveOwnerWsIds]);
 
-  // The highlight names a running row; when that session's work settles the
-  // row stays listed (idle rows are listed too) but the highlight clears.
-  useEffect(() => {
-    if (highlightedSessionId === null) return;
-    const stillWorking = summaries.some((summary) => summary.id === highlightedSessionId
-      && (summary.active === true || summary.runningCount > 0));
-    if (!stillWorking) setHighlightedSessionId(null);
-  }, [highlightedSessionId, summaries]);
-
   const hiddenMobileDrawer = isMobile && collapsed;
   return (
     <>
@@ -362,32 +316,6 @@ export function Sidebar({
             </div>
           </div>
 
-          {liveSummaries.length > 0 && (
-            <div className="th-sidebar-live">
-              <div className="th-sidebar-live-label">
-                {t("sidebar.sessions")}
-                {totalRunningCount > 0 && (
-                  <span className="th-sidebar-live-count th-overview-card-running" aria-label={t("overview.runningAria", { n: totalRunningCount })}>
-                    <span className="th-overview-card-running-dot" aria-hidden="true" />
-                    {totalRunningCount}
-                  </span>
-                )}
-              </div>
-              <LiveSessionList
-                summaries={liveSummaries}
-                workspaces={workspaces}
-                sessionLists={sessionLists}
-                onSelect={onSelectTerminal}
-                onOpen={sessionOpen.open}
-                openAttempts={sessionOpen.attempts}
-                focusedSessionId={highlightedSessionId}
-                showLastLine={false}
-                listClassName="th-sidebar-live-list"
-                onActivated={() => setHighlightedSessionId(null)}
-              />
-            </div>
-          )}
-
           <div className="th-sidebar-body">
             <div className="th-sidebar-section-label">{t("sidebar.title")}</div>
             <button type="button" className="th-btn-add" onClick={onAddWorkspace}>
@@ -415,9 +343,6 @@ export function Sidebar({
                 onToggle={onToggleExpanded}
                 onLoadMoreSessions={onLoadMoreSessions}
                 onSelect={onSelectTerminal}
-                onOpen={sessionOpen.open}
-                openAttempts={sessionOpen.attempts}
-                onViewLive={(sessionId) => setHighlightedSessionId(sessionId)}
                 onAddTerminal={onAddTerminal}
                 onDeleteWorkspace={onDeleteWorkspace}
                 onDeleteTerminal={onDeleteTerminal}

@@ -34,13 +34,6 @@ const workspace: Workspace = {
 
 const sessions: readonly WorkspaceSession[] = [
   { id: "tm-1", name: "Stored session", source: "stored", recencyMs: 2 },
-  {
-    id: "disk-1",
-    name: "Discovered session",
-    source: "discovered",
-    recencyMs: 1,
-    resumeIdentity: "/sessions/disk-1.jsonl",
-  },
 ];
 
 describe("SessionTree session-row hierarchy", () => {
@@ -78,7 +71,6 @@ describe("SessionTree session-row hierarchy", () => {
             onToggle={onToggle}
             onLoadMoreSessions={() => undefined}
             onSelect={onSelect}
-            onOpen={async () => undefined}
             onAddTerminal={() => undefined}
             onDeleteWorkspace={() => undefined}
             onDeleteTerminal={() => undefined}
@@ -97,22 +89,6 @@ describe("SessionTree session-row hierarchy", () => {
     expect(match).toBeDefined();
     return match!;
   }
-
-  it("keeps the session name as the direct-open row's accessible name without an import badge", () => {
-    render();
-    const discovered = row("Discovered session");
-
-    const activation = discovered.querySelector<HTMLButtonElement>(".th-tree-activation");
-    // The accessible name is built from the session name...
-    expect(activation?.getAttribute("aria-label")).toBe(
-      "sidebar.tm.discoveredHint Discovered session",
-    );
-    expect(discovered.querySelector(".th-tree-source")).toBeNull();
-    // The primary label stays exposed.
-    const label = discovered.querySelector(".th-tree-label");
-    expect(label?.textContent).toBe("Discovered session");
-    expect(label?.getAttribute("aria-hidden")).toBeNull();
-  });
 
   it("gives a stored session row its name with no badge at all", () => {
     render();

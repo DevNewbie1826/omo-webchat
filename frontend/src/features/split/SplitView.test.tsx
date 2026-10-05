@@ -286,12 +286,12 @@ describe("SplitView empty pane", () => {
 				{ id: "ws-mru", name: "mru", path: "/repo/mru", chats: mruChats },
 			];
 			// Server MRU order deliberately differs from the ws.chats append order,
-			// including discovered and already placed rows.
+			// including catalog-only and already placed rows.
 			const mruLists = new Map<string, readonly WorkspaceSession[]>([
 				[
 					"ws-mru",
 					[
-						{ id: "d-1", name: "Discovered", source: "discovered", recencyMs: 40 },
+						{ id: "d-1", name: "Session D", source: "stored", recencyMs: 40 },
 						{ id: "s-3", name: "Session 3", source: "stored", recencyMs: 30 },
 						{ id: "s-1", name: "Session 1", source: "stored", recencyMs: 20 },
 						{ id: "s-2", name: "Session 2", source: "stored", recencyMs: 10 },
@@ -312,7 +312,7 @@ describe("SplitView empty pane", () => {
 				mruLists,
 				mruPages,
 			);
-			expect(rowNames()).toEqual(["Discovered", "Session 3", "Session 1", "Session 2"]);
+			expect(rowNames()).toEqual(["Session D", "Session 3", "Session 1", "Session 2"]);
 		});
 
 		it("requests the first session page once and shows a loading note while it is in flight", () => {

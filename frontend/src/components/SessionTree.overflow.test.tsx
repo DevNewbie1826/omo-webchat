@@ -78,7 +78,6 @@ describe("SessionTree workspace overflow disclosure", () => {
               onToggle={() => undefined}
               onLoadMoreSessions={() => undefined}
               onSelect={() => undefined}
-              onOpen={async () => undefined}
               onAddTerminal={(ws) => {
                 onAddTerminal(ws);
                 setChatOpen(true);

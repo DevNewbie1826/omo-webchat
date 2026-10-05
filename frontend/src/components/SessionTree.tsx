@@ -11,7 +11,6 @@ import {
 } from "./icons";
 import type { Terminal, Workspace, WorkspaceSession } from "../features/workspace/workspace";
 import type { WorkspaceSessionPaging } from "../features/workspace/useWorkspaces";
-import { sessionOpenAttemptKey, type SessionOpenAttemptResult, type SessionOpenAttemptStatus } from "../features/workspace/useSessionOpenAttempts";
 
 export type ToastKind = "info" | "success" | "error";
 
@@ -31,9 +30,6 @@ export interface SessionTreeProps {
   readonly onToggle: (wsId: string) => void;
   readonly onLoadMoreSessions: (wsId: string) => void;
   readonly onSelect: (ws: Workspace, tm: Terminal) => void;
-  readonly onOpen: (ws: Workspace, session: WorkspaceSession, force?: boolean) => Promise<SessionOpenAttemptResult>;
-  readonly openAttempts?: ReadonlyMap<string, SessionOpenAttemptStatus>;
-  readonly onViewLive?: (sessionId: string) => void;
   readonly onAddTerminal: (ws: Workspace) => void;
   readonly onDeleteWorkspace: (ws: Workspace) => void;
   readonly onDeleteTerminal: (ws: Workspace, tm: Terminal) => void;
@@ -116,9 +112,6 @@ export function SessionTree({
   onToggle,
   onLoadMoreSessions,
   onSelect,
-  onOpen,
-  openAttempts = new Map(),
-  onViewLive,
   onAddTerminal,
   onDeleteWorkspace,
   onDeleteTerminal,
@@ -164,7 +157,6 @@ export function SessionTree({
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [overflowFor]);
-  const openingRef = useRef(new Set<string>());
   const treeRef = useRef<HTMLDivElement>(null);
   const indicatorRef = useRef<HTMLSpanElement>(null);
   const indicatorState = useRef<SelectionIndicatorState>({ key: null, box: null });
@@ -189,13 +181,6 @@ export function SessionTree({
     observer.observe(tree);
     return () => observer.disconnect();
   }, []);
-
-  const openDiscovered = (ws: Workspace, session: WorkspaceSession, force = false): void => {
-    const key = sessionOpenAttemptKey(ws.id, session.id);
-    if (openingRef.current.has(key)) return;
-    openingRef.current.add(key);
-    void onOpen(ws, session, force).finally(() => openingRef.current.delete(key));
-  };
 
   const commitRename = (target: RenameTarget, value: string): void => {
     const name = value.trim();
@@ -234,7 +219,7 @@ export function SessionTree({
       onRenameWorkspace(ws, name).catch(() => notify(t("toast.error"), "error"));
     } else {
       const item = (sessionLists.get(ws.id) ?? []).find(
-        (session) => session.id === target.tmId && session.source === "stored" && session.dangling !== true,
+        (session) => session.id === target.tmId && session.dangling !== true,
       );
       const tm = ws.chats.find((x) => x.id === target.tmId) ?? (item
         ? { id: item.id, name: item.name, provider: "omo" as const }
@@ -408,25 +393,21 @@ export function SessionTree({
 
             <fieldset className={`th-tree-children${isOpen ? "" : " th-tree-children--closed"}`}>
               {(sessionLists.get(ws.id) ?? []).map((item) => {
-                const stored = item.source === "stored";
-                const listed = stored ? ws.chats.find((chat) => chat.id === item.id) : undefined;
+                const listed = ws.chats.find((chat) => chat.id === item.id);
                 // v2 union: the sessions REST also lists cursorstore-only chats
                 // the legacy workspace chat list does not carry. They are real
                 // chats — activate them through the same select flow instead of
                 // rendering a dead row. Dangling identities stay inert.
-                const tm = listed ?? (stored && item.dangling !== true
+                const tm = listed ?? (item.dangling !== true
                   ? { id: item.id, name: item.name, provider: "omo" as const }
                   : undefined);
-                const discovered = item.source === "discovered";
-                const openKey = sessionOpenAttemptKey(ws.id, item.id);
-                const openAttempt = discovered ? openAttempts.get(openKey) : undefined;
-                const openInFlight = openAttempt === "opening";
-                const activeElsewhere = openAttempt === "session-active";
-                const openFailed = openAttempt === "failed";
-                const interactive = tm !== undefined || discovered;
-                const rowDisabled = !interactive || openInFlight || activeElsewhere;
+                const rowDisabled = tm === undefined;
                 const active = tm !== undefined && item.id === activeTerminalId;
-                const live = tm !== undefined && liveSessions.has(item.id);
+                // Live comes from both feeds: the webchat live-sessions
+                // subscription and the server's rpc-watch flag on the row
+                // itself, which also covers daemon sessions webchat never
+                // attached to.
+                const live = tm !== undefined && (liveSessions.has(item.id) || item.live === true);
                 const renamingTm = tm !== undefined && rename?.kind === "terminal" && rename.tmId === item.id
                   ? rename
                   : null;
@@ -434,20 +415,11 @@ export function SessionTree({
                 const running = runningInfo ?? 0;
                 const mainRunning = activeSessions?.has(item.id) === true;
                 const displayName = item.name.trim() !== "" ? item.name : t("sidebar.tm.untitled", { id: item.id.slice(0, 8) });
-                const discoveredLabel = discovered
-                  ? t("sidebar.tm.discoveredHint", { name: displayName })
-                  : undefined;
-                const dangling = item.source === "stored" && item.dangling === true;
+                const dangling = item.dangling === true;
                 const danglingHint = dangling
                   ? t("sidebar.tm.missingOriginalHint", { name: displayName })
                   : undefined;
-                const title = danglingHint
-                  ?? (openInFlight ? t("sidebar.tm.opening") : openFailed ? t("sidebar.tm.openFailed") : discoveredLabel)
-                  ?? (live ? t("sidebar.tm.liveProcess") : undefined);
-                const activate = (): void => {
-                  if (tm !== undefined) onSelect(ws, tm);
-                  else if (discovered) openDiscovered(ws, item);
-                };
+                const title = danglingHint ?? (live ? t("sidebar.tm.liveProcess") : undefined);
                 return (
                   <div
                     key={`${item.source}:${item.id}`}
@@ -468,40 +440,17 @@ export function SessionTree({
                         type="button"
                         className="th-tree-activation"
                         title={title}
-                        aria-label={discoveredLabel}
                         aria-current={active ? "true" : undefined}
-                        aria-busy={openInFlight || undefined}
                         disabled={rowDisabled}
-                        onClick={activate}
+                        onClick={() => {
+                          if (tm !== undefined) onSelect(ws, tm);
+                        }}
                       >
                         <span className="th-tree-label">{displayName}</span>
-                        {openInFlight ? (
-                          <span className="th-tree-source" aria-hidden="true">{t("sidebar.tm.opening")}</span>
-                        ) : dangling ? (
+                        {dangling ? (
                           <span className="th-tree-source" aria-hidden="true">{t("sidebar.tm.missingOriginal")}</span>
                         ) : null}
                       </button>
-                    )}
-                    {(activeElsewhere || openFailed) && (
-                      <span className="th-tree-session-active" role="status">
-                        {t(activeElsewhere ? "sidebar.tm.sessionActive" : "sidebar.tm.openFailed")}
-                        {activeElsewhere && onViewLive && (running > 0 || mainRunning) && (
-                          <button
-                            type="button"
-                            className="th-btn th-btn--ghost th-tree-view-live"
-                            onClick={() => onViewLive(item.id)}
-                          >
-                            {t("sidebar.tm.viewLive")}
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          className={`th-btn th-btn--ghost ${activeElsewhere ? "th-tree-force-open" : "th-tree-retry-open"}`}
-                          onClick={() => openDiscovered(ws, item, activeElsewhere)}
-                        >
-                          {t(activeElsewhere ? "sidebar.tm.forceOpen" : "sidebar.tm.retryOpen")}
-                        </button>
-                      </span>
                     )}
                     {tm ? (
                       <span className="th-tree-actions">

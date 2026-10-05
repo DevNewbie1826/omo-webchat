@@ -52,7 +52,6 @@ describe("SessionTree live-process indicator", () => {
           onToggle={() => undefined}
           onLoadMoreSessions={() => undefined}
           onSelect={() => undefined}
-          onOpen={async () => undefined}
           onAddTerminal={() => undefined}
           onDeleteWorkspace={() => undefined}
           onDeleteTerminal={() => undefined}
@@ -120,7 +119,6 @@ describe("SessionTree live-process indicator", () => {
           onToggle={() => undefined}
           onLoadMoreSessions={() => undefined}
           onSelect={() => undefined}
-          onOpen={async () => undefined}
           onAddTerminal={() => undefined}
           onDeleteWorkspace={() => undefined}
           onDeleteTerminal={() => undefined}
@@ -152,67 +150,5 @@ describe("SessionTree live-process indicator", () => {
       "/api/workspaces/ws-1/chats/cursor-only",
       expect.objectContaining({ method: "PATCH", body: JSON.stringify({ name: "Renamed" }) }),
     );
-  });
-
-  it("renders discovered sessions as adoptable rows with no store actions", () => {
-    const onSelect = vi.fn();
-    const onOpen = vi.fn(async () => undefined);
-    const onDeleteTerminal = vi.fn();
-    const onRenameTerminal = vi.fn(async () => undefined);
-    const workspace: Workspace = {
-      id: "ws-1",
-      name: "Workspace",
-      path: "/work",
-      chats: [{ id: "stored-1", name: "Stored chat", provider: "omo" }],
-    };
-
-    act(() => {
-      root.render(
-        <SessionTree
-          workspaces={[workspace]}
-          liveSessions={new Set()}
-          activeTerminalId={null}
-          placedSessions={new Set()}
-          expanded={new Set(["ws-1"])}
-          sessionLists={new Map([["ws-1", [
-            { id: "omo-session-uuid", name: "Disk session", source: "discovered", recencyMs: 2 },
-            { id: "stored-1", name: "Stored chat", source: "stored", recencyMs: 1 },
-          ]]])}
-          sessionPages={new Map()}
-          onToggle={() => undefined}
-          onLoadMoreSessions={() => undefined}
-          onSelect={onSelect}
-          onOpen={onOpen}
-          onAddTerminal={() => undefined}
-          onDeleteWorkspace={() => undefined}
-          onDeleteTerminal={onDeleteTerminal}
-          onRenameWorkspace={async () => undefined}
-          onRenameTerminal={onRenameTerminal}
-          notify={() => undefined}
-        />,
-      );
-    });
-
-    const discovered = Array.from(container.querySelectorAll<HTMLElement>(".th-tree-node"))
-      .find((node) => node.textContent?.includes("Disk session"));
-    const activation = discovered?.querySelector<HTMLButtonElement>(".th-tree-activation");
-    expect(discovered?.getAttribute("role")).toBeNull();
-    expect(discovered?.getAttribute("aria-disabled")).toBeNull();
-    expect(discovered?.getAttribute("aria-expanded")).toBeNull();
-    expect(discovered?.getAttribute("aria-selected")).toBeNull();
-    expect(activation?.tagName).toBe("BUTTON");
-    expect(activation?.getAttribute("aria-label")).toBe("sidebar.tm.discoveredHint");
-    expect(activation?.getAttribute("title")).toBe("sidebar.tm.discoveredHint");
-    expect(discovered?.querySelectorAll("button")).toHaveLength(1);
-
-    act(() => {
-      activation?.click();
-      activation?.click();
-    });
-
-    expect(onOpen).toHaveBeenCalledTimes(1);
-    expect(onSelect).not.toHaveBeenCalled();
-    expect(onDeleteTerminal).not.toHaveBeenCalled();
-    expect(onRenameTerminal).not.toHaveBeenCalled();
   });
 });

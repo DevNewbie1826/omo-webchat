@@ -1193,14 +1193,34 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	if resumeOnly && !resumed {
 		return nil, false, nil, ErrNoDurableCursor
 	}
+	var data omorpc.OpenSessionData
+	var epoch omorpc.EpochToken
+	var openErr error
+	attached := false
+	if cur.AutoEnrolled && resumed {
+		data, epoch, attached, openErr = m.attachEnrolled(ctx, cur)
+		if openErr != nil {
+			return nil, false, nil, openErr
+		}
+	}
 	var sessionFileIdentity os.FileInfo
 	if resumed && cur.InPlace {
 		sessionFileIdentity, err = fileid.Lstat(cur.SessionFile)
-		if err != nil {
+		if err != nil && !(attached && errors.Is(err, os.ErrNotExist)) {
 			return nil, false, nil, externalIdentityReadError(err)
 		}
 	}
-	data, epoch, openErr := m.open(ctx, chatID, chat.CWD(), cur.SessionFile)
+	if !attached {
+		if cur.AutoEnrolled {
+			if preparer, ok := m.cfg.Store.(WritePreparer); ok {
+				if err := preparer.PrepareWrite(ctx, chatID); err != nil {
+					return nil, false, nil, err
+				}
+				cur.WritePrepared = true
+			}
+		}
+		data, epoch, openErr = m.open(ctx, chatID, chat.CWD(), cur.SessionFile)
+	}
 	if openErr == nil {
 		openErr = validateOpen(data, cur, resumed)
 	}
@@ -1276,6 +1296,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		}
 	}()
 	s.inPlace = cur.InPlace
+	s.enrolledAttached = attached
 	s.writePrepared = cur.WritePrepared
 	s.sessionFileIdentity = sessionFileIdentity
 	identityChanged := cur.SessionFile != data.State.SessionFile || cur.DurableSessionID != data.State.SessionID

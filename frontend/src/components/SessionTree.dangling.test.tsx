@@ -37,13 +37,6 @@ const sessions: readonly WorkspaceSession[] = [
     dangling: true,
   } as WorkspaceSession,
   { id: "tm-2", name: "Stored session", source: "stored", recencyMs: 2 },
-  {
-    id: "disk-1",
-    name: "Discovered session",
-    source: "discovered",
-    recencyMs: 1,
-    resumeIdentity: "/sessions/disk-1.jsonl",
-  },
 ];
 
 describe("SessionTree dangling stored-row badge", () => {
@@ -81,7 +74,6 @@ describe("SessionTree dangling stored-row badge", () => {
             onToggle={onToggle}
             onLoadMoreSessions={() => undefined}
             onSelect={onSelect}
-            onOpen={async () => undefined}
             onAddTerminal={() => undefined}
             onDeleteWorkspace={() => undefined}
             onDeleteTerminal={() => undefined}
@@ -123,13 +115,5 @@ describe("SessionTree dangling stored-row badge", () => {
     expect(activation?.disabled).toBe(false);
     act(() => activation?.click());
     expect(onSelect).toHaveBeenCalledWith(workspace, workspace.chats[1]);
-  });
-
-  it("renders a discovered session as a direct primary action without an import badge", () => {
-    render();
-    const discovered = row("Discovered session");
-    expect(discovered.querySelector(".th-tree-source")).toBeNull();
-    expect(discovered.querySelector<HTMLButtonElement>(".th-tree-activation")?.disabled).toBe(false);
-    expect(discovered.textContent).not.toContain("sidebar.tm.missingOriginal");
   });
 });

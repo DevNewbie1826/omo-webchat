@@ -235,83 +235,6 @@ describe("useWorkspaces paginated session history", () => {
     });
   });
 
-  it("suppresses an in-place source locally and after a stale canonical refresh", async () => {
-    let latest: ReturnType<typeof useWorkspaces> | undefined;
-    const source = {
-      id: "disk-session",
-      name: "Disk session",
-      source: "discovered" as const,
-      recencyMs: 5,
-      resumeIdentity: "/sessions/disk-session.jsonl",
-    };
-    vi.mocked(listWorkspaceSessions)
-      .mockResolvedValueOnce({
-        items: [
-          ...chats.slice(0, 4).map((chat, index) => ({
-            id: chat.id,
-            name: chat.name,
-            source: "stored" as const,
-            recencyMs: 10 - index,
-          })),
-          source,
-        ],
-        nextCursor: "next-page",
-      })
-      .mockResolvedValueOnce({
-        // Simulate a stale canonical page that still contains the source.
-        items: [
-          { id: "chat-new", name: "New chat", source: "stored", recencyMs: 20 },
-          source,
-          { id: "chat-6", name: "Chat 6", source: "stored", recencyMs: 4 },
-        ],
-        nextCursor: "",
-      });
-
-    function Probe() {
-      latest = useWorkspaces({
-        notify: () => undefined,
-        t: (key) => key,
-        layout,
-        confirm: async () => true,
-      });
-      return null;
-    }
-
-    act(() => root.render(<Probe />));
-    await act(async () => latest?.load());
-    act(() => latest?.setExpanded(new Set(["ws-1"])));
-    await act(async () => undefined);
-
-    act(() => latest?.addCreatedSession("ws-1", {
-      id: "chat-new",
-      name: "New chat",
-      provider: "omo",
-    }, source));
-
-    expect(latest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
-      "chat-1", "chat-2", "chat-3", "chat-4", "chat-new",
-    ]);
-    expect(latest?.sessionLists.get("ws-1")?.find(item => item.id === "chat-new")?.recencyMs).toBe(source.recencyMs);
-    expect(latest?.sessionPages.get("ws-1")?.nextCursor).toBe("next-page");
-
-    await act(async () => latest?.loadMoreSessions("ws-1"));
-
-    expect(listWorkspaceSessions).toHaveBeenLastCalledWith("ws-1", "next-page");
-    expect(latest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
-      "chat-new", "chat-1", "chat-2", "chat-3", "chat-4", "chat-6",
-    ]);
-    expect(latest?.sessionLists.get("ws-1")?.filter((item) => item.id === "chat-new"))
-      .toHaveLength(1);
-    expect(latest?.sessionLists.get("ws-1")?.filter((item) => item.id === "disk-session"))
-      .toHaveLength(0);
-    expect(latest?.sessionPages.get("ws-1")).toMatchObject({
-      ready: true,
-      loading: false,
-      hasMore: false,
-      nextCursor: "",
-    });
-  });
-
   it("merges a chat created during the pending first page and keeps load-more deduplicated", async () => {
     let latest: ReturnType<typeof useWorkspaces> | undefined;
     let resolveFirstPage!: (page: Awaited<ReturnType<typeof listWorkspaceSessions>>) => void;
@@ -720,128 +643,6 @@ describe("useWorkspaces paginated session history", () => {
     ]);
   });
 
-  it("renders a same-path replacement session beside its in-place chat", async () => {
-    const source = {
-      id: "disk-session",
-      name: "Disk session",
-      source: "discovered" as const,
-      recencyMs: 5,
-      resumeIdentity: "/sessions/disk-session.jsonl",
-    };
-    vi.mocked(listWorkspaceSessions)
-      .mockResolvedValueOnce({
-        items: [
-          ...chats.slice(0, 4).map((chat, index) => ({
-            id: chat.id,
-            name: chat.name,
-            source: "stored" as const,
-            recencyMs: 10 - index,
-          })),
-          source,
-        ],
-        nextCursor: "next-page",
-      })
-      .mockResolvedValueOnce({
-        // Observed engine behavior: the durable-id-authoritative catalog keeps
-        // exposing a same-path replacement session under its own durable id,
-        // next to the stored row the in-place chat became.
-        items: [
-          { id: "chat-new", name: "New chat", source: "stored", recencyMs: 20 },
-          source,
-          {
-            id: "disk-session-next",
-            name: "Replacement session",
-            source: "discovered",
-            recencyMs: 3,
-            resumeIdentity: "/sessions/disk-session.jsonl",
-          },
-        ],
-        nextCursor: "",
-      });
-
-    act(() => root.render(<PendingSessionsProbe />));
-    await act(async () => pendingLatest?.load());
-    act(() => pendingLatest?.setExpanded(new Set(["ws-1"])));
-    await act(async () => undefined);
-
-    act(() => pendingLatest?.addCreatedSession("ws-1", {
-      id: "chat-new",
-      name: "New chat",
-      provider: "omo",
-    }, source));
-
-    expect(container.querySelectorAll('[data-session-id="disk-session"]')).toHaveLength(0);
-
-    await act(async () => pendingLatest?.loadMoreSessions("ws-1"));
-
-    // No fold across differing durable ids: the stored row and the discovered
-    // replacement both render; only the exact adopted source stays folded.
-    expect(container.querySelectorAll('[data-session-id="chat-new"]')).toHaveLength(1);
-    expect(container.querySelector('[data-session-id="disk-session-next"]')?.textContent)
-      .toBe("Replacement session");
-    expect(container.querySelectorAll('[data-session-id="disk-session"]')).toHaveLength(0);
-    expect(pendingLatest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
-      "chat-new", "chat-1", "chat-2", "chat-3", "chat-4", "disk-session-next",
-    ]);
-  });
-
-  it("folds by path only when the adopted source has no durable id", async () => {
-    const pathOnlySource = {
-      id: "",
-      name: "Legacy session",
-      source: "discovered" as const,
-      recencyMs: 5,
-      resumeIdentity: "/sessions/legacy.jsonl",
-    };
-    vi.mocked(listWorkspaceSessions)
-      .mockResolvedValueOnce({
-        items: [
-          ...chats.slice(0, 4).map((chat, index) => ({
-            id: chat.id,
-            name: chat.name,
-            source: "stored" as const,
-            recencyMs: 10 - index,
-          })),
-          pathOnlySource,
-        ],
-        nextCursor: "next-page",
-      })
-      .mockResolvedValueOnce({
-        items: [
-          { id: "chat-new", name: "New chat", source: "stored", recencyMs: 20 },
-          {
-            id: "legacy-file-session",
-            name: "Legacy file session",
-            source: "discovered",
-            recencyMs: 3,
-            resumeIdentity: "/sessions/legacy.jsonl",
-          },
-        ],
-        nextCursor: "",
-      });
-
-    act(() => root.render(<PendingSessionsProbe />));
-    await act(async () => pendingLatest?.load());
-    act(() => pendingLatest?.setExpanded(new Set(["ws-1"])));
-    await act(async () => undefined);
-
-    act(() => pendingLatest?.addCreatedSession("ws-1", {
-      id: "chat-new",
-      name: "New chat",
-      provider: "omo",
-    }, pathOnlySource));
-
-    await act(async () => pendingLatest?.loadMoreSessions("ws-1"));
-
-    expect(container.querySelectorAll('[data-session-id="chat-new"]')).toHaveLength(1);
-    // Without a recorded durable id the resume path is the only source
-    // identity, so the same-path discovered row still folds.
-    expect(container.querySelectorAll('[data-session-id="legacy-file-session"]')).toHaveLength(0);
-    expect(pendingLatest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
-      "chat-new", "chat-1", "chat-2", "chat-3", "chat-4",
-    ]);
-  });
-
   it("refreshes a ready page once so a later-visible session appears without a reload", async () => {
     vi.useFakeTimers();
     try {
@@ -857,7 +658,7 @@ describe("useWorkspaces paginated session history", () => {
         })
         .mockResolvedValueOnce({
           // Observed engine behavior: a freshly written session is held out of
-          // the discovered catalog behind a stabilization window, so it only
+          // the session catalog behind a stabilization window, so it only
           // shows up when the page is fetched again after that horizon.
           items: [
             ...chats.slice(0, 5).map((chat, index) => ({
@@ -869,9 +670,8 @@ describe("useWorkspaces paginated session history", () => {
             {
               id: "late-session",
               name: "Late session",
-              source: "discovered",
+              source: "stored",
               recencyMs: 9,
-              resumeIdentity: "/sessions/late-session.jsonl",
             },
           ],
           nextCursor: "next-page",
@@ -961,9 +761,8 @@ describe("useWorkspaces paginated session history", () => {
           {
             id: "late-session",
             name: "Late session",
-            source: "discovered",
+            source: "stored",
             recencyMs: 9,
-            resumeIdentity: "/sessions/late-session.jsonl",
           },
         ],
         nextCursor: "",
@@ -1012,9 +811,8 @@ describe("useWorkspaces paginated session history", () => {
             {
               id: "late-session",
               name: "Late session",
-              source: "discovered",
+              source: "stored",
               recencyMs: 9,
-              resumeIdentity: "/sessions/late-session.jsonl",
             },
           ],
           nextCursor: "",

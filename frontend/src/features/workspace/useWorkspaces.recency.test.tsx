@@ -9,7 +9,7 @@ import { CATALOG_REFRESH_DELAY_MS, RECENCY_REFRESH_INTERVAL_MS, useWorkspaces } 
 const workspace: Workspace = { id: "ws", name: "Workspace", path: "/work", chats: [
   { id: "web", name: "Web", provider: "omo" },
 ] };
-const disk = { id: "disk", name: "Disk", source: "discovered", recencyMs: 100 } as const;
+const disk = { id: "disk", name: "Disk", source: "stored", recencyMs: 100 } as const;
 const web = { id: "web", name: "Web", source: "stored", recencyMs: 80 } as const;
 const layout: LayoutApi = {
   root: { kind: "leaf", id: "pane", sessionId: null }, focusedPaneId: "pane", placed: new Set(),
@@ -188,17 +188,6 @@ it("does not restore a removed workspace when an old page resolves", async () =>
   expect(current.sessionPages.has("ws")).toBe(false);
 });
 
-it("keeps represented source activity when a canonical page still carries its durable alias", async () => {
-  // Given: an in-place binding whose discovered source is folded into web.
-  const chat = workspace.chats[0]; if (!chat) throw new Error("fixture missing chat");
-  act(() => current.addCreatedSession("ws", chat, disk));
-  act(() => { void current.loadMoreSessions("ws"); });
-  // When: later activity arrives on the original durable ID.
-  await act(async () => pages[1]?.resolve({ items: [{ ...disk, recencyMs: 5000 }], nextCursor: "" }));
-  // Then: the stored representative gets the activity, without a second row.
-  expect(rows()).toEqual([["web", 5000]]);
-});
-
 it("keeps server activity observed under an optimistic use when confirmation is older", async () => {
   // Given: optimistic use is ahead of the server clock.
   act(() => current.markSessionUsed("ws", "web"));
@@ -327,14 +316,4 @@ it("disarms the recency cadence on unmount", async () => {
   await act(async () => vi.advanceTimersByTime(RECENCY_REFRESH_INTERVAL_MS * 3));
   // Then: only the harness's first page was ever requested.
   expect(paths.filter(path => path === "GET /api/workspaces/ws/sessions")).toHaveLength(1);
-});
-
-it("preserves logical file recency when adding its stored wrapper without activation", () => {
-  // Given: file activity predates the client clock used for new metadata wrappers.
-  const chat = workspace.chats[0]; if (!chat) throw new Error("fixture missing chat");
-  // When: identity wrapping alone is not explicit use.
-  act(() => current.addCreatedSession("ws", chat, disk));
-  // Then: the representative inherits file activity, not wrapper creation time.
-  expect(rows()).toEqual([["web", 100]]);
-  expect(paths.filter(path => path.endsWith("/touch"))).toEqual([]);
 });
