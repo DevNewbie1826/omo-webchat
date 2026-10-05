@@ -350,7 +350,8 @@ func findDiskSession(cwd, id, path string) (diskSession, bool) {
 		if id != "" && id != session.ID {
 			continue
 		}
-		if path != "" && path != session.Path && path != session.ID {
+		if path != "" && path != session.Path && path != session.ID &&
+			canonicalWatcherPath(path) != canonicalWatcherPath(session.Path) {
 			continue
 		}
 		return session, true

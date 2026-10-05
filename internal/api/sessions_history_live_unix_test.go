@@ -4,6 +4,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -92,12 +93,32 @@ func TestUnifiedSessionTmpPrivateTmpCanonicalMatch(t *testing.T) {
 	if err := st.SaveWorkspace(ws); err != nil {
 		t.Fatal(err)
 	}
+	unifiedWatch(t, s, []rpcwatch.Session{{SessionID: "route", DurableSessionID: "durable", SessionPath: filepath.Join(dir, "unpersisted.jsonl"), Cwd: dir, Status: "working"}})
+	unbound := unifiedGet(t, s, ws.ID, "")
+	if len(unbound.Live) != 1 || unbound.Live[0].ComparisonPath != filepath.Join(canonical, "unpersisted.jsonl") {
+		t.Fatalf("unbound tmp comparison path=%+v", unbound.Live)
+	}
 	if err := st.SaveChat(cursorstore.Chat{ID: "bound", WorkspaceID: ws.ID, CWD: canonical, SessionFile: filepath.Join(canonical, "unpersisted.jsonl"), DurableSessionID: "durable"}); err != nil {
 		t.Fatal(err)
 	}
-	unifiedWatch(t, s, []rpcwatch.Session{{SessionID: "route", DurableSessionID: "durable", SessionPath: filepath.Join(dir, "unpersisted.jsonl"), Cwd: dir, Status: "working"}})
 	page := unifiedGet(t, s, ws.ID, "")
 	if len(page.Live) != 0 || len(page.Items) != 1 || page.Items[0].Live == nil || page.Items[0].Live.Status != "working" {
 		t.Fatalf("tmp alias page=%+v", page)
+	}
+	// A canonical resume identity must still open the catalog's /tmp spelling.
+	t.Setenv("OMO_CODING_AGENT_DIR", dir)
+	catalogDir := sessionsDirForCwd(canonical)
+	if err := os.MkdirAll(catalogDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(catalogDir, "catalog.jsonl")
+	header := fmt.Sprintf("{\"type\":\"session\",\"id\":\"catalog-durable\",\"cwd\":%q}\n", canonical)
+	if err := os.WriteFile(source, []byte(header), 0600); err != nil {
+		t.Fatal(err)
+	}
+	resolvedSource := canonicalWatcherPath(source)
+	matched, ok := findDiskSession(canonical, "catalog-durable", resolvedSource)
+	if !ok || matched.Path != source {
+		t.Fatalf("canonical catalog identity failed: path=%q matched=%+v ok=%v", resolvedSource, matched, ok)
 	}
 }

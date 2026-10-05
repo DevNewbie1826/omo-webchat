@@ -90,9 +90,14 @@ type sessionHistoryItem struct {
 }
 
 type sessionHistoryPage struct {
-	Items      []sessionHistoryItem `json:"items"`
-	NextCursor string               `json:"nextCursor"`
-	Live       []rpcwatch.Session   `json:"live"`
+	Items      []sessionHistoryItem       `json:"items"`
+	NextCursor string                     `json:"nextCursor"`
+	Live       []sessionHistoryRpcSession `json:"live"`
+}
+
+type sessionHistoryRpcSession struct {
+	rpcwatch.Session
+	ComparisonPath string `json:"comparisonPath"`
 }
 
 type diskSession struct {
@@ -630,6 +635,19 @@ func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	populateSessionHistoryNames(page.Items)
-	page.Live = pinned
+	// Resume identities and watcher comparison paths share the same server
+	// realpath normalization, including files not yet persisted.
+	for i := range page.Items {
+		if page.Items[i].ResumeIdentity != "" {
+			page.Items[i].ResumeIdentity = canonicalWatcherPath(page.Items[i].ResumeIdentity)
+		}
+	}
+	page.Live = make([]sessionHistoryRpcSession, 0, len(pinned))
+	for _, observed := range pinned {
+		page.Live = append(page.Live, sessionHistoryRpcSession{
+			Session:        observed,
+			ComparisonPath: canonicalWatcherPath(observed.SessionPath),
+		})
+	}
 	writeJSON(w, http.StatusOK, page)
 }

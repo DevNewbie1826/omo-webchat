@@ -53,8 +53,8 @@ type unifiedPage struct {
 			Questions []string `json:"questions"`
 		} `json:"live"`
 	} `json:"items"`
-	NextCursor string             `json:"nextCursor"`
-	Live       []rpcwatch.Session `json:"live"`
+	NextCursor string                     `json:"nextCursor"`
+	Live       []sessionHistoryRpcSession `json:"live"`
 }
 
 func unifiedWatch(t *testing.T, s *Server, rows []rpcwatch.Session) (*rpcwatch.Watcher, *unifiedCaller) {
