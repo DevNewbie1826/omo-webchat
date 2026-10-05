@@ -325,6 +325,7 @@ func (s *Store) DeleteWorkspace(id string) error {
 	candidate.Workspaces = append(candidate.Workspaces[:idx], candidate.Workspaces[idx+1:]...)
 	for chatID, c := range candidate.Chats {
 		if c.WorkspaceID == id {
+			recordEnrollmentTombstone(&candidate, c)
 			delete(candidate.Chats, chatID)
 		}
 	}

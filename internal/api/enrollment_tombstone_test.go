@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
@@ -16,6 +18,114 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 	"github.com/DevNewbie1826/omo-webchat/internal/wsbridge"
 )
+
+func TestEnrollmentWorkspaceDeleteTombstonesMembersAfterReload(t *testing.T) {
+	// Given: two auto-enrolled chats and a normal chat in the same workspace.
+	s, store, caller, ws := enrollmentFixture(t)
+	for _, id := range []string{"workspace-durable-a", "workspace-durable-b"} {
+		caller.sessions = append(caller.sessions, observedEnrollment(ws, id))
+	}
+	s.rpcWatcher.Tick(t.Context())
+	enrolled := store.ListChats(ws.ID)
+	if len(enrolled) != 2 {
+		t.Fatalf("enrolled chats = %+v", enrolled)
+	}
+	if err := store.SaveChat(cursorstore.Chat{ID: "normal-chat", WorkspaceID: ws.ID, CWD: ws.Path, DurableSessionID: "normal-durable"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// When: the workspace handler removes all members, then state is reloaded.
+	req := httptest.NewRequest(http.MethodDelete, "/", nil)
+	req.SetPathValue("wsId", ws.ID)
+	response := httptest.NewRecorder()
+	s.handleDeleteWorkspace(response, req)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("DELETE workspace = %d: %s", response.Code, response.Body.String())
+	}
+	reloaded, err := cursorstore.Open(filepath.Join(store.StateDir(), "state-v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cursors = reloaded
+
+	// Then: each reconcile tick leaves both workspace and chats deleted.
+	for tick := 1; tick <= 2; tick++ {
+		s.rpcWatcher.Tick(t.Context())
+		if workspaces := reloaded.ListWorkspaces(); len(workspaces) != 0 {
+			t.Fatalf("tick %d recreated workspace: %+v", tick, workspaces)
+		}
+		for _, chat := range enrolled {
+			if _, err := reloaded.GetChat(chat.ID); !errors.Is(err, cursorstore.ErrNotFound) {
+				t.Fatalf("tick %d retained chat %s: %v", tick, chat.ID, err)
+			}
+			if !reloaded.EnrollmentDeleted(chat.DurableSessionID) {
+				t.Fatalf("missing persisted tombstone for %s", chat.DurableSessionID)
+			}
+		}
+	}
+	if reloaded.EnrollmentDeleted("normal-durable") {
+		t.Fatal("normal chat deletion must not record an enrollment tombstone")
+	}
+	if _, err := reloaded.GetChat("normal-chat"); !errors.Is(err, cursorstore.ErrNotFound) {
+		t.Fatalf("normal member not removed: %v", err)
+	}
+}
+
+func TestEnrollmentSessionsListContainsOnlyStoredRows(t *testing.T) {
+	// Given: disk-only sessions of different ages beside an enrolled identity.
+	s, store, caller, ws := enrollmentFixture(t)
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+	for _, id := range []string{"disk-old", "disk-fresh", "enrolled-durable"} {
+		at := time.Unix(1_700_000_000, 0)
+		if id == "disk-fresh" {
+			at = time.Now()
+		}
+		path := writeDiskSession(t, agent, ws.Path, id, id, at)
+		if id == "enrolled-durable" {
+			live := observedEnrollment(ws, id)
+			live.SessionPath = path
+			caller.sessions = append(caller.sessions, live)
+		}
+	}
+	s.rpcWatcher.Tick(t.Context())
+	chats := store.ListChats(ws.ID)
+	if len(chats) != 1 {
+		t.Fatalf("enrolled chats = %+v", chats)
+	}
+	assertStoredOnly := func(want int) {
+		t.Helper()
+		page := listWorkspaceSessions(t, s, ws.ID, "")
+		for _, item := range page.Items {
+			if item.Source == "discovered" {
+				t.Fatalf("sessions list exposed discovered row: %+v", item)
+			}
+			if item.Source != sessionHistorySourceStored || item.ID != chats[0].ID {
+				t.Fatalf("sessions list exposed non-enrolled identity: %+v", item)
+			}
+		}
+		if len(page.Items) != want {
+			t.Fatalf("sessions list = %+v, want %d stored rows", page.Items, want)
+		}
+	}
+	assertStoredOnly(1)
+
+	// When: the enrolled chat is deleted while its disk file and daemon remain.
+	req := httptest.NewRequest(http.MethodDelete, "/", nil)
+	req.SetPathValue("wsId", ws.ID)
+	req.SetPathValue("chatId", chats[0].ID)
+	response := httptest.NewRecorder()
+	s.handleDeleteChat(response, req)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("DELETE chat = %d: %s", response.Code, response.Body.String())
+	}
+
+	// Then: neither disk-only nor tombstoned identities appear in any form.
+	for tick := 0; tick < 2; tick++ {
+		s.rpcWatcher.Tick(t.Context())
+		assertStoredOnly(0)
+	}
+}
 
 func TestEnrollmentTombstoneSurvivesDeleteAndReload(t *testing.T) {
 	// Given: an auto-enrolled session still listed on the daemon, never attached.
