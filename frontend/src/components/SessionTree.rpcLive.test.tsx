@@ -272,6 +272,87 @@ describe("SessionTree rpc live rows", () => {
     expect(row!.textContent).toContain("sess-q");
   });
 
+  it("renders and refreshes every first-page bound status without manager ownership", async () => {
+    window.localStorage.setItem("th-lang", "ko");
+    const items = [
+      { id: "chat-a", name: "Bound Alpha", source: "stored", recencyMs: 2,
+        live: { status: "working", questions: [] } },
+      { id: "chat-b", name: "Bound Beta", source: "stored", recencyMs: 1,
+        live: { status: "blocked", questions: ["choose target", "confirm"] } },
+    ];
+    await renderExpanded({ items, nextCursor: "page-two", live: [liveGamma] });
+    const boundRow = (name: string): HTMLElement =>
+      activationsContaining(name)[0]!.closest<HTMLElement>(".th-tree-node")!;
+    expect(boundRow("Bound Alpha").querySelector(".th-tree-running")).not.toBeNull();
+    expect(boundRow("Bound Beta").querySelector(".th-tree-questions")?.textContent).toBe("질문 대기");
+    expect(boundRow("Bound Beta").querySelector(".th-tree-questions")?.getAttribute("title"))
+      .toBe("choose target\nconfirm");
+    expect(rpcRow("sess-g")).not.toBeNull();
+
+    const tick = pushSessions();
+    const tickPageTwo = pushSessions();
+    act(() => { vi.advanceTimersByTime(15_000); });
+    await act(async () => {
+      tick.resolve(jsonResponse({ items: [
+        { ...items[0], live: { status: "blocked", questions: ["new question"] } },
+        { ...items[1], live: { status: "working", questions: [] } },
+      ], nextCursor: "page-two", live: [] }));
+      tickPageTwo.resolve(jsonResponse({ items: [], nextCursor: "", live: [] }));
+      await tick.promise;
+    });
+    expect(boundRow("Bound Alpha").querySelector(".th-tree-running")).toBeNull();
+    expect(boundRow("Bound Alpha").querySelector(".th-tree-questions")?.getAttribute("title"))
+      .toBe("new question");
+    expect(boundRow("Bound Beta").querySelector(".th-tree-questions")).toBeNull();
+    expect(boundRow("Bound Beta").querySelector(".th-tree-running")).not.toBeNull();
+    expect(rpcRow("sess-g")).toBeNull();
+    const request = fetchMock.mock.calls.filter(([input]) => String(input).includes("/sessions?")).at(-1);
+    expect(String(request![0])).toBe("/api/workspaces/ws-1/sessions?limit=5&cursor=page-two");
+
+    const settled = pushSessions();
+    const settledPageTwo = pushSessions();
+    act(() => { vi.advanceTimersByTime(15_000); });
+    await act(async () => {
+      settled.resolve(jsonResponse({ items: items.map(({ live: _live, ...item }) => item),
+        nextCursor: "page-two", live: [] }));
+      settledPageTwo.resolve(jsonResponse({ items: [], nextCursor: "", live: [] }));
+      await settled.promise;
+    });
+    expect(boundRow("Bound Alpha").querySelector(".th-tree-questions")).toBeNull();
+    expect(boundRow("Bound Beta").querySelector(".th-tree-running")).toBeNull();
+  });
+
+  it("keeps a same-path discovered replacement with a different durable id visible", async () => {
+    await renderExpanded({ items: [{
+      id: "replacement-b", name: "Beta replacement", source: "discovered",
+      recencyMs: 1, resumeIdentity: liveBeta.sessionPath,
+    }], nextCursor: "", live: [liveBeta] });
+    expect(activationsContaining("Beta")).toHaveLength(2);
+  });
+
+  it("suppresses a compatible discovered row after lexical path cleanup", async () => {
+    await renderExpanded({ items: [{
+      id: liveBeta.durableSessionId, name: "Beta file", source: "discovered",
+      recencyMs: 1, resumeIdentity: "/s/nested/../b.jsonl",
+    }], nextCursor: "", live: [liveBeta] });
+    expect(activationsContaining("Beta")).toHaveLength(1);
+  });
+
+  it("suppresses a realpath-normalized /tmp alias while keeping a different durable id visible", async () => {
+    await renderExpanded({ items: [{
+      id: liveBeta.durableSessionId, name: "Beta file", source: "discovered",
+      recencyMs: 2, resumeIdentity: "/private/tmp/b.jsonl",
+    }, {
+      id: "replacement-b", name: "Beta replacement", source: "discovered",
+      recencyMs: 1, resumeIdentity: "/private/tmp/b.jsonl",
+    }], nextCursor: "", live: [{
+      ...liveBeta, sessionPath: "/tmp/b.jsonl", comparisonPath: "/private/tmp/b.jsonl",
+    }] });
+    expect(activationsContaining("Beta file")).toHaveLength(0);
+    expect(activationsContaining("Beta live")).toHaveLength(1);
+    expect(activationsContaining("Beta replacement")).toHaveLength(1);
+  });
+
   it("opens a live row in place, then folds it into the chat row on refresh", async () => {
     await renderExpanded({ items: [], nextCursor: "", live: [liveAlpha] });
 

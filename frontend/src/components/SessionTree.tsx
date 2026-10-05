@@ -12,7 +12,7 @@ import {
 import type { Terminal, Workspace, WorkspaceSession } from "../features/workspace/workspace";
 import type { WorkspaceSessionPaging } from "../features/workspace/useWorkspaces";
 import { sessionOpenAttemptKey, type SessionOpenAttemptResult, type SessionOpenAttemptStatus } from "../features/workspace/useSessionOpenAttempts";
-import { formatRpcLiveRecency, type RpcLiveSession } from "../features/workspace/rpcSessions";
+import { formatRpcLiveRecency, rpcSessionIdentityMatches, type RpcLiveSession, type RpcLiveState } from "../features/workspace/rpcSessions";
 
 export type ToastKind = "info" | "success" | "error";
 
@@ -37,7 +37,7 @@ export interface SessionTreeProps {
   /** Unbound watcher rows pinned above the paged history. */
   readonly rpcLiveRows?: ReadonlyMap<string, readonly RpcLiveSession[]> | undefined;
   /** Watcher status for bound chats the manager does not route, by chat id. */
-  readonly rpcLiveChats?: ReadonlyMap<string, RpcLiveSession> | undefined;
+  readonly rpcLiveChats?: ReadonlyMap<string, RpcLiveState> | undefined;
   /** Activates a watcher row through the rpc open endpoint. */
   readonly onOpenRpc?: (ws: Workspace, live: RpcLiveSession) => Promise<SessionOpenAttemptResult>;
   readonly rpcOpenAttempts?: ReadonlyMap<string, SessionOpenAttemptStatus>;
@@ -282,10 +282,10 @@ export function SessionTree({
         const workspaceMainRunning = Array.from(mergedSessionIds).some((id) => activeSessions?.has(id));
         const rpcRows = rpcLiveRows?.get(ws.id) ?? [];
         // A live watcher row is the single representation of its session:
-        // it suppresses the disk-discovered history row at the same path.
-        const rpcSuppressedPaths = new Set(rpcRows.map((row) => row.sessionPath));
+        // it suppresses only the compatible disk identity at the same path.
         const historyRows = (sessionLists.get(ws.id) ?? []).filter((item) =>
-          !(item.source === "discovered" && item.resumeIdentity !== undefined && rpcSuppressedPaths.has(item.resumeIdentity)));
+          !(item.source === "discovered" && rpcRows.some((row) =>
+            rpcSessionIdentityMatches(item.resumeIdentity ?? "", item.id, row.sessionPath, row.durableSessionId))));
         const renamingWs =
           rename && rename.kind === "workspace" && rename.wsId === ws.id ? rename : null;
         const nameTail = ws.name.match(/\s\S{1,4}$/u)?.[0] ?? Array.from(ws.name).slice(-5).join("");

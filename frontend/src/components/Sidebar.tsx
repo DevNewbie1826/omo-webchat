@@ -21,7 +21,7 @@ import type { WorkspaceSessionPaging } from "../features/workspace/useWorkspaces
 import { useMediaQuery } from "../lib/useMediaQuery";
 import { SystemStatsModal } from "../features/system/SystemStatsModal";
 import { EngineRestartDialog } from "../features/system/EngineRestartDialog";
-import type { RpcLiveSession } from "../features/workspace/rpcSessions";
+import type { RpcLiveSession, RpcLiveState } from "../features/workspace/rpcSessions";
 
 const rpcLiveSessionKey = (live: RpcLiveSession): string => live.sessionId;
 
@@ -44,7 +44,7 @@ export interface SidebarProps {
   /** Activates a watcher live row through the rpc open endpoint. */
   readonly onOpenRpcSession?: (ws: Workspace, live: RpcLiveSession) => Promise<"opened" | "session-active" | void>;
   readonly rpcLiveRows?: ReadonlyMap<string, readonly RpcLiveSession[]>;
-  readonly rpcLiveChats?: ReadonlyMap<string, RpcLiveSession>;
+  readonly rpcLiveChats?: ReadonlyMap<string, RpcLiveState>;
   readonly onAddWorkspace: () => void;
   readonly onAddTerminal: (ws: Workspace) => void;
   readonly onDeleteWorkspace: (ws: Workspace) => void;

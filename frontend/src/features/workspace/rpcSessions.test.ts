@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { useRpcSessions, type UseRpcSessionsResult } from "./useRpcSessions";
 import { translate } from "../../i18n";
 import type { Translate } from "../../i18n";
 import type { Terminal } from "./workspace";
@@ -11,6 +14,7 @@ import {
   partitionRpcLiveSessions,
   rpcLiveAliasChatId,
   rpcLiveCompatibleDurable,
+  rpcSessionIdentityMatches,
   type RpcLiveSession,
 } from "./rpcSessions";
 
@@ -105,6 +109,22 @@ describe("rpcLiveCompatibleDurable", () => {
   });
 });
 
+describe("rpcSessionIdentityMatches with server-normalized paths", () => {
+  it("matches the same durable id via /tmp and /private/tmp using the comparison path", () => {
+    const row = parseRpcLiveSession({
+      ...fullRow, sessionPath: "/tmp/one.jsonl", comparisonPath: "/private/tmp/one.jsonl",
+    });
+    expect(row?.sessionPath).toBe("/private/tmp/one.jsonl");
+    expect(rpcSessionIdentityMatches("/private/tmp/one.jsonl", "durable-1", row?.sessionPath ?? "", "durable-1")).toBe(true);
+    expect(rpcLiveAliasChatId(row ?? fullRow, bindings([["durable-1", "chat-a", "/private/tmp/one.jsonl"]]))).toBe("chat-a");
+  });
+
+  it("keeps different durable ids distinct at the same normalized path", () => {
+    expect(rpcSessionIdentityMatches("/private/tmp/one.jsonl", "durable-1", "/private/tmp/one.jsonl", "durable-2")).toBe(false);
+  });
+
+});
+
 const rowA: RpcLiveSession = { ...fullRow, sessionId: "sess-a", sessionPath: "/s/a.jsonl", updatedAt: 10 };
 const rowA2: RpcLiveSession = { ...rowA, sessionId: "sess-a2", durableSessionId: "durable-2", updatedAt: 30 };
 const rowB: RpcLiveSession = { ...fullRow, sessionId: "sess-b", sessionPath: "/s/b.jsonl", updatedAt: 20 };
@@ -116,6 +136,12 @@ function bindings(entries: readonly (readonly [string, string, string])[]): Read
 describe("rpcLiveAliasChatId", () => {
   it("aliases a same-path compatible-durable row into its bound chat", () => {
     expect(rpcLiveAliasChatId(rowA, bindings([["durable-1", "chat-a", "/s/a.jsonl"]]))).toBe("chat-a");
+  });
+
+  it("folds lexical path aliases only when durable ids are compatible", () => {
+    const binding = bindings([["durable-1", "chat-a", "/s/nested/../a.jsonl"]]);
+    expect(rpcLiveAliasChatId(rowA, binding)).toBe("chat-a");
+    expect(rpcLiveAliasChatId(rowA2, binding)).toBeUndefined();
   });
 
   it("aliases when either side recorded no durable id, on the same path", () => {
@@ -179,10 +205,10 @@ describe("listWorkspaceRpcLiveSessions", () => {
         Promise.resolve(jsonResponse({ items: [], nextCursor: "", live: [fullRow, { bad: true }] })),
     );
     vi.stubGlobal("fetch", fetchMock);
-    const rows = await listWorkspaceRpcLiveSessions("ws-1");
+    const snapshot = await listWorkspaceRpcLiveSessions("ws-1");
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0]![0])).toBe("/api/workspaces/ws-1/sessions?limit=1");
-    expect(rows).toEqual([fullRow]);
+    expect(String(fetchMock.mock.calls[0]![0])).toBe("/api/workspaces/ws-1/sessions?limit=5");
+    expect(snapshot).toEqual({ live: [fullRow], items: [] });
   });
 
   it("returns an empty list when the backend omits the live section", async () => {
@@ -190,7 +216,44 @@ describe("listWorkspaceRpcLiveSessions", () => {
       (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
         Promise.resolve(jsonResponse({ items: [], nextCursor: "" })),
     ));
-    expect(await listWorkspaceRpcLiveSessions("ws-1")).toEqual([]);
+    expect(await listWorkspaceRpcLiveSessions("ws-1")).toEqual({ live: [], items: [] });
+  });
+
+  it.each(["blocked", "unbound"])("refreshes the sixth bound row through the next cursor when %s", async (state) => {
+    const firstFive = Array.from({ length: 5 }, (_, i) => ({
+      id: `chat-${i}`, source: "stored", live: { status: "idle", questions: [] },
+    }));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ items: firstFive, nextCursor: "page-two", live: [] }))
+      .mockResolvedValueOnce(jsonResponse({ items: [{
+        id: "chat-5", source: "stored",
+        ...(state === "blocked" ? { live: { status: "blocked", questions: ["choose"] } } : {}),
+      }], nextCursor: "", live: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let current: UseRpcSessionsResult | undefined;
+    function Harness(): null {
+      current = useRpcSessions();
+      return null;
+    }
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      await act(async () => { root.render(createElement(Harness)); });
+      act(() => current?.applyRows("ws-1", [], [{
+        id: "chat-5", source: "stored", live: { status: "working", questions: [] },
+      }]));
+      const snapshot = await listWorkspaceRpcLiveSessions("ws-1");
+      act(() => current?.applyRows("ws-1", snapshot.live, snapshot.items));
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(String(fetchMock.mock.calls[1]?.[0])).toBe("/api/workspaces/ws-1/sessions?limit=5&cursor=page-two");
+      expect(snapshot.items).toHaveLength(6);
+      expect(current?.boundByWs.get("ws-1")?.get("chat-5")).toEqual(
+        state === "blocked" ? { status: "blocked", questions: ["choose"] } : undefined,
+      );
+    } finally {
+      act(() => root.unmount());
+    }
   });
 });
 

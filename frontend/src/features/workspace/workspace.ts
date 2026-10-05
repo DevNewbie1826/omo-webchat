@@ -1,6 +1,6 @@
 import { ApiError, apiJson, apiVoid, qs } from "../../lib/api";
 import { isRecord } from "../../lib/chatWsParseFields";
-import { parseRpcLiveSection, type RpcLiveSession } from "./rpcSessions";
+import { parseRpcLiveSection, type RpcLiveSession, type RpcLiveState } from "./rpcSessions";
 import { parseDagDigest, parseTaskDigest, type DagDigest, type TaskDigest } from "./activityDigest";
 
 export type ChatProvider = "omo";
@@ -100,6 +100,8 @@ export interface WorkspaceSession {
   readonly dangling?: boolean;
   /** Live rows only: the row's stored session file has not been written yet. */
   readonly preparing?: boolean;
+  /** Watcher status for a bound chat without a manager-owned route. */
+  readonly live?: RpcLiveState;
 }
 
 export interface WorkspaceSessionPage {

@@ -6,7 +6,7 @@ import type { LayoutApi } from "../split/useLayout";
 import { deleteTerminal, renameTerminal } from "../terminal/terminal";
 import { deleteWorkspace, listWorkspaceSessions, listWorkspaces, mergeWorkspaceSessions, renameWorkspace, touchWorkspaceSession } from "./workspace";
 import type { ChatSessionRef, Terminal, Workspace, WorkspaceSession } from "./workspace";
-import { partitionRpcLiveSessions, type RpcLiveSession } from "./rpcSessions";
+import { partitionRpcLiveSessions, rpcSessionIdentityMatches, type RpcLiveSession, type RpcLiveState } from "./rpcSessions";
 import { useRpcSessions } from "./useRpcSessions";
 import type { ConfirmOptions } from "../../components/ConfirmDialog";
 
@@ -51,7 +51,7 @@ export interface UseWorkspacesResult {
   /** Unbound watcher rows per workspace, pinned above the paged history. */
   readonly rpcLiveRows: ReadonlyMap<string, readonly RpcLiveSession[]>;
   /** Watcher status carried by bound chats the manager does not route, by chat id. */
-  readonly rpcLiveChats: ReadonlyMap<string, RpcLiveSession>;
+  readonly rpcLiveChats: ReadonlyMap<string, RpcLiveState>;
   readonly load: () => Promise<void>;
   readonly addCreatedSession: (wsId: string, tm: Terminal, inPlaceSource?: WorkspaceSession) => void;
   readonly loadMoreSessions: (wsId: string) => Promise<void>;
@@ -146,6 +146,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
   // fire and how rows fold into bound chats.
   const {
     liveByWs,
+    boundByWs,
     applyRows: applyRpcRows,
     refresh: refreshRpcLive,
     removeWorkspace: removeRpcWorkspace,
@@ -163,18 +164,15 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
   // so a stale server page cannot briefly project both rows.
   const inPlaceBindingsRef = useRef<Map<string, Map<string, { readonly chatId: string; readonly path: string }>>>(new Map());
 
-  // Observed engine behavior: a recorded durable id is authoritative — the
-  // same resume path under a different id is a distinct replacement session
-  // that must stay visible. The fold therefore matches the exact source
-  // identity and falls back to the path only when the adopted source recorded
-  // no durable id at all.
+  // Paths must match as well as compatible durable ids: an adopted copy at a
+  // different path remains a separate session even when it retains the id.
   const suppressBoundSources = (wsId: string, items: readonly WorkspaceSession[]): readonly WorkspaceSession[] => {
     const bindings = inPlaceBindingsRef.current.get(wsId);
     if (!bindings) return items;
     return items.flatMap((item) => {
       if (item.source !== "discovered") return [item];
-      const match = [...bindings.entries()].find(([durableId, binding]) => durableId !== ""
-        ? item.id === durableId : binding.path !== "" && item.resumeIdentity === binding.path);
+      const match = [...bindings.entries()].find(([durableId, binding]) =>
+        rpcSessionIdentityMatches(binding.path, durableId, item.resumeIdentity ?? "", item.id));
       if (!match) return [item];
       const representative = items.find(row => row.id === match[1].chatId)
         ?? sessionListsRef.current.get(wsId)?.find(row => row.id === match[1].chatId);
@@ -269,7 +267,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       try {
         const page = await listWorkspaceSessions(wsId, cursor);
         if (pageRequestsRef.current.get(wsId) !== request) return;
-        applyRpcRows(wsId, page.live ?? []);
+        applyRpcRows(wsId, page.live ?? [], page.items);
         const canonicalItems = suppressBoundSources(wsId, page.items);
         for (const item of canonicalItems) {
           const recency = recenciesRef.current.get(wsId)?.get(item.id);
@@ -565,12 +563,15 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
   );
 
   const rpcLiveChats = useMemo(() => {
-    const merged = new Map<string, RpcLiveSession>();
+    const merged = new Map<string, RpcLiveState>();
     for (const partition of rpcPartitioned.values()) {
       for (const [chatId, live] of partition.byChatId) merged.set(chatId, live);
     }
+    for (const statuses of boundByWs.values()) {
+      for (const [chatId, live] of statuses) merged.set(chatId, live);
+    }
     return merged;
-  }, [rpcPartitioned]);
+  }, [rpcPartitioned, boundByWs]);
 
   const toggleExpanded = (wsId: string): void => {
     setExpanded((prev) => {

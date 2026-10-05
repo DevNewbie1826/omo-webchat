@@ -8,15 +8,18 @@ import type { Terminal } from "./workspace";
  * compacting), or idle; done rows may appear for one observation. */
 export type RpcLiveStatus = "blocked" | "working" | "idle" | "done";
 
+export interface RpcLiveState {
+  readonly status: RpcLiveStatus;
+  readonly questions: readonly string[];
+}
+
 /** One unbound watcher row of a workspace's always-complete live section. */
-export interface RpcLiveSession {
+export interface RpcLiveSession extends RpcLiveState {
   readonly sessionId: string;
   readonly durableSessionId: string;
   readonly sessionPath: string;
   readonly cwd: string;
   readonly name: string;
-  readonly status: RpcLiveStatus;
-  readonly questions: readonly string[];
   readonly updatedAt: number;
   readonly messageCount: number;
 }
@@ -30,12 +33,27 @@ export interface RpcLiveBinding {
 
 const RPC_LIVE_STATUSES: ReadonlySet<string> = new Set(["blocked", "working", "idle", "done"]);
 
+export function parseRpcLiveState(value: unknown): RpcLiveState | undefined {
+  if (!isRecord(value)) return undefined;
+  const status = value["status"];
+  const questions = value["questions"];
+  if (typeof status !== "string" || !RPC_LIVE_STATUSES.has(status) || !Array.isArray(questions)) return undefined;
+  return {
+    status: status as RpcLiveStatus,
+    questions: questions.filter((q): q is string => typeof q === "string"),
+  };
+}
+
 /** Validate one watcher row, dropping malformed items at the transport edge. */
 export function parseRpcLiveSession(value: unknown): RpcLiveSession | null {
   if (!isRecord(value)) return null;
   const sessionId = value["sessionId"];
   if (typeof sessionId !== "string" || sessionId === "") return null;
-  const sessionPath = value["sessionPath"];
+  // Normalize once at the boundary so every identity comparison and newly
+  // recorded binding uses the server's realpath, not a browser lexical alias.
+  const sessionPath = typeof value["comparisonPath"] === "string"
+    ? value["comparisonPath"]
+    : value["sessionPath"];
   if (typeof sessionPath !== "string" || sessionPath === "") return null;
   const status = value["status"];
   if (typeof status !== "string" || !RPC_LIVE_STATUSES.has(status)) return null;
@@ -74,14 +92,37 @@ export function parseRpcLiveSection(value: unknown): readonly RpcLiveSession[] {
   return rows;
 }
 
-/** Fetch only the live section. The section is always complete regardless of
- * the history page size, so a minimal page keeps the request light. */
-export async function listWorkspaceRpcLiveSessions(wsId: string, signal?: AbortSignal): Promise<readonly RpcLiveSession[]> {
-  const body = await apiJson<unknown>(
-    `/api/workspaces/${encodeURIComponent(wsId)}/sessions${qs({ limit: "1" })}`,
-    signal ? { signal } : {},
-  );
-  return parseRpcLiveSection(isRecord(body) ? body["live"] : undefined);
+export interface RpcBoundSession {
+  readonly id: string;
+  readonly source: string;
+  readonly live?: RpcLiveState | undefined;
+}
+
+/** Refresh every history page as well as the complete unbound section. */
+export async function listWorkspaceRpcLiveSessions(wsId: string, signal?: AbortSignal): Promise<{
+  readonly live: readonly RpcLiveSession[];
+  readonly items: readonly RpcBoundSession[];
+}> {
+  const items: RpcBoundSession[] = [];
+  let live: readonly RpcLiveSession[] = [];
+  let cursor = "";
+  do {
+    const body = await apiJson<unknown>(
+      `/api/workspaces/${encodeURIComponent(wsId)}/sessions${qs({ limit: "5", cursor: cursor || undefined })}`,
+      signal ? { signal } : {},
+    );
+    if (!isRecord(body)) break;
+    if (cursor === "") live = parseRpcLiveSection(body["live"]);
+    const pageItems = body["items"];
+    if (Array.isArray(pageItems)) {
+      items.push(...pageItems.flatMap((item): RpcBoundSession[] =>
+        isRecord(item) && typeof item["id"] === "string" && item["source"] === "stored"
+          ? [{ id: item["id"], source: "stored", live: parseRpcLiveState(item["live"]) }]
+          : []));
+    }
+    cursor = typeof body["nextCursor"] === "string" ? body["nextCursor"] : "";
+  } while (cursor !== "");
+  return { live, items };
 }
 
 /** Activate a watcher row: register the in-place chat when unbound, or
@@ -102,7 +143,31 @@ export async function openRpcLiveSession(wsId: string, sessionId: string): Promi
 /** Durable ids are compatible when equal or when either side never recorded
  * one; two known different ids mark a replacement session. */
 export function rpcLiveCompatibleDurable(a: string, b: string): boolean {
+  a = a.trim();
+  b = b.trim();
   return a === "" || b === "" || a === b;
+}
+
+/** Browser fallback to lexical Clean: filesystem symlinks cannot be resolved
+ * here. Callers must supply resolved paths to match arbitrary symlink aliases. */
+export function cleanRpcSessionPath(path: string): string {
+  path = path.trim();
+  if (path === "") return "";
+  const windows = /^[a-z]:[\\/]|^\\\\/i.test(path);
+  if (windows) path = path.replaceAll("\\", "/");
+  const root = path.match(/^(?:[a-z]:)?\//i)?.[0] ?? "";
+  const parts: string[] = [];
+  for (const part of path.slice(root.length).split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === ".." && parts.length > 0 && parts.at(-1) !== "..") parts.pop();
+    else if (part !== ".." || root === "") parts.push(part);
+  }
+  return root + parts.join("/") || ".";
+}
+
+export function rpcSessionIdentityMatches(aPath: string, aId: string, bPath: string, bId: string): boolean {
+  const path = cleanRpcSessionPath(aPath);
+  return path !== "" && path === cleanRpcSessionPath(bPath) && rpcLiveCompatibleDurable(aId, bId);
 }
 
 /** The chat a watcher row aliases into, if any. Canonical session-path
@@ -114,8 +179,7 @@ export function rpcLiveAliasChatId(
   bindings: ReadonlyMap<string, RpcLiveBinding>,
 ): string | undefined {
   for (const [durableId, binding] of bindings) {
-    if (binding.path === "" || binding.path !== live.sessionPath) continue;
-    if (!rpcLiveCompatibleDurable(durableId, live.durableSessionId)) continue;
+    if (!rpcSessionIdentityMatches(binding.path, durableId, live.sessionPath, live.durableSessionId)) continue;
     return binding.chatId;
   }
   return undefined;
