@@ -80,6 +80,7 @@ type Cursor struct {
 	// the first successful plain prompt may replace with a derived title.
 	TitleIsPlaceholder bool
 	InPlace            bool
+	AutoEnrolled       bool
 	// WritePrepared reports that CursorForOpen completed the one-time work
 	// required before provider initialization can mutate this session.
 	WritePrepared bool

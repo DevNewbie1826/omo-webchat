@@ -173,6 +173,8 @@ func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
 			c = current
 		}
 		remove := func() error {
+			// DeleteChat atomically persists an AutoEnrolled durable tombstone
+			// with removal. The StopContext contract above remains unchanged.
 			err := s.cursors.DeleteChat(id)
 			if errors.Is(err, cursorstore.ErrNotFound) {
 				return nil

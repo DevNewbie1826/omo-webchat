@@ -72,11 +72,13 @@ var discoveredObservations = struct {
 }{m: make(map[string]discoveredSighting)}
 
 type sessionHistoryItem struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	Source         string `json:"source"`
-	RecencyMs      int64  `json:"recencyMs"`
-	ResumeIdentity string `json:"resumeIdentity,omitempty"`
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Source           string `json:"source"`
+	RecencyMs        int64  `json:"recencyMs"`
+	ResumeIdentity   string `json:"resumeIdentity,omitempty"`
+	DurableSessionID string `json:"durableSessionID,omitempty"`
+	Live             bool   `json:"live,omitempty"`
 	// Dangling flags a stored row whose owned session copy is gone. Source
 	// catalog rows never set it.
 	Dangling bool `json:"dangling,omitempty"`
@@ -357,10 +359,11 @@ func mergeSessionHistoryLive(chats []cursorstore.Chat, disk []diskSession, liveC
 		_, live := liveChatIDs[ch.ID]
 		preparing := missingFile && live
 		items = append(items, sessionHistoryItem{
-			ID:        ch.ID,
-			Name:      ch.Name,
-			Source:    sessionHistorySourceStored,
-			RecencyMs: chatRecencyMs(ch, disk),
+			ID:               ch.ID,
+			Name:             ch.Name,
+			Source:           sessionHistorySourceStored,
+			DurableSessionID: ch.DurableSessionID,
+			RecencyMs:        chatRecencyMs(ch, disk),
 			// A cheap Stat per stored row flags an owned copy that vanished.
 			// Never a branch scan — that is recovery-time work.
 			Dangling:  missingFile && !preparing,
@@ -620,6 +623,20 @@ func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	items := mergeSessionHistoryLive(chats, disk, live, scannedCWD...)
+	for i := range items {
+		if items[i].Source != sessionHistorySourceStored {
+			continue
+		}
+		for _, chat := range chats {
+			if chat.ID == items[i].ID {
+				items[i].Live = s.enrollmentLive(chat)
+				if items[i].Live && items[i].Dangling {
+					items[i].Dangling, items[i].Preparing = false, true
+				}
+				break
+			}
+		}
+	}
 	page, err := paginateSessionHistory(items, limit, strings.TrimSpace(r.URL.Query().Get("cursor")))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid cursor")

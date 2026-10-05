@@ -212,6 +212,15 @@ func (s *Server) handleOpenWorkspaceSession(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	// Auto-enrolled identities can be live before their first disk persist.
+	// Return the ordinary chat; WS acquisition attaches its existing route.
+	for _, chat := range s.cursors.ListChats(ws.ID) {
+		if chat.AutoEnrolled && (strings.TrimSpace(req.ID) == chat.ID || strings.TrimSpace(req.ID) == chat.DurableSessionID ||
+			strings.TrimSpace(req.ResumeIdentity) != "" && strings.TrimSpace(req.ResumeIdentity) == chat.SessionFile) {
+			writeJSON(w, http.StatusOK, projectChat(chat))
+			return
+		}
+	}
 	source, ok := findDiskSession(ws.Path, strings.TrimSpace(req.ID), strings.TrimSpace(req.ResumeIdentity))
 	if !ok {
 		writeError(w, http.StatusBadRequest, "session does not belong to workspace catalog")
