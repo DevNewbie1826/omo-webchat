@@ -239,6 +239,7 @@ type Manager struct {
 	// releases its slot, so waiters observe settlement without polling.
 	openSettled           chan struct{}
 	overviewCache         map[string]*overviewCacheEntry
+	daemonSessions        map[string]daemonSession
 	overviewCurrent       map[string]Summary
 	overviewOwners        residencyLRU[string]
 	overviewExposed       residencyLRU[overviewExposure]
