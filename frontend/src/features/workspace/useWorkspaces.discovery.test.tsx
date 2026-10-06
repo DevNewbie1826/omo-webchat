@@ -19,10 +19,15 @@ vi.mock("./workspace", async (importOriginal) => {
   };
 });
 
-function deferred<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T) => void } {
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (error: Error) => void;
+} {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => { resolve = settle; });
-  return { promise, resolve };
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((settle, fail) => { resolve = settle; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 const layout: LayoutApi = {
@@ -408,6 +413,105 @@ describe("useWorkspaces event-driven discovery", () => {
     });
 
     // Then: the pending retry is dropped; nothing keeps probing the catalog.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+    expect(catalogCalls()).toBe(1);
+  });
+
+  it("serializes the load retry and discovery so neither overlaps nor loses a newer row", async () => {
+    // Given: the very first load fails, which arms the 1s load retry.
+    vi.mocked(listWorkspaces).mockRejectedValueOnce(new Error("network"));
+    act(() => {
+      root.render(<DiscoveryProbe />);
+    });
+    await act(async () => {
+      await latest?.load();
+    });
+    expect(catalogCalls()).toBe(1);
+
+    // Every later catalog call parks until the test settles it, so the test can
+    // see exactly how many requests are outstanding at once.
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const pending: Array<{
+      readonly resolve: (rows: readonly Workspace[]) => void;
+      readonly reject: (error: Error) => void;
+    }> = [];
+    vi.mocked(listWorkspaces).mockImplementation(() =>
+      new Promise<readonly Workspace[]>((resolve, reject) => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        pending.push({
+          resolve: (rows) => { inFlight -= 1; resolve(rows); },
+          reject: (error) => { inFlight -= 1; reject(error); },
+        });
+      }));
+
+    // When: the load retry comes due and its response is held...
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DISCOVERY_RETRY_DELAYS_MS[0]!);
+    });
+    expect(catalogCalls()).toBe(2);
+    expect(pending).toHaveLength(1);
+
+    // ...and a live id the catalog does not own requests discovery while that
+    // load is still in flight.
+    await act(async () => {
+      latest?.requestDiscovery();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // Then: the request is coalesced behind the load - never a second
+    // concurrent request - and runs only once the load has settled.
+    expect(maxInFlight).toBe(1);
+    expect(pending).toHaveLength(1);
+    expect(catalogCalls()).toBe(2);
+
+    const wsA: Workspace = { id: "ws-a", name: "A", path: "/work/a", chats: [] };
+    const wsB: Workspace = { id: "ws-b", name: "B", path: "/work/b", chats: [] };
+    await act(async () => {
+      pending[0]!.resolve([wsA]);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(latest?.workspaces.map((workspace) => workspace.id)).toEqual(["ws-a"]);
+
+    // And: the coalesced merge now runs, and the newer rows it reports cannot
+    // be dropped by the request that started before it.
+    expect(pending).toHaveLength(2);
+    await act(async () => {
+      pending[1]!.resolve([wsA, wsB]);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(maxInFlight).toBe(1);
+    expect(latest?.workspaces.map((workspace) => workspace.id)).toEqual(["ws-a", "ws-b"]);
+  });
+
+  it("does not retry a load that fails after the session ended (logout)", async () => {
+    // Given: a load whose catalog request is still outstanding.
+    const inFlightLoad = deferred<readonly Workspace[]>();
+    vi.mocked(listWorkspaces).mockReturnValue(inFlightLoad.promise);
+    act(() => {
+      root.render(<ToggleProbe enabled />);
+    });
+    await act(async () => {
+      void latest?.load();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(catalogCalls()).toBe(1);
+
+    // When: the session ends while that request is still in flight, and its
+    // failure only lands afterwards.
+    act(() => {
+      root.render(<ToggleProbe enabled={false} />);
+    });
+    await act(async () => {
+      inFlightLoad.reject(new Error("network"));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // Then: the late failure arms no retry and makes no further request -
+    // logout must not leave a probing ladder behind.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(120_000);
     });

@@ -10,6 +10,10 @@ import type { ConfirmOptions } from "../../components/ConfirmDialog";
 
 type Notify = (msg: string, kind?: ToastKind) => void;
 
+/** The two shapes a catalog request takes through the single-flight gate:
+ * `load` replaces the whole list (canonical), `merge` adds discovered rows. */
+type CatalogRequestKind = "load" | "merge";
+
 // Mutable reconciliation state, stable for one live workspace/chat incarnation.
 type SessionRecency = {
   confirmedMs: number;
@@ -59,11 +63,13 @@ export interface UseWorkspacesResult {
   /** Requests one additive discovery merge of the workspace catalog. The
    * caller is the live-session trigger: a live id the catalog does not own is
    * proof the catalog has a row this tab has not loaded yet. Stable identity;
-   * a no-op while discovery is disabled, at most one merge runs at a time
-   * (a request during flight coalesces into exactly one rerun), and a request
-   * before the first `load()` settles is queued and run once it does. A merge
-   * that failed or was discarded by the generation guard walks the bounded
-   * retry ladder; a successful merge resets it. */
+   * a no-op while discovery is disabled. It shares the single-flight catalog
+   * gate with `load()` and the load retry, so at most one /api/workspaces
+   * request is in flight at a time (a request during flight coalesces into
+   * exactly one rerun, and a request before the first `load()` settles is
+   * queued and run once it does). A merge that failed or was discarded by the
+   * generation guard walks the bounded retry ladder; a successful merge
+   * resets it. */
   readonly requestDiscovery: () => void;
   /** Declares the workspaces that currently own live sessions. The hook's
    * catalog scheduler owns the single periodic recency cadence and refreshes
@@ -231,13 +237,35 @@ export function useWorkspaces({ notify, t, layout, confirm, discoveryEnabled = f
   const discoveryLiveRef = useRef(discoveryEnabled);
   const discoveryLoadedRef = useRef(false);
   const discoveryQueuedBeforeLoadRef = useRef(false);
-  const discoveryInFlightRef = useRef(false);
-  const discoveryRerunRef = useRef(false);
   const discoveryRetryCountRef = useRef(0);
   const discoveryRetryTimerRef = useRef<number | undefined>(undefined);
   // The gated entry point, re-read from a timer callback so the retry can
   // never bypass the single-flight gate it was armed behind.
   const discoveryStartRef = useRef<() => void>(() => undefined);
+  // Single-flight catalog gate: at most one /api/workspaces request is in
+  // flight, for load(), its ladder retry and every discovery entry point
+  // alike. A request that arrives while another is in flight is queued behind
+  // it and runs once it settles, so responses always apply in the order their
+  // requests started and an older response can never land after a newer one
+  // and drop the rows it added.
+  const catalogInFlightRef = useRef(false);
+  // The requests queued behind the in-flight one, in order. A merge is never
+  // queued twice (that is the "exactly one rerun" coalescing) and a load
+  // subsumes a queued merge, because a canonical replace already carries every
+  // row a merge could add - but a merge requested while a load is queued still
+  // runs after it, so a discovery request is never dropped.
+  const catalogPendingRef = useRef<
+    { readonly kinds: readonly CatalogRequestKind[]; readonly waiters: readonly (() => void)[] } | undefined
+  >(undefined);
+  // The gate itself, re-read from a timer callback and from the settle hooks,
+  // so the load and discovery paths never close over it circularly.
+  const catalogStartRef = useRef<(kind: CatalogRequestKind, waiters?: readonly (() => void)[]) => void>(
+    () => undefined,
+  );
+  // Session teardown token: bumped by logout and by unmount. Every response,
+  // late failure and settle hook compares it, so nothing is applied, merged,
+  // scheduled or fetched after the session ended.
+  const catalogTeardownRef = useRef(0);
   // Canonical-load ladder: a failed load() leaves an empty tree that no live
   // frame will ever repopulate, so the load itself retries on the same bounded
   // cadence until it succeeds, is superseded, or the session ends.
@@ -430,28 +458,12 @@ export function useWorkspaces({ notify, t, layout, confirm, discoveryEnabled = f
     loadGenerationRef.current++;
   }, [disarmAllCatalogRefreshes, disarmRecencyRefresh]);
 
-  // One discovery merge: re-fetches the workspace catalog and merges newly
-  // auto-enrolled workspaces — and new chats of already-known workspaces —
-  // into state. Strictly additive and identity-preserving: a catalog that
-  // reports nothing new leaves every array untouched, optimistic local edits
-  // (renames, pending creations) are never overwritten, and removals still
-  // flow only through the explicit delete flows and load(). Reports whether
-  // the response was applied: a failed fetch or a response the generation
-  // guard discarded returns false so requestDiscovery can retry.
-  const runDiscoveryMerge = useCallback(async (): Promise<boolean> => {
-    // Snapshot the load generation before the request: a delete or reload that
-    // lands while the catalog fetch is in flight bumps it, and the stale
-    // response must be discarded instead of resurrecting what the user
-    // removed.
-    const generation = loadGenerationRef.current;
-    let discovered: readonly Workspace[];
-    try {
-      discovered = await listWorkspaces();
-    } catch {
-      // Transient failure: requestDiscovery's bounded ladder retries.
-      return false;
-    }
-    if (loadGenerationRef.current !== generation) return false;
+  // One discovery merge applied to state: strictly additive and
+  // identity-preserving. A catalog that reports nothing new leaves every array
+  // untouched, optimistic local edits (renames, pending creations) are never
+  // overwritten, and removals still flow only through the explicit delete
+  // flows and load().
+  const applyDiscoveryRows = useCallback((discovered: readonly Workspace[]): void => {
     const { newlyExpanded, chatGrew } = mergeDiscoveredWorkspaces(workspacesRef.current, discovered);
     if (newlyExpanded.length > 0) {
       setExpanded((previous) => {
@@ -476,55 +488,195 @@ export function useWorkspaces({ notify, t, layout, confirm, discoveryEnabled = f
     for (const wsId of chatGrew) {
       if (sessionPagesRef.current.get(wsId)?.ready) void fetchSessionPage(wsId, "", false, true);
     }
-    return true;
   }, [fetchSessionPage, setExpanded]);
 
   // The single entry point of the event-driven design. Every trigger funnels
-  // through here - App's live-id effect, the visibility fallback, and the
-  // retry ladder below - so exactly one merge is ever in flight: a request (or
-  // a retry that comes due) while a merge runs coalesces into one rerun
-  // instead of starting a second concurrent fetch.
+  // through here - App's live-id effect, the visibility fallback, and the retry
+  // ladder below - and from here through the shared catalog gate, so a request
+  // (or a retry that comes due) while a load or a merge runs coalesces into one
+  // rerun instead of starting a second concurrent fetch.
   const requestDiscovery = useCallback((): void => {
     if (!discoveryLiveRef.current) return;
     if (!discoveryLoadedRef.current) {
       // Nothing merges before the first load() settles: against the empty
       // pre-load list every catalog workspace looks newly sighted, and the
-      // merge would expand all of them.
+      // merge would expand all of them. The request is remembered instead and
+      // released once, right after that load settles.
       discoveryQueuedBeforeLoadRef.current = true;
       return;
     }
-    if (discoveryInFlightRef.current) {
-      discoveryRerunRef.current = true;
+    catalogStartRef.current("merge");
+  }, []);
+  discoveryStartRef.current = requestDiscovery;
+
+  // One canonical load applied to state: it replaces the list and prunes the
+  // expanded set, the independently paged sidebar view and the recency map.
+  const applyLoadRows = useCallback((loadedWorkspaces: readonly Workspace[]): void => {
+    setWorkspaces(loadedWorkspaces);
+    // Mirror eagerly: the queued discovery request below may run before the
+    // render that would normally refresh the ref, and merging against the
+    // stale pre-load list would treat every catalog workspace as new.
+    workspacesRef.current = loadedWorkspaces;
+    const loadedIds = new Set(loadedWorkspaces.map((workspace) => workspace.id));
+    setExpanded((previous) => new Set([...previous].filter((id) => loadedIds.has(id))));
+    // A fresh canonical list invalidates the independently paged sidebar view.
+    disarmAllCatalogRefreshes();
+    pageRequestsRef.current.clear();
+    replaceSessionLists(new Map([...sessionListsRef.current].filter(([id]) => loadedIds.has(id))));
+    replaceSessionPages(new Map());
+    for (const id of recenciesRef.current.keys()) if (!loadedIds.has(id)) recenciesRef.current.delete(id);
+    loadRetryCountRef.current = 0;
+  }, [disarmAllCatalogRefreshes, replaceSessionLists, replaceSessionPages, setExpanded]);
+
+  // A transient load failure leaves an empty tree, and with no live id App
+  // never requests discovery - the removed 20s poll used to be the only self
+  // heal. Retry the canonical load on the bounded ladder instead: a newer load,
+  // a delete and an unmount all stand the timer down, and a logout drops it
+  // outright (see the disable effect).
+  const armLoadRetry = useCallback((generation: number): void => {
+    if (loadRetryTimerRef.current !== undefined
+      || loadRetryCountRef.current >= DISCOVERY_RETRY_DELAYS_MS.length) return;
+    const delay = DISCOVERY_RETRY_DELAYS_MS[loadRetryCountRef.current] ?? 0;
+    loadRetryCountRef.current += 1;
+    loadRetryTimerRef.current = window.setTimeout(() => {
+      loadRetryTimerRef.current = undefined;
+      // Superseded by a newer load or a delete: stand down.
+      if (loadGenerationRef.current !== generation) return;
+      void loadRef.current();
+    }, delay);
+  }, []);
+
+  // The first settled load is what makes discovery safe (see requestDiscovery).
+  // A request that arrived before it is released here, once, through the gate,
+  // so it coalesces behind this very request and drains right after it.
+  const settleFirstLoad = useCallback((): void => {
+    discoveryLoadedRef.current = true;
+    if (!discoveryQueuedBeforeLoadRef.current) return;
+    discoveryQueuedBeforeLoadRef.current = false;
+    requestDiscovery();
+  }, [requestDiscovery]);
+
+  // One catalog request, applied according to its kind. Reached only through
+  // the gate below, so it never runs concurrently with another catalog request
+  // and responses always apply in the order their requests started. Reports
+  // whether a merge applied: a failed fetch or a response the guards discarded
+  // returns false so the retry ladder can run.
+  const runCatalogRequest = useCallback(async (kind: CatalogRequestKind): Promise<boolean> => {
+    // Snapshot both invalidation tokens before the request. A delete or a newer
+    // load moves the generation; a logout or an unmount moves the teardown
+    // token. Either way the stale response is discarded instead of resurrecting
+    // what the user removed or repopulating a session that already ended.
+    const generation = loadGenerationRef.current;
+    const teardown = catalogTeardownRef.current;
+    let rows: readonly Workspace[];
+    try {
+      rows = await listWorkspaces();
+    } catch {
+      // A failure that lands after the session ended is not a failure to
+      // retry: stand down instead of arming another request.
+      if (catalogTeardownRef.current !== teardown) return false;
+      if (kind === "merge") return false;
+      if (loadGenerationRef.current !== generation) return false;
+      armLoadRetry(generation);
+      settleFirstLoad();
+      return false;
+    }
+    if (catalogTeardownRef.current !== teardown || loadGenerationRef.current !== generation) return false;
+    if (kind === "merge") {
+      applyDiscoveryRows(rows);
+      return true;
+    }
+    applyLoadRows(rows);
+    settleFirstLoad();
+    return true;
+  }, [applyDiscoveryRows, applyLoadRows, armLoadRetry, settleFirstLoad]);
+
+  // A merge's outcome feeds the bounded retry ladder; a success resets it.
+  const settleDiscoveryMerge = useCallback((applied: boolean): void => {
+    if (!discoveryLiveRef.current) return;
+    if (applied) {
+      discoveryRetryCountRef.current = 0;
+      if (discoveryRetryTimerRef.current !== undefined) {
+        window.clearTimeout(discoveryRetryTimerRef.current);
+        discoveryRetryTimerRef.current = undefined;
+      }
       return;
     }
-    discoveryInFlightRef.current = true;
-    void runDiscoveryMerge().then((merged) => {
-      discoveryInFlightRef.current = false;
-      if (!discoveryLiveRef.current) return;
-      if (merged) {
-        discoveryRetryCountRef.current = 0;
-        if (discoveryRetryTimerRef.current !== undefined) {
-          window.clearTimeout(discoveryRetryTimerRef.current);
-          discoveryRetryTimerRef.current = undefined;
-        }
-      } else if (discoveryRetryTimerRef.current === undefined
-        && discoveryRetryCountRef.current < DISCOVERY_RETRY_DELAYS_MS.length) {
-        const delay = DISCOVERY_RETRY_DELAYS_MS[discoveryRetryCountRef.current] ?? 0;
-        discoveryRetryCountRef.current += 1;
-        discoveryRetryTimerRef.current = window.setTimeout(() => {
-          discoveryRetryTimerRef.current = undefined;
-          // Back through the gate, never around it: a retry that comes due
-          // while another merge is in flight coalesces instead of racing it.
-          discoveryStartRef.current();
-        }, delay);
-      }
-      if (discoveryRerunRef.current) {
-        discoveryRerunRef.current = false;
+    if (discoveryRetryTimerRef.current === undefined
+      && discoveryRetryCountRef.current < DISCOVERY_RETRY_DELAYS_MS.length) {
+      const delay = DISCOVERY_RETRY_DELAYS_MS[discoveryRetryCountRef.current] ?? 0;
+      discoveryRetryCountRef.current += 1;
+      discoveryRetryTimerRef.current = window.setTimeout(() => {
+        discoveryRetryTimerRef.current = undefined;
+        if (!discoveryLiveRef.current) return;
+        // Back through the gate, never around it: a retry that comes due while
+        // another catalog request is in flight coalesces instead of racing it.
         discoveryStartRef.current();
+      }, delay);
+    }
+  }, []);
+
+  // Start one request that is known to own the gate: the caller has already
+  // established that nothing is in flight. When it settles, the pending slot -
+  // if any - starts next, which is what keeps responses applying in start
+  // order.
+  const startCatalogRequest = useCallback(
+    (kind: CatalogRequestKind, waiters: readonly (() => void)[] = []): void => {
+      catalogInFlightRef.current = true;
+      void runCatalogRequest(kind)
+        .then((applied) => {
+          if (kind === "merge") settleDiscoveryMerge(applied);
+        })
+        .finally(() => {
+          for (const resolve of waiters) resolve();
+          catalogInFlightRef.current = false;
+          const pending = catalogPendingRef.current;
+          catalogPendingRef.current = undefined;
+          if (pending === undefined) return;
+          const [next, ...rest] = pending.kinds;
+          if (next === undefined) {
+            for (const resolve of pending.waiters) resolve();
+            return;
+          }
+          if (rest.length > 0) catalogPendingRef.current = { kinds: rest, waiters: [] };
+          catalogStartRef.current(next, next === "load" ? pending.waiters : []);
+        });
+    },
+    [runCatalogRequest, settleDiscoveryMerge],
+  );
+
+  // The single-flight gate every catalog request goes through: load(), its
+  // ladder retry, App's live-id trigger, the visibility fallback and both retry
+  // ladders. While a request is in flight a new one is queued behind it and
+  // started only once the in-flight request has settled, so at most one
+  // /api/workspaces request is ever outstanding and an older response can never
+  // land after a newer one and drop the rows it added.
+  const enqueueCatalogRequest = useCallback(
+    (kind: CatalogRequestKind, waiters: readonly (() => void)[] = []): void => {
+      if (!catalogInFlightRef.current) {
+        startCatalogRequest(kind, waiters);
+        return;
       }
-    });
-  }, [runDiscoveryMerge]);
-  discoveryStartRef.current = requestDiscovery;
+      const pending = catalogPendingRef.current;
+      if (kind === "load") {
+        // A canonical replace subsumes a queued merge and joins a queued load's
+        // waiters rather than replacing it, so every load() caller still
+        // settles with its own run.
+        catalogPendingRef.current = { kinds: ["load"], waiters: [...(pending?.waiters ?? []), ...waiters] };
+        return;
+      }
+      if (pending === undefined) {
+        catalogPendingRef.current = { kinds: ["merge"], waiters: [] };
+        return;
+      }
+      // At most one queued merge: a second request coalesces into the rerun
+      // that is already queued.
+      if (pending.kinds.includes("merge")) return;
+      catalogPendingRef.current = { kinds: [...pending.kinds, "merge"], waiters: pending.waiters };
+    },
+    [startCatalogRequest],
+  );
+  catalogStartRef.current = enqueueCatalogRequest;
 
   // Visibility fallback: only a REST-created chat or workspace that was never
   // run reaches the catalog without a live frame, and a returning tab is
@@ -545,7 +697,9 @@ export function useWorkspaces({ notify, t, layout, confirm, discoveryEnabled = f
     discoveryLiveRef.current = discoveryEnabled;
     if (discoveryEnabled) return;
     discoveryQueuedBeforeLoadRef.current = false;
-    discoveryRerunRef.current = false;
+    // The next session arms the first-load gate again: nothing merges until its
+    // own load settles.
+    discoveryLoadedRef.current = false;
     discoveryRetryCountRef.current = 0;
     if (discoveryRetryTimerRef.current !== undefined) {
       window.clearTimeout(discoveryRetryTimerRef.current);
@@ -558,71 +712,47 @@ export function useWorkspaces({ notify, t, layout, confirm, discoveryEnabled = f
       window.clearTimeout(loadRetryTimerRef.current);
       loadRetryTimerRef.current = undefined;
     }
+    // Invalidate what is in flight: the teardown token makes a late load
+    // response, a late merge response and a late failure stand down instead of
+    // repopulating the tree, merging into it or arming a fresh retry.
+    catalogTeardownRef.current++;
+    // Drop a coalesced request too - nothing may start after the session ended -
+    // and release its load() awaiters so no caller hangs on a dropped run.
+    const pending = catalogPendingRef.current;
+    catalogPendingRef.current = undefined;
+    if (pending !== undefined) for (const resolve of pending.waiters) resolve();
   }, [discoveryEnabled]);
 
   useEffect(() => () => {
     discoveryLiveRef.current = false;
     discoveryQueuedBeforeLoadRef.current = false;
-    discoveryRerunRef.current = false;
     if (discoveryRetryTimerRef.current !== undefined) {
       window.clearTimeout(discoveryRetryTimerRef.current);
       discoveryRetryTimerRef.current = undefined;
     }
+    // Unmount tears the session down exactly like a logout: whatever is in
+    // flight is invalidated and a coalesced request is dropped.
+    catalogTeardownRef.current++;
+    const pending = catalogPendingRef.current;
+    catalogPendingRef.current = undefined;
+    if (pending !== undefined) for (const resolve of pending.waiters) resolve();
   }, []);
 
-  const load = useCallback(async (): Promise<void> => {
-    const generation = ++loadGenerationRef.current;
-    // A fresh load supersedes any pending ladder retry.
+  const load = useCallback((): Promise<void> => {
+    // A fresh load supersedes the in-flight response (the generation it bumps
+    // makes that response stand down) and any pending ladder retry.
+    loadGenerationRef.current += 1;
     if (loadRetryTimerRef.current !== undefined) {
       window.clearTimeout(loadRetryTimerRef.current);
       loadRetryTimerRef.current = undefined;
     }
-    try {
-      const loadedWorkspaces = await listWorkspaces();
-      if (loadGenerationRef.current !== generation) return;
-      setWorkspaces(loadedWorkspaces);
-      // Mirror eagerly: the queued discovery request below may run before the
-      // render that would normally refresh the ref, and merging against the
-      // stale pre-load list would treat every catalog workspace as new.
-      workspacesRef.current = loadedWorkspaces;
-      const loadedIds = new Set(loadedWorkspaces.map((workspace) => workspace.id));
-      setExpanded((previous) => new Set([...previous].filter((id) => loadedIds.has(id))));
-      // A fresh canonical list invalidates the independently paged sidebar view.
-      disarmAllCatalogRefreshes();
-      pageRequestsRef.current.clear();
-      replaceSessionLists(new Map([...sessionListsRef.current].filter(([id]) => loadedIds.has(id))));
-      replaceSessionPages(new Map());
-      for (const id of recenciesRef.current.keys()) if (!loadedIds.has(id)) recenciesRef.current.delete(id);
-      loadRetryCountRef.current = 0;
-    } catch {
-      // A transient failure leaves an empty tree, and with no live id App never
-      // requests discovery - the removed 20s poll used to be the only self
-      // heal. Retry the canonical load on the bounded ladder instead: a newer
-      // load, a delete, logout and unmount all cancel it.
-      if (loadGenerationRef.current === generation
-        && loadRetryTimerRef.current === undefined
-        && loadRetryCountRef.current < DISCOVERY_RETRY_DELAYS_MS.length) {
-        const delay = DISCOVERY_RETRY_DELAYS_MS[loadRetryCountRef.current] ?? 0;
-        loadRetryCountRef.current += 1;
-        loadRetryTimerRef.current = window.setTimeout(() => {
-          loadRetryTimerRef.current = undefined;
-          // Superseded by a newer load or a delete: stand down.
-          if (loadGenerationRef.current !== generation) return;
-          void loadRef.current();
-        }, delay);
-      }
-    } finally {
-      // The first settled load is what makes discovery safe (see
-      // requestDiscovery); a request that arrived before it runs now, once.
-      if (loadGenerationRef.current === generation) {
-        discoveryLoadedRef.current = true;
-        if (discoveryQueuedBeforeLoadRef.current) {
-          discoveryQueuedBeforeLoadRef.current = false;
-          requestDiscovery();
-        }
-      }
-    }
-  }, [disarmAllCatalogRefreshes, replaceSessionLists, replaceSessionPages, requestDiscovery, setExpanded]);
+    return new Promise<void>((resolve) => {
+      // Through the shared gate: a load that arrives while a catalog request is
+      // in flight is coalesced into the pending slot - where it subsumes a
+      // pending merge - and runs once that request settles.
+      catalogStartRef.current("load", [resolve]);
+    });
+  }, []);
   loadRef.current = load;
 
   // The first page loads whenever a loaded workspace becomes expanded,
