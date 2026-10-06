@@ -326,8 +326,9 @@ describe("Sidebar pinned running sessions", () => {
     const pinned = container.querySelector(".th-sidebar-live");
     expect(pinned).not.toBeNull();
     expect(pinned?.querySelector(".th-sidebar-live-count")?.textContent).toBe("2");
-    const cardRunning = pinned?.querySelector(".th-overview-card-running");
-    expect(cardRunning?.textContent).toBe("2");
+    const daemonCard = [...(pinned?.querySelectorAll<HTMLElement>(".th-overview-card") ?? [])]
+      .find((card) => card.querySelector(".th-overview-card-name")?.textContent === "Daemon-enrolled chat");
+    expect(daemonCard?.querySelector(".th-overview-card-running")?.textContent).toBe("2");
   });
 
   it("shows the tree live dot from the shared poller's live-session membership", async () => {
