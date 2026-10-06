@@ -102,6 +102,12 @@ func (m *Manager) projectOverviewLocked(snapshot Summary) Summary {
 	if m.deletingDurable[durable] != 0 {
 		return Summary{}
 	}
+	daemon, watched := m.daemonSessions[durable]
+	if watched && snapshot.BindingID == "" {
+		if _, eligible := m.daemonOverviewOwnerLocked(durable); !eligible {
+			return Summary{}
+		}
+	}
 	entry := m.overviewCache[durable]
 	chatID, title := m.currentOverviewOwnerLocked(durable, snapshot.Title)
 	if chatID != "" {
@@ -132,6 +138,15 @@ func (m *Manager) projectOverviewLocked(snapshot Summary) Summary {
 		// Never relabel a buffered old snapshot with a replacement route's ID.
 		if s := m.byChat[chatID]; s == nil || s.durableID != durable || m.byRoute[s.routingID] != s {
 			snapshot.BindingID = ""
+		}
+	}
+	if watched && snapshot.BindingID == "" {
+		snapshot.Active = daemon.status == "working" || daemon.status == "blocked"
+		if entry == nil {
+			snapshot.ActivityPair = daemon.snapshot.ActivityPair
+			snapshot.TaskDigest, snapshot.DagDigest = daemon.snapshot.TaskDigest, daemon.snapshot.DagDigest
+			snapshot.TaskOversized, snapshot.DagOversized = daemon.snapshot.TaskOversized, daemon.snapshot.DagOversized
+			snapshot.live = daemon.snapshot.live
 		}
 	}
 	return m.exposeOverviewRevisionLocked(snapshot)
@@ -178,6 +193,9 @@ func (m *Manager) exposeOverviewRevisionLocked(snapshot Summary) Summary {
 }
 
 func (m *Manager) overviewDurableLiveLocked(durable string) bool {
+	if _, watched := m.daemonSessions[durable]; watched {
+		return true
+	}
 	if m.overviewCache[durable] != nil {
 		return true
 	}
@@ -202,6 +220,11 @@ func (m *Manager) overviewResidentRowsLocked() map[string]bool {
 	}
 	for durable := range m.overviewCache {
 		add(durable)
+	}
+	for durable := range m.daemonSessions {
+		if _, eligible := m.daemonOverviewOwnerLocked(durable); eligible {
+			add(durable)
+		}
 	}
 	for _, s := range m.byRoute {
 		if m.byChat[s.chatID] == s {
@@ -285,6 +308,18 @@ func (m *Manager) projectedOverviewLocked() []Summary {
 	}
 	for durable := range m.overviewCache {
 		snapshot := m.projectOverviewLocked(Summary{ChatID: durable, DurableSessionID: durable})
+		if snapshot.ChatID != "" {
+			rows[snapshot.ChatID] = snapshot
+		}
+	}
+	for durable, daemon := range m.daemonSessions {
+		if m.overviewCache[durable] != nil {
+			continue
+		}
+		if _, eligible := m.daemonOverviewOwnerLocked(durable); !eligible {
+			continue
+		}
+		snapshot := m.projectOverviewLocked(daemon.snapshot)
 		if snapshot.ChatID != "" {
 			rows[snapshot.ChatID] = snapshot
 		}

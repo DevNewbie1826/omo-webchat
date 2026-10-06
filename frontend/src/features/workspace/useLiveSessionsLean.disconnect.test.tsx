@@ -41,13 +41,14 @@ it("restores the Sidebar main-running badge through fresh fallback requests afte
   const root = createRoot(container);
   const row = { id: "s", title: "Session", active: true, last_activity_ms: 300,
     running: { agents: 0, tasks: 0, dag: 0 }, done: 7 };
-  // The stored chat gives the live row its open target, so the tree row
-  // rendering the main-running chip is one the user can actually open.
+  // The stored chat gives the live row its open target, so the pinned card
+  // rendering the main-running badge is one the user can actually open.
   const workspaces = [{
     id: "ws", name: "Workspace", path: "/work",
     chats: [{ id: "s", name: "Session", provider: "omo" as const }],
   }];
-  const badge = () => container.querySelector(".th-tree-children .th-tree-running");
+  const badge = () => container.querySelector(".th-overview-card-running");
+  const treeBadge = () => container.querySelector(".th-tree-children .th-tree-running");
   const startPoll = () => {
     if (scheduledPoll === undefined) throw new Error("No fallback poll scheduled");
     const callback = scheduledPoll;
@@ -61,7 +62,7 @@ it("restores the Sidebar main-running badge through fresh fallback requests afte
       workspaces={workspaces} activeTerminalId={null} placedSessions={new Set()} liveSessions={new Set(["s"])}
       expanded={new Set(["ws"])} sessionLists={new Map([["ws", [{ id: "s", name: "Session", source: "stored" as const, recencyMs: 1 }]]])} sessionPages={new Map()}
       onToggleExpanded={() => undefined} onLoadMoreSessions={() => undefined}
-      onSelectTerminal={() => undefined}
+      onSelectTerminal={() => undefined} onOpenSession={async () => undefined}
       onAddWorkspace={() => undefined} onAddTerminal={() => undefined}
       onDeleteWorkspace={() => undefined} onDeleteTerminal={() => undefined}
       onRenameWorkspace={async () => undefined} onRenameTerminal={async () => undefined}
@@ -73,18 +74,23 @@ it("restores the Sidebar main-running badge through fresh fallback requests afte
     if (frame === null) throw new Error("Invalid activity fixture");
     act(() => handlers.onFrame(frame));
     expect(badge()).not.toBeNull();
+    expect(treeBadge()).not.toBeNull();
     startPoll();
     act(() => handlers.onClose?.(1006));
     expect(badge()).toBeNull();
+    expect(treeBadge()).toBeNull();
     await completePoll();
     expect(badge()).toBeNull();
+    expect(treeBadge()).toBeNull();
     startPoll();
     await completePoll();
     expect(badge()).not.toBeNull();
+    expect(treeBadge()).not.toBeNull();
     startPoll();
     await completePoll();
     expect(badge()).not.toBeNull();
-    expect(container.querySelector(".th-sidebar-live")).toBeNull();
+    expect(treeBadge()).not.toBeNull();
+    expect(container.querySelector(".th-sidebar-live-count")).toBeNull();
   } finally {
     act(() => root.unmount());
     container.remove();

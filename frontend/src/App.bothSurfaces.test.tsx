@@ -6,13 +6,14 @@ import { App } from "./App";
 import { apiJson } from "./lib/api";
 
 /**
- * Catalog-cadence integration: the REAL Sidebar and the REAL useWorkspaces
- * hook mount together. A live session that has no open target - absent from
- * the chat list and every loaded catalog page, resolvable only through the
- * membership crawl - must not render any separate live-session region, while
- * the crawl still learns its recency, attributes its owner, and keeps the
- * single 15s catalog cadence armed. Only the transport and pane layout are
- * mocked.
+ * Both-surfaces integration: the REAL Sidebar and the REAL home live-session
+ * block mount together on the REAL useWorkspaces hook. A live session that
+ * has no open target - absent from the chat list and every loaded catalog
+ * page, resolvable only through the membership crawl - must not render a card
+ * on either surface, while the crawl still learns its recency, attributes its
+ * owner, and keeps the single 15s catalog cadence armed. The discovery cycle
+ * (workspace-list refetch) rides the same real hook and disarms on logout.
+ * Only the transport and pane layout are mocked.
  */
 
 const workspace = {
@@ -106,7 +107,7 @@ function installMatchMedia(): void {
   }));
 }
 
-describe("App + Sidebar catalog cadence without separate live regions", () => {
+describe("App + Sidebar both-surfaces live ordering", () => {
   let container: HTMLDivElement;
   let root: Root;
   let livePayload: unknown;
@@ -132,6 +133,10 @@ describe("App + Sidebar catalog cadence without separate live regions", () => {
         path === `/api/workspaces/${wsId}/sessions?limit=5`
         && !(options as { readonly signal?: unknown } | undefined)?.signal)
       .length;
+
+  const cardNames = (selector: string): string[] =>
+    [...container.querySelectorAll<HTMLElement>(`${selector} .th-overview-card`)]
+      .map((card) => card.querySelector(".th-overview-card-name")?.textContent ?? "");
 
   const treeRowNames = (): string[] =>
     [...container.querySelectorAll<HTMLElement>(".th-tree-children .th-tree-label")]
@@ -174,20 +179,26 @@ describe("App + Sidebar catalog cadence without separate live regions", () => {
     window.localStorage.clear();
   });
 
-  it("keeps the crawl learning an unopenable session's recency while no separate region renders", async () => {
+  it("excludes a crawl-only session from both surfaces while the crawl still learns its recency and arms the cadence", async () => {
     await act(async () => {
       root.render(<App />);
     });
     await act(async () => {});
 
-    // The tree mounted and lists the openable chat. z-hidden is live but has
-    // no open target - absent from the chat list and the loaded first catalog
-    // page - so it must not render anywhere; the membership crawl still pages
-    // to learn its timestamp and attribute ws-1 as its owner.
+    // Both surfaces and the tree mounted. z-hidden is live but has no open
+    // target - absent from the chat list and the loaded first catalog page -
+    // so the pinned surfaces exclude it while the tree still lists the
+    // openable chat; the membership crawl still pages to learn its timestamp
+    // and attribute ws-1 as its owner.
     expect(container.querySelector(".th-sidebar-body .th-tree")).not.toBeNull();
     expect(treeRowNames()).toEqual(["A visible"]);
-    expect(container.querySelector(".th-sidebar-live")).toBeNull();
+    expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
+    expect(container.querySelector(".th-home-live")).not.toBeNull();
     expect(catalogCalls()).toContain("/api/workspaces/ws-1/sessions?limit=5&cursor=p2");
+
+    // Only the openable session renders a card on either surface.
+    expect(cardNames(".th-sidebar-live")).toEqual(["A visible"]);
+    expect(cardNames(".th-home-live")).toEqual(["A visible"]);
 
     // Production scheduling path: the catalog scheduler owns the single 15s
     // recency cadence. Nothing catalog-related fires before the cadence...
@@ -212,8 +223,9 @@ describe("App + Sidebar catalog cadence without separate live regions", () => {
     ]);
 
     // z-hidden settles to idle; the next poll (4s cadence) delivers it. It
-    // still has no open target, so the tree keeps listing only the openable
-    // chat, and the owner attribution keeps the cadence armed.
+    // still has no open target, so both surfaces keep listing only the
+    // openable session while the tree keeps its row, and the owner
+    // attribution keeps the cadence armed.
     livePayload = PHASE_IDLE;
     await act(async () => {
       await vi.advanceTimersByTimeAsync(4_000);
@@ -221,6 +233,8 @@ describe("App + Sidebar catalog cadence without separate live regions", () => {
     await act(async () => {});
 
     expect(treeRowNames()).toEqual(["A visible"]);
+    expect(cardNames(".th-sidebar-live")).toEqual(["A visible"]);
+    expect(cardNames(".th-home-live")).toEqual(["A visible"]);
   });
 
   it("keeps exactly the 15s cadence for a stable owner while a second owner joins and leaves", async () => {
@@ -248,6 +262,7 @@ describe("App + Sidebar catalog cadence without separate live regions", () => {
 
     // Both owners' first pages are ready; ws-1 is the sole initial owner.
     expect(container.querySelector(".th-sidebar-body .th-tree")).not.toBeNull();
+    expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
     const baseline = scheduledFirstPageCalls("ws-1");
     expect(baseline).toBe(1);
 
@@ -276,8 +291,9 @@ describe("App + Sidebar catalog cadence without separate live regions", () => {
     });
     await act(async () => {});
 
-    // No live-session region renders for the excluded row.
+    // Excluded from both live surfaces.
     expect(container.querySelector(".th-sidebar-live")).toBeNull();
+    expect(container.querySelector(".th-home-live")).toBeNull();
 
     // Three full cadences: not a single further catalog request (the
     // discovery cycle only refetches the workspace list, never pages).
@@ -296,6 +312,7 @@ describe("App + Sidebar catalog cadence without separate live regions", () => {
     await act(async () => {});
 
     // ws-1 is a live owner; the cadence is armed and discovery ticks.
+    expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
     const logoutButton = container.querySelector<HTMLButtonElement>('.th-sidebar-footer button[title="Log out"]');
     expect(logoutButton).not.toBeNull();
 

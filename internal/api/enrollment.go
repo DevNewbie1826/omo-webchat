@@ -17,6 +17,7 @@ func (s *Server) startRPCWatcher(caller rpcwatch.Caller) func() {
 		if err := s.reconcileEnrollment(sessions); err != nil {
 			s.logger.Error("enrolling daemon sessions", "err", err)
 		}
+		s.applyEnrollmentLive(ctx, sessions)
 	}))
 	done := make(chan struct{})
 	go func() {

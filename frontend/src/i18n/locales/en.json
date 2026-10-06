@@ -48,6 +48,7 @@
   "sidebar.tm.liveProcess": "Provider process running",
   "sidebar.tm.runningAgents": "{n} running",
   "sidebar.tm.mainRunning": "Main running",
+  "sidebar.sessions": "Sessions",
   "sidebar.tm.opening": "Opening…",
   "sidebar.tm.sessionActive": "In use elsewhere",
   "sidebar.tm.forceOpen": "Open anyway",
