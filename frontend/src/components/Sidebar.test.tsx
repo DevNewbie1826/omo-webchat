@@ -43,6 +43,7 @@ describe("Sidebar mobile drawer", () => {
           onToggleExpanded={() => undefined}
           onLoadMoreSessions={() => undefined}
           onSelectTerminal={() => undefined}
+          onOpenSession={async () => undefined}
           onAddWorkspace={() => undefined}
           onAddTerminal={() => undefined}
           onDeleteWorkspace={() => undefined}
@@ -95,6 +96,7 @@ describe("Sidebar mobile drawer", () => {
           onToggleExpanded={() => undefined}
           onLoadMoreSessions={() => undefined}
           onSelectTerminal={() => undefined}
+          onOpenSession={async () => undefined}
           onAddWorkspace={() => undefined}
           onAddTerminal={() => undefined}
           onDeleteWorkspace={() => undefined}
@@ -149,6 +151,7 @@ describe("Sidebar desktop collapse focus", () => {
           onToggleExpanded={() => undefined}
           onLoadMoreSessions={() => undefined}
           onSelectTerminal={() => undefined}
+          onOpenSession={async () => undefined}
           onAddWorkspace={() => undefined}
           onAddTerminal={() => undefined}
           onDeleteWorkspace={() => undefined}
