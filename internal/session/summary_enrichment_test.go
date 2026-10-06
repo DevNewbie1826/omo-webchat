@@ -285,18 +285,89 @@ func TestProviderNameOnlyOverwritesAutoSource(t *testing.T) {
 		sub := newRecorder(16)
 		sess, _, _ := acquire(t, mgr, testChat{id: chatID, cwd: t.TempDir()}, sub)
 		sub.next(t) // ready
+		updates := make(chan Summary, 4)
+		unsubscribe := mgr.SubscribeOverview(func(snapshot Summary) { updates <- snapshot })
+		defer unsubscribe()
 
 		injectEvent(t, sess, map[string]any{"type": "session_info_changed", "name": "Later provider title"})
+		_, frame := sub.await(t, FrameName)
+		data, _ := frame.Data.(map[string]any)
+		if data["name"] != "Later provider title" || data["origin"] != "provider" {
+			t.Fatalf("name frame = %+v", frame)
+		}
+		if cur := store.stored(chatID); cur.Name != "Later provider title" || cur.NameSource != NameSourceAuto {
+			t.Fatalf("stored renamed title = %+v", cur)
+		}
+		if summary, _ := sess.summary(); summary.Title != "Later provider title" {
+			t.Fatalf("summary renamed title = %+v", summary)
+		}
+		if snapshot := awaitOverview(t, updates); snapshot.ChatID != chatID || snapshot.Title != "Later provider title" {
+			t.Fatalf("overview rename = %+v", snapshot)
+		}
+	})
+
+	t.Run("echo", func(t *testing.T) {
+		d := newDaemon(t)
+		client := dial(t, d)
+		store := newMemStore()
+		const chatID = "provider-echo"
+		if err := store.SaveCursor(context.Background(), chatID, Cursor{Name: "Established title", NameSource: NameSourceAuto}); err != nil {
+			t.Fatal(err)
+		}
+		mgr := testManager(t, client, store, 64)
+		sub := newRecorder(16)
+		sess, _, _ := acquire(t, mgr, testChat{id: chatID, cwd: t.TempDir()}, sub)
+		sub.next(t) // ready
+
+		injectEvent(t, sess, map[string]any{"type": "session_info_changed", "name": "Established title"})
 		injectEvent(t, sess, map[string]any{"type": "state_changed"})
 		prior, _ := sub.await(t, FrameState)
 		if counts(prior)[FrameName] != 0 {
-			t.Fatalf("provider replaced established title: %+v", prior)
+			t.Fatalf("echo of the current title emitted a name frame: %+v", prior)
 		}
 		if cur := store.stored(chatID); cur.Name != "Established title" || cur.NameSource != NameSourceAuto {
-			t.Fatalf("stored established title overwritten: %+v", cur)
+			t.Fatalf("echo changed the stored name: %+v", cur)
 		}
-		if summary, _ := sess.summary(); summary.Title != "Established title" {
-			t.Fatalf("summary established title overwritten: %+v", summary)
+	})
+
+	t.Run("legacy_empty_source", func(t *testing.T) {
+		d := newDaemon(t)
+		client := dial(t, d)
+		store := newMemStore()
+		const chatID = "provider-legacy-source"
+		placeholder := Cursor{Name: "New session", NameSource: NameSourceAuto, TitleIsPlaceholder: true}
+		if err := store.SaveCursor(context.Background(), chatID, placeholder); err != nil {
+			t.Fatal(err)
+		}
+		mgr := testManager(t, client, store, 64)
+		sub := newRecorder(16)
+		sess, _, _ := acquire(t, mgr, testChat{id: chatID, cwd: t.TempDir()}, sub)
+		sub.next(t) // ready
+
+		// A pre-NameSource record: a title with no source. The first prompt
+		// adopts it as the established name instead of deriving one, and a
+		// later daemon name must not replace it either.
+		legacy := placeholder
+		legacy.Name, legacy.NameSource, legacy.TitleIsPlaceholder = "Legacy title", "", false
+		if err := store.SaveCursor(context.Background(), chatID, legacy); err != nil {
+			t.Fatal(err)
+		}
+		runScript(t, d, sess, "A plain prompt")
+		if title, source := lockedTitle(sess); title != "Legacy title" || source != "" {
+			t.Fatalf("legacy title not adopted: (%q, %q)", title, source)
+		}
+
+		injectEvent(t, sess, map[string]any{"type": "session_info_changed", "name": "Provider replacement"})
+		injectEvent(t, sess, map[string]any{"type": "state_changed"})
+		prior, _ := sub.await(t, FrameState)
+		if counts(prior)[FrameName] != 0 {
+			t.Fatalf("provider replaced a legacy empty-source title: %+v", prior)
+		}
+		if cur := store.stored(chatID); cur.Name != "Legacy title" || cur.NameSource != "" {
+			t.Fatalf("legacy stored title overwritten: %+v", cur)
+		}
+		if summary, _ := sess.summary(); summary.Title != "Legacy title" {
+			t.Fatalf("legacy summary title overwritten: %+v", summary)
 		}
 	})
 

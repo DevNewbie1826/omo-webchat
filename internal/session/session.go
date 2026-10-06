@@ -1421,8 +1421,12 @@ func (s *Session) applyAutoTitle(ctx context.Context, prompt string) {
 		return
 	}
 	s.lifecycleMu.Lock()
-	if cur.NameSource == NameSourceUser {
-		s.title, s.nameSource = cur.Name, NameSourceUser
+	// Only a creation placeholder may be replaced by the derived title: a
+	// stored user name, and any non-placeholder stored name written by the rpc
+	// side, are established and block the derived title, mirroring the open
+	// path's rule (manager.go openSession).
+	if cur.NameSource == NameSourceUser || (cur.Name != "" && !cur.TitleIsPlaceholder) {
+		s.title, s.nameSource = cur.Name, cur.NameSource
 	}
 	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.title != "" || s.nameSource == NameSourceUser {
 		s.lifecycleMu.Unlock()
@@ -1450,6 +1454,7 @@ func (s *Session) applyAutoTitle(ctx context.Context, prompt string) {
 }
 
 func (s *Session) applyProviderName(name string) {
+	name = strings.TrimSpace(name)
 	if name == "" {
 		return
 	}
@@ -1465,7 +1470,7 @@ func (s *Session) applyProviderName(name string) {
 	if cur.NameSource == NameSourceUser {
 		s.title, s.nameSource = cur.Name, NameSourceUser
 	}
-	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.title != "" || s.nameSource == NameSourceUser {
+	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.title == name || !s.providerNameReplaceableLocked() {
 		s.lifecycleMu.Unlock()
 		return
 	}
@@ -1475,11 +1480,27 @@ func (s *Session) applyProviderName(name string) {
 		return
 	}
 	s.lifecycleMu.Lock()
-	if !s.closed && !s.closing && !s.resumable && s.quarantineErr == nil && s.title == "" && s.nameSource != NameSourceUser {
+	if !s.closed && !s.closing && !s.resumable && s.quarantineErr == nil && s.title != name && s.providerNameReplaceableLocked() {
 		s.title, s.nameSource = name, NameSourceAuto
 		s.publishLocked(Frame{Kind: FrameName, SessionID: s.durableID, Data: map[string]any{"name": name, "origin": "provider"}})
+		s.manager.notifySessionOverviewLocked(s)
 	}
 	s.lifecycleMu.Unlock()
+}
+
+// providerNameReplaceableLocked applies the name-precedence decision: a
+// webchat user's name (and a legacy title whose source is unknown) is never
+// replaced by a daemon-side name, while an empty title or an automatic name is
+// replaced by the latest one. omo emits automatic names on the same event, so
+// the source - not the event - decides.
+func (s *Session) providerNameReplaceableLocked() bool {
+	if s.nameSource == NameSourceUser {
+		return false
+	}
+	if s.title == "" {
+		return true
+	}
+	return s.nameSource == NameSourceAuto
 }
 
 func (s *Session) currentCursor(ctx context.Context) (Cursor, error) {
