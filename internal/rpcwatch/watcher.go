@@ -29,6 +29,11 @@ type Session struct {
 	Questions        []string `json:"questions"`
 	MessageCount     int      `json:"messageCount"`
 	UpdatedAt        int64    `json:"updatedAt"`
+	// ObservedAt is the process-local instant this snapshot was read from the
+	// daemon. It is deliberately absent from the wire: consumers use it to tell
+	// a stale read from a fresh one (a name observed before a live session's
+	// last title change must not revert that title).
+	ObservedAt time.Time `json:"-"`
 }
 
 type Option func(*Watcher)
@@ -113,6 +118,9 @@ func (w *Watcher) Tick(ctx context.Context) {
 		info := entry.Session
 		old, observed := prev[info.SessionID]
 		var s omorpc.SessionState
+		// The observation instant is taken before the state is read, so it can
+		// never be later than the daemon state this snapshot carries.
+		observedAt := w.now()
 		if err := w.call(ctx, omorpc.GetState{SessionID: info.SessionID}, &s); err != nil {
 			var stable *omorpc.StableError
 			if errors.As(err, &stable) && stable.Code == omorpc.ErrCodeUnknownSession {
@@ -142,6 +150,7 @@ func (w *Watcher) Tick(ctx context.Context) {
 			raw = "working"
 		}
 		info.Status, info.MessageCount, info.UpdatedAt = raw, s.MessageCount, w.now().UnixMilli()
+		info.ObservedAt = observedAt
 		info.Questions = []string{}
 		for _, pending := range s.PendingQuestions {
 			for _, q := range pending.Questions {

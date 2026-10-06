@@ -104,6 +104,7 @@ vi.mock("./features/workspace/useWorkspaces", () => ({
     handleRenameWorkspace: async () => undefined,
     handleRenameTerminal: async () => undefined,
     handleChatName: () => undefined,
+    requestDiscovery: () => undefined,
   }),
 }));
 vi.mock("./features/terminal/terminal", () => ({ createTerminal: vi.fn() }));

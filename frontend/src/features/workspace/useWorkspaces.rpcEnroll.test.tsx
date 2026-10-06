@@ -5,7 +5,7 @@ import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionTree } from "../../components/SessionTree";
 import type { LayoutApi } from "../split/useLayout";
-import { DISCOVERY_MERGE_INTERVAL_MS, useWorkspaces } from "./useWorkspaces";
+import { useWorkspaces } from "./useWorkspaces";
 import { deleteWorkspace, listWorkspaceSessions, listWorkspaces } from "./workspace";
 import type { Workspace } from "./workspace";
 
@@ -121,7 +121,7 @@ describe("useWorkspaces rpc auto-enrollment discovery", () => {
     window.localStorage.clear();
   });
 
-  it("merges a newly enrolled workspace+chat from the empty initial state within one cycle", async () => {
+  it("merges a newly enrolled workspace+chat from the empty initial state on a discovery request", async () => {
     // Given: the zero-workspaces initial state - no live targets anywhere, so
     // the conditional 15s recency cadence is disarmed.
     act(() => {
@@ -133,11 +133,13 @@ describe("useWorkspaces rpc auto-enrollment discovery", () => {
     expect(container.querySelector('[data-testid="empty"]')).not.toBeNull();
     expect(listWorkspaces).toHaveBeenCalledTimes(1);
 
-    // When: the daemon enrolls a new workspace + chat on the server and one
-    // discovery cycle elapses.
+    // When: the daemon enrolls a new workspace + chat on the server and the
+    // live-session trigger (App's unknown-id effect, or the visibility
+    // fallback) requests a discovery merge - there is no periodic cadence left.
     vi.mocked(listWorkspaces).mockResolvedValue([enrolledWorkspace]);
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(DISCOVERY_MERGE_INTERVAL_MS);
+      latest?.requestDiscovery();
+      await vi.advanceTimersByTimeAsync(0);
     });
 
     // Then: workspace and chat row render without reload or click - the new
@@ -175,7 +177,8 @@ describe("useWorkspaces rpc auto-enrollment discovery", () => {
     const staleCatalog = deferred<readonly Workspace[]>();
     vi.mocked(listWorkspaces).mockReturnValueOnce(staleCatalog.promise);
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(DISCOVERY_MERGE_INTERVAL_MS);
+      latest?.requestDiscovery();
+      await vi.advanceTimersByTimeAsync(0);
     });
     await act(async () => {
       await latest?.handleDeleteWorkspace(enrolledWorkspace);
@@ -192,19 +195,23 @@ describe("useWorkspaces rpc auto-enrollment discovery", () => {
     });
 
     // Then: the stale response is discarded - neither the deleted workspace
-    // nor its auto-enrolled chat reappears, and later cycles keep them gone.
+    // nor its auto-enrolled chat reappears, and later requests keep them gone.
     expect(latest?.workspaces).toHaveLength(0);
     expect(chatRows()).toHaveLength(0);
     expect(latest?.sessionLists.has("ws-enrolled")).toBe(false);
+    // The discard is reported to the trigger, which walks its bounded retry
+    // ladder; every retry refetches and still must not resurrect the row.
+    const fetchesAfterDiscard = vi.mocked(listWorkspaces).mock.calls.length;
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(DISCOVERY_MERGE_INTERVAL_MS);
+      await vi.advanceTimersByTimeAsync(20_000);
     });
+    expect(vi.mocked(listWorkspaces).mock.calls.length).toBeGreaterThan(fetchesAfterDiscard);
     expect(latest?.workspaces).toHaveLength(0);
     expect(container.querySelector('[data-testid="empty"]')).not.toBeNull();
   });
 
-  it("keeps rows and page fetches deduplicated across repeat cycles with the same catalog", async () => {
-    // Given: an enrolled workspace merged on the first cycle.
+  it("keeps rows and page fetches deduplicated across repeat discovery requests", async () => {
+    // Given: an enrolled workspace merged on the first request.
     act(() => {
       root.render(<DiscoveryProbe />);
     });
@@ -213,7 +220,8 @@ describe("useWorkspaces rpc auto-enrollment discovery", () => {
     });
     vi.mocked(listWorkspaces).mockResolvedValue([enrolledWorkspace]);
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(DISCOVERY_MERGE_INTERVAL_MS);
+      latest?.requestDiscovery();
+      await vi.advanceTimersByTimeAsync(0);
     });
     expect(chatRows()).toHaveLength(1);
     // The expand-effect's first-page fetch is the only sessions request so
@@ -221,10 +229,12 @@ describe("useWorkspaces rpc auto-enrollment discovery", () => {
     expect(listWorkspaceSessions).toHaveBeenCalledTimes(1);
     expect(listWorkspaceSessions).toHaveBeenCalledWith("ws-enrolled", "");
 
-    // When: two further cycles report the same catalog with no recency
-    // targets armed.
+    // When: two further requests report the same catalog with no recency
+    // targets armed. Both land as one coalesced rerun behind the settled one.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(2 * DISCOVERY_MERGE_INTERVAL_MS);
+      latest?.requestDiscovery();
+      latest?.requestDiscovery();
+      await vi.advanceTimersByTimeAsync(0);
     });
 
     // Then: no duplicate workspaces, chats, rows or page fetches.
@@ -273,7 +283,8 @@ describe("useWorkspaces rpc auto-enrollment discovery", () => {
       nextCursor: "",
     });
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(DISCOVERY_MERGE_INTERVAL_MS);
+      latest?.requestDiscovery();
+      await vi.advanceTimersByTimeAsync(0);
     });
 
     // Then: the chat merges into the known workspace, its ready first page

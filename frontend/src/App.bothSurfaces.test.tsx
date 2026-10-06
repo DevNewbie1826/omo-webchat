@@ -11,8 +11,9 @@ import { apiJson } from "./lib/api";
  * has no open target - absent from the chat list and every loaded catalog
  * page, resolvable only through the membership crawl - must not render a card
  * on either surface, while the crawl still learns its recency, attributes its
- * owner, and keeps the single 15s catalog cadence armed. The discovery cycle
- * (workspace-list refetch) rides the same real hook and disarms on logout.
+ * owner, and keeps the single 15s catalog cadence armed. The discovery merge
+ * (workspace-list refetch) rides the same real hook, is event driven, and
+ * disarms on logout.
  * Only the transport and pane layout are mocked.
  */
 
@@ -295,14 +296,15 @@ describe("App + Sidebar both-surfaces live ordering", () => {
     expect(container.querySelector(".th-sidebar-live")).toBeNull();
     expect(container.querySelector(".th-home-live")).toBeNull();
 
-    // Three full cadences: not a single further catalog request (the
-    // discovery cycle only refetches the workspace list, never pages).
+    // Discovery is event driven: with no live id the catalog does not own,
+    // 45 simulated seconds add no catalog request and no page request - the
+    // boot load is the only /api/workspaces call this tab ever makes.
     const baseline = catalogCalls().length;
     await act(async () => {
       await vi.advanceTimersByTimeAsync(45_000);
     });
     expect(catalogCalls().length).toBe(baseline);
-    expect(workspaceListCalls()).toBeGreaterThan(1);
+    expect(workspaceListCalls()).toBe(1);
   });
 
   it("clears the registered periodic targets and the discovery cycle when logging out", async () => {
@@ -311,7 +313,7 @@ describe("App + Sidebar both-surfaces live ordering", () => {
     });
     await act(async () => {});
 
-    // ws-1 is a live owner; the cadence is armed and discovery ticks.
+    // ws-1 is a live owner, so the 15s recency cadence is armed.
     expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
     const logoutButton = container.querySelector<HTMLButtonElement>('.th-sidebar-footer button[title="Log out"]');
     expect(logoutButton).not.toBeNull();
