@@ -93,6 +93,17 @@ describe("useWorkspaces event-driven discovery", () => {
     );
   }
 
+  function ToggleProbe({ enabled }: { readonly enabled: boolean }): ReactElement {
+    latest = useWorkspaces({
+      notify: () => undefined,
+      t: (key) => key,
+      layout,
+      confirm: async () => true,
+      discoveryEnabled: enabled,
+    });
+    return <div data-testid="tree" />;
+  }
+
   const chatRows = (): HTMLElement[] =>
     Array.from(container.querySelectorAll<HTMLElement>(".th-tree-children > .th-tree-node"));
   const catalogCalls = (): number => vi.mocked(listWorkspaces).mock.calls.length;
@@ -266,5 +277,140 @@ describe("useWorkspaces event-driven discovery", () => {
     expect(catalogCalls()).toBe(2);
     expect(latest?.workspaces.map((workspace) => workspace.id)).toEqual(["ws-enrolled"]);
     expect(latest?.expanded.size).toBe(0);
+  });
+
+  it("coalesces a retry that comes due mid-request instead of running two merges, and never drops a newer row", async () => {
+    // Given: a settled empty initial load.
+    act(() => {
+      root.render(<DiscoveryProbe />);
+    });
+    await act(async () => {
+      await latest?.load();
+    });
+    expect(catalogCalls()).toBe(1);
+
+    // A catalog whose every call parks until the test settles it, so the test
+    // can see exactly how many requests are outstanding at once.
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const pending: Array<{
+      readonly resolve: (rows: readonly Workspace[]) => void;
+      readonly reject: (error: Error) => void;
+    }> = [];
+    vi.mocked(listWorkspaces).mockImplementation(() =>
+      new Promise<readonly Workspace[]>((resolve, reject) => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        pending.push({
+          resolve: (rows) => { inFlight -= 1; resolve(rows); },
+          reject: (error) => { inFlight -= 1; reject(error); },
+        });
+      }));
+
+    // When: the first merge's fetch fails, arming the 1s retry...
+    await act(async () => {
+      latest?.requestDiscovery();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(pending).toHaveLength(1);
+    await act(async () => {
+      pending[0]!.reject(new Error("network"));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // ...a new discovery request is issued 500ms later and is still unresolved...
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    await act(async () => {
+      latest?.requestDiscovery();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(pending).toHaveLength(2);
+
+    // ...and the armed retry comes due 500ms after that, while that request is
+    // still in flight. It must coalesce behind it, never start a second fetch.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(maxInFlight).toBe(1);
+    expect(pending).toHaveLength(2);
+
+    // Then: the newer response lands first and an older catalog view after it;
+    // the older response cannot drop the row the newer merge added.
+    const wsA: Workspace = { id: "ws-a", name: "A", path: "/work/a", chats: [] };
+    const wsB: Workspace = { id: "ws-b", name: "B", path: "/work/b", chats: [] };
+    await act(async () => {
+      pending[1]!.resolve([wsA, wsB]);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(latest?.workspaces.map((workspace) => workspace.id)).toEqual(["ws-a", "ws-b"]);
+    expect(pending).toHaveLength(3);
+
+    await act(async () => {
+      pending[2]!.resolve([wsA]);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(maxInFlight).toBe(1);
+    expect(latest?.workspaces.map((workspace) => workspace.id)).toEqual(["ws-a", "ws-b"]);
+  });
+
+  it("recovers a failed initial load by itself on the bounded ladder", async () => {
+    // Given: the very first catalog load fails - the server is briefly
+    // unavailable - leaving the tree empty with no live id to trigger
+    // discovery.
+    vi.mocked(listWorkspaces).mockRejectedValueOnce(new Error("network"));
+    vi.mocked(listWorkspaces).mockResolvedValue([enrolledWorkspace]);
+    act(() => {
+      root.render(<DiscoveryProbe />);
+    });
+    await act(async () => {
+      await latest?.load();
+    });
+    expect(catalogCalls()).toBe(1);
+    expect(latest?.workspaces).toHaveLength(0);
+    expect(container.querySelector('[data-testid="empty"]')).not.toBeNull();
+
+    // Then: no user action is needed - the ladder retries the canonical load
+    // and the tree populates.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DISCOVERY_RETRY_DELAYS_MS[0]! - 1);
+    });
+    expect(catalogCalls()).toBe(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(catalogCalls()).toBe(2);
+    expect(latest?.workspaces.map((workspace) => workspace.id)).toEqual(["ws-enrolled"]);
+    expect(container.querySelector('[data-testid="empty"]')).toBeNull();
+
+    // And the ladder is cancelled by success: no further probes.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+    expect(catalogCalls()).toBe(2);
+  });
+
+  it("cancels a pending load retry when discovery is disabled (logout)", async () => {
+    // Given: an initial load that fails, arming the ladder.
+    vi.mocked(listWorkspaces).mockRejectedValue(new Error("network"));
+    act(() => {
+      root.render(<ToggleProbe enabled />);
+    });
+    await act(async () => {
+      await latest?.load();
+    });
+    expect(catalogCalls()).toBe(1);
+
+    // When: the session ends - logout flips discoveryEnabled false.
+    act(() => {
+      root.render(<ToggleProbe enabled={false} />);
+    });
+
+    // Then: the pending retry is dropped; nothing keeps probing the catalog.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+    expect(catalogCalls()).toBe(1);
   });
 });

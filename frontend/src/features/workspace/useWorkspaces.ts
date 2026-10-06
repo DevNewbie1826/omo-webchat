@@ -81,6 +81,43 @@ export interface UseWorkspacesResult {
   readonly handleChatName: (wsId: string, chatId: string, name: string) => void;
 }
 
+/** Pure additive merge of one discovery response into a catalog snapshot: the
+ * rows to keep plus the ids to expand and whose chat list grew. Strictly
+ * additive and identity-preserving per row, so applying it through a
+ * functional state update can never drop rows a newer merge committed. */
+function mergeDiscoveredWorkspaces(
+  current: readonly Workspace[],
+  discovered: readonly Workspace[],
+): {
+  readonly workspaces: readonly Workspace[];
+  readonly newlyExpanded: readonly string[];
+  readonly chatGrew: readonly string[];
+} {
+  const currentById = new Map(current.map((workspace) => [workspace.id, workspace]));
+  const next = [...current];
+  const newlyExpanded: string[] = [];
+  const chatGrew: string[] = [];
+  for (const incoming of discovered) {
+    const existing = currentById.get(incoming.id);
+    if (existing === undefined) {
+      next.push(incoming);
+      // First sighting: expand so the enrolled chat rows are visible
+      // without a click. Later ticks never fight the user's collapse.
+      newlyExpanded.push(incoming.id);
+      continue;
+    }
+    const knownChatIds = new Set(existing.chats.map((chat) => chat.id));
+    const missingChats = incoming.chats.filter((chat) => !knownChatIds.has(chat.id));
+    if (missingChats.length === 0) continue;
+    next[next.findIndex((workspace) => workspace.id === existing.id)] = {
+      ...existing,
+      chats: [...existing.chats, ...missingChats],
+    };
+    chatGrew.push(existing.id);
+  }
+  return { workspaces: next, newlyExpanded, chatGrew };
+}
+
 export function applyChatNameToWorkspaces(
   workspaces: readonly Workspace[],
   wsId: string,
@@ -198,6 +235,15 @@ export function useWorkspaces({ notify, t, layout, confirm, discoveryEnabled = f
   const discoveryRerunRef = useRef(false);
   const discoveryRetryCountRef = useRef(0);
   const discoveryRetryTimerRef = useRef<number | undefined>(undefined);
+  // The gated entry point, re-read from a timer callback so the retry can
+  // never bypass the single-flight gate it was armed behind.
+  const discoveryStartRef = useRef<() => void>(() => undefined);
+  // Canonical-load ladder: a failed load() leaves an empty tree that no live
+  // frame will ever repopulate, so the load itself retries on the same bounded
+  // cadence until it succeeds, is superseded, or the session ends.
+  const loadRetryCountRef = useRef(0);
+  const loadRetryTimerRef = useRef<number | undefined>(undefined);
+  const loadRef = useRef<() => Promise<void>>(async () => undefined);
 
   const disarmCatalogRefresh = useCallback((wsId: string): void => {
     const timer = catalogRefreshTimersRef.current.get(wsId);
@@ -377,6 +423,10 @@ export function useWorkspaces({ notify, t, layout, confirm, discoveryEnabled = f
     recencyTargetsRef.current = new Set();
     pageRequestsRef.current.clear();
     recenciesRef.current.clear();
+    if (loadRetryTimerRef.current !== undefined) {
+      window.clearTimeout(loadRetryTimerRef.current);
+      loadRetryTimerRef.current = undefined;
+    }
     loadGenerationRef.current++;
   }, [disarmAllCatalogRefreshes, disarmRecencyRefresh]);
 
@@ -402,29 +452,7 @@ export function useWorkspaces({ notify, t, layout, confirm, discoveryEnabled = f
       return false;
     }
     if (loadGenerationRef.current !== generation) return false;
-    const current = workspacesRef.current;
-    const currentById = new Map(current.map((workspace) => [workspace.id, workspace]));
-    const next = [...current];
-    const newlyExpanded: string[] = [];
-    const chatGrew: string[] = [];
-    for (const incoming of discovered) {
-      const existing = currentById.get(incoming.id);
-      if (existing === undefined) {
-        next.push(incoming);
-        // First sighting: expand so the enrolled chat rows are visible
-        // without a click. Later ticks never fight the user's collapse.
-        newlyExpanded.push(incoming.id);
-        continue;
-      }
-      const knownChatIds = new Set(existing.chats.map((chat) => chat.id));
-      const missingChats = incoming.chats.filter((chat) => !knownChatIds.has(chat.id));
-      if (missingChats.length === 0) continue;
-      next[next.findIndex((workspace) => workspace.id === existing.id)] = {
-        ...existing,
-        chats: [...existing.chats, ...missingChats],
-      };
-      chatGrew.push(existing.id);
-    }
+    const { newlyExpanded, chatGrew } = mergeDiscoveredWorkspaces(workspacesRef.current, discovered);
     if (newlyExpanded.length > 0) {
       setExpanded((previous) => {
         const merged = new Set(previous);
@@ -432,7 +460,15 @@ export function useWorkspaces({ notify, t, layout, confirm, discoveryEnabled = f
         return merged;
       });
     }
-    if (next.length !== current.length || chatGrew.length > 0) setWorkspaces(next);
+    if (newlyExpanded.length > 0 || chatGrew.length > 0) {
+      // Functional update: merge into whatever is committed when React runs
+      // it, so a response that resolved against an older snapshot can never
+      // overwrite rows a newer merge added.
+      setWorkspaces((previous) => {
+        const merged = mergeDiscoveredWorkspaces(previous, discovered);
+        return merged.newlyExpanded.length > 0 || merged.chatGrew.length > 0 ? merged.workspaces : previous;
+      });
+    }
     // A known workspace whose server chats grew (an enrolled session bound to
     // an already-loaded workspace) refreshes its ready first page through the
     // scheduled path so the new row renders on this same cadence. New
@@ -443,9 +479,11 @@ export function useWorkspaces({ notify, t, layout, confirm, discoveryEnabled = f
     return true;
   }, [fetchSessionPage, setExpanded]);
 
-  // The single entry point of the event-driven design. Exactly one merge runs
-  // at a time; a request that lands mid-flight is remembered and runs once
-  // more afterwards, so a burst of live frames costs at most two fetches.
+  // The single entry point of the event-driven design. Every trigger funnels
+  // through here - App's live-id effect, the visibility fallback, and the
+  // retry ladder below - so exactly one merge is ever in flight: a request (or
+  // a retry that comes due) while a merge runs coalesces into one rerun
+  // instead of starting a second concurrent fetch.
   const requestDiscovery = useCallback((): void => {
     if (!discoveryLiveRef.current) return;
     if (!discoveryLoadedRef.current) {
@@ -459,35 +497,34 @@ export function useWorkspaces({ notify, t, layout, confirm, discoveryEnabled = f
       discoveryRerunRef.current = true;
       return;
     }
-    const attempt = (): void => {
+    discoveryInFlightRef.current = true;
+    void runDiscoveryMerge().then((merged) => {
+      discoveryInFlightRef.current = false;
       if (!discoveryLiveRef.current) return;
-      discoveryInFlightRef.current = true;
-      void runDiscoveryMerge().then((merged) => {
-        discoveryInFlightRef.current = false;
-        if (!discoveryLiveRef.current) return;
-        if (merged) {
-          discoveryRetryCountRef.current = 0;
-          if (discoveryRetryTimerRef.current !== undefined) {
-            window.clearTimeout(discoveryRetryTimerRef.current);
-            discoveryRetryTimerRef.current = undefined;
-          }
-        } else if (discoveryRetryTimerRef.current === undefined
-          && discoveryRetryCountRef.current < DISCOVERY_RETRY_DELAYS_MS.length) {
-          const delay = DISCOVERY_RETRY_DELAYS_MS[discoveryRetryCountRef.current] ?? 0;
-          discoveryRetryCountRef.current += 1;
-          discoveryRetryTimerRef.current = window.setTimeout(() => {
-            discoveryRetryTimerRef.current = undefined;
-            attempt();
-          }, delay);
+      if (merged) {
+        discoveryRetryCountRef.current = 0;
+        if (discoveryRetryTimerRef.current !== undefined) {
+          window.clearTimeout(discoveryRetryTimerRef.current);
+          discoveryRetryTimerRef.current = undefined;
         }
-        if (discoveryRerunRef.current) {
-          discoveryRerunRef.current = false;
-          attempt();
-        }
-      });
-    };
-    attempt();
+      } else if (discoveryRetryTimerRef.current === undefined
+        && discoveryRetryCountRef.current < DISCOVERY_RETRY_DELAYS_MS.length) {
+        const delay = DISCOVERY_RETRY_DELAYS_MS[discoveryRetryCountRef.current] ?? 0;
+        discoveryRetryCountRef.current += 1;
+        discoveryRetryTimerRef.current = window.setTimeout(() => {
+          discoveryRetryTimerRef.current = undefined;
+          // Back through the gate, never around it: a retry that comes due
+          // while another merge is in flight coalesces instead of racing it.
+          discoveryStartRef.current();
+        }, delay);
+      }
+      if (discoveryRerunRef.current) {
+        discoveryRerunRef.current = false;
+        discoveryStartRef.current();
+      }
+    });
   }, [runDiscoveryMerge]);
+  discoveryStartRef.current = requestDiscovery;
 
   // Visibility fallback: only a REST-created chat or workspace that was never
   // run reaches the catalog without a live frame, and a returning tab is
@@ -514,6 +551,13 @@ export function useWorkspaces({ notify, t, layout, confirm, discoveryEnabled = f
       window.clearTimeout(discoveryRetryTimerRef.current);
       discoveryRetryTimerRef.current = undefined;
     }
+    // A pending canonical-load retry dies with the session too: logout must
+    // not keep probing the catalog on the way out.
+    loadRetryCountRef.current = 0;
+    if (loadRetryTimerRef.current !== undefined) {
+      window.clearTimeout(loadRetryTimerRef.current);
+      loadRetryTimerRef.current = undefined;
+    }
   }, [discoveryEnabled]);
 
   useEffect(() => () => {
@@ -528,6 +572,11 @@ export function useWorkspaces({ notify, t, layout, confirm, discoveryEnabled = f
 
   const load = useCallback(async (): Promise<void> => {
     const generation = ++loadGenerationRef.current;
+    // A fresh load supersedes any pending ladder retry.
+    if (loadRetryTimerRef.current !== undefined) {
+      window.clearTimeout(loadRetryTimerRef.current);
+      loadRetryTimerRef.current = undefined;
+    }
     try {
       const loadedWorkspaces = await listWorkspaces();
       if (loadGenerationRef.current !== generation) return;
@@ -544,8 +593,24 @@ export function useWorkspaces({ notify, t, layout, confirm, discoveryEnabled = f
       replaceSessionLists(new Map([...sessionListsRef.current].filter(([id]) => loadedIds.has(id))));
       replaceSessionPages(new Map());
       for (const id of recenciesRef.current.keys()) if (!loadedIds.has(id)) recenciesRef.current.delete(id);
+      loadRetryCountRef.current = 0;
     } catch {
-      /* transient failure — tree stays empty until next mutation */
+      // A transient failure leaves an empty tree, and with no live id App never
+      // requests discovery - the removed 20s poll used to be the only self
+      // heal. Retry the canonical load on the bounded ladder instead: a newer
+      // load, a delete, logout and unmount all cancel it.
+      if (loadGenerationRef.current === generation
+        && loadRetryTimerRef.current === undefined
+        && loadRetryCountRef.current < DISCOVERY_RETRY_DELAYS_MS.length) {
+        const delay = DISCOVERY_RETRY_DELAYS_MS[loadRetryCountRef.current] ?? 0;
+        loadRetryCountRef.current += 1;
+        loadRetryTimerRef.current = window.setTimeout(() => {
+          loadRetryTimerRef.current = undefined;
+          // Superseded by a newer load or a delete: stand down.
+          if (loadGenerationRef.current !== generation) return;
+          void loadRef.current();
+        }, delay);
+      }
     } finally {
       // The first settled load is what makes discovery safe (see
       // requestDiscovery); a request that arrived before it runs now, once.
@@ -558,6 +623,7 @@ export function useWorkspaces({ notify, t, layout, confirm, discoveryEnabled = f
       }
     }
   }, [disarmAllCatalogRefreshes, replaceSessionLists, replaceSessionPages, requestDiscovery, setExpanded]);
+  loadRef.current = load;
 
   // The first page loads whenever a loaded workspace becomes expanded,
   // whichever action (chevron toggle, session select, chat creation) expanded it.
