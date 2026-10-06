@@ -97,9 +97,27 @@ func (s *Server) reconcileEnrollment(sessions []rpcwatch.Session) error {
 				break
 			}
 			name := strings.TrimSpace(live.Name)
-			if (chat.AutoEnrolled || chat.DurableSessionID == "") && (chat.SessionFile != live.SessionPath || chat.DurableSessionID != live.DurableSessionID) || chat.TitleIsPlaceholder && name != "" {
-				if err := s.cursors.RefreshEnrollment(chat.ID, live.SessionPath, live.DurableSessionID, name); err != nil && !errors.Is(err, cursorstore.ErrNotFound) {
+			// A chat that is open in webchat owns its title through its live
+			// session, which persists and publishes the rename itself. The
+			// dispatch is asynchronous, so a watcher tick never blocks on it.
+			liveOwnsName := name != "" && s.manager != nil && s.manager.ApplyDaemonName(chat.ID, name)
+			identityChanged := (chat.AutoEnrolled || chat.DurableSessionID == "") && (chat.SessionFile != live.SessionPath || chat.DurableSessionID != live.DurableSessionID)
+			// The store owns the name rule; this only skips a pointless flush
+			// when the daemon name cannot change the stored one.
+			nameReplaceable := !liveOwnsName && name != "" &&
+				(chat.TitleIsPlaceholder || chat.NameSource == cursorstore.NameSourceAuto && chat.Name != name)
+			if identityChanged || nameReplaceable {
+				storedName := name
+				if liveOwnsName {
+					// Identity only: an empty name leaves the title to the session.
+					storedName = ""
+				}
+				replaced, err := s.cursors.RefreshEnrollment(chat.ID, live.SessionPath, live.DurableSessionID, storedName)
+				if err != nil && !errors.Is(err, cursorstore.ErrNotFound) {
 					return err
+				}
+				if replaced && s.manager != nil {
+					s.manager.ApplyChatTitle(chat.ID, name)
 				}
 			}
 			break
