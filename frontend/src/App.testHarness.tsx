@@ -200,6 +200,7 @@ export const useWorkspacesMock = {
       handleRenameWorkspace: noopAsync,
       handleRenameTerminal: noopAsync,
       handleChatName: () => undefined,
+      requestDiscovery: () => undefined,
     };
   },
 };

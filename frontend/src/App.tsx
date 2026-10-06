@@ -101,7 +101,7 @@ export function App() {
     sessionLists, sessionPages, load, addCreatedSession, loadMoreSessions,
     ensureSessionsLoaded, setRecencyTargets, markSessionUsed, toggleExpanded, handleDeleteWorkspace,
     handleDeleteTerminal, handleRenameWorkspace, handleRenameTerminal,
-    handleChatName,
+    handleChatName, requestDiscovery,
   } = useWorkspaces({ notify, t, layout, confirm, discoveryEnabled: authed === true });
 
   useEffect(() => {
@@ -126,6 +126,36 @@ export function App() {
   }, [load]);
 
   const liveSessions = useLiveSessions(authed === true);
+
+  // Event-driven discovery trigger. A live id no loaded workspace owns is
+  // proof the catalog holds a row this tab has not merged yet (the push and
+  // the catalog use the same chat id), so it requests one merge instead of
+  // waiting for a poll. The dependency is the derived, sorted string of those
+  // ids - never Set or array identity - so live-tick churn cannot refire, and
+  // an id already requested is not requested again. An id that becomes owned
+  // (or leaves the live set) is forgotten, so a later re-appearance - a chat
+  // deleted and re-enrolled - requests again.
+  const discoveryRequestedIdsRef = useRef<Set<string>>(new Set());
+  const unownedLiveKey = useMemo(() => {
+    const owned = new Set<string>();
+    for (const workspace of workspaces) for (const chat of workspace.chats) owned.add(chat.id);
+    return [...liveSessions].filter((id) => !owned.has(id)).sort().join("\n");
+  }, [liveSessions, workspaces]);
+  useEffect(() => {
+    if (authed !== true) {
+      discoveryRequestedIdsRef.current.clear();
+      return;
+    }
+    const unowned = unownedLiveKey === "" ? [] : unownedLiveKey.split("\n");
+    const current = new Set(unowned);
+    for (const id of [...discoveryRequestedIdsRef.current]) {
+      if (!current.has(id)) discoveryRequestedIdsRef.current.delete(id);
+    }
+    const fresh = unowned.filter((id) => !discoveryRequestedIdsRef.current.has(id));
+    if (fresh.length === 0) return;
+    for (const id of fresh) discoveryRequestedIdsRef.current.add(id);
+    requestDiscovery();
+  }, [authed, requestDiscovery, unownedLiveKey]);
 
   const handleLogin = (): void => {
     setAuthed(true);
