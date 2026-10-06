@@ -30,6 +30,23 @@ func namedEnrollmentFixture(t *testing.T) (*Server, *cursorstore.Store, *enrollm
 	return s, store, caller, ws
 }
 
+// pinObservationClock rebuilds the fixture's watcher with a fixed observation
+// clock, so every snapshot instant the tick stamps is deterministic. The
+// observation must be strictly later than the title change the session recorded
+// when it opened, which time.Now() cannot guarantee: a coarse clock (Windows
+// timer resolution) can return the same instant twice, and the freshness check
+// is strict. An hour ahead of the reading is later than any instant the session
+// could have taken, whatever the clock's resolution.
+func pinObservationClock(t *testing.T, s *Server, caller *enrollmentCaller, observedAt time.Time) {
+	t.Helper()
+	s.rpcWatcher = rpcwatch.New(caller, rpcwatch.WithClock(func() time.Time { return observedAt }),
+		rpcwatch.WithSnapshot(func(snapshot []rpcwatch.Session) {
+			if err := s.reconcileEnrollment(snapshot); err != nil {
+				t.Fatal(err)
+			}
+		}))
+}
+
 // namedEnrolledChat stores a chat whose identity already matches the session
 // observedEnrollment reports for the same durable id.
 func namedEnrolledChat(ws cursorstore.Workspace, id, durable, name, source string) cursorstore.Chat {
@@ -159,7 +176,11 @@ func TestEnrollmentTickRoutesDaemonNameToBoundSession(t *testing.T) {
 	live := observedEnrollment(ws, bound.DurableSessionID)
 	live.SessionPath = bound.SessionFile
 	live.Name = "Daemon rename"
-	live.ObservedAt = time.Now()
+	// The tick stamps every snapshot with the watcher's own clock reading, so
+	// setting the instant here could never reach the session. Pin that clock
+	// instead: the observation must be strictly later than the title change the
+	// session recorded when it opened above.
+	pinObservationClock(t, s, caller, time.Now().Add(time.Hour))
 	caller.sessions = []rpcwatch.Session{live}
 
 	s.rpcWatcher.Tick(t.Context())

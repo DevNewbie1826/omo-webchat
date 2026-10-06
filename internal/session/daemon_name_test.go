@@ -43,7 +43,7 @@ func TestApplyDaemonNameRoutesToBoundSession(t *testing.T) {
 	defer detach()
 	sub.next(t) // ready
 
-	if ok := mgr.ApplyDaemonName(sess.ChatID(), "Daemon renamed title", time.Now()); !ok {
+	if ok := mgr.ApplyDaemonName(sess.ChatID(), "Daemon renamed title", freshTitleObservation(sess)); !ok {
 		t.Fatal("ApplyDaemonName did not report the route-bound session")
 	}
 	_, frame := sub.await(t, FrameName)
@@ -90,7 +90,7 @@ func TestApplyDaemonNameKeepsUserTitle(t *testing.T) {
 	}
 	sub.await(t, FrameName)
 
-	if ok := mgr.ApplyDaemonName(sess.ChatID(), "Daemon replacement", time.Now()); !ok {
+	if ok := mgr.ApplyDaemonName(sess.ChatID(), "Daemon replacement", freshTitleObservation(sess)); !ok {
 		t.Fatal("ApplyDaemonName did not report the route-bound session")
 	}
 	// The dispatched application reads the cursor while holding the session's
@@ -125,6 +125,33 @@ func lockedTitleChange(s *Session) time.Time {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	return s.titleChangedAt
+}
+
+// freshTitleObservation returns an observation instant that is strictly later
+// than the session's last title change. It is derived from that change rather
+// than from a second time.Now() because the freshness check is strict: on a
+// coarse clock (Windows timer resolution) two back-to-back wall-clock readings
+// can be the same instant, and an equal instant is refused.
+func freshTitleObservation(s *Session) time.Time {
+	return lockedTitleChange(s).Add(time.Millisecond)
+}
+
+// staleTitleObservation returns an observation instant strictly earlier than
+// the session's last title change, without sleeping.
+func staleTitleObservation(s *Session) time.Time {
+	return lockedTitleChange(s).Add(-time.Millisecond)
+}
+
+// adoptTitleAfter applies a title change that is strictly later than observedAt
+// however coarse the clock is. It mirrors the event path's adoptTitleLocked and
+// then pins the ordering a test asserts, which a repeated time.Now() cannot.
+func adoptTitleAfter(s *Session, name, source string, observedAt time.Time) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	s.adoptTitleLocked(name, source)
+	if !s.titleChangedAt.After(observedAt) {
+		s.titleChangedAt = observedAt.Add(time.Millisecond)
+	}
 }
 
 // awaitNameApplications serializes on the session's name lock, so any name
@@ -163,7 +190,7 @@ func TestApplyDaemonNameRefusesStaleSnapshot(t *testing.T) {
 	if data, _ := frame.Data.(map[string]any); data["name"] != "Event title" {
 		t.Fatalf("event name frame = %+v", frame)
 	}
-	stale := lockedTitleChange(sess).Add(-time.Second)
+	stale := staleTitleObservation(sess)
 
 	// The watcher read this snapshot before that change, so the route refuses
 	// it without dispatching anything.
@@ -181,7 +208,7 @@ func TestApplyDaemonNameRefusesStaleSnapshot(t *testing.T) {
 	assertEventTitleKept(t, sess, store)
 
 	// A snapshot read after the change is current and still applies.
-	if ok := mgr.ApplyDaemonName(sess.ChatID(), "Fresh snapshot name", lockedTitleChange(sess).Add(time.Nanosecond)); !ok {
+	if ok := mgr.ApplyDaemonName(sess.ChatID(), "Fresh snapshot name", freshTitleObservation(sess)); !ok {
 		t.Fatal("ApplyDaemonName did not report the route-bound session")
 	}
 	_, fresh := sub.await(t, FrameName)
@@ -238,7 +265,10 @@ func TestApplyDaemonNameCommitPointRecheckKeepsEventTitle(t *testing.T) {
 	defer detach()
 	sub.next(t) // ready
 
-	observedAt := time.Now()
+	// The snapshot must be current when it is dispatched and stale once the
+	// event's title change lands, so both instants come from the session's own
+	// title clock: a coarse clock can repeat an instant and the check is strict.
+	observedAt := freshTitleObservation(sess)
 	if ok := mgr.ApplyDaemonName(sess.ChatID(), "Stale snapshot name", observedAt); !ok {
 		t.Fatal("ApplyDaemonName did not report the route-bound session")
 	}
@@ -248,9 +278,7 @@ func TestApplyDaemonNameCommitPointRecheckKeepsEventTitle(t *testing.T) {
 		t.Fatal("dispatched name application never reached its durable write")
 	}
 
-	sess.lifecycleMu.Lock()
-	sess.adoptTitleLocked("Event title", NameSourceAuto)
-	sess.lifecycleMu.Unlock()
+	adoptTitleAfter(sess, "Event title", NameSourceAuto, observedAt)
 	close(store.release)
 
 	awaitNameApplications(sess)
