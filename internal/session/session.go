@@ -146,19 +146,23 @@ type Session struct {
 	activityLast                                                            [3]activityContentStamp
 	activityOversized                                                       map[string]bool
 	title, nameSource                                                       string
-	inPlace, sessionFileObserved                                            bool
-	enrolledAttached                                                        bool
-	sessionFileIdentity                                                     os.FileInfo
-	queueFileIdentity                                                       os.FileInfo
-	queueFileErr                                                            error
-	queueHistoryEstablished                                                 bool
-	liveRevision                                                            liveRevision
-	taskDigest                                                              *TaskDigest
-	dagDigest                                                               *DagDigest
-	dagSnapshots                                                            dagSnapshotCache
-	taskSnapshots                                                           taskSnapshotCache
-	engineQueue                                                             EngineQueueSnapshot
-	pendingApprovals                                                        []*pendingApproval
+	// titleChangedAt is the instant the in-memory title last changed, through
+	// any path. A daemon snapshot observed before it is stale and must not
+	// revert the newer name. Guarded by lifecycleMu.
+	titleChangedAt               time.Time
+	inPlace, sessionFileObserved bool
+	enrolledAttached             bool
+	sessionFileIdentity          os.FileInfo
+	queueFileIdentity            os.FileInfo
+	queueFileErr                 error
+	queueHistoryEstablished      bool
+	liveRevision                 liveRevision
+	taskDigest                   *TaskDigest
+	dagDigest                    *DagDigest
+	dagSnapshots                 dagSnapshotCache
+	taskSnapshots                taskSnapshotCache
+	engineQueue                  EngineQueueSnapshot
+	pendingApprovals             []*pendingApproval
 
 	transcriptNotices transcriptNoticeState
 	todoRead          todoReadState
@@ -185,6 +189,11 @@ func newSession(m *Manager, chatID, cwd string, data omorpc.OpenSessionData, res
 		title: name, nameSource: nameSource,
 		engineQueue:          engineQueueFromState(data.State),
 		completedCompactions: make(map[string]struct{}), activitySnapshots: make(map[string]json.RawMessage), activityOversized: make(map[string]bool),
+	}
+	// An open that adopts a name has already changed its title: a snapshot
+	// observed before this instant is older than the name it carries.
+	if s.title != "" {
+		s.titleChangedAt = time.Now()
 	}
 	s.sendOwner = &sendOperationOwner{operations: make(map[string]sendOperation), sessions: map[*Session]struct{}{s: {}}}
 	// Remember even native file identity before the first queue inspection.
@@ -1392,7 +1401,7 @@ func (s *Session) SetSessionName(ctx context.Context, name string) error {
 	}
 	s.lifecycleMu.Lock()
 	if _, err = s.routeLocked(); err == nil {
-		s.title, s.nameSource = name, NameSourceUser
+		s.adoptTitleLocked(name, NameSourceUser)
 		s.publishLocked(Frame{Kind: FrameName, SessionID: s.durableID, Data: map[string]any{"name": name, "origin": NameSourceUser}})
 		s.manager.notifySessionOverviewLocked(s)
 	}
@@ -1426,7 +1435,7 @@ func (s *Session) applyAutoTitle(ctx context.Context, prompt string) {
 	// side, are established and block the derived title, mirroring the open
 	// path's rule (manager.go openSession).
 	if cur.NameSource == NameSourceUser || (cur.Name != "" && !cur.TitleIsPlaceholder) {
-		s.title, s.nameSource = cur.Name, cur.NameSource
+		s.adoptTitleLocked(cur.Name, cur.NameSource)
 	}
 	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.title != "" || s.nameSource == NameSourceUser {
 		s.lifecycleMu.Unlock()
@@ -1444,7 +1453,7 @@ func (s *Session) applyAutoTitle(ctx context.Context, prompt string) {
 	route, err := s.routeLocked()
 	committed := err == nil && s.title == "" && s.nameSource != NameSourceUser
 	if committed {
-		s.title, s.nameSource = name, NameSourceAuto
+		s.adoptTitleLocked(name, NameSourceAuto)
 		s.publishLocked(Frame{Kind: FrameName, SessionID: s.durableID, Data: map[string]any{"name": name, "origin": NameSourceAuto}})
 	}
 	s.lifecycleMu.Unlock()
@@ -1453,7 +1462,7 @@ func (s *Session) applyAutoTitle(ctx context.Context, prompt string) {
 	}
 }
 
-func (s *Session) applyProviderName(name string) {
+func (s *Session) applyProviderName(name string, observedAt time.Time) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return
@@ -1467,8 +1476,17 @@ func (s *Session) applyProviderName(name string) {
 		return
 	}
 	s.lifecycleMu.Lock()
+	// The D1 cursor sync runs first so a webchat user's name is restored from
+	// the cursor even when the snapshot that carried this name is stale; the
+	// observation check below only decides whether the older name may apply.
 	if cur.NameSource == NameSourceUser {
-		s.title, s.nameSource = cur.Name, NameSourceUser
+		s.adoptTitleLocked(cur.Name, NameSourceUser)
+	}
+	if !s.titleObservationCurrentLocked(observedAt) {
+		// The snapshot was read before the title last changed: a newer rpc or
+		// webchat name already won, and applying this one would revert it.
+		s.lifecycleMu.Unlock()
+		return
 	}
 	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.title == name || !s.providerNameReplaceableLocked() {
 		s.lifecycleMu.Unlock()
@@ -1480,12 +1498,35 @@ func (s *Session) applyProviderName(name string) {
 		return
 	}
 	s.lifecycleMu.Lock()
-	if !s.closed && !s.closing && !s.resumable && s.quarantineErr == nil && s.title != name && s.providerNameReplaceableLocked() {
-		s.title, s.nameSource = name, NameSourceAuto
+	// Rechecked at the commit point: a title that changed while this name was
+	// being persisted still wins over the older observation.
+	if !s.closed && !s.closing && !s.resumable && s.quarantineErr == nil && s.title != name && s.providerNameReplaceableLocked() && s.titleObservationCurrentLocked(observedAt) {
+		s.adoptTitleLocked(name, NameSourceAuto)
 		s.publishLocked(Frame{Kind: FrameName, SessionID: s.durableID, Data: map[string]any{"name": name, "origin": "provider"}})
 		s.manager.notifySessionOverviewLocked(s)
 	}
 	s.lifecycleMu.Unlock()
+}
+
+// adoptTitleLocked records a title assignment and the instant it happened. It
+// is a no-op when the value is unchanged, so a redundant sync from the cursor
+// cannot make a genuinely newer daemon observation look stale. Callers hold
+// lifecycleMu.
+func (s *Session) adoptTitleLocked(name, source string) {
+	if s.title == name && s.nameSource == source {
+		return
+	}
+	s.title, s.nameSource = name, source
+	s.titleChangedAt = time.Now()
+}
+
+// titleObservationCurrentLocked reports whether a title observed at observedAt
+// may still replace the current one. A zero instant means the caller observed
+// the name live (the provider event path), which is always current; otherwise
+// the observation must be strictly later than the last title change. Callers
+// hold lifecycleMu.
+func (s *Session) titleObservationCurrentLocked(observedAt time.Time) bool {
+	return observedAt.IsZero() || observedAt.After(s.titleChangedAt)
 }
 
 // providerNameReplaceableLocked applies the name-precedence decision: a

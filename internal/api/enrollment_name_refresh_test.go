@@ -159,6 +159,7 @@ func TestEnrollmentTickRoutesDaemonNameToBoundSession(t *testing.T) {
 	live := observedEnrollment(ws, bound.DurableSessionID)
 	live.SessionPath = bound.SessionFile
 	live.Name = "Daemon rename"
+	live.ObservedAt = time.Now()
 	caller.sessions = []rpcwatch.Session{live}
 
 	s.rpcWatcher.Tick(t.Context())

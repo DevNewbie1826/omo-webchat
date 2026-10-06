@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"slices"
+	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
@@ -46,7 +47,9 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 	}
 	if ev.Type == "session_info_changed" {
 		name, _ := raw["name"].(string)
-		s.applyProviderName(name)
+		// A live provider event is observed now: the zero instant means
+		// "current", so it always outranks an earlier watcher snapshot.
+		s.applyProviderName(name, time.Time{})
 		return
 	}
 	if ev.Type == omorpc.EventQueueUpdate {

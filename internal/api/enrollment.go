@@ -100,7 +100,7 @@ func (s *Server) reconcileEnrollment(sessions []rpcwatch.Session) error {
 			// A chat that is open in webchat owns its title through its live
 			// session, which persists and publishes the rename itself. The
 			// dispatch is asynchronous, so a watcher tick never blocks on it.
-			liveOwnsName := name != "" && s.manager != nil && s.manager.ApplyDaemonName(chat.ID, name)
+			liveOwnsName := name != "" && s.manager != nil && s.manager.ApplyDaemonName(chat.ID, name, live.ObservedAt)
 			identityChanged := (chat.AutoEnrolled || chat.DurableSessionID == "") && (chat.SessionFile != live.SessionPath || chat.DurableSessionID != live.DurableSessionID)
 			// The store owns the name rule; this only skips a pointless flush
 			// when the daemon name cannot change the stored one.
