@@ -26,19 +26,27 @@ func TestEnrolledGhost(t *testing.T) {
 		s, _, detach, err := h.m.Acquire(t.Context(), h.chat, r)
 		mustOK(t, err)
 		defer detach()
-		if s.ID() != h.opened.State.SessionID || s.sessionFile != cur.SessionFile {
-			t.Fatal("ghost heal changed durable identity/path")
+		// The heal is the host's same-route attach on a DEDICATED connection: the
+		// ghost's listed handle and durable identity survive, and webchat must not
+		// take the session over on main (mainAttached marks exactly that fallback).
+		if s.ID() != h.opened.State.SessionID || s.RoutingID() != h.opened.SessionID || s.sessionFile != cur.SessionFile {
+			t.Fatalf("ghost heal changed identity: durable=%q route=%q file=%q (listed route %q)", s.ID(), s.RoutingID(), s.sessionFile, h.opened.SessionID)
 		}
+		if s.client == h.main || s.attachClient == nil || s.mainAttached {
+			t.Fatal("ghost heal used the main residual instead of a dedicated connection")
+		}
+		// The external owner's own attachment survived the heal (1 -> 2).
+		if got := h.d.Attachments(h.opened.State.SessionFile); got != 2 {
+			t.Fatalf("attachments after the ghost heal = %d, want the owner's 1 + webchat's 1", got)
+		}
+		// The owner's session-scoped event reaches the WS subscriber after the heal.
 		h.stream(r, "healed-ghost-live")
 		mustOK(t, h.m.StopContext(t.Context(), h.chat.id))
-		if h.d.RequestCount(omorpc.CmdCloseSession) != 0 {
-			t.Fatal("webchat ended healed retained ghost instead of detaching")
-		}
-		mustOK(t, h.main.Close())
+		h.assertDetached()
 		if len(h.d.LiveSessions()) != 1 {
-			t.Fatal("retained ghost did not stay live after main residual detached")
+			t.Fatal("healed retained ghost did not stay live after webchat detached")
 		}
-		t.Log("matching ghost selected, healed via path open, streamed, retained live after disconnect")
+		t.Log("ghost healed on a dedicated same-route attach: identity retained, owner attachment survived, owner event streamed, detach left close_session=0")
 	})
 
 	t.Run("durable_match", func(t *testing.T) {

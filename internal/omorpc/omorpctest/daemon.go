@@ -116,9 +116,12 @@ type daemonSession struct {
 	otherApprovalIDs map[string]struct{}
 	reaskQuestions   bool
 
-	// ghost models the host's rollback ghost: list_sessions still lists the
-	// session, but its binding is gone, so every session-scoped command
-	// answers unknown_session until an open_session naming its path heals it.
+	// ghost models the host's rollback ghost: the registry entry is still OPEN
+	// and listed - same routing handle, same attachments, same durable identity -
+	// but its router binding was rolled back, so every session-scoped command
+	// answers unknown_session until an open_session naming its path ATTACHES to
+	// that same entry and the binding is recreated (HOST
+	// session-registry-attach.js:2-39, session-command-router.js:534).
 	ghost bool
 }
 
@@ -515,9 +518,9 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 	}
 	d.mu.Lock()
 	rec := d.sessionByRPC(sid)
-	// A ghost is listed but has no live binding: every session-scoped command
-	// answers unknown_session until an open_session naming its path heals it
-	// (HOST session-command-router.js:534).
+	// A ghost is listed but has no router binding: every session-scoped command
+	// answers unknown_session until an open_session naming its path attaches to
+	// the same entry (HOST session-command-router.js:534).
 	live := rec != nil && rec.live && !rec.ghost
 	if live && d.evictUsedSession && rec.used {
 		rec.live = false
@@ -828,11 +831,15 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 			d.registry[path] = rec
 		}
 		if rec.ghost {
-			// Healing open: the rolled-back entry is gone on the host, so a
-			// path-naming open rebuilds the binding from a clean slate (HOST
+			// Healing open: the registry entry never left the open state, so a
+			// path-naming open ATTACHES to the same entry - same handle, one more
+			// attachment, attached:true with the current state - and the router
+			// recreates the missing binding. The attachments the entry already
+			// holds (its original owner's) are preserved, not discarded (HOST
+			// session-registry.js:80-81, session-registry-attach.js:2-39,
 			// session-command-router.js:534).
-			d.forgetAttachmentsLocked(rec.path)
 			rec.ghost = false
+			attach = d.attachmentScope && rec.live
 		} else if d.attachmentScope && rec.live {
 			attach = true
 		}
@@ -1167,9 +1174,11 @@ func (d *Daemon) CloseRequestsFrom(ordinal int) int {
 	return d.closeRequests[ordinal]
 }
 
-// MakeGhost turns path's listed session into the host's rollback ghost: it stays
-// in list_sessions but every session-scoped command answers unknown_session
-// until an open_session naming the path heals it (HOST
+// MakeGhost turns path's listed session into the host's rollback ghost: the
+// registry entry stays OPEN - listed with its routing handle and its existing
+// attachments - while its router binding is rolled back, so every
+// session-scoped command answers unknown_session until an open_session naming
+// the path attaches to the same entry (HOST session-registry-attach.js:2-39,
 // session-command-router.js:534).
 func (d *Daemon) MakeGhost(path string) {
 	d.mu.Lock()
@@ -1231,20 +1240,6 @@ func (d *Daemon) releaseAttachmentLocked(path string, explicitClose bool) {
 	if d.sessionAttachments[path] == 0 && (explicitClose || !d.retainedSessions[path]) {
 		if rec := d.registry[path]; rec != nil {
 			rec.live = false
-		}
-	}
-	d.notify(d.attachmentFeed)
-}
-
-// forgetAttachmentsLocked drops every attachment record for path without
-// touching liveness: a healed ghost's bindings were rolled back, so the healing
-// open re-attaches from a clean slate. Callers hold d.mu.
-func (d *Daemon) forgetAttachmentsLocked(path string) {
-	delete(d.sessionAttachments, path)
-	for conn, sessions := range d.connAttachments {
-		delete(sessions, path)
-		if len(sessions) == 0 {
-			delete(d.connAttachments, conn)
 		}
 	}
 	d.notify(d.attachmentFeed)

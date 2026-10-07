@@ -435,13 +435,18 @@ func TestAttachmentScopeEventFanout(t *testing.T) {
 	c.expectTypes(EventSessionOpened)
 }
 
-// TestAttachmentScopeGhostHealsOnSessionPathOpen pins item 6: a ghost stays
-// listed, answers unknown_session to every session-scoped command, and is
-// healed by a path-naming open.
+// TestAttachmentScopeGhostHealsOnSessionPathOpen pins item 6: a ghost is the
+// host's rollback ghost - a still-listed OPEN registry entry (same handle, same
+// durable identity, same attachments) whose router binding was rolled back. It
+// answers unknown_session to every session-scoped command, and a path-naming
+// open ATTACHES to the same entry: same route, attached:true with the current
+// state, one more attachment, and normal command handling restored
+// (HOST session-registry-attach.js:2-39, session-command-router.js:534).
 func TestAttachmentScopeGhostHealsOnSessionPathOpen(t *testing.T) {
 	h := newAttachHarness(t, true)
 	a := h.dial()
 	opened := a.open(omorpc.OpenSession{CWD: h.dir})
+	ownerOrdinal := h.ordinalAttachedTo(opened.path)
 	h.d.MakeGhost(opened.path)
 
 	if got := a.listSessions(); len(got) != 1 || got[0].path != opened.path || got[0].rpcID != opened.rpcID {
@@ -457,23 +462,41 @@ func TestAttachmentScopeGhostHealsOnSessionPathOpen(t *testing.T) {
 			t.Fatalf("ghost %T error = %q, want %q", cmd, got, omorpc.ErrCodeUnknownSession)
 		}
 	}
-
-	healed := a.open(omorpc.OpenSession{CWD: h.dir, SessionPath: opened.path})
-	if healed.rpcID == opened.rpcID {
-		t.Fatalf("healed route = %q, want a fresh binding", healed.rpcID)
-	}
-	if healed.path != opened.path {
-		t.Fatalf("healed path = %q, want %q", healed.path, opened.path)
-	}
-	if got, present := healed.raw["attached"]; present {
-		t.Fatalf("healing open data carries attached=%v; it is a fresh binding", got)
-	}
+	// Only the binding was rolled back: the entry keeps the attachment its owner
+	// already held.
 	if got := h.d.Attachments(opened.path); got != 1 {
-		t.Fatalf("attachments after the heal = %d, want 1", got)
+		t.Fatalf("attachments on the ghost = %d, want the owner's 1 preserved", got)
 	}
-	a.callOK(omorpc.GetState{SessionID: healed.rpcID})
+
+	// A DIFFERENT connection heals it by naming the path.
+	b := h.dial()
+	healed := b.open(omorpc.OpenSession{CWD: h.dir, SessionPath: opened.path})
+	if healed.rpcID != opened.rpcID {
+		t.Fatalf("healed route = %q, want the listed handle %q", healed.rpcID, opened.rpcID)
+	}
+	if healed.durable != opened.durable {
+		t.Fatalf("healed durable id = %q, want %q", healed.durable, opened.durable)
+	}
+	if got, ok := healed.raw["attached"].(bool); !ok || !got {
+		t.Fatalf("healing open attached = %v (data %v), want true", healed.raw["attached"], healed.raw)
+	}
+	if _, ok := healed.raw["state"].(map[string]any); !ok {
+		t.Fatalf("healing open carries no state: %v", healed.raw)
+	}
+	if !h.d.AwaitAttachments(opened.path, 2, attachAwait) {
+		t.Fatalf("attachments after the heal = %d, want the owner's 1 + the healer's 1", h.d.Attachments(opened.path))
+	}
+	if got := h.d.AttachedSessions(ownerOrdinal); !slices.Equal(got, []string{opened.path}) {
+		t.Fatalf("the ghost's original attachment = %v, want [%s] preserved", got, opened.path)
+	}
+
+	// Binding recreated: the SAME handle works again for the pre-existing
+	// attachment too, and session-scoped records reach both attachments.
+	a.callOK(omorpc.GetState{SessionID: opened.rpcID})
+	b.callOK(omorpc.GetState{SessionID: opened.rpcID})
 	h.d.EmitSession(opened.path, map[string]any{"type": EventMessageDelta, "text": "after-heal"})
 	a.expectTypes(EventMessageDelta)
+	b.expectTypes(EventMessageDelta)
 }
 
 // TestAttachmentScopeRepeatAttachAndReopen pins the host's per-open counting: a
