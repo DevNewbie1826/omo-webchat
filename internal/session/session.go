@@ -1936,6 +1936,7 @@ func (s *Session) classifyRouteError(err error) error {
 		s.markProviderUnloadedLocked()
 	}
 	s.lifecycleMu.Unlock()
+	s.releaseAttach()
 	if errors.Is(err, ErrSessionResumable) {
 		return err
 	}
