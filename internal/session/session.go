@@ -102,8 +102,11 @@ type DetachedSendRetryToken struct {
 }
 
 type Session struct {
-	manager                           *Manager
-	client                            *omorpc.Client
+	manager *Manager
+	client  *omorpc.Client
+	// Guarded by lifecycleMu; client and epoch remain immutable after release.
+	attachClient                      *omorpc.Client
+	attachStop                        chan struct{}
 	chatID, cwd                       string
 	durableID, routingID, sessionFile string
 	// Immutable provider-binding incarnation, assigned before any replay queues.
@@ -152,6 +155,7 @@ type Session struct {
 	titleChangedAt               time.Time
 	inPlace, sessionFileObserved bool
 	enrolledAttached             bool
+	mainAttached                 bool
 	sessionFileIdentity          os.FileInfo
 	queueFileIdentity            os.FileInfo
 	queueFileErr                 error
@@ -1753,6 +1757,14 @@ func (s *Session) beginCloseLocked(idle bool) *closeTransaction {
 // across the RPC.
 func (s *Session) executeClose(ctx context.Context, txn *closeTransaction) error {
 	route := s.routingID
+	// close_session is an explicit end, even for retained external sessions.
+	// A main-connection residual cannot detach individually; leave it for
+	// that connection's disconnect rather than end another client's session.
+	if s.enrolledAttached && (s.client != s.manager.cfg.Client || s.mainAttached) {
+		s.releaseAttach()
+		s.completeClose(txn, route, nil)
+		return nil
+	}
 	cmd := omorpc.CloseSession{SessionID: route}
 	complete := func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
 		s.completeClose(txn, route, callErr)
@@ -1882,6 +1894,7 @@ func (s *Session) retireReplaced() {
 	s.stopQuestionTimersLocked()
 	s.cancelIdleLocked()
 	s.lifecycleMu.Unlock()
+	s.releaseAttach()
 	s.broadcast.retireAll(ErrSubscriberSessionEnd)
 	s.releaseSendOperations()
 }
@@ -1996,6 +2009,7 @@ func (s *Session) invalidate(code, message string) {
 	s.lifecycleMu.Lock()
 	if s.closed || s.invalidated {
 		s.lifecycleMu.Unlock()
+		s.releaseAttach()
 		return
 	}
 	s.workAtLoss = s.workAtLoss || s.activeLocked()
@@ -2011,6 +2025,7 @@ func (s *Session) invalidate(code, message string) {
 	s.cancelIdleLocked()
 	s.publishLocked(Frame{Kind: FrameError, SessionID: s.durableID, Data: ErrorInfo{Code: code, Message: message}})
 	s.lifecycleMu.Unlock()
+	s.releaseAttach()
 }
 
 func (s *Session) cancelIdleLocked() {

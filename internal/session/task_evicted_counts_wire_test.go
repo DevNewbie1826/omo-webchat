@@ -120,6 +120,10 @@ type evictedCountsFixture struct {
 }
 
 func newEvictedCountsFixture(t *testing.T) *evictedCountsFixture {
+	return newEvictedCountsFixtureConfigured(t, false, nil)
+}
+
+func newEvictedCountsFixtureConfigured(t *testing.T, attachmentScope bool, configure func(*session.Config)) *evictedCountsFixture {
 	t.Helper()
 	daemonDir, err := os.MkdirTemp("", "evicted-counts-")
 	if err != nil {
@@ -127,6 +131,9 @@ func newEvictedCountsFixture(t *testing.T) *evictedCountsFixture {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(daemonDir) })
 	daemon := omorpctest.New(daemonDir)
+	if attachmentScope {
+		daemon.EnableAttachmentScope()
+	}
 	if err := daemon.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +155,11 @@ func newEvictedCountsFixture(t *testing.T) *evictedCountsFixture {
 		t.Fatal(err)
 	}
 
-	manager := session.NewManager(session.Config{Client: client, Store: (*wsbridge.CursorStore)(store)})
+	managerConfig := session.Config{Client: client, Store: (*wsbridge.CursorStore)(store)}
+	if configure != nil {
+		configure(&managerConfig)
+	}
+	manager := session.NewManager(managerConfig)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	authStore := auth.NewSessionStore(t.Context(), "pw", logger)
 	bridge := wsbridge.New(wsbridge.Config{

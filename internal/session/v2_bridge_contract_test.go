@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,19 +29,45 @@ func TestStructuredStatsPreserveProviderShape(t *testing.T) {
 
 func TestDelayedBusyPromptDoesNotSteerIntoNewerRun(t *testing.T) {
 	d := newDaemon(t)
-	client := dial(t, d)
+	held := make(chan []byte, 1)
+	var holdOnce sync.Once
+	proxy := newEnrolledWireProxy(t, d.SocketPath(), func(frame map[string]any) {
+		if frame["command"] == omorpc.CmdPrompt && frame["success"] == false && frame["error"] == busyAgentErrorPrefix {
+			holdOnce.Do(func() {
+				raw, err := json.Marshal(frame)
+				if err != nil {
+					t.Errorf("marshal held busy response: %v", err)
+					return
+				}
+				held <- raw
+				frame["id"] = "held-" + frame["id"].(string)
+			})
+		}
+	})
+	client, err := omorpc.Dial(t.Context(), proxy.path)
+	mustOK(t, err)
+	t.Cleanup(func() { _ = client.Close() })
 	mgr := testManager(t, client, newMemStore(), 64)
 	sub := newRecorder(32)
 	s, _, _ := acquire(t, mgr, testChat{id: "busy-owner", cwd: t.TempDir()}, sub)
 	sub.next(t)
 
-	releasePrompts := d.BlockHandler(omorpc.CmdPrompt)
 	d.FailNext(omorpc.CmdPrompt, busyAgentErrorPrefix)
 	aDone := make(chan error, 1)
 	go func() { aDone <- s.SendPrompt(context.Background(), "A", nil) }()
 	if !d.AwaitRequestCount(omorpc.CmdPrompt, 1, testTimeout) {
 		t.Fatal("A prompt was not forwarded")
 	}
+	// Request receipt does not order the daemon's asynchronous handlers.
+	// Observe A's actual failed response before B can consume FailNext.
+	var response []byte
+	select {
+	case response = <-held:
+	case <-time.After(testTimeout):
+		t.Fatal("A busy response did not reach the wire barrier")
+	}
+	releaseBusy := sync.OnceFunc(func() { d.WriteRaw(append(response, '\n')) })
+	defer releaseBusy()
 
 	d.EmitSession(s.SessionFile(), map[string]any{"type": omorpctest.EventAgentStart})
 	d.EmitSession(s.SessionFile(), map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"})
@@ -52,7 +79,7 @@ func TestDelayedBusyPromptDoesNotSteerIntoNewerRun(t *testing.T) {
 	if !d.AwaitRequestCount(omorpc.CmdPrompt, 2, testTimeout) {
 		t.Fatal("B prompt was not forwarded")
 	}
-	releasePrompts()
+	releaseBusy()
 
 	select {
 	case err := <-aDone:

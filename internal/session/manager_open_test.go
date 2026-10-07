@@ -47,7 +47,7 @@ func TestOpenWaitsForPendingOpenThenReacquires(t *testing.T) {
 	resultCh := make(chan result, 1)
 	cwd := t.TempDir()
 	go func() {
-		data, epoch, err := mgr.open(ctx, chatID, cwd, "")
+		data, epoch, err := mgr.open(ctx, chatID, cwd, "", false)
 		resultCh <- result{data: data, epoch: epoch, err: err}
 	}()
 
@@ -92,7 +92,7 @@ func TestOpenCompletionReleasesSlotBeforeWakingWaiter(t *testing.T) {
 	var openedEpoch omorpc.EpochToken
 	go func() {
 		var err error
-		opened, openedEpoch, err = mgr.open(ctx, chatID, t.TempDir(), "")
+		opened, openedEpoch, err = mgr.open(ctx, chatID, t.TempDir(), "", false)
 		result <- err
 	}()
 	select {
@@ -235,7 +235,7 @@ func TestOpenPendingWaitReturnsWrappedContextError(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, _, err := mgr.open(ctx, chatID, t.TempDir(), "")
+	_, _, err := mgr.open(ctx, chatID, t.TempDir(), "", false)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("pending-open wait error = %v, want wrapped context cancellation", err)
 	}
