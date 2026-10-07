@@ -53,6 +53,12 @@ const (
 	EventTool            = "tool"
 	EventSessionUnloaded = "session_unloaded"
 
+	// The lifecycle records the host fanout broadcasts to EVERY connection
+	// (session-event-fanout.js:5-11). Every other record type is session-scoped.
+	EventAgentIdle     = "agent_idle"
+	EventSessionOpened = "session_opened"
+	EventSessionClosed = "session_closed"
+
 	EventQueueUpdate = omorpc.EventQueueUpdate
 
 	CodeSessionPathInUse = omorpc.ErrCodeSessionPathInUse
@@ -109,6 +115,11 @@ type daemonSession struct {
 	pendingQuestions []map[string]any
 	otherApprovalIDs map[string]struct{}
 	reaskQuestions   bool
+
+	// ghost models the host's rollback ghost: list_sessions still lists the
+	// session, but its binding is gone, so every session-scoped command
+	// answers unknown_session until an open_session naming its path heals it.
+	ghost bool
 }
 
 // queueSnapshotLocked is the session's queue as the wire sees it: the
@@ -215,6 +226,18 @@ type Daemon struct {
 	defaultPromptScript []map[string]any
 	writeMu             sync.Mutex
 
+	// Attachment-scoped mode (opt-in; see EnableAttachmentScope). Every field
+	// below stays empty until the mode is on, so the default-mode code paths
+	// behave exactly as they did before.
+	attachmentScope    bool
+	connSeq            int
+	connOrdinals       map[net.Conn]int
+	connAttachments    map[net.Conn]map[string]int
+	sessionAttachments map[string]int
+	retainedSessions   map[string]bool
+	closeRequests      map[int]int
+	attachmentFeed     chan struct{}
+
 	requestFeed      chan map[string]any
 	questionDropFeed chan struct{}
 	historyFeed      chan struct{}
@@ -248,12 +271,19 @@ func New(dir string) *Daemon {
 		compactScripts:      map[string][]map[string]any{},
 		promptHolds:         map[string]chan struct{}{},
 		promptApplyBarriers: map[string]*promptApplyBarrier{},
-		requestFeed:         make(chan map[string]any, 256),
-		questionDropFeed:    make(chan struct{}, 1),
-		historyFeed:         make(chan struct{}, 256),
-		handshakeFeed:       make(chan struct{}, 1),
-		refusalFeed:         make(chan struct{}, 1),
-		closeFeed:           make(chan struct{}, 256),
+		connOrdinals:        map[net.Conn]int{},
+		connAttachments:     map[net.Conn]map[string]int{},
+		sessionAttachments:  map[string]int{},
+		retainedSessions:    map[string]bool{},
+		closeRequests:       map[int]int{},
+		attachmentFeed:      make(chan struct{}, 1),
+
+		requestFeed:      make(chan map[string]any, 256),
+		questionDropFeed: make(chan struct{}, 1),
+		historyFeed:      make(chan struct{}, 256),
+		handshakeFeed:    make(chan struct{}, 1),
+		refusalFeed:      make(chan struct{}, 1),
+		closeFeed:        make(chan struct{}, 256),
 	}
 }
 
@@ -329,6 +359,8 @@ func (d *Daemon) acceptLoop(ln net.Listener) {
 		}
 		d.mu.Lock()
 		d.connections++
+		d.connSeq++
+		d.connOrdinals[conn] = d.connSeq
 		if d.refuse {
 			d.refusals++
 			d.notify(d.refusalFeed)
@@ -350,6 +382,8 @@ func (d *Daemon) readLoop(conn net.Conn) {
 			d.mu.Lock()
 			delete(d.conns, conn)
 			delete(d.clientCaps, conn)
+			delete(d.connOrdinals, conn)
+			d.detachConnectionLocked(conn)
 			d.mu.Unlock()
 			_ = conn.Close()
 			return
@@ -481,7 +515,10 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 	}
 	d.mu.Lock()
 	rec := d.sessionByRPC(sid)
-	live := rec != nil && rec.live
+	// A ghost is listed but has no live binding: every session-scoped command
+	// answers unknown_session until an open_session naming its path heals it
+	// (HOST session-command-router.js:534).
+	live := rec != nil && rec.live && !rec.ghost
 	if live && d.evictUsedSession && rec.used {
 		rec.live = false
 		d.evictUsedSession = false
@@ -515,7 +552,27 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 
 	case omorpc.CmdCloseSession:
 		d.mu.Lock()
-		rec.live = false
+		if d.attachmentScope {
+			// Ownership, not knowledge of the handle, authorizes a close (HOST
+			// session-command-router.js:753-761): routing handles are public on a
+			// shared host, so a connection that never attached holds no claim and
+			// must not be able to release another client's.
+			d.closeRequests[d.connOrdinals[conn]]++
+			if !d.connAttachedLocked(conn, rec.path) {
+				d.mu.Unlock()
+				d.write(conn, map[string]any{
+					"id": id, "type": "response", "command": cmd,
+					"success": false, "error": omorpc.ErrCodeUnknownSession,
+				})
+				return
+			}
+			// An explicit close releases the CALLER's attachment and ends the
+			// session at zero attachments even when it is retained (HOST
+			// session-command-router.js:770-771, session-teardown.js:19-41).
+			d.releaseConnAttachmentLocked(conn, rec.path, true)
+		} else {
+			rec.live = false
+		}
 		d.closes++
 		d.notify(d.closeFeed)
 		d.mu.Unlock()
@@ -763,11 +820,21 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 		return
 	}
 	var rec *daemonSession
+	attach := false
 	if path != "" {
 		rec = d.registry[path]
 		if rec == nil {
 			rec = &daemonSession{path: path, durableID: durableForPath(path)}
 			d.registry[path] = rec
+		}
+		if rec.ghost {
+			// Healing open: the rolled-back entry is gone on the host, so a
+			// path-naming open rebuilds the binding from a clean slate (HOST
+			// session-command-router.js:534).
+			d.forgetAttachmentsLocked(rec.path)
+			rec.ghost = false
+		} else if d.attachmentScope && rec.live {
+			attach = true
 		}
 	} else {
 		durable := fmt.Sprintf("durable-%08d-4f2a-9c31", d.opens)
@@ -776,6 +843,27 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 		d.registry[path] = rec
 		_ = writeSessionHeader(rec)
 	}
+	if attach {
+		// Attaching to a LIVE session keeps its routing handle, counts one more
+		// attachment and reports the current state next to "attached": true
+		// (HOST session-registry.js:80-81, session-registry-attach.js:2-39,
+		// session-command-router.js:582-595). A fresh open never carries the
+		// field, which is what makes it meaningful.
+		d.attachLocked(conn, rec)
+		response := d.resp(id, omorpc.CmdOpenSession, "", map[string]any{
+			"sessionId": rec.rpcID,
+			"attached":  true,
+			"state":     d.openSessionStateLocked(rec, rec.durableID),
+		})
+		if d.omitActivityFields {
+			state := response["data"].(map[string]any)["state"].(map[string]any)
+			delete(state, "isStreaming")
+			delete(state, "isCompacting")
+		}
+		d.mu.Unlock()
+		d.write(conn, response)
+		return
+	}
 	d.rpcCounter++
 	rec.rpcID = fmt.Sprintf("rpc-%d", d.rpcCounter)
 	d.rpcPaths[rec.rpcID] = rec.path
@@ -783,6 +871,10 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 	rec.used = false
 	rec.opens++
 	rec.clientCaps = append([]string(nil), d.clientCaps[conn]...)
+	if d.attachmentScope {
+		// A fresh or resumed open attaches its opener (attachments=1).
+		d.attachLocked(conn, rec)
+	}
 	reasks := d.reaskQuestionsLocked(rec)
 	if cwd != "" {
 		rec.cwd = cwd
@@ -795,21 +887,7 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 	}
 	response := d.resp(id, omorpc.CmdOpenSession, "", map[string]any{
 		"sessionId": rec.rpcID,
-		"state": map[string]any{
-			"isStreaming": rec.runActive, "isCompacting": rec.compactActive,
-			"sessionId":     durableID,
-			"sessionFile":   rec.path,
-			"model":         map[string]any{"provider": "anthropic", "modelId": "claude-fake"},
-			"thinkingLevel": "off",
-			"sessionName":   rec.name,
-			"entries":       []any{},
-			"messageCount":  0,
-
-			"followUp":            []any{},
-			"ordered":             []any{},
-			"pendingMessageCount": 0,
-			"pendingQuestions":    pendingQuestionsLocked(rec),
-		},
+		"state":     d.openSessionStateLocked(rec, durableID),
 	})
 	if d.omitActivityFields {
 		state := response["data"].(map[string]any)["state"].(map[string]any)
@@ -821,6 +899,26 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 	d.write(conn, response)
 	for _, event := range reasks {
 		d.write(conn, event)
+	}
+}
+
+// openSessionStateLocked is the state payload of an open_session response, for
+// both a fresh/resumed open and an attach to a live session. Callers hold d.mu.
+func (d *Daemon) openSessionStateLocked(rec *daemonSession, durableID string) map[string]any {
+	return map[string]any{
+		"isStreaming": rec.runActive, "isCompacting": rec.compactActive,
+		"sessionId":     durableID,
+		"sessionFile":   rec.path,
+		"model":         map[string]any{"provider": "anthropic", "modelId": "claude-fake"},
+		"thinkingLevel": "off",
+		"sessionName":   rec.name,
+		"entries":       []any{},
+		"messageCount":  0,
+
+		"followUp":            []any{},
+		"ordered":             []any{},
+		"pendingMessageCount": 0,
+		"pendingQuestions":    pendingQuestionsLocked(rec),
 	}
 }
 
@@ -921,10 +1019,11 @@ func (d *Daemon) resp(id, cmd, sid string, data map[string]any) map[string]any {
 	return resp
 }
 
-// emitScript writes each scripted event to conn with the session's current
-// rpc id injected, in order, on the handler goroutine. After the script's
-// agent_end and settles at agent_settled, which consumes one head follow-up
-// item as the next run.
+// emitScript writes each scripted event with the session's current rpc id
+// injected, in order, on the handler goroutine: to the requesting connection by
+// default, and under attachment scope through the fanout rule. After the
+// script's agent_end it settles at agent_settled, which consumes one head
+// follow-up item as the next run.
 func (d *Daemon) emitScript(conn net.Conn, rpcID string, rec *daemonSession, script []map[string]any) {
 	for _, ev := range script {
 		e := make(map[string]any, len(ev)+1)
@@ -932,12 +1031,13 @@ func (d *Daemon) emitScript(conn net.Conn, rpcID string, rec *daemonSession, scr
 			e[k] = v
 		}
 		e["sessionId"] = rpcID
+		typ, _ := ev["type"].(string)
 		d.mu.Lock()
 		applyActivityEventLocked(rec, ev)
 		applyQuestionEventLocked(rec, e)
 		d.mu.Unlock()
-		d.write(conn, e)
-		if typ, _ := ev["type"].(string); typ == EventAgentSettled {
+		d.writeSessionRecord(conn, rpcID, typ, e)
+		if typ == EventAgentSettled {
 			d.consumeNextFollowUp(conn, rec)
 		}
 	}
@@ -956,9 +1056,9 @@ func (d *Daemon) consumeNextFollowUp(conn net.Conn, rec *daemonSession) {
 	update := queueUpdateEventLocked(rec)
 	rpcID := rec.rpcID
 	d.mu.Unlock()
-	d.write(conn, update)
-	d.write(conn, map[string]any{"type": EventAgentStart, "sessionId": rpcID})
-	d.write(conn, map[string]any{"type": EventAgentEnd, "sessionId": rpcID})
+	d.writeSessionRecord(conn, rpcID, EventQueueUpdate, update)
+	d.writeSessionRecord(conn, rpcID, EventAgentStart, map[string]any{"type": EventAgentStart, "sessionId": rpcID})
+	d.writeSessionRecord(conn, rpcID, EventAgentEnd, map[string]any{"type": EventAgentEnd, "sessionId": rpcID})
 }
 
 // write emits one frame to conn; handler goroutines may write concurrently.
@@ -972,19 +1072,289 @@ func (d *Daemon) write(conn net.Conn, v map[string]any) {
 	_, _ = conn.Write(append(b, '\n'))
 }
 
+// ---- attachment scope (opt-in) ----
+
+// EnableAttachmentScope turns on the host-faithful attachment model: every
+// connection carries an attachment count per session, a path-naming open_session
+// of a LIVE session attaches instead of re-opening, close_session is ownership
+// checked, and session-scoped records reach only the connections attached to
+// that session. Call it before Start (and before any client dials). The mode is
+// OFF by default, so every existing test keeps the broadcast, no-ownership
+// behaviour it was written against.
+func (d *Daemon) EnableAttachmentScope() {
+	d.mu.Lock()
+	d.attachmentScope = true
+	d.mu.Unlock()
+}
+
+// MarkRetained marks path's session as retain_on_disconnect: a disconnect that
+// drops the last attachment leaves it live at zero attachments, while an
+// explicit close_session still ends it.
+func (d *Daemon) MarkRetained(path string) {
+	d.mu.Lock()
+	d.retainedSessions[path] = true
+	d.mu.Unlock()
+}
+
+// Attachments reports how many attachments the session stored at path currently
+// holds, across all connections. Always 0 while the attachment mode is off.
+func (d *Daemon) Attachments(path string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.sessionAttachments[path]
+}
+
+// AwaitAttachments waits on the attachment feed until path has exactly n
+// attachments. It uses an event signal rather than polling or sleeps.
+func (d *Daemon) AwaitAttachments(path string, n int, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		if d.Attachments(path) == n {
+			return true
+		}
+		select {
+		case <-d.attachmentFeed:
+		case <-deadline.C:
+			return false
+		}
+	}
+}
+
+// ConnectionOrdinals lists the accept order of the currently live connections,
+// oldest first. An ordinal is stable for the life of its connection and keeps
+// addressing CloseRequestsFrom's counters after it disconnects.
+func (d *Daemon) ConnectionOrdinals() []int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]int, 0, len(d.connOrdinals))
+	for _, ordinal := range d.connOrdinals {
+		out = append(out, ordinal)
+	}
+	sort.Ints(out)
+	return out
+}
+
+// AttachedSessions lists the session paths the connection with this ordinal is
+// attached to, ordered by path.
+func (d *Daemon) AttachedSessions(ordinal int) []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var conn net.Conn
+	for c, id := range d.connOrdinals {
+		if id == ordinal {
+			conn = c
+			break
+		}
+	}
+	if conn == nil {
+		return nil
+	}
+	out := make([]string, 0, len(d.connAttachments[conn]))
+	for path := range d.connAttachments[conn] {
+		out = append(out, path)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// CloseRequestsFrom counts the close_session requests received from the
+// connection with this ordinal, rejected ones included: the attribution a
+// handle-only protocol otherwise hides from a test.
+func (d *Daemon) CloseRequestsFrom(ordinal int) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.closeRequests[ordinal]
+}
+
+// MakeGhost turns path's listed session into the host's rollback ghost: it stays
+// in list_sessions but every session-scoped command answers unknown_session
+// until an open_session naming the path heals it (HOST
+// session-command-router.js:534).
+func (d *Daemon) MakeGhost(path string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if rec := d.registry[path]; rec != nil {
+		rec.ghost = true
+	}
+}
+
+// attachLocked records ONE attachment from conn to rec's session. The host
+// counts every accepted open, so a connection that opens the same live session
+// twice holds two (HOST session-command-router.js:536-539). Callers hold d.mu.
+func (d *Daemon) attachLocked(conn net.Conn, rec *daemonSession) {
+	sessions := d.connAttachments[conn]
+	if sessions == nil {
+		sessions = map[string]int{}
+		d.connAttachments[conn] = sessions
+	}
+	sessions[rec.path]++
+	d.sessionAttachments[rec.path]++
+	d.notify(d.attachmentFeed)
+}
+
+// connAttachedLocked reports whether conn holds an attachment to path. Callers
+// hold d.mu.
+func (d *Daemon) connAttachedLocked(conn net.Conn, path string) bool {
+	return d.connAttachments[conn][path] > 0
+}
+
+// releaseConnAttachmentLocked drops ONE of conn's attachments to path and
+// applies the refcount rule. Callers hold d.mu.
+func (d *Daemon) releaseConnAttachmentLocked(conn net.Conn, path string, explicitClose bool) {
+	sessions := d.connAttachments[conn]
+	if sessions[path] <= 0 {
+		return
+	}
+	if sessions[path] == 1 {
+		delete(sessions, path)
+		if len(sessions) == 0 {
+			delete(d.connAttachments, conn)
+		}
+	} else {
+		sessions[path]--
+	}
+	d.releaseAttachmentLocked(path, explicitClose)
+}
+
+// releaseAttachmentLocked drops ONE attachment count from path. The session
+// ends at zero attachments when the release was an explicit close or the
+// session is not retained; a retained session survives a disconnect (HOST
+// session-teardown.js:19-41). Callers hold d.mu.
+func (d *Daemon) releaseAttachmentLocked(path string, explicitClose bool) {
+	switch n := d.sessionAttachments[path]; {
+	case n <= 1:
+		delete(d.sessionAttachments, path)
+	default:
+		d.sessionAttachments[path] = n - 1
+	}
+	if d.sessionAttachments[path] == 0 && (explicitClose || !d.retainedSessions[path]) {
+		if rec := d.registry[path]; rec != nil {
+			rec.live = false
+		}
+	}
+	d.notify(d.attachmentFeed)
+}
+
+// forgetAttachmentsLocked drops every attachment record for path without
+// touching liveness: a healed ghost's bindings were rolled back, so the healing
+// open re-attaches from a clean slate. Callers hold d.mu.
+func (d *Daemon) forgetAttachmentsLocked(path string) {
+	delete(d.sessionAttachments, path)
+	for conn, sessions := range d.connAttachments {
+		delete(sessions, path)
+		if len(sessions) == 0 {
+			delete(d.connAttachments, conn)
+		}
+	}
+	d.notify(d.attachmentFeed)
+}
+
+// detachConnectionLocked releases every attachment a dropped connection held.
+// Callers hold d.mu.
+func (d *Daemon) detachConnectionLocked(conn net.Conn) {
+	if !d.attachmentScope {
+		return
+	}
+	for path, count := range d.connAttachments[conn] {
+		for i := 0; i < count; i++ {
+			d.releaseAttachmentLocked(path, false)
+		}
+	}
+	delete(d.connAttachments, conn)
+}
+
+// pathForRoutingIDLocked resolves a routing handle to the durable session path
+// it addresses, including handles that predate a resume. Callers hold d.mu.
+func (d *Daemon) pathForRoutingIDLocked(sessionID string) string {
+	if sessionID == "" {
+		return ""
+	}
+	if rec := d.sessionByRPC(sessionID); rec != nil {
+		return rec.path
+	}
+	return d.rpcPaths[sessionID]
+}
+
+// broadcastLifecycleRecords are the record types the host fanout delivers to
+// EVERY connection (session-event-fanout.js:5-11); every other record is
+// session-scoped and reaches only the connections attached to that session.
+var broadcastLifecycleRecords = map[string]struct{}{
+	EventAgentStart:    {},
+	EventAgentSettled:  {},
+	EventAgentIdle:     {},
+	EventSessionOpened: {},
+	EventSessionClosed: {},
+}
+
+// attachmentTargetsLocked returns the connections one record must reach under
+// attachment scope (session-event-fanout.js:99-106): the lifecycle records go
+// to every connection, every other record only to the connections attached to
+// the addressed session, and a record with no session identity keeps the
+// default broadcast. Callers hold d.mu.
+func (d *Daemon) attachmentTargetsLocked(sessionID, recordType string) []net.Conn {
+	conns := make([]net.Conn, 0, len(d.conns))
+	for c := range d.conns {
+		conns = append(conns, c)
+	}
+	if _, lifecycle := broadcastLifecycleRecords[recordType]; lifecycle {
+		return conns
+	}
+	path := d.pathForRoutingIDLocked(sessionID)
+	if path == "" {
+		return conns
+	}
+	return attachedConns(conns, d.connAttachments, path)
+}
+
+// attachedConns keeps only the connections holding an attachment to path.
+func attachedConns(conns []net.Conn, attachments map[net.Conn]map[string]int, path string) []net.Conn {
+	out := make([]net.Conn, 0, len(conns))
+	for _, c := range conns {
+		if attachments[c][path] > 0 {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// writeSessionRecord delivers one session-scoped record a request handler
+// produced: to the requesting connection by default, and under attachment scope
+// to every connection the fanout rule selects.
+func (d *Daemon) writeSessionRecord(conn net.Conn, rpcID, recordType string, event map[string]any) {
+	if !d.attachmentScope {
+		d.write(conn, event)
+		return
+	}
+	d.mu.Lock()
+	conns := d.attachmentTargetsLocked(rpcID, recordType)
+	d.mu.Unlock()
+	for _, c := range conns {
+		d.write(c, event)
+	}
+}
+
 // ---- event injection ----
 
-// Emit injects an unsolicited event, verbatim, on every live connection.
+// Emit injects an unsolicited event, verbatim, on every live connection — or,
+// under attachment scope, on exactly the connections the fanout rule selects.
 func (d *Daemon) Emit(event map[string]any) {
 	d.mu.Lock()
-	if sid, _ := event["sessionId"].(string); sid != "" {
+	sid, _ := event["sessionId"].(string)
+	if sid != "" {
 		if rec := d.sessionByRPC(sid); rec != nil {
 			applyQuestionEventLocked(rec, event)
 		}
 	}
-	conns := make([]net.Conn, 0, len(d.conns))
-	for c := range d.conns {
-		conns = append(conns, c)
+	var conns []net.Conn
+	if d.attachmentScope {
+		recordType, _ := event["type"].(string)
+		conns = d.attachmentTargetsLocked(sid, recordType)
+	} else {
+		conns = make([]net.Conn, 0, len(d.conns))
+		for c := range d.conns {
+			conns = append(conns, c)
+		}
 	}
 	d.mu.Unlock()
 	for _, c := range conns {
