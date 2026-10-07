@@ -21,7 +21,7 @@ Use this for a ghost webchat isn't viewing, or one you want gone.
 
 1. Open a **new** connection to the rpc socket (`<agentDir>/rpc/rpc.sock`) and send `open_session` with `sessionPath` set to the session file. The reply carries the handle, the state and `attached: true`. The session now has a binding, and this connection holds an attachment.
 2. Pick one:
-   - **Keep the session**: close that connection. The host releases the attachment with detach semantics.
+   - **Leave the session as it was**: close that connection. The host releases the attachment with detach semantics. That keeps the session only if it's retained (`retain_on_disconnect`) or another client still holds an attachment. If this was the last attachment of a non-retained session, disconnecting ends it: the entry moves to `closing` (dist/modes/rpc/session-teardown.js:19-36).
    - **End the session**: send `close_session` for the handle from that **same** connection. Other connections get `unknown_session`, since the host only lets an attached connection close (dist/modes/rpc/session-command-router.js:759-761).
 
 Example over the socket (one JSON object per line; `>` is sent, `<` is received, other event lines omitted):
@@ -33,7 +33,7 @@ Example over the socket (one JSON object per line; `>` is sent, `<` is received,
 < {"id":"2","type":"response","command":"close_session","success":true,"data":{}}
 ```
 
-Skip the second request to keep the session alive; just disconnect.
+Skipping the second request and disconnecting keeps the session alive only when it's retained or another client is still attached. Otherwise the disconnect ends it as well.
 
 One way to drive it by hand:
 
