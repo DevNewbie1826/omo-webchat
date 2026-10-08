@@ -47,6 +47,11 @@ type recoveryDaemonLifecycle struct {
 	stopping      bool
 	retirementErr error
 	logger        *slog.Logger
+
+	// retireUnowned stops an engine this server holds no supervisor for, so a
+	// restart still works after the server was replaced or a successor was
+	// adopted. nil keeps the strict ErrDaemonNotOwned refusal.
+	retireUnowned func(ctx context.Context) error
 }
 
 func (l *recoveryDaemonLifecycle) initialize(daemon *omorpc.EnsuredDaemon) {
@@ -142,7 +147,12 @@ func (l *recoveryDaemonLifecycle) stopCurrent(ctx context.Context, client *omorp
 	generation := slices.Clone(l.generation)
 	l.mu.Unlock()
 	if current == nil || !current.Owned {
-		return omorpc.EpochToken{}, omorpc.ErrDaemonNotOwned
+		if l.retireUnowned == nil {
+			return omorpc.EpochToken{}, omorpc.ErrDaemonNotOwned
+		}
+		if err := l.retireUnowned(ctx); err != nil {
+			return omorpc.EpochToken{}, err
+		}
 	}
 
 	var stopErr error
@@ -195,8 +205,8 @@ func engineRestarter(lifecycle *recoveryDaemonLifecycle, client *omorpc.Client) 
 		if err := client.EnsureConnectedAfter(ctx, retired); err != nil {
 			return before, "", err
 		}
-		if !lifecycle.currentOwned() {
-			return before, "", omorpc.ErrDaemonNotOwned
+		if !lifecycle.currentOwned() && lifecycle.logger != nil {
+			lifecycle.logger.Warn("engine restarted but the successor was not started by this server")
 		}
 		return before, client.ServerVersion(), nil
 	}
@@ -217,10 +227,16 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 	}
 	recoveryDaemons := recoveryDaemonLifecycle{logger: logger}
 	ensureCfg := omorpc.EnsureConfig{
-		BinaryPath: os.Getenv("CHAT_PI_BINARY"),
-		WorkingDir: cfg.Root,
-		StateDir:   stateDir,
-		Env:        os.Environ(),
+		BinaryPath:   os.Getenv("CHAT_PI_BINARY"),
+		WorkingDir:   cfg.Root,
+		StateDir:     stateDir,
+		Env:          os.Environ(),
+		ReadyTimeout: 30 * time.Second,
+	}
+	if socketPath, err := omorpc.SocketPathFor(ensureCfg); err == nil {
+		recoveryDaemons.retireUnowned = func(ctx context.Context) error {
+			return omorpc.RetireUnownedEngine(ctx, socketPath)
+		}
 	}
 	// The long-lived client re-runs this ensure step when a reconnect dials a
 	// missing socket path, so a vanished socket file recovers without a
