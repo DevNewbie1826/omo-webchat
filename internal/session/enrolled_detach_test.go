@@ -246,8 +246,21 @@ func TestEnrolledDetachLateMainAttached(t *testing.T) {
 	completion := make(chan openResult, 1)
 	completion <- openResult{response: resp, epoch: epoch}
 	h.m.awaitDetachedCompletion(h.chat.id, h.opened.State.SessionFile, marker, completion, true)
+	if !h.m.mainAttached(data.SessionID, epoch) {
+		t.Fatal("late attached main result was not remembered as a residual")
+	}
 	if got := h.d.RequestCount(omorpc.CmdCloseSession); got != 0 {
 		t.Fatalf("late attached main result discarded via %d close_session", got)
+	}
+	// The remembered residual must survive a later local stop and native
+	// recovery: neither may close the externally retained main route.
+	mustOK(t, h.m.StopContext(t.Context(), h.chat.id))
+	h.m.reconcileStaleRoutes("native-recovery", h.opened.State.SessionFile)
+	if got := h.d.RequestCount(omorpc.CmdCloseSession); got != 0 {
+		t.Fatalf("native recovery closed the late main residual via %d close_session", got)
+	}
+	if _, err := h.main.Call(t.Context(), omorpc.GetState{SessionID: data.SessionID}); err != nil {
+		t.Fatalf("external retained session ended after recovery: %v", err)
 	}
 	mustOK(t, h.main.Close())
 	h.assertDetached()
