@@ -191,7 +191,8 @@ func TestEnrolledDetachResidualSaturation(t *testing.T) {
 	epoch, _ := h.main.CurrentEpoch()
 	// Seed only the reachable residual precondition; the target attachment
 	// below is acquired through the actual Unix RPC connection.
-	const priorResiduals = 1025
+	// Derived from the production cap so the saturation seed cannot drift.
+	const priorResiduals = maxRetiringRoutes + 1
 	h.m.mu.Lock()
 	for i := 0; i < priorResiduals; i++ {
 		h.m.mainAttachedResiduals[retiringRoute{route: fmt.Sprintf("prior-residual-%d", i), epoch: epoch}] = struct{}{}
