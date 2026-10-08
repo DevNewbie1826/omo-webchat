@@ -229,6 +229,35 @@ func TestEnrolledDetachResidualSaturation(t *testing.T) {
 	t.Log("cleanup: main and owner disconnected; zero remaining host attachments")
 }
 
+func TestEnrolledDetachResidualNoRecoveryBookkeeping(t *testing.T) {
+	h := newEnrolledHarness(t)
+	cur := h.store.stored(h.chat.id)
+	cur.AutoEnrolled = false // Main resume attaches to the external retained file.
+	mustOK(t, h.store.SaveCursor(t.Context(), h.chat.id, cur))
+	s, _, detach, err := h.m.Acquire(t.Context(), h.chat, nil)
+	mustOK(t, err)
+	defer detach()
+	if !s.mainAttached || !s.enrolledAttached || s.client != h.main {
+		t.Fatal("fixture did not acquire an actual main attached:true result")
+	}
+	epoch := s.epoch
+	// Local stop removes byRoute protection; native recovery must refuse
+	// the residual close without consuming retired-route bookkeeping.
+	mustOK(t, h.m.StopContext(t.Context(), h.chat.id))
+	h.m.reconcileStaleRoutes("native-recovery", s.sessionFile)
+	h.m.mu.Lock()
+	_, retired := h.m.retiredRoutes[retiringRoute{route: s.routingID, epoch: epoch}]
+	h.m.mu.Unlock()
+	if retired {
+		t.Fatal("recovery close consumed retired-route bookkeeping for a residual route")
+	}
+	if got := h.d.RequestCount(omorpc.CmdCloseSession); got != 0 {
+		t.Fatalf("recovery sent %d close_session for a residual route", got)
+	}
+	mustOK(t, h.main.Close())
+	h.assertDetached()
+}
+
 func TestEnrolledDetachLateMainAttached(t *testing.T) {
 	h := newEnrolledHarness(t)
 	resp, epoch, err := h.main.CallInEpoch(t.Context(), omorpc.OpenSession{CWD: h.chat.cwd, SessionPath: h.opened.State.SessionFile})
