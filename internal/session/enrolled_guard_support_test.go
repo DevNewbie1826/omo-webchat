@@ -14,6 +14,7 @@ import (
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/transport"
 )
 
 type enrolledHarness struct {
@@ -162,7 +163,7 @@ func newEnrolledWireProxy(t *testing.T, upstream string, hook func(map[string]an
 	dir, err := os.MkdirTemp("", "enrwire-")
 	mustOK(t, err)
 	path := filepath.Join(dir, "p.sock")
-	ln, err := net.Listen("unix", path)
+	ln, err := transport.Listen(path)
 	mustOK(t, err)
 	p := &enrolledWireProxy{path: path, ln: ln, streamClosed: make(chan struct{})}
 	p.wg.Add(1)
@@ -173,7 +174,7 @@ func newEnrolledWireProxy(t *testing.T, upstream string, hook func(map[string]an
 			if err != nil {
 				return
 			}
-			remote, err := net.Dial("unix", upstream)
+			remote, err := transport.Dial(context.Background(), upstream)
 			if err != nil {
 				_ = conn.Close()
 				continue
