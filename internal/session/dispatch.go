@@ -70,7 +70,13 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		return
 	}
 	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
+	providerUnloaded := false
+	defer func() {
+		s.lifecycleMu.Unlock()
+		if providerUnloaded {
+			s.releaseAttach()
+		}
+	}()
 	if s.closed || s.resumable {
 		return
 	}
@@ -144,11 +150,13 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		// handle. The durable chat remains attached and reopens lazily when a
 		// user-required operation next enters the per-chat flight.
 		s.markProviderUnloadedLocked()
+		providerUnloaded = true
 	case "response":
 		command, _ := raw["command"].(string)
 		success, _ := raw["success"].(bool)
 		if command == omorpc.CmdCloseSession && success {
 			s.markProviderUnloadedLocked()
+			providerUnloaded = true
 		}
 		if command == omorpc.CmdExtensionUIProgress && !success {
 			slog.Warn("question draft progress rejected", "error", raw["error"])

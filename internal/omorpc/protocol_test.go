@@ -422,6 +422,47 @@ func TestProtocolSessionStateDecoding(t *testing.T) {
 	}
 }
 
+// TestOpenSessionDataAttached decodes the open_session attached flag.
+// attached:true is preserved; a payload that omits the field decodes false,
+// matching json omitempty.
+func TestOpenSessionDataAttached(t *testing.T) {
+	t.Run("true", func(t *testing.T) {
+		var data OpenSessionData
+		if err := json.Unmarshal([]byte(`{"sessionId":"rpc-1","attached":true,"state":{"sessionId":"durable-1"}}`), &data); err != nil {
+			t.Fatalf("unmarshal attached:true: %v", err)
+		}
+		if !data.Attached || data.SessionID != "rpc-1" || data.State.SessionID != "durable-1" {
+			t.Fatalf("data = %+v, want Attached true and ids preserved", data)
+		}
+		wire, err := json.Marshal(data)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !bytes.Contains(wire, []byte(`"attached":true`)) {
+			t.Fatalf("marshal of Attached true = %s, want attached:true", wire)
+		}
+	})
+	t.Run("absent", func(t *testing.T) {
+		var data OpenSessionData
+		if err := json.Unmarshal([]byte(`{"sessionId":"rpc-2","state":{"sessionId":"durable-2"}}`), &data); err != nil {
+			t.Fatalf("unmarshal absent attached: %v", err)
+		}
+		if data.Attached {
+			t.Fatal("omitted attached decoded true, want false")
+		}
+		if data.SessionID != "rpc-2" {
+			t.Fatalf("SessionID = %q", data.SessionID)
+		}
+		wire, err := json.Marshal(OpenSessionData{SessionID: data.SessionID, State: data.State})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if bytes.Contains(wire, []byte("attached")) {
+			t.Fatalf("false Attached must be omitted, got %s", wire)
+		}
+	})
+}
+
 func TestProtocolSessionStatePendingQuestions(t *testing.T) {
 	var state SessionState
 	line := `{"sessionId":"d0b0-uuid","pendingQuestions":[{"id":"dlg-new","requestId":"tool-1",` +

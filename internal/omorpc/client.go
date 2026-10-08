@@ -76,6 +76,13 @@ type Config struct {
 	// and must not call back into the client. It gives embedders a
 	// transport-loss signal that does not depend on issuing a request.
 	OnEpochChange func(prev, next EpochToken)
+
+	// NoReconnect disables re-dial after the live transport dies. That
+	// epoch ends — its event stream closes and EpochCurrent reports
+	// false — and later calls fail with ErrDisconnected. The zero value
+	// keeps the default reconnect budget (250ms initial, 5s max, 8
+	// attempts).
+	NoReconnect bool
 }
 
 // DefaultConfig is the zero-argument configuration.
@@ -225,6 +232,11 @@ func DialWithConfig(ctx context.Context, socketPath string, cfg Config) (*Client
 		return nil, err
 	}
 	return c, nil
+}
+
+// SocketPath returns the endpoint path this client was dialed with.
+func (c *Client) SocketPath() string {
+	return c.socketPath
 }
 
 func normalizeConfig(cfg Config) Config {
@@ -551,6 +563,13 @@ func (c *Client) connection(ctx context.Context) (*connectionEpoch, error) {
 		ep := c.current
 		c.mu.Unlock()
 		return ep, nil
+	}
+	// Transport loss already retired the epoch inside invalidate. Do not
+	// start a dial flight: a fresh socket would not restore the caller's
+	// attachment, and every later call must surface ErrDisconnected.
+	if c.cfg.NoReconnect {
+		c.mu.Unlock()
+		return nil, ErrDisconnected
 	}
 	flightCtx, cancelFlight := context.WithCancel(c.lifecycle)
 	flight := &connectFlight{done: make(chan struct{}), ctx: flightCtx, cancel: cancelFlight}

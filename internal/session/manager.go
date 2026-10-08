@@ -24,6 +24,8 @@ import (
 type keyedFlight struct {
 	mu      sync.Mutex
 	flights map[string]*chatFlight
+	// Optional observer for deterministic FIFO interleaving tests, under mu.
+	onQueued func(string)
 }
 type chatFlight struct {
 	owned   bool
@@ -55,6 +57,9 @@ func (k *keyedFlight) enter(ctx context.Context, key string) (func(), error) {
 		close(waiter.ready)
 	} else {
 		x.waiters = append(x.waiters, waiter)
+		if k.onQueued != nil {
+			k.onQueued(key)
+		}
 	}
 	k.mu.Unlock()
 
@@ -181,36 +186,38 @@ type Manager struct {
 	cfg        Config
 	instanceID string
 
-	durableChatResolver DurableChatResolver
-	chats               keyedFlight
-	mu                  sync.Mutex
-	byChat              map[string]*Session
-	byRoute             map[string]*Session
-	routeCleanup        map[string]chan struct{}
-	operationOwners     map[string]*sendOperationOwner
-	byDurableEpoch      map[omorpc.EpochToken]map[string]*durableEpochBinding
-	durableTombstones   []durableTombstoneRecord
-	durableToChat       map[string]string
-	retiredDurable      map[string]struct{} // view of retirement.values for existing package readers
-	retirement          residencyLRU[struct{}]
-	deletingDurable     map[string]int
-	invalidatedEpochs   map[omorpc.EpochToken]struct{}
-	epochIngestions     map[omorpc.EpochToken]int
-	retiringByChat      map[string]map[retiringRoute]struct{}
-	retiringFIFO        []retiringRecord
-	slotGeneration      map[string]uint64
-	slotGenerationFIFO  []generationRecord
-	generation          uint64
-	closed              bool
-	done                chan struct{}
-	shutdownCtx         context.Context
-	shutdownCancel      context.CancelFunc
-	closeOnce           sync.Once
-	acquireWG           sync.WaitGroup
-	cleanupWG           sync.WaitGroup
-	eventWG             sync.WaitGroup
-	sessionReconciler   func(chatID string, stale *Session)
-	openCleanupExpired  chan struct{}
+	durableChatResolver   DurableChatResolver
+	chats                 keyedFlight
+	mu                    sync.Mutex
+	byChat                map[string]*Session
+	byRoute               map[string]*Session
+	routeCleanup          map[string]chan struct{}
+	operationOwners       map[string]*sendOperationOwner
+	byDurableEpoch        map[omorpc.EpochToken]map[string]*durableEpochBinding
+	durableTombstones     []durableTombstoneRecord
+	durableToChat         map[string]string
+	retiredDurable        map[string]struct{} // view of retirement.values for existing package readers
+	retirement            residencyLRU[struct{}]
+	deletingDurable       map[string]int
+	invalidatedEpochs     map[omorpc.EpochToken]struct{}
+	epochIngestions       map[omorpc.EpochToken]int
+	attachClients         map[omorpc.EpochToken]*omorpc.Client
+	mainAttachedResiduals map[retiringRoute]struct{}
+	retiringByChat        map[string]map[retiringRoute]struct{}
+	retiringFIFO          []retiringRecord
+	slotGeneration        map[string]uint64
+	slotGenerationFIFO    []generationRecord
+	generation            uint64
+	closed                bool
+	done                  chan struct{}
+	shutdownCtx           context.Context
+	shutdownCancel        context.CancelFunc
+	closeOnce             sync.Once
+	acquireWG             sync.WaitGroup
+	cleanupWG             sync.WaitGroup
+	eventWG               sync.WaitGroup
+	sessionReconciler     func(chatID string, stale *Session)
+	openCleanupExpired    chan struct{}
 	// retiredRoutes records provider route handles retired by open
 	// recovery, scoped to the connection epoch that minted them.
 	// Publication of a retired handle is refused even after its
@@ -283,6 +290,8 @@ func NewManager(cfg Config) *Manager {
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	m := &Manager{cfg: cfg, instanceID: rand.Text(), nidGeneration: time.Now().UnixNano(), byChat: make(map[string]*Session), byRoute: make(map[string]*Session), routeCleanup: make(map[string]chan struct{}), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[retiringRoute]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), retiredRoutes: make(map[retiringRoute]struct{}), noticeJournals: make(map[string]*noticeJournal), pendingOpen: make(map[string]chan struct{}), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), openSettled: make(chan struct{}), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
+	m.attachClients = make(map[omorpc.EpochToken]*omorpc.Client)
+	m.mainAttachedResiduals = make(map[retiringRoute]struct{})
 	m.retirement = newResidencyLRU[struct{}](maxIdentityTombstones)
 	m.retiredDurable = m.retirement.values
 	m.overviewOwners = newResidencyLRU[string](maxIdentityTombstones)
@@ -332,16 +341,7 @@ func (m *Manager) eventLoop() {
 				continue
 			}
 			backoff = time.Millisecond
-			if ev == nil || ev.SessionID == "" || !m.cfg.Client.EpochCurrent(token) || !m.beginEpochIngestion(token) {
-				continue
-			}
-			s, snapshot, subscribers := m.ingestEpochEvent(token, ev)
-			if s != nil {
-				s.dispatchEpoch(token, ev)
-			} else {
-				deliverOverview(subscribers, snapshot)
-			}
-			m.endEpochIngestion(token)
+			m.ingestClientEvent(m.cfg.Client, token, ev)
 		}
 	}
 }
@@ -382,7 +382,7 @@ func (m *Manager) scheduleSessionReconciliation() {
 		// Tokens never become live again, so only dead-epoch routes need
 		// reconciliation; a session invalidated on the live epoch (engine-side
 		// eviction) keeps its existing user-query-driven recovery path.
-		if s.epoch == (omorpc.EpochToken{}) || m.cfg.Client.EpochCurrent(s.epoch) {
+		if s.epoch == (omorpc.EpochToken{}) || m.epochCurrent(s.epoch) {
 			continue
 		}
 		// Never nest lifecycleMu under Manager.mu.
@@ -564,7 +564,7 @@ func (m *Manager) invalidateDisconnectedEpochs() {
 	for epoch := range epochs {
 		// Do not compare against the earlier snapshot: acquisition may have
 		// registered a live successor since then. Tokens never become live again.
-		if !m.cfg.Client.EpochCurrent(epoch) {
+		if !m.epochCurrent(epoch) {
 			m.invalidateEpoch(epoch)
 		}
 	}
@@ -602,6 +602,11 @@ func (m *Manager) detachEpoch(token omorpc.EpochToken) []*Session {
 	for route := range m.retiredRoutes {
 		if route.epoch == token {
 			delete(m.retiredRoutes, route)
+		}
+	}
+	for route := range m.mainAttachedResiduals {
+		if route.epoch == token {
+			delete(m.mainAttachedResiduals, route)
 		}
 	}
 	m.pruneDurableTombstonesLocked(token)
@@ -1099,7 +1104,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		}
 		m.mu.Lock()
 		valid := !m.closed && m.generation == managerGeneration && m.slotGeneration[chatID] == slotGeneration && m.byChat[chatID] == s
-		epochLive := m.cfg.Client.EpochCurrent(s.epoch)
+		epochLive := m.epochCurrentLocked(s.epoch)
 		if _, invalidated := m.invalidatedEpochs[s.epoch]; invalidated {
 			epochLive = false
 		}
@@ -1115,7 +1120,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	if existing != nil {
 		// The event observer may still be dispatching when the transport dies.
 		// Reconcile its loss before deciding whether this route can be reused.
-		if !m.cfg.Client.EpochCurrent(existing.epoch) {
+		if !m.epochCurrent(existing.epoch) {
 			m.invalidateEpoch(existing.epoch)
 		}
 		routeErr := existing.acquisitionError()
@@ -1197,11 +1202,36 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	var data omorpc.OpenSessionData
 	var epoch omorpc.EpochToken
 	var openErr error
+	var attachClient *omorpc.Client
+	var attachEvents <-chan *omorpc.Event
+	var attachSession *Session
+	defer func() {
+		if attachClient == nil {
+			return
+		}
+		m.mu.Lock()
+		published := attachSession != nil && m.byChat[chatID] == attachSession
+		m.mu.Unlock()
+		if !published {
+			if attachSession != nil {
+				attachSession.releaseAttach()
+			} else {
+				m.releaseAttachClient(epoch, attachClient)
+			}
+		}
+	}()
 	attached := false
 	if cur.AutoEnrolled && resumed {
 		data, epoch, attached, openErr = m.attachEnrolled(ctx, cur)
 		if openErr != nil {
 			return nil, false, nil, openErr
+		}
+		if attached && m.cfg.DialAttach != nil {
+			data, attachClient, epoch, attachEvents, openErr = m.openEnrolled(ctx, chat.CWD(), cur, data)
+			if openErr != nil {
+				return nil, false, nil, openErr
+			}
+			attached = data.Attached
 		}
 	}
 	var sessionFileIdentity os.FileInfo
@@ -1220,13 +1250,20 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 				cur.WritePrepared = true
 			}
 		}
-		data, epoch, openErr = m.open(ctx, chatID, chat.CWD(), cur.SessionFile)
+		data, epoch, openErr = m.open(ctx, chatID, chat.CWD(), cur.SessionFile, cur.AutoEnrolled)
+	}
+	// Dedicated routes never enter the main client's retiring family.
+	// Main attached responses are residuals rather than owned opens.
+	discardOpened := func() {
+		if attachClient == nil && !data.Attached {
+			m.discardRouting(chatID, data.SessionID, epoch)
+		}
 	}
 	if openErr == nil {
 		openErr = validateOpen(data, cur, resumed)
 	}
 	if openErr != nil && data.SessionID != "" {
-		m.discardRouting(chatID, data.SessionID, epoch)
+		discardOpened()
 	}
 	if openErr != nil && m.isClosed() {
 		return nil, false, nil, ErrManagerClosed
@@ -1256,13 +1293,13 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			}
 			return nil, false, nil, openErr
 		}
-		data, epoch, err = m.open(ctx, chatID, chat.CWD(), "")
+		data, epoch, err = m.open(ctx, chatID, chat.CWD(), "", cur.AutoEnrolled)
 		if err == nil {
 			err = validateOpen(data, Cursor{}, false)
 		}
 		if err != nil {
 			if data.SessionID != "" {
-				m.discardRouting(chatID, data.SessionID, epoch)
+				discardOpened()
 			}
 			return nil, false, nil, fmt.Errorf("resume failed (%v), fallback open failed: %w", openErr, err)
 		}
@@ -1286,6 +1323,10 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		name = providerName
 	}
 	s := newSession(m, chatID, chat.CWD(), data, resumed, epoch, name, cur.NameSource)
+	if attachClient != nil {
+		s.client, s.attachClient, s.attachStop = attachClient, attachClient, make(chan struct{})
+		attachSession = s
+	}
 	s.restoreTranscriptNoticesLocked()
 	s.inheritWork(replaced, data.State)
 	s.inheritQuestions(replaced, data.State)
@@ -1297,13 +1338,14 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		}
 	}()
 	s.inPlace = cur.InPlace
-	s.enrolledAttached = attached
+	s.enrolledAttached = attached || data.Attached
+	s.mainAttached = data.Attached && attachClient == nil
 	s.writePrepared = cur.WritePrepared
 	s.sessionFileIdentity = sessionFileIdentity
 	identityChanged := cur.SessionFile != data.State.SessionFile || cur.DurableSessionID != data.State.SessionID
 	if m.cfg.Store != nil && !preserveCursor && identityChanged {
 		if err := m.cfg.Store.UpdateIdentity(ctx, chatID, data.State.SessionFile, data.State.SessionID); err != nil {
-			m.discardRouting(chatID, data.SessionID, epoch)
+			discardOpened()
 			return nil, false, nil, err
 		}
 	}
@@ -1316,11 +1358,11 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		valid := !m.closed && m.generation == managerGeneration && m.slotGeneration[chatID] == slotGeneration && m.byChat[chatID] == existing
 		m.mu.Unlock()
 		if !valid {
-			m.discardRouting(chatID, data.SessionID, epoch)
+			discardOpened()
 			return nil, false, nil, ErrManagerClosed
 		}
-		if !m.cfg.Client.EpochCurrent(epoch) {
-			m.discardRouting(chatID, data.SessionID, epoch)
+		if !m.epochCurrent(epoch) {
+			discardOpened()
 			return nil, false, nil, ErrSessionResumable
 		}
 		var detach func()
@@ -1337,7 +1379,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			detach, target, attachErr = s.attachCheckedTarget(sub)
 		}
 		if attachErr != nil {
-			m.discardRouting(chatID, data.SessionID, epoch)
+			discardOpened()
 			return nil, false, nil, attachErr
 		}
 		if !resumed {
@@ -1354,7 +1396,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		if err := validate(); err != nil {
 			detach()
 			s.retireReplaced()
-			m.discardRouting(chatID, data.SessionID, epoch)
+			discardOpened()
 			return nil, false, nil, err
 		}
 		var overviewSnapshot Summary
@@ -1362,7 +1404,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		s.lifecycleMu.Lock()
 		m.mu.Lock()
 		valid = !m.closed && m.generation == managerGeneration && m.slotGeneration[chatID] == slotGeneration && m.byChat[chatID] == existing
-		epochLive := m.cfg.Client.EpochCurrent(epoch)
+		epochLive := m.epochCurrentLocked(epoch)
 		if _, invalidated := m.invalidatedEpochs[epoch]; invalidated {
 			epochLive = false
 		}
@@ -1390,13 +1432,14 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 				s.invalidate("provider_disconnected", "provider route cleanup or retirement was already in progress")
 			} else {
 				s.retireReplaced()
-				m.discardRouting(chatID, data.SessionID, epoch)
+				discardOpened()
 			}
 			if !valid {
 				return nil, false, nil, ErrManagerClosed
 			}
 			return nil, false, nil, ErrSessionResumable
 		}
+		s.startAttachPump(attachEvents)
 		validated := func() error {
 			if after == nil {
 				return nil
@@ -1438,7 +1481,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	s.lifecycleMu.Lock()
 	m.mu.Lock()
 	valid := !m.closed && m.generation == managerGeneration && m.slotGeneration[chatID] == slotGeneration && m.byChat[chatID] == existing
-	epochLive := m.cfg.Client.EpochCurrent(epoch)
+	epochLive := m.epochCurrentLocked(epoch)
 	if _, invalidated := m.invalidatedEpochs[epoch]; invalidated {
 		epochLive = false
 	}
@@ -1465,7 +1508,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	m.mu.Unlock()
 	s.lifecycleMu.Unlock()
 	if !valid {
-		m.discardRouting(chatID, data.SessionID, epoch)
+		discardOpened()
 		return nil, false, nil, ErrManagerClosed
 	}
 	if !epochLive || cleanupInFlight || retiredRoute {
@@ -1497,7 +1540,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		m.mu.Lock()
 		m.retireSessionIdentityLocked(s, true)
 		m.mu.Unlock()
-		m.discardRouting(chatID, data.SessionID, epoch)
+		discardOpened()
 		return nil, false, nil, attachErr
 	}
 	if !resumed {
@@ -1514,6 +1557,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	if initialize != nil {
 		initialize(s, true, detach)
 	}
+	s.startAttachPump(attachEvents)
 	validated := func() error {
 		if after == nil {
 			return nil
@@ -1634,13 +1678,16 @@ func (m *Manager) beginRecoveryClose(chatID, route string, epoch omorpc.EpochTok
 	if m.closed || m.byRoute[route] != nil {
 		return nil, false
 	}
+	if _, residual := m.mainAttachedResiduals[retiringRoute{route: route, epoch: epoch}]; residual {
+		return nil, false
+	}
 	if _, invalidated := m.invalidatedEpochs[epoch]; invalidated {
 		// The epoch that minted this stale list result already died and was
 		// detached; admitting would reinsert bookkeeping that detachEpoch
 		// cleared and let a dead epoch consume the admission bound.
 		return nil, false
 	}
-	if !m.cfg.Client.EpochCurrent(epoch) {
+	if !m.epochCurrentLocked(epoch) {
 		// The token died without the invalidation barrier being observable
 		// yet; either way this epoch's routes are gone and can never be
 		// published, so there is nothing left to protect against.
@@ -1666,6 +1713,12 @@ func (m *Manager) beginRecoveryClose(chatID, route string, epoch omorpc.EpochTok
 // close (or epoch mismatch) is forgotten, anything else stays retained
 // for the later Stop/delete retry.
 func (m *Manager) closeRetiringRoute(chatID string, retiring retiringRoute) {
+	if m.mainAttached(retiring.route, retiring.epoch) {
+		m.mu.Lock()
+		m.removeRetiringLocked(chatID, retiring)
+		m.mu.Unlock()
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.CloseTimeout)
 	defer cancel()
 	_, _, err := m.cfg.Client.CallInEpochToken(ctx, retiring.epoch, omorpc.CloseSession{SessionID: retiring.route})
@@ -1679,7 +1732,7 @@ func (m *Manager) closeRetiringRoute(chatID string, retiring retiringRoute) {
 }
 
 func (m *Manager) discardRouting(chatID, route string, epoch omorpc.EpochToken) {
-	if route == "" {
+	if route == "" || m.mainAttached(route, epoch) {
 		return
 	}
 	retiring := retiringRoute{route: route, epoch: epoch}
@@ -1741,6 +1794,12 @@ func (m *Manager) drainRetiring(ctx context.Context, chatID string) error {
 	m.mu.Unlock()
 	var first error
 	for _, route := range routes {
+		if m.mainAttached(route.route, route.epoch) {
+			m.mu.Lock()
+			m.removeRetiringLocked(chatID, route)
+			m.mu.Unlock()
+			continue
+		}
 		_, _, err := m.cfg.Client.CallInEpochToken(ctx, route.epoch, omorpc.CloseSession{SessionID: route.route})
 		if definitiveCloseFailure(err) || errors.Is(err, omorpc.ErrEpochMismatch) {
 			m.mu.Lock()
@@ -1763,8 +1822,8 @@ type openResult struct {
 
 // open keeps transport ownership after its caller stops waiting. The manager
 // tracks that ownership until the response or epoch death is observed and any
-// routing handle from a late success has been closed.
-func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.OpenSessionData, omorpc.EpochToken, error) {
+// a late owned route has been closed or an attached external route remembered.
+func (m *Manager) open(ctx context.Context, chatID, cwd, path string, autoEnrolled bool) (omorpc.OpenSessionData, omorpc.EpochToken, error) {
 	var marker chan struct{}
 	for {
 		select {
@@ -1795,7 +1854,7 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 	result := make(chan openResult, 1)
 	m.cleanupWG.Add(1)
 	go func() {
-		data, epoch, detached, err := m.openCall(opCtx, chatID, cwd, path, marker)
+		data, epoch, detached, err := m.openCall(opCtx, chatID, cwd, path, marker, autoEnrolled)
 		result <- openResult{data: data, epoch: epoch, err: err, detached: detached}
 	}()
 
@@ -1816,7 +1875,7 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 			if !got.detached {
 				m.clearPendingOpenMarker(chatID, marker)
 			}
-			if got.data.SessionID != "" {
+			if got.data.SessionID != "" && !got.data.Attached {
 				m.discardRouting(chatID, got.data.SessionID, got.epoch)
 			}
 			m.cleanupWG.Done()
@@ -1830,7 +1889,7 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 			if !got.detached {
 				m.clearPendingOpenMarker(chatID, marker)
 			}
-			if got.data.SessionID != "" {
+			if got.data.SessionID != "" && !got.data.Attached {
 				m.discardRouting(chatID, got.data.SessionID, got.epoch)
 			}
 			m.cleanupWG.Done()
@@ -1896,7 +1955,7 @@ func (m *Manager) recoverOpenFence(chatID string, marker chan struct{}) bool {
 	return true
 }
 
-func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string, marker chan struct{}) (omorpc.OpenSessionData, omorpc.EpochToken, bool, error) {
+func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string, marker chan struct{}, autoEnrolled bool) (omorpc.OpenSessionData, omorpc.EpochToken, bool, error) {
 	cmd := omorpc.OpenSession{CWD: cwd, SessionPath: path}
 	var last error
 	var epoch omorpc.EpochToken
@@ -1918,7 +1977,7 @@ func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string, marker
 				m.cleanupWG.Add(1)
 				go func() {
 					defer m.cleanupWG.Done()
-					m.awaitDetachedCompletion(chatID, path, marker, completion)
+					m.awaitDetachedCompletion(chatID, path, marker, completion, autoEnrolled)
 				}()
 				return omorpc.OpenSessionData{}, epoch, true, ctx.Err()
 			}
@@ -1928,6 +1987,7 @@ func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string, marker
 			if err := json.Unmarshal(resp.Data, &out); err != nil {
 				return out, epoch, false, fmt.Errorf("session: decode open_session: %w", err)
 			}
+			m.rememberMainAttached(out, epoch)
 			return out, epoch, false, nil
 		}
 		last = err
@@ -1955,12 +2015,13 @@ func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string, marker
 // ownership to DetachedOpenLimit. After one final OpenRecoveryAfter grace
 // the manager stops WAITING, but a residual owner keeps the epoch-bound
 // cleanup until the response or connection-epoch death settles it, so a
-// late success is still closed and never published - even after shutdown.
+// late success is never published, even after shutdown: owned routes close,
+// attached external routes remain until the main connection disconnects.
 // The omorpc client correlation itself persists until the response or the
 // connection-epoch death settles it, per CallDetached's existing contract.
-func (m *Manager) awaitDetachedCompletion(chatID, path string, marker chan struct{}, completion chan openResult) {
+func (m *Manager) awaitDetachedCompletion(chatID, path string, marker chan struct{}, completion chan openResult, autoEnrolled bool) {
 	settle := func(got openResult) {
-		// The late route is closed BEFORE the fence or slot is released: a
+		// An owned late route is closed BEFORE the fence or slot is released: a
 		// successor open admitted the moment the fence clears can reach the
 		// provider while the route this open minted is only addressable by
 		// its original handle, so the successor's open could supersede that
@@ -1970,7 +2031,10 @@ func (m *Manager) awaitDetachedCompletion(chatID, path string, marker chan struc
 		if got.err == nil && got.response != nil {
 			var late omorpc.OpenSessionData
 			if json.Unmarshal(got.response.Data, &late) == nil && late.SessionID != "" {
-				m.discardRouting(chatID, late.SessionID, got.epoch)
+				m.rememberMainAttached(late, got.epoch)
+				if !late.Attached {
+					m.discardRouting(chatID, late.SessionID, got.epoch)
+				}
 			}
 		}
 		if !m.clearPendingOpenMarker(chatID, marker) {
@@ -1998,7 +2062,10 @@ func (m *Manager) awaitDetachedCompletion(chatID, path string, marker chan struc
 	// routes that predate recovery, never the successor's. Every route close
 	// and the fence release revalidate shutdown state and ownership under
 	// the manager lock immediately before acting.
-	if path != "" {
+	// Enrolled opens may attach an external retained route before replying.
+	// Until the response identifies ownership, disconnect-only residual
+	// handling is safer than the native orphan reconciliation.
+	if path != "" && !autoEnrolled {
 		m.reconcileStaleRoutes(chatID, path)
 	}
 	m.recoverOpenFence(chatID, marker)
@@ -2012,7 +2079,7 @@ func (m *Manager) awaitDetachedCompletion(chatID, path string, marker chan struc
 		// The final grace stops the manager's bounded WAIT, not its cleanup
 		// ownership: a residual owner settles the correlation whenever it
 		// completes - even during or after shutdown - so a late success is
-		// still closed epoch-bound and never published.
+		// settled epoch-bound and never published.
 		go func() { settle(<-completion) }()
 	}
 }

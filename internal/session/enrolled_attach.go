@@ -45,12 +45,19 @@ func (m *Manager) attachEnrolled(ctx context.Context, cur Cursor) (omorpc.OpenSe
 			continue
 		}
 		stateResp, stateEpoch, err := m.cfg.Client.CallInEpochToken(ctx, epoch, omorpc.GetState{SessionID: route.SessionID})
-		if err != nil {
-			return omorpc.OpenSessionData{}, stateEpoch, false, err
+		if err == nil {
+			err = stateResp.Err()
 		}
-		if err := stateResp.Err(); err != nil {
+		if err != nil {
 			var stable *omorpc.StableError
 			if errors.As(err, &stable) && stable.Code == omorpc.ErrCodeUnknownSession {
+				if (cur.DurableSessionID != "" && route.DurableSessionID == cur.DurableSessionID) ||
+					(cur.DurableSessionID == "" && path == cur.SessionFile) {
+					if path == "" {
+						path = cur.SessionFile
+					}
+					return omorpc.OpenSessionData{SessionID: route.SessionID, State: omorpc.SessionState{SessionID: route.DurableSessionID, SessionFile: path}}, stateEpoch, true, nil
+				}
 				continue
 			}
 			return omorpc.OpenSessionData{}, stateEpoch, false, err
@@ -64,6 +71,12 @@ func (m *Manager) attachEnrolled(ctx context.Context, cur Cursor) (omorpc.OpenSe
 		}
 		if cur.DurableSessionID == "" && state.SessionFile != cur.SessionFile {
 			continue
+		}
+		if state.SessionFile == "" {
+			state.SessionFile = path
+			if state.SessionFile == "" {
+				state.SessionFile = cur.SessionFile
+			}
 		}
 		return omorpc.OpenSessionData{SessionID: route.SessionID, State: state}, stateEpoch, true, nil
 	}
