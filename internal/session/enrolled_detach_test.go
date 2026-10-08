@@ -295,6 +295,55 @@ func TestEnrolledDetachLateMainAttached(t *testing.T) {
 	h.assertDetached()
 }
 
+func TestEnrolledDetachDirectGuardsSkipResidual(t *testing.T) {
+	for _, sub := range []string{"closeRetiringRoute", "discardRouting"} {
+		t.Run(sub, func(t *testing.T) {
+			h := newEnrolledHarness(t)
+			cur := h.store.stored(h.chat.id)
+			cur.AutoEnrolled = false // Main resume attaches to the external retained file.
+			mustOK(t, h.store.SaveCursor(t.Context(), h.chat.id, cur))
+			s, _, detach, err := h.m.Acquire(t.Context(), h.chat, nil)
+			mustOK(t, err)
+			defer detach()
+			if !s.mainAttached || !s.enrolledAttached || s.client != h.main {
+				t.Fatal("fixture did not acquire an actual main attached:true result")
+			}
+			// The residual must be the one production registered with main's
+			// LIVE epoch: a synthetic epoch would fail the close with
+			// ErrEpochMismatch and mask a removed guard as a pass.
+			if !h.m.mainAttached(s.routingID, s.epoch) {
+				t.Fatal("acquired main route was not registered as a residual")
+			}
+			switch sub {
+			case "closeRetiringRoute":
+				h.m.closeRetiringRoute(h.chat.id, retiringRoute{route: s.routingID, epoch: s.epoch})
+			case "discardRouting":
+				// Discriminator: rememberRetiringLocked appends to
+				// retiringFIFO and removeRetiringLocked never shrinks it,
+				// so an unchanged FIFO length proves discardRouting's own
+				// guard returned BEFORE recording. The closeRetiringRoute
+				// guard alone would append and then only drop the map
+				// entry, leaving the FIFO one record longer.
+				h.m.mu.Lock()
+				before := len(h.m.retiringFIFO)
+				h.m.mu.Unlock()
+				h.m.discardRouting(h.chat.id, s.routingID, s.epoch)
+				h.m.mu.Lock()
+				after := len(h.m.retiringFIFO)
+				h.m.mu.Unlock()
+				if after != before {
+					t.Fatalf("discardRouting recorded a residual as retiring: FIFO %d -> %d", before, after)
+				}
+			}
+			if got := h.d.RequestCount(omorpc.CmdCloseSession); got != 0 {
+				t.Fatalf("%s closed a residual route via %d close_session", sub, got)
+			}
+			mustOK(t, h.main.Close())
+			h.assertDetached()
+		})
+	}
+}
+
 func TestEnrolledDetachLateDedicatedResult(t *testing.T) {
 	h := newEnrolledHarness(t)
 	entered, release := make(chan struct{}), make(chan struct{})
