@@ -188,6 +188,9 @@ func TestRetireUnownedEngineRefusesChildWithoutHandshake(t *testing.T) {
 	if !errors.Is(err, ErrDaemonNotOwned) {
 		t.Fatalf("listener without handshake = %v, want ErrDaemonNotOwned", err)
 	}
+	if errors.Is(err, ErrRetirementUnconfirmed) {
+		t.Fatal("no-signal handshake refusal marked retirement unconfirmed")
+	}
 	assertRetireHelperAlive(t, h)
 }
 
@@ -200,6 +203,9 @@ func TestRetireUnownedEngineRefusesNonLeaderChild(t *testing.T) {
 	err = retireUnownedEngine(t.Context(), h.cfg, 100*time.Millisecond, time.Second, inspectEngineProcess)
 	if !errors.Is(err, ErrDaemonNotOwned) {
 		t.Fatalf("handshaken nonleader = %v, want ErrDaemonNotOwned", err)
+	}
+	if errors.Is(err, ErrRetirementUnconfirmed) {
+		t.Fatal("no-signal identity refusal marked retirement unconfirmed")
 	}
 	assertRetireHelperAlive(t, h)
 }
@@ -252,4 +258,25 @@ func TestRetireUnownedEngineRechecksStartTime(t *testing.T) {
 	}
 	_ = client.Close()
 	t.Log("changed start time confirmed retirement without delivering SIGKILL")
+}
+
+func TestRetireUnownedEngineMarksUnconfirmedAfterSignal(t *testing.T) {
+	h := startRetireHelper(t, "ignore", true, 0)
+	recheckErr := errors.New("process inspection unavailable")
+	reads := 0
+	inspect := func(pid int) (engineProcessInfo, error) {
+		reads++
+		if reads > 1 {
+			return engineProcessInfo{}, recheckErr
+		}
+		return inspectEngineProcess(pid)
+	}
+	err := retireUnownedEngine(t.Context(), h.cfg, 100*time.Millisecond, time.Second, inspect)
+	if !errors.Is(err, ErrRetirementUnconfirmed) || !errors.Is(err, recheckErr) {
+		t.Fatalf("post-SIGTERM recheck error = %v, want unconfirmed marker and inspection error", err)
+	}
+	if RetirementConfirmed(err) || reads != 2 {
+		t.Fatalf("post-signal retirement confirmed=%v reads=%d", RetirementConfirmed(err), reads)
+	}
+	assertRetireHelperAlive(t, h)
 }

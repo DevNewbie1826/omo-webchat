@@ -76,18 +76,18 @@ func retireUnownedEngine(ctx context.Context, cfg EnsureConfig, grace, killWait 
 			return cleanupRetiredSocket(ctx, cfg, identity)
 		}
 		if err != nil && !errors.Is(err, syscall.ESRCH) && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("omorpc: recheck unowned engine group %d: %w", pid, err)
+			return errors.Join(ErrRetirementUnconfirmed, fmt.Errorf("omorpc: recheck unowned engine group %d: %w", pid, err))
 		}
 		if err == nil && (now.pgid != pid || now.uid != info.uid) {
-			return fmt.Errorf("omorpc: unowned engine group %d identity changed before SIGKILL", pid)
+			return fmt.Errorf("%w: unowned engine group %d identity changed before SIGKILL", ErrRetirementUnconfirmed, pid)
 		}
 		// If the leader exited but descendants remain, the PGID cannot be
 		// reused and still identifies the original group.
 		if err := procexec.SignalGroup(pid, syscall.SIGKILL); err != nil {
-			return fmt.Errorf("omorpc: kill unowned engine group %d: %w", pid, err)
+			return errors.Join(ErrRetirementUnconfirmed, fmt.Errorf("omorpc: kill unowned engine group %d: %w", pid, err))
 		}
 		if !waitEngineGroupGone(ctx, pid, killWait) {
-			return fmt.Errorf("omorpc: unowned engine group %d did not exit after SIGKILL", pid)
+			return fmt.Errorf("%w: unowned engine group %d did not exit after SIGKILL", ErrRetirementUnconfirmed, pid)
 		}
 	}
 	return cleanupRetiredSocket(ctx, cfg, identity)

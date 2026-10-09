@@ -153,9 +153,11 @@ func (l *recoveryDaemonLifecycle) stopCurrent(ctx context.Context, client *omorp
 		}
 		if err := l.retireUnowned(ctx); err != nil {
 			if !omorpc.RetirementConfirmed(err) {
-				l.mu.Lock()
-				l.retirementErr = err
-				l.mu.Unlock()
+				if errors.Is(err, omorpc.ErrRetirementUnconfirmed) {
+					l.mu.Lock()
+					l.retirementErr = err
+					l.mu.Unlock()
+				}
 				return omorpc.EpochToken{}, err
 			}
 			stopErr = err

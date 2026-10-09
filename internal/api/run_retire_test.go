@@ -208,7 +208,7 @@ func TestStopCurrentUnconfirmedUnownedRetirementRejectsRecovery(t *testing.T) {
 	}
 	stopEntered := make(chan struct{})
 	releaseStop := make(chan struct{})
-	wantErr := errors.New("unowned group retirement unconfirmed")
+	wantErr := errors.Join(omorpc.ErrRetirementUnconfirmed, errors.New("unowned group retirement unconfirmed"))
 	lifecycle := recoveryDaemonLifecycle{
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		retireUnowned: func(ctx context.Context) error {
@@ -259,6 +259,37 @@ func TestStopCurrentUnconfirmedUnownedRetirementRejectsRecovery(t *testing.T) {
 		t.Fatal("recovery spawned beside an unconfirmed unowned group")
 	default:
 	}
+}
+
+func TestStopCurrentRefusedUnownedRetirementAllowsRecovery(t *testing.T) {
+	// Given: the unsupported-platform callback refuses without signaling.
+	lifecycle := recoveryDaemonLifecycle{
+		retireUnowned: func(context.Context) error { return omorpc.ErrDaemonNotOwned },
+	}
+	adopted := &omorpc.EnsuredDaemon{}
+	lifecycle.initialize(adopted)
+
+	// When: restart refuses, then the adopted endpoint disappears.
+	if _, err := lifecycle.stopCurrent(t.Context(), nil); !errors.Is(err, omorpc.ErrDaemonNotOwned) {
+		t.Fatalf("unsupported retirement = %v, want ErrDaemonNotOwned", err)
+	}
+	entered := false
+	probeErr := errors.New("missing endpoint ensure entered")
+	err := lifecycle.ensure(t.Context(), func(context.Context) (*omorpc.EnsuredDaemon, error) {
+		entered = true
+		return nil, probeErr
+	})
+
+	// Then: recovery enters its real lifecycle ensure boundary, not the fence.
+	if !entered || !errors.Is(err, probeErr) {
+		t.Fatalf("recovery after no-signal refusal: ensure entered=%v error=%v, want entered and probe error", entered, err)
+	}
+	lifecycle.mu.Lock()
+	defer lifecycle.mu.Unlock()
+	if lifecycle.retirementErr != nil || lifecycle.current != adopted {
+		t.Fatal("no-signal refusal changed retirement state")
+	}
+	t.Log("unsupported-platform refusal preserved missing-endpoint ensure admission")
 }
 
 func TestRestartBudgetProductionEnsureConfig(t *testing.T) {
