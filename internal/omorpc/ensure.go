@@ -637,6 +637,15 @@ func normalizeEnsureConfig(cfg EnsureConfig) (EnsureConfig, error) {
 	return cfg, nil
 }
 
+// SocketPathFor resolves the endpoint EnsureDaemon would use for cfg.
+func SocketPathFor(cfg EnsureConfig) (string, error) {
+	cfg, err := normalizeEnsureConfig(cfg)
+	if err != nil {
+		return "", err
+	}
+	return cfg.SocketPath, nil
+}
+
 func probeDaemon(ctx context.Context, cfg EnsureConfig) (*Client, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, cfg.ProbeTimeout)
 	defer cancel()

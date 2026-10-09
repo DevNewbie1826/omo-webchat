@@ -233,9 +233,9 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 		Env:          os.Environ(),
 		ReadyTimeout: 30 * time.Second,
 	}
-	if socketPath, err := omorpc.SocketPathFor(ensureCfg); err == nil {
+	if _, err := omorpc.SocketPathFor(ensureCfg); err == nil {
 		recoveryDaemons.retireUnowned = func(ctx context.Context) error {
-			return omorpc.RetireUnownedEngine(ctx, socketPath)
+			return omorpc.RetireUnownedEngine(ctx, ensureCfg)
 		}
 	}
 	// The long-lived client re-runs this ensure step when a reconnect dials a

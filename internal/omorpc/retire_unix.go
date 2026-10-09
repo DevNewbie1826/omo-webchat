@@ -6,98 +6,124 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
+	"log/slog"
 	"os"
-	"os/exec"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/procexec"
 )
 
-const (
-	unownedEngineStopGrace = 15 * time.Second
-	unownedEngineKillWait  = 5 * time.Second
-)
+const retirementUnlinkWait = 2 * time.Second
 
-// SocketPathFor resolves the endpoint EnsureDaemon would use for cfg.
-func SocketPathFor(cfg EnsureConfig) (string, error) {
-	cfg, err := normalizeEnsureConfig(cfg)
-	if err != nil {
-		return "", err
-	}
-	return cfg.SocketPath, nil
+type engineProcessInfo struct {
+	startTime uint64
+	pgid      int
+	uid       int
 }
 
-// RetireUnownedEngine stops the engine listening at socketPath when this
-// server holds no supervisor handle for it: an engine that survived a killed
-// server, was adopted from another launcher, or whose handle was lost after a
-// failed restart. The listener is identified by its socket peer PID and must
-// look like an omo engine; a missing or refusing endpoint needs no stop.
-func RetireUnownedEngine(ctx context.Context, socketPath string) error {
-	identity, exists := currentSocketIdentity(socketPath)
+// RetireUnownedEngine authenticates the engine serving this ensure endpoint,
+// then retires its entire process group even without a supervisor handle.
+// Identity comes from the handshaken socket peer, never mutable process argv.
+func RetireUnownedEngine(ctx context.Context, cfg EnsureConfig) error {
+	cfg, err := normalizeEnsureConfig(cfg)
+	if err != nil {
+		return err
+	}
+	return retireUnownedEngine(ctx, cfg, daemonStopGrace, daemonKillWait, inspectEngineProcess)
+}
+
+func retireUnownedEngine(ctx context.Context, cfg EnsureConfig, grace, killWait time.Duration, inspect func(int) (engineProcessInfo, error)) error {
+	identity, exists := currentSocketIdentity(cfg.SocketPath)
 	if !exists {
 		return nil
 	}
-	dialCtx, cancel := context.WithTimeout(ctx, time.Second)
-	var dialer net.Dialer
-	conn, err := dialer.DialContext(dialCtx, "unix", socketPath)
-	cancel()
+	// The probe must not launch or reconnect to a different peer while identity
+	// is being established. Read the PID from its negotiated connection.
+	cfg.OnDialNotExist = nil
+	client, err := probeDaemon(ctx, cfg)
 	if err != nil {
 		if isSpawnableProbeError(err) {
-			return removeOwnedSocket(socketPath, &identity)
+			return cleanupRetiredSocket(ctx, cfg, identity)
 		}
-		return fmt.Errorf("omorpc: probe unowned engine: %w", err)
+		return fmt.Errorf("%w: unowned engine handshake: %v", ErrDaemonNotOwned, err)
 	}
-	pid, err := connectionPeerPID(conn)
-	_ = conn.Close()
-	if err != nil {
-		return fmt.Errorf("%w: identify engine process: %v", ErrDaemonNotOwned, err)
+	defer client.Close()
+	after, exists := currentSocketIdentity(cfg.SocketPath)
+	if !exists || after != identity {
+		return fmt.Errorf("%w: engine socket changed during handshake", ErrDaemonNotOwned)
 	}
-	if pid <= 1 || pid == os.Getpid() {
-		return fmt.Errorf("%w: unexpected engine peer pid %d", ErrDaemonNotOwned, pid)
+	client.mu.Lock()
+	pid := 0
+	if client.current != nil {
+		pid, err = connectionPeerPID(client.current.conn)
 	}
-	if !looksLikeEngine(pid) {
-		return fmt.Errorf("%w: socket peer pid %d is not an omo engine", ErrDaemonNotOwned, pid)
+	client.mu.Unlock()
+	if err != nil || pid <= 1 || pid == os.Getpid() {
+		return fmt.Errorf("%w: unexpected engine peer pid %d: %v", ErrDaemonNotOwned, pid, err)
 	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return fmt.Errorf("omorpc: stop unowned engine %d: %w", pid, err)
+	info, err := inspect(pid)
+	if err != nil || info.pgid != pid || info.uid != os.Getuid() {
+		return fmt.Errorf("%w: engine peer %d is not a same-user group leader: %v", ErrDaemonNotOwned, pid, err)
 	}
-	if !waitProcessExit(ctx, pid, unownedEngineStopGrace) {
-		target := pid
-		if pgid, err := syscall.Getpgid(pid); err == nil && pgid == pid {
-			target = -pid
+	_ = client.Close()
+	if err := procexec.SignalGroup(pid, syscall.SIGTERM); err != nil {
+		return fmt.Errorf("omorpc: terminate unowned engine group %d: %w", pid, err)
+	}
+	if !waitEngineGroupGone(ctx, pid, grace) {
+		// A reused leader PID proves the old group has drained: the kernel
+		// cannot reuse a PID while it still names a process group.
+		now, err := inspect(pid)
+		if err == nil && now.startTime != info.startTime {
+			return cleanupRetiredSocket(ctx, cfg, identity)
 		}
-		_ = syscall.Kill(target, syscall.SIGKILL)
-		if !waitProcessExit(ctx, pid, unownedEngineKillWait) {
-			return fmt.Errorf("omorpc: unowned engine %d did not exit", pid)
+		if err != nil && !errors.Is(err, syscall.ESRCH) && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("omorpc: recheck unowned engine group %d: %w", pid, err)
+		}
+		if err == nil && (now.pgid != pid || now.uid != info.uid) {
+			return fmt.Errorf("omorpc: unowned engine group %d identity changed before SIGKILL", pid)
+		}
+		// If the leader exited but descendants remain, the PGID cannot be
+		// reused and still identifies the original group.
+		if err := procexec.SignalGroup(pid, syscall.SIGKILL); err != nil {
+			return fmt.Errorf("omorpc: kill unowned engine group %d: %w", pid, err)
+		}
+		if !waitEngineGroupGone(ctx, pid, killWait) {
+			return fmt.Errorf("omorpc: unowned engine group %d did not exit after SIGKILL", pid)
 		}
 	}
-	return removeOwnedSocket(socketPath, &identity)
+	return cleanupRetiredSocket(ctx, cfg, identity)
 }
 
-func looksLikeEngine(pid int) bool {
-	out, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil {
-		return false
-	}
-	command := strings.ToLower(string(out))
-	return strings.Contains(command, "omo") || strings.Contains(command, "senpi")
-}
-
-func waitProcessExit(ctx context.Context, pid int, limit time.Duration) bool {
-	deadline := time.Now().Add(limit)
+func waitEngineGroupGone(ctx context.Context, pid int, limit time.Duration) bool {
+	deadline := time.NewTimer(limit)
+	defer deadline.Stop()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
 	for {
-		var status syscall.WaitStatus
-		if reaped, _ := syscall.Wait4(pid, &status, syscall.WNOHANG, nil); reaped == pid {
+		if !procexec.GroupAlive(pid) {
 			return true
 		}
-		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
-			return true
-		}
-		if time.Now().After(deadline) || ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
 			return false
+		case <-deadline.C:
+			return false
+		case <-tick.C:
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+func cleanupRetiredSocket(ctx context.Context, cfg EnsureConfig, identity socketIdentity) error {
+	cfg.LockTimeout = retirementUnlinkWait
+	lock, err := acquireEnsureLock(ctx, cfg)
+	if err != nil {
+		slog.WarnContext(ctx, "leaving retired engine socket without ensure lock", "socket", cfg.SocketPath, "err", err)
+		return nil
+	}
+	defer lock.Close()
+	if err := removeOwnedSocket(cfg.SocketPath, &identity); err != nil {
+		return &supervisorStopError{err: err, confirmed: true}
+	}
+	return nil
 }
