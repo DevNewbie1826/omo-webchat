@@ -146,16 +146,22 @@ func (l *recoveryDaemonLifecycle) stopCurrent(ctx context.Context, client *omorp
 	current := l.current
 	generation := slices.Clone(l.generation)
 	l.mu.Unlock()
+	var stopErr error
 	if current == nil || !current.Owned {
 		if l.retireUnowned == nil {
 			return omorpc.EpochToken{}, omorpc.ErrDaemonNotOwned
 		}
 		if err := l.retireUnowned(ctx); err != nil {
-			return omorpc.EpochToken{}, err
+			if !omorpc.RetirementConfirmed(err) {
+				l.mu.Lock()
+				l.retirementErr = err
+				l.mu.Unlock()
+				return omorpc.EpochToken{}, err
+			}
+			stopErr = err
 		}
 	}
 
-	var stopErr error
 	var unresolved error
 	for _, daemon := range generation {
 		if err := stopSupervisorDaemon(daemon, ctx); err != nil {
@@ -205,10 +211,20 @@ func engineRestarter(lifecycle *recoveryDaemonLifecycle, client *omorpc.Client) 
 		if err := client.EnsureConnectedAfter(ctx, retired); err != nil {
 			return before, "", err
 		}
-		if !lifecycle.currentOwned() && lifecycle.logger != nil {
-			lifecycle.logger.Warn("engine restarted but the successor was not started by this server")
+		if !lifecycle.currentOwned() {
+			return before, "", omorpc.ErrDaemonNotOwned
 		}
 		return before, client.ServerVersion(), nil
+	}
+}
+
+func runEnsureConfig(cfg *config.Config, stateDir string) omorpc.EnsureConfig {
+	return omorpc.EnsureConfig{
+		BinaryPath:   os.Getenv("CHAT_PI_BINARY"),
+		WorkingDir:   cfg.Root,
+		StateDir:     stateDir,
+		Env:          os.Environ(),
+		ReadyTimeout: 17 * time.Second,
 	}
 }
 
@@ -226,13 +242,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 		}
 	}
 	recoveryDaemons := recoveryDaemonLifecycle{logger: logger}
-	ensureCfg := omorpc.EnsureConfig{
-		BinaryPath:   os.Getenv("CHAT_PI_BINARY"),
-		WorkingDir:   cfg.Root,
-		StateDir:     stateDir,
-		Env:          os.Environ(),
-		ReadyTimeout: 30 * time.Second,
-	}
+	ensureCfg := runEnsureConfig(cfg, stateDir)
 	if _, err := omorpc.SocketPathFor(ensureCfg); err == nil {
 		recoveryDaemons.retireUnowned = func(ctx context.Context) error {
 			return omorpc.RetireUnownedEngine(ctx, ensureCfg)
@@ -289,12 +299,12 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 	defer stopWatcher()
 	apiServer.queue = queue
 	// The restart sequence never calls Stop: closing the shared client is
-	// terminal for every chat. StopSupervisor only terminates the owned
-	// supervisor process groups, so the reconnect hook can spawn a successor
-	// engine and re-establish the transport on the same client. The ensured
-	// handle is checked first: a foreign engine must be refused before any
-	// signal is sent, and every stop confirms its process group is gone
-	// before a successor may spawn.
+	// terminal for every chat. Owned supervisor groups are stopped; an engine
+	// serving this server's socket is also retired by process group when its
+	// stable handshaken peer passes the process identity checks. Every stop
+	// confirms the retiring group is gone before a successor may spawn on the
+	// same client. Restart refuses with ErrDaemonNotOwned if the successor is
+	// not owned by this server.
 	apiServer.restartEngine = engineRestarter(&recoveryDaemons, ensured.Client)
 
 	var cleanup sync.Once

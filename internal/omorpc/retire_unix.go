@@ -14,8 +14,6 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/procexec"
 )
 
-const retirementUnlinkWait = 2 * time.Second
-
 type engineProcessInfo struct {
 	startTime uint64
 	pgid      int

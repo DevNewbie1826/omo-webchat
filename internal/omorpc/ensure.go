@@ -646,6 +646,30 @@ func SocketPathFor(cfg EnsureConfig) (string, error) {
 	return cfg.SocketPath, nil
 }
 
+const retirementUnlinkWait = 2 * time.Second
+
+// RestartBudget accounts for probing, group retirement, bounded unlink-lock
+// admission, ensure locking, both runtime attempts and their cleanup, and all
+// default reconnect delays (the first attempt has no delay).
+func RestartBudget(cfg EnsureConfig) (time.Duration, error) {
+	cfg, err := normalizeEnsureConfig(cfg)
+	if err != nil {
+		return 0, err
+	}
+	reconnect := DefaultConfig()
+	backoff := reconnect.ReconnectInitial
+	var delays time.Duration
+	for attempt := 1; attempt < reconnect.ReconnectMaxAttempts; attempt++ {
+		delays += backoff
+		backoff *= 2
+		if backoff > reconnect.ReconnectMax {
+			backoff = reconnect.ReconnectMax
+		}
+	}
+	return cfg.ProbeTimeout + daemonStopGrace + daemonKillWait + retirementUnlinkWait +
+		cfg.LockTimeout + 2*cfg.ReadyTimeout + 4*time.Second + delays, nil
+}
+
 func probeDaemon(ctx context.Context, cfg EnsureConfig) (*Client, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, cfg.ProbeTimeout)
 	defer cancel()
