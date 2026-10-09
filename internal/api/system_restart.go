@@ -43,7 +43,9 @@ func (s *Server) handleSystemEngineRestart(w http.ResponseWriter, r *http.Reques
 	before, after, err := s.restartEngine(ctx)
 	if err != nil {
 		status := http.StatusInternalServerError
-		if errors.Is(err, omorpc.ErrDaemonNotOwned) {
+		if errors.Is(err, errEngineRestartNotReady) {
+			status = http.StatusInternalServerError
+		} else if errors.Is(err, omorpc.ErrDaemonNotOwned) {
 			status = http.StatusConflict
 		} else if errors.Is(err, context.DeadlineExceeded) {
 			status = http.StatusGatewayTimeout

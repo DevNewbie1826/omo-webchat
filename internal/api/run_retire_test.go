@@ -272,3 +272,148 @@ func TestRestartBudgetProductionEnsureConfig(t *testing.T) {
 		t.Fatalf("production restart budget %s + 15s exceeds HTTP limit %s (ReadyTimeout=%s)", budget, engineRestartTimeout, cfg.ReadyTimeout)
 	}
 }
+
+func TestEngineRestartBoundsStalledSuccessorNegotiation(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		callerTimeout time.Duration
+		wantStatus    int
+		wantErr       error
+		waitLimit     time.Duration
+	}{
+		{"restart-budget", 5 * time.Second, http.StatusInternalServerError, errEngineRestartNotReady, 2 * time.Second},
+		{"earlier-caller-deadline", time.Second, http.StatusGatewayTimeout, context.DeadlineExceeded, time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Given: readiness succeeds on the real RPC socket; only the shared
+			// client's subsequent negotiation is held behind an explicit gate.
+			const budget = 2 * time.Second
+			const slack = 500 * time.Millisecond
+			daemon := newRetireTestDaemon(t)
+			var release func()
+			var releaseMu sync.Mutex
+			releaseNegotiation := func() {
+				releaseMu.Lock()
+				defer releaseMu.Unlock()
+				if release != nil {
+					release()
+				}
+			}
+			lifecycle := recoveryDaemonLifecycle{
+				logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+				retireUnowned: func(context.Context) error {
+					daemon.Stop()
+					return nil
+				},
+			}
+			client, err := omorpc.DialWithConfig(t.Context(), daemon.SocketPath(), omorpc.Config{
+				OnDialNotExist: func(ctx context.Context) error {
+					return lifecycle.ensure(ctx, func(ctx context.Context) (*omorpc.EnsuredDaemon, error) {
+						daemon.SetServerVersion("budget-successor")
+						if err := daemon.Start(); err != nil {
+							return nil, err
+						}
+						probe, err := omorpc.Dial(ctx, daemon.SocketPath())
+						if err != nil {
+							return nil, err
+						}
+						releaseMu.Lock()
+						release = daemon.BlockHandler("get_protocol_info")
+						releaseMu.Unlock()
+						return &omorpc.EnsuredDaemon{Client: probe, Owned: true}, nil
+					})
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				releaseNegotiation()
+				if err := client.Close(); err != nil {
+					t.Error(err)
+				}
+				daemon.Stop()
+				t.Log("cleanup: negotiation gate released, shared client joined, RPC listener closed")
+			}()
+			lifecycle.initialize(&omorpc.EnsuredDaemon{Client: client})
+			s, _, _ := newChatCreateTestServer(t)
+			callerCtx, cancelCaller := context.WithTimeout(t.Context(), tc.callerTimeout)
+			defer cancelCaller()
+			s.ctx = callerCtx
+			restart := engineRestarterWithBudget(&lifecycle, client, budget)
+			returned := make(chan error, 1)
+			s.restartEngine = func(ctx context.Context) (string, string, error) {
+				before, after, err := restart(ctx)
+				returned <- err
+				return before, after, err
+			}
+			server := httptest.NewServer(s.Handler())
+			defer func() {
+				cancelCaller()
+				releaseNegotiation()
+				server.Close()
+				t.Logf("cleanup: HTTP listener %s closed and handlers joined", server.URL)
+			}()
+			token, err := s.sessions.Create(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			requestCtx, cancelRequest := context.WithTimeout(t.Context(), 8*time.Second)
+			defer cancelRequest()
+			request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, server.URL+"/api/system/engine/restart", strings.NewReader("{}"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Content-Type", "application/json")
+			request.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+			t.Logf("HTTP scenario: POST %s Content-Type=application/json Cookie=authenticated body={}; PASS=status%d within %s+%s, then shared flight completes after release", request.URL, tc.wantStatus, tc.waitLimit, slack)
+
+			// When: the request feed is installed before triggering the real HTTP
+			// call; its third handshake proves the readiness/negotiation branch.
+			type responseResult struct {
+				response *http.Response
+				err      error
+			}
+			done := make(chan responseResult, 1)
+			started := time.Now()
+			go func() {
+				response, err := server.Client().Do(request)
+				done <- responseResult{response: response, err: err}
+			}()
+			reached := daemon.AwaitRequestCount("get_protocol_info", 3, 5*time.Second)
+			got := <-done
+			elapsed := time.Since(started)
+			if got.err != nil {
+				t.Fatal(got.err)
+			}
+			defer got.response.Body.Close()
+			capture, err := httputil.DumpResponse(got.response, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("successor readiness and stalled shared handshake reached=%v; elapsed=%s; response:\n%s", reached, elapsed, capture)
+			if !reached {
+				t.Fatal("successor shared negotiation gate was not reached")
+			}
+
+			// Then: the restart returns on its own budget (or earlier parent),
+			// without cancelling the shared reconnect flight.
+			if got.response.StatusCode != tc.wantStatus || elapsed > tc.waitLimit+slack {
+				t.Errorf("restart timing/status: got HTTP%d in %s, want HTTP%d within %s", got.response.StatusCode, elapsed, tc.wantStatus, tc.waitLimit+slack)
+			}
+			if err := <-returned; !errors.Is(err, tc.wantErr) {
+				t.Errorf("restart error = %v, want %v", err, tc.wantErr)
+			}
+			releaseNegotiation()
+			lateCtx, cancelLate := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancelLate()
+			if err := client.EnsureConnected(lateCtx); err != nil {
+				t.Fatal(err)
+			}
+			if !lifecycle.currentOwned() || client.ServerVersion() != "budget-successor" {
+				t.Fatal("the background flight did not negotiate the owned successor after release")
+			}
+			t.Log("shared flight completed after HTTP response: owned=true version=budget-successor")
+		})
+	}
+}

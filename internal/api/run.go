@@ -199,7 +199,22 @@ func (l *recoveryDaemonLifecycle) stopDaemon(daemon *omorpc.EnsuredDaemon) {
 }
 
 func engineRestarter(lifecycle *recoveryDaemonLifecycle, client *omorpc.Client) func(context.Context) (string, string, error) {
+	budget, err := omorpc.RestartBudget(runEnsureConfig(&config.Config{}, ""))
+	if err != nil {
+		return func(context.Context) (string, string, error) { return "", "", err }
+	}
+	return engineRestarterWithBudget(lifecycle, client, budget)
+}
+
+var errEngineRestartNotReady = errors.New("engine did not become ready in time")
+
+func engineRestarterWithBudget(lifecycle *recoveryDaemonLifecycle, client *omorpc.Client, budget time.Duration) func(context.Context) (string, string, error) {
 	return func(ctx context.Context) (string, string, error) {
+		// Count retirement against the budget, but leave its cancellation contract
+		// unchanged. Only this caller's successor wait is bounded; a shared
+		// reconnect flight keeps its own lifecycle and may finish afterwards.
+		waitCtx, cancel := context.WithDeadlineCause(ctx, time.Now().Add(budget), errEngineRestartNotReady)
+		defer cancel()
 		before := client.ServerVersion()
 		retired, err := lifecycle.stopCurrent(ctx, client)
 		if err != nil {
@@ -208,11 +223,20 @@ func engineRestarter(lifecycle *recoveryDaemonLifecycle, client *omorpc.Client) 
 		// stopCurrent releases the spawn barrier before this wait. A reconnect
 		// flight may therefore run its own ensure hook without deadlocking behind
 		// the restart that is waiting for it.
-		if err := client.EnsureConnectedAfter(ctx, retired); err != nil {
+		if err := client.EnsureConnectedAfter(waitCtx, retired); err != nil {
+			if waitCtx.Err() != nil {
+				err = context.Cause(waitCtx)
+			}
 			return before, "", err
+		}
+		if waitCtx.Err() != nil {
+			return before, "", context.Cause(waitCtx)
 		}
 		if !lifecycle.currentOwned() {
 			return before, "", omorpc.ErrDaemonNotOwned
+		}
+		if waitCtx.Err() != nil {
+			return before, "", context.Cause(waitCtx)
 		}
 		return before, client.ServerVersion(), nil
 	}
@@ -243,6 +267,10 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 	}
 	recoveryDaemons := recoveryDaemonLifecycle{logger: logger}
 	ensureCfg := runEnsureConfig(cfg, stateDir)
+	restartBudget, err := omorpc.RestartBudget(ensureCfg)
+	if err != nil {
+		return fmt.Errorf("calculating engine restart budget: %w", err)
+	}
 	if _, err := omorpc.SocketPathFor(ensureCfg); err == nil {
 		recoveryDaemons.retireUnowned = func(ctx context.Context) error {
 			return omorpc.RetireUnownedEngine(ctx, ensureCfg)
@@ -305,7 +333,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 	// confirms the retiring group is gone before a successor may spawn on the
 	// same client. Restart refuses with ErrDaemonNotOwned if the successor is
 	// not owned by this server.
-	apiServer.restartEngine = engineRestarter(&recoveryDaemons, ensured.Client)
+	apiServer.restartEngine = engineRestarterWithBudget(&recoveryDaemons, ensured.Client, restartBudget)
 
 	var cleanup sync.Once
 	cleanupAll := func() {

@@ -176,6 +176,7 @@ func TestSystemEngineRestartErrorsReleaseMutex(t *testing.T) {
 	}{
 		{"not-owned", omorpc.ErrDaemonNotOwned, http.StatusConflict, "not started by this server"},
 		{"restart-failure", errors.New("ERESTART fixture failure"), http.StatusInternalServerError, "ERESTART fixture failure"},
+		{"readiness-budget", errors.Join(errEngineRestartNotReady, context.DeadlineExceeded), http.StatusInternalServerError, errEngineRestartNotReady.Error()},
 		{"deadline", context.DeadlineExceeded, http.StatusGatewayTimeout, context.DeadlineExceeded.Error()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
