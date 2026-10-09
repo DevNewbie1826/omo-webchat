@@ -140,11 +140,15 @@ func TestEngineRestartRefusesUnownedSuccessor(t *testing.T) {
 	lifecycle.initialize(&omorpc.EnsuredDaemon{Client: client})
 	s, _, _ := newChatCreateTestServer(t)
 	returned := make(chan error, 1)
-	restart := engineRestarter(&lifecycle, client)
-	s.restartEngine = func(ctx context.Context) (string, string, error) {
-		before, after, err := restart(ctx)
+	budget, err := omorpc.RestartBudget(runEnsureConfig(&config.Config{}, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restart := engineRestarterWithBudget(&lifecycle, client, budget)
+	s.restartEngine = func(ctx context.Context) (string, string, <-chan struct{}, error) {
+		before, after, finished, err := restart(ctx)
 		returned <- err
-		return before, after, err
+		return before, after, finished, err
 	}
 	server := httptest.NewServer(s.Handler())
 	t.Cleanup(server.Close)
@@ -373,10 +377,10 @@ func TestEngineRestartBoundsStalledSuccessorNegotiation(t *testing.T) {
 			s.ctx = callerCtx
 			restart := engineRestarterWithBudget(&lifecycle, client, budget)
 			returned := make(chan error, 1)
-			s.restartEngine = func(ctx context.Context) (string, string, error) {
-				before, after, err := restart(ctx)
+			s.restartEngine = func(ctx context.Context) (string, string, <-chan struct{}, error) {
+				before, after, finished, err := restart(ctx)
 				returned <- err
-				return before, after, err
+				return before, after, finished, err
 			}
 			server := httptest.NewServer(s.Handler())
 			defer func() {

@@ -34,14 +34,30 @@ func (s *Server) handleSystemEngineRestart(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusConflict, "engine restart already running")
 		return
 	}
-	defer s.updateMu.Unlock()
+	var finished <-chan struct{}
+	defer func() {
+		if finished == nil {
+			s.updateMu.Unlock()
+			return
+		}
+		select {
+		case <-finished:
+			s.updateMu.Unlock()
+		default:
+			// A timely HTTP response does not end the restart sequence.
+			go func() {
+				<-finished
+				s.updateMu.Unlock()
+			}()
+		}
+	}()
 	activeChats := s.activeChatCount()
 	// A closed tab must not interrupt a running restart. Server shutdown and
 	// this deadline end the caller's wait; any started retirement still owns
 	// its process-group drain and endpoint cleanup.
 	ctx, cancel := context.WithTimeout(s.ctx, engineRestartTimeout)
 	defer cancel()
-	before, after, err := s.restartEngine(ctx)
+	before, after, finished, err := s.restartEngine(ctx)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, errEngineRestartNotReady) {

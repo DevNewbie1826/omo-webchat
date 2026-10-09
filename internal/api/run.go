@@ -205,13 +205,17 @@ func engineRestarter(lifecycle *recoveryDaemonLifecycle, client *omorpc.Client) 
 	if err != nil {
 		return func(context.Context) (string, string, error) { return "", "", err }
 	}
-	return engineRestarterWithBudget(lifecycle, client, budget)
+	restart := engineRestarterWithBudget(lifecycle, client, budget)
+	return func(ctx context.Context) (string, string, error) {
+		before, after, _, err := restart(ctx)
+		return before, after, err
+	}
 }
 
 var errEngineRestartNotReady = errors.New("engine did not become ready in time")
 
-func engineRestarterWithBudget(lifecycle *recoveryDaemonLifecycle, client *omorpc.Client, budget time.Duration) func(context.Context) (string, string, error) {
-	return func(ctx context.Context) (string, string, error) {
+func engineRestarterWithBudget(lifecycle *recoveryDaemonLifecycle, client *omorpc.Client, budget time.Duration) func(context.Context) (string, string, <-chan struct{}, error) {
+	return func(ctx context.Context) (string, string, <-chan struct{}, error) {
 		// Bound the caller across admission, retirement and successor negotiation.
 		// Retirement keeps its barrier and bounded cleanup after this caller
 		// leaves; the shared reconnect flight keeps its own lifecycle.
@@ -224,6 +228,7 @@ func engineRestarterWithBudget(lifecycle *recoveryDaemonLifecycle, client *omorp
 		}
 		// A late result never blocks its worker or touches an HTTP response.
 		done := make(chan restartResult, 1)
+		finished := make(chan struct{})
 		go func() {
 			retired, err := lifecycle.stopCurrent(context.WithoutCancel(ctx), client)
 			if err == nil {
@@ -237,16 +242,17 @@ func engineRestarterWithBudget(lifecycle *recoveryDaemonLifecycle, client *omorp
 			if err == nil {
 				after = client.ServerVersion()
 			}
+			close(finished)
 			done <- restartResult{after: after, err: err}
 		}()
 		select {
 		case <-waitCtx.Done():
-			return before, "", context.Cause(waitCtx)
+			return before, "", finished, context.Cause(waitCtx)
 		case result := <-done:
 			if waitCtx.Err() != nil {
-				return before, "", context.Cause(waitCtx)
+				return before, "", finished, context.Cause(waitCtx)
 			}
-			return before, result.after, result.err
+			return before, result.after, finished, result.err
 		}
 	}
 }
