@@ -212,35 +212,42 @@ var errEngineRestartNotReady = errors.New("engine did not become ready in time")
 
 func engineRestarterWithBudget(lifecycle *recoveryDaemonLifecycle, client *omorpc.Client, budget time.Duration) func(context.Context) (string, string, error) {
 	return func(ctx context.Context) (string, string, error) {
-		// Count retirement against the budget, but leave its cancellation contract
-		// unchanged. Only this caller's successor wait is bounded; a shared
-		// reconnect flight keeps its own lifecycle and may finish afterwards.
+		// Bound the caller across admission, retirement and successor negotiation.
+		// Retirement keeps its barrier and bounded cleanup after this caller
+		// leaves; the shared reconnect flight keeps its own lifecycle.
 		waitCtx, cancel := context.WithDeadlineCause(ctx, time.Now().Add(budget), errEngineRestartNotReady)
 		defer cancel()
 		before := client.ServerVersion()
-		retired, err := lifecycle.stopCurrent(ctx, client)
-		if err != nil {
-			return before, "", err
+		type restartResult struct {
+			after string
+			err   error
 		}
-		// stopCurrent releases the spawn barrier before this wait. A reconnect
-		// flight may therefore run its own ensure hook without deadlocking behind
-		// the restart that is waiting for it.
-		if err := client.EnsureConnectedAfter(waitCtx, retired); err != nil {
-			if waitCtx.Err() != nil {
-				err = context.Cause(waitCtx)
+		// A late result never blocks its worker or touches an HTTP response.
+		done := make(chan restartResult, 1)
+		go func() {
+			retired, err := lifecycle.stopCurrent(context.WithoutCancel(ctx), client)
+			if err == nil {
+				// The spawn barrier is released before joining recovery.
+				err = client.EnsureConnectedAfter(waitCtx, retired)
 			}
-			return before, "", err
-		}
-		if waitCtx.Err() != nil {
+			if err == nil && !lifecycle.currentOwned() {
+				err = omorpc.ErrDaemonNotOwned
+			}
+			after := ""
+			if err == nil {
+				after = client.ServerVersion()
+			}
+			done <- restartResult{after: after, err: err}
+		}()
+		select {
+		case <-waitCtx.Done():
 			return before, "", context.Cause(waitCtx)
+		case result := <-done:
+			if waitCtx.Err() != nil {
+				return before, "", context.Cause(waitCtx)
+			}
+			return before, result.after, result.err
 		}
-		if !lifecycle.currentOwned() {
-			return before, "", omorpc.ErrDaemonNotOwned
-		}
-		if waitCtx.Err() != nil {
-			return before, "", context.Cause(waitCtx)
-		}
-		return before, client.ServerVersion(), nil
 	}
 }
 

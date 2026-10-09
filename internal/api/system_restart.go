@@ -36,8 +36,9 @@ func (s *Server) handleSystemEngineRestart(w http.ResponseWriter, r *http.Reques
 	}
 	defer s.updateMu.Unlock()
 	activeChats := s.activeChatCount()
-	// A closed tab must not interrupt a running restart; server shutdown and
-	// this deadline still cancel the whole replacement sequence.
+	// A closed tab must not interrupt a running restart. Server shutdown and
+	// this deadline end the caller's wait; any started retirement still owns
+	// its process-group drain and endpoint cleanup.
 	ctx, cancel := context.WithTimeout(s.ctx, engineRestartTimeout)
 	defer cancel()
 	before, after, err := s.restartEngine(ctx)

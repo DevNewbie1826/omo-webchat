@@ -448,3 +448,65 @@ func TestEngineRestartBoundsStalledSuccessorNegotiation(t *testing.T) {
 		})
 	}
 }
+
+type budgetRestartHTTPResult struct {
+	status  int
+	capture string
+	elapsed time.Duration
+	err     error
+}
+
+func startBudgetRestartHTTP(t *testing.T, lifecycle *recoveryDaemonLifecycle, client *omorpc.Client) <-chan budgetRestartHTTPResult {
+	t.Helper()
+	s, _, _ := newChatCreateTestServer(t)
+	s.restartEngine = engineRestarterWithBudget(lifecycle, client, 500*time.Millisecond)
+	server := httptest.NewServer(s.Handler())
+	requestCtx, cancelRequest := context.WithTimeout(t.Context(), 8*time.Second)
+	token, err := s.sessions.Create(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, server.URL+"/api/system/engine/restart", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	done := make(chan budgetRestartHTTPResult, 1)
+	joined := make(chan struct{})
+	t.Cleanup(func() {
+		cancelRequest()
+		server.Close()
+		<-joined
+		t.Logf("cleanup: HTTP listener %s closed; request and handlers joined", server.URL)
+	})
+	t.Logf("HTTP scenario: POST %s Content-Type=application/json Cookie=authenticated body={}; PASS=HTTP500 not-ready within 2s while gate remains held (budget=500ms)", request.URL)
+	go func() {
+		defer close(joined)
+		started := time.Now()
+		response, err := server.Client().Do(request)
+		got := budgetRestartHTTPResult{elapsed: time.Since(started), err: err}
+		if err == nil {
+			capture, dumpErr := httputil.DumpResponse(response, true)
+			got.status, got.capture, got.err = response.StatusCode, string(capture), dumpErr
+			_ = response.Body.Close()
+		}
+		done <- got
+	}()
+	return done
+}
+
+func observeBudgetRestartHTTP(t *testing.T, done <-chan budgetRestartHTTPResult) bool {
+	t.Helper()
+	select {
+	case got := <-done:
+		t.Logf("elapsed=%s; response:\n%s", got.elapsed, got.capture)
+		if got.err != nil || got.status != http.StatusInternalServerError || !strings.Contains(got.capture, errEngineRestartNotReady.Error()) || got.elapsed > 2*time.Second {
+			t.Errorf("restart timing/status: HTTP%d elapsed=%s error=%v, want HTTP500 not-ready within 2s before gate release", got.status, got.elapsed, got.err)
+		}
+		return true
+	case <-time.After(2 * time.Second):
+		t.Error("restart timing/status: no HTTP500 not-ready response within 2s before gate release")
+		return false
+	}
+}
