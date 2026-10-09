@@ -553,6 +553,10 @@ type OpenSessionData struct {
 	// subsequent session-scoped commands and replies address.
 	SessionID string       `json:"sessionId"`
 	State     SessionState `json:"state"`
+	// Attached reports that this open_session bound an already-open
+	// session instead of creating one. The field is omitted on the wire
+	// when false, so a payload without it decodes as not attached.
+	Attached bool `json:"attached,omitempty"`
 }
 
 // EncodeFrame renders v as one wire frame: compact JSON terminated by

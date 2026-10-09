@@ -118,7 +118,10 @@ type ChatRef interface {
 }
 
 type Config struct {
-	Client        *omorpc.Client
+	Client *omorpc.Client
+	// DialAttach opens a dedicated, non-reconnecting connection for an
+	// enrolled route. Nil preserves handle-only discovery for legacy callers.
+	DialAttach    func(context.Context) (*omorpc.Client, error)
 	Store         CursorStore
 	IdleAfter     time.Duration
 	QueueSize     int
@@ -135,15 +138,18 @@ type Config struct {
 	// shutdown barrier - so the next acquire can issue its own open_session,
 	// while the detached-open slot stays held until the correlation settles,
 	// bounding retained RPC ownership to DetachedOpenLimit. When the
-	// original open targeted a stored session path, live unowned provider
+	// original native open targeted a stored session path, live unowned provider
 	// routes on that path are first reconciled (list_sessions plus
 	// epoch-bound close_session through the ordinary retiring machinery);
 	// routes this manager currently owns and publishes are never closed.
+	// Auto-enrolled opens skip this pre-response reconciliation because
+	// the unanswered result may already have attached an external session.
 	// The detached completion wait then gets one final OpenRecoveryAfter
 	// grace, after which the manager stops waiting but a residual owner
 	// keeps the epoch-bound cleanup until the response or connection-epoch
 	// death settles it, per CallDetached's existing contract, so a late
-	// success is still closed and never published. Zero selects
+	// success is never published: owned routes close, attached external
+	// routes stay as main-connection residuals until disconnect. Zero selects
 	// DefaultOpenRecoveryAfter; a negative value disables recovery entirely
 	// (legacy unbounded detached wait). Configured values must exceed
 	// CloseTimeout; NewManager raises smaller positive values to
