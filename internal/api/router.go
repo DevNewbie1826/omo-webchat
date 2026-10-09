@@ -50,7 +50,9 @@ type Server struct {
 	// restartEngine stops every owned supervisor, re-establishes the shared
 	// client transport so the reconnect hook spawns a successor engine, and
 	// reports the negotiated engine version before and after the swap.
-	restartEngine func(ctx context.Context) (before, after string, err error)
+	// finished closes when the sequence ends, even after a caller timeout;
+	// nil means the call completed synchronously.
+	restartEngine func(ctx context.Context) (before, after string, finished <-chan struct{}, err error)
 
 	chatLifecycleMu             sync.Mutex
 	adoptionMu                  sync.Mutex

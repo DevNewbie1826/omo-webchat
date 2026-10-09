@@ -43,7 +43,7 @@ func assertSystemRestartError(t *testing.T, w *httptest.ResponseRecorder, status
 func TestSystemEngineRestartAuthenticationAndContract(t *testing.T) {
 	s, _, _ := newChatCreateTestServer(t)
 	calls := 0
-	s.restartEngine = func(ctx context.Context) (string, string, error) {
+	s.restartEngine = func(ctx context.Context) (string, string, <-chan struct{}, error) {
 		calls++
 		if _, ok := ctx.Deadline(); !ok {
 			t.Error("restart context is not bounded")
@@ -51,7 +51,7 @@ func TestSystemEngineRestartAuthenticationAndContract(t *testing.T) {
 		if ctx.Err() != nil {
 			t.Error("restart context is already canceled")
 		}
-		return "before-version", "after-version", nil
+		return "before-version", "after-version", nil, nil
 	}
 	handler := s.Handler()
 	for _, authenticated := range []bool{false, true} {
@@ -85,9 +85,9 @@ func TestSystemEngineRestartAuthenticationAndContract(t *testing.T) {
 
 func TestSystemEngineRestartRejectsNonEmptyBodies(t *testing.T) {
 	s, _, _ := newChatCreateTestServer(t)
-	s.restartEngine = func(context.Context) (string, string, error) {
+	s.restartEngine = func(context.Context) (string, string, <-chan struct{}, error) {
 		t.Fatal("invalid request restarted the engine")
-		return "", "", nil
+		return "", "", nil, nil
 	}
 	handler := s.Handler()
 	for _, body := range []string{`{"force":true}`, `{"command":"anything"}`, `[]`, `null`, `"x"`, `{} {}`, ``, strings.Repeat("x", 2048)} {
@@ -122,16 +122,16 @@ func TestSystemEngineRestartDisconnectAndConcurrentRequests(t *testing.T) {
 	started := make(chan context.Context, 1)
 	release := make(chan struct{})
 	var calls atomic.Int32
-	s.restartEngine = func(ctx context.Context) (string, string, error) {
+	s.restartEngine = func(ctx context.Context) (string, string, <-chan struct{}, error) {
 		if calls.Add(1) != 1 {
-			return "", "", nil
+			return "", "", nil, nil
 		}
 		started <- ctx
 		select {
 		case <-release:
-			return "before", "after", nil
+			return "before", "after", nil, nil
 		case <-ctx.Done():
-			return "", "", ctx.Err()
+			return "", "", nil, ctx.Err()
 		}
 	}
 	handler := s.Handler()
@@ -176,17 +176,18 @@ func TestSystemEngineRestartErrorsReleaseMutex(t *testing.T) {
 	}{
 		{"not-owned", omorpc.ErrDaemonNotOwned, http.StatusConflict, "not started by this server"},
 		{"restart-failure", errors.New("ERESTART fixture failure"), http.StatusInternalServerError, "ERESTART fixture failure"},
+		{"readiness-budget", errors.Join(errEngineRestartNotReady, context.DeadlineExceeded), http.StatusInternalServerError, errEngineRestartNotReady.Error()},
 		{"deadline", context.DeadlineExceeded, http.StatusGatewayTimeout, context.DeadlineExceeded.Error()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _, _ := newChatCreateTestServer(t)
 			calls := 0
-			s.restartEngine = func(context.Context) (string, string, error) {
+			s.restartEngine = func(context.Context) (string, string, <-chan struct{}, error) {
 				calls++
 				if calls == 1 {
-					return "", "", tc.err
+					return "", "", nil, tc.err
 				}
-				return "before", "after", nil
+				return "before", "after", nil, nil
 			}
 			handler := s.Handler()
 			first := httptest.NewRecorder()

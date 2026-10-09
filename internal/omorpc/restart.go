@@ -9,6 +9,11 @@ import (
 // it may terminate for the ensured engine.
 var ErrDaemonNotOwned = errors.New("omorpc: engine was not started by this server")
 
+// ErrRetirementUnconfirmed marks an unowned retirement that sent a signal but
+// could not confirm the process group exited. No-signal refusals do not carry
+// this marker and must leave recovery available.
+var ErrRetirementUnconfirmed = errors.New("omorpc: engine retirement unconfirmed")
+
 type supervisorStopError struct {
 	err       error
 	confirmed bool

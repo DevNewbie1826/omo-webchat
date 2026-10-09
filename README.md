@@ -249,8 +249,13 @@ Windows에서는 모든 omo/senpi 프로세스와 웹챗을 종료한 뒤 터미
 로그인한 사용자만 실행할 수 있고, 설치 업데이트와 엔진 재시작은 동시에
 실행되지 않습니다. 한쪽이 진행 중이면 다른 요청은 거부합니다.
 
-이 서버가 시작한 엔진만 재시작할 수 있습니다. 다른 프로세스가 시작한 엔진에
-연결된 경우에는 소유하지 않은 프로세스를 안전하게 종료할 방법이 없어 요청을
+재시작은 이 서버가 시작한 엔진을 종료합니다. Linux와 macOS에서는 서버가 강제
+종료된 뒤 남은 엔진처럼 이 서버가 시작하지 않은 엔진도, 이 서버의 RPC 소켓을
+맡고 있고 RPC 핸드셰이크에 응답하며 같은 사용자로 실행 중인 자기 프로세스
+그룹의 리더라면 다른 런처가 시작했더라도 프로세스 그룹 전체를 종료하고 이
+서버가 시작한 엔진으로 교체합니다. 이때 그 엔진에서 실행 중이던 채팅은
+끝납니다. 교체된 엔진도 이 서버가 시작한 것이 아니면 이전처럼 요청을
+거부합니다(409). Windows에서는 이 서버가 시작하지 않은 엔진의 재시작을 계속
 거부합니다. 업데이트 없이도, 엔진을 오래 켜 둔 뒤 새로 시작하고 싶을 때
 단독으로 사용할 수 있습니다.
 
@@ -459,9 +464,14 @@ is streaming at that moment is interrupted. The confirmation dialog warns when
 chats are running. The action requires login, and installation updates and engine
 restarts never run at the same time; a second request while one runs is refused.
 
-Only an engine started by this server can be restarted. When the server attached
-to an engine someone else started, the request is refused because there is no safe
-way to stop a process this server does not own. A restart is also useful on its
+A restart stops the engines this server started. On Linux and macOS it can also
+retire an engine this server didn't start, such as one left behind after the
+server was killed. If that engine serves this server's RPC socket, answers the RPC
+handshake, runs as the same user and leads its own process group, its whole
+process group is stopped and replaced by one this server starts, even when
+another launcher started it. Chats running on it end. If the replacement still
+isn't started by this server, the request is refused (409) as before. On Windows
+a restart of an engine this server didn't start is still refused. A restart is also useful on its
 own, without an update, when the engine has been running for a long time.
 
 ### Security
