@@ -47,9 +47,11 @@ type Server struct {
 	// both endpoints single-flight on one mutex and never overlap.
 	updateMu           sync.Mutex
 	updateInstallation func(context.Context) error
-	// restartEngine stops every owned supervisor, re-establishes the shared
-	// client transport so the reconnect hook spawns a successor engine, and
-	// reports the negotiated engine version before and after the swap.
+	// restartEngine stops every owned supervisor, retires an engine this
+	// server does not own by terminating its whole process group,
+	// re-establishes the shared client transport so the reconnect hook spawns
+	// a successor engine, and reports the negotiated engine version before
+	// and after the swap.
 	// finished closes when the sequence ends, even after a caller timeout;
 	// nil means the call completed synchronously.
 	restartEngine func(ctx context.Context) (before, after string, finished <-chan struct{}, err error)
