@@ -764,7 +764,7 @@ func TestLauncherUpdateCommandMatchesInstallShape(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bunRoot := filepath.Join(t.TempDir(), ".bun", "install", "global", "node_modules", "omo-ai")
-			if got, want := launcherUpdateCommand(bunRoot, tc.version), "bun add --cwd "+shellQuote(bunRoot)+" -g "+tc.spec; got != want {
+			if got, want := launcherUpdateCommand(bunRoot, tc.version), "bun add -g "+tc.spec; got != want {
 				t.Fatalf("bun update command = %q, want %q", got, want)
 			}
 			npmRoot := filepath.Join(t.TempDir(), "lib", "node_modules", "omo-ai")
