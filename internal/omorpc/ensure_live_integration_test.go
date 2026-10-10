@@ -204,8 +204,18 @@ childProcess.spawn = function (...args) {
   if (typeof brand === "string") fs.writeFileSync(%q, brand);
   return spawn.apply(this, args);
 };
+// POSIX launchers replace themselves with the engine through process.execve
+// instead of spawning it, so the brand handoff has to be captured there too.
+const execve = process.execve;
+if (typeof execve === "function") {
+  process.execve = function (file, args, env) {
+    const brand = env?.SENPI_BRAND;
+    if (typeof brand === "string") fs.writeFileSync(%q, brand);
+    return execve.call(this, file, args, env);
+  };
+}
 syncBuiltinESMExports();
-`, profilePath)
+`, profilePath, profilePath)
 	if err := os.WriteFile(preloadPath, []byte(preload), 0o600); err != nil {
 		t.Fatalf("write brand profile probe: %v", err)
 	}
@@ -293,6 +303,12 @@ func nativeDescendantProcess(t *testing.T, supervisorPID int) nativeProcess {
 	descendants := map[int]int{supervisorPID: 0}
 	var native nativeProcess
 	nativeDepth := -1
+	// A launcher that replaced itself through execve is the native host.
+	for _, current := range processes {
+		if current.pid == supervisorPID && (strings.EqualFold(current.brand, "omo") || strings.EqualFold(current.brand, "senpi")) {
+			native, nativeDepth = current, 0
+		}
+	}
 	for changed := true; changed; {
 		changed = false
 		for _, current := range processes {

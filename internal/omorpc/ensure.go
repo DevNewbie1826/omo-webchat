@@ -1132,7 +1132,7 @@ func isBunLauncherInstallation(root string) bool {
 func launcherUpdateCommand(root, version string) string {
 	spec := channelPackageSpec(version)
 	if isBunLauncherInstallation(root) {
-		return fmt.Sprintf("bun add --cwd %s -g %s", shellQuote(root), spec)
+		return "bun add -g " + spec
 	}
 	return "npm i -g " + spec
 }
